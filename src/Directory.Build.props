@@ -65,6 +65,7 @@
          （PROCESSRECORDERAPP_LANG で表示言語を強制できる）。 -->
     <DefaultLanguage>en-US</DefaultLanguage>
     <NeutralLanguage>en-US</NeutralLanguage>
+    <SatelliteResourceLanguages>en;ja</SatelliteResourceLanguages>
 
     <!-- AOT -->
     <InvariantGlobalization>true</InvariantGlobalization>

@@ -107,4 +107,45 @@
   <PropertyGroup Condition="'$(DisableHasPackageAndPublishMenuAddedByProject)'!='true' and '$(EnableMsixTooling)'=='true'">
     <HasPackageAndPublishMenu>true</HasPackageAndPublishMenu>
   </PropertyGroup>
+
+  <!--
+    Windows App SDK の .mui を、対応している言語だけに絞る
+
+    **SatelliteResourceLanguages では止まらない。**あれが絞るのは .NET のサテライト
+    (*.resources.dll) であり、.mui は Windows App SDK が配る Win32 の MUI リソースだからである。
+    放っておくと `App.WinUI` の発行物に en-us / ja-jp 以外の**85 言語ぶん / 3.3MB** が入り、
+    en-US と ja-JP しか持たないアプリが**85 言語で使えるように見える**。
+
+    **上流が用意している逃げ道を使う。**
+    microsoft.windowsappsdk.base/*/build/Microsoft.WindowsAppSDK.SelfContained.targets の
+    AddMicrosoftWindowsAppSDKPayloadFilesFromComponents が、集めた一覧に対して
+
+      <MicrosoftWindowsAppSDKFiles Remove="@(MicrosoftWindowsAppSDKFilesExcluded)"/>
+
+    を掛けている。そこへ入れておけば済む。**None を後から削る形にしないこと** —
+    あの一覧は .dll / .winmd / .xbf も運んでおり、後追いで消す形は取りこぼしと行き過ぎの両方を作る。
+
+    **Remove する側を先に列挙してから、残したい言語を差し戻す**形にしてある。
+    「残す側を列挙する」形にすると、言語フォルダの命名が変わった日に**黙って全部落ちる**。
+    こちらの形なら、変わったときに増えるのは「落とし損ね」であって「消しすぎ」ではない。
+
+    条件は WindowsAppSdkComponentPackages の有無で見る。WinUI を参照しないプロジェクトでは
+    この target 自体が何もしない。
+  -->
+  <Target Name="ExcludeUnsupportedWindowsAppSdkLanguages"
+          BeforeTargets="AddMicrosoftWindowsAppSDKPayloadFilesFromComponents"
+          DependsOnTargets="GetWindowsAppSDKNativePlatform"
+          Condition="'@(WindowsAppSdkComponentPackages)' != ''">
+    <PropertyGroup>
+      <_UiaTriggerWinAppSdkNative>runtimes-framework\win-$(NativePlatform)\native</_UiaTriggerWinAppSdkNative>
+    </PropertyGroup>
+    <ItemGroup>
+      <MicrosoftWindowsAppSDKFilesExcluded
+          Include="%(WindowsAppSdkComponentPackages.Identity)$(_UiaTriggerWinAppSdkNative)\**\*.mui" />
+      <!-- 対応している 2 つだけ差し戻す。NeutralLanguage=en-US / サテライトは ja に揃えてある -->
+      <MicrosoftWindowsAppSDKFilesExcluded
+          Remove="@(MicrosoftWindowsAppSDKFilesExcluded)"
+          Condition="'%(RecursiveDir)' == 'en-us\' Or '%(RecursiveDir)' == 'ja-jp\'" />
+    </ItemGroup>
+  </Target>
 </Project>
