@@ -165,6 +165,48 @@ public partial class AppSettings : JsonSettingsBase<AppSettings>
     public partial int RecordingCleanupIntervalHours { get; set; } = 6;
 
     /// <summary>
+    /// UIA トリガ監視全体の有効/無効。無効にすると監視スレッドごと止める
+    /// （<c>UiaTriggerService</c> がこのプロパティの変更を購読している）。
+    /// </summary>
+    [System.ComponentModel.Category("PropCat_Triggers")]
+    [System.ComponentModel.Description("PropDesc_UiaTriggersEnabled")]
+    [ObservableProperty]
+    public partial bool UiaTriggersEnabled { get; set; } = true;
+
+    /// <summary>
+    /// トリガ一覧の編集の起動口。「…」ボタンでトリガ一覧エディタを開く
+    /// （MainPage が <c>PropertyGridView.ValueBuilder</c> にこのキーで応答する）。
+    /// 値そのものに意味は無く、トリガの正本は <see cref="UiaTriggers"/> なので永続化もしない。
+    /// </summary>
+    [System.ComponentModel.Category("PropCat_Triggers")]
+    [System.ComponentModel.Description("PropDesc_UiaTriggerList")]
+    [ValueBuilder(UiaTriggerBuilderKey)]
+    [JsonIgnore]
+    [ObservableProperty]
+    public partial string UiaTriggerList { get; set; } = "";
+
+    /// <summary>
+    /// <see cref="UiaTriggerList"/> のビルダー識別キー。
+    /// <b><c>PropCat_</c> / <c>PropDesc_</c> で始めてはいけない</b>（<see cref="EncoderChoiceListKey"/> と同じ理由）。
+    /// </summary>
+    public const string UiaTriggerBuilderKey = "UiaTriggerList";
+
+    /// <summary>
+    /// UIA トリガ定義の一覧（正本）。編集はトリガ一覧エディタ経由のみで、PropertyGrid には出さない。
+    ///
+    /// <para>
+    /// エディタは常に新しい写しを返すので、<b>変更はリストごと差し替える</b>（要素の in-place
+    /// 変更をしない）。PropertyChanged が飛んでデバウンス保存と監視の再起動が効くのは
+    /// その形だけである。差し替え運用なのでバックグラウンド（監視サービス）からの
+    /// 参照読みも安全になる。
+    /// </para>
+    /// </summary>
+    [System.ComponentModel.Browsable(false)]
+    [JsonInclude]
+    [ObservableProperty]
+    public partial List<UiaTrigger.Models.TriggerDefinition> UiaTriggers { get; internal set; } = [];
+
+    /// <summary>
     /// テンプレート変数（<c>{キー名}</c>）のうち、<b>永続化するよう明示的に指定されたもの</b>。
     ///
     /// <para>
@@ -253,6 +295,7 @@ public partial class AppSettings : JsonSettingsBase<AppSettings>
     internal AppSettings()
     {
         Recorders.CollectionChanged += Recorders_CollectionChanged;
+        UiaTriggerAssignments.CollectionChanged += UiaTriggerAssignments_CollectionChanged;
     }
 
     /// <summary>
@@ -323,6 +366,89 @@ public partial class AppSettings : JsonSettingsBase<AppSettings>
         if (0 <= idx)
             Recorders[idx] = Recorders[idx];
     }
+
+    /// <summary>
+    /// トリガ ID ごとの録画アクション割り当て。行の増減はトリガ編集
+    /// （<see cref="TriggerAssignmentReconciler"/>）が管理し、PropertyGrid では各行の
+    /// 値（アクション・対象）だけを編集する ── だから <c>[CollectionItemType]</c> は
+    /// 付けない（Add ボタンを出さない。Remove で行を消しても次の編集で復活し、実害はない）。
+    /// 変数の反映は割り当てに関係なく常に行われる。
+    /// </summary>
+    [System.ComponentModel.Category("PropCat_Triggers")]
+    [System.ComponentModel.Description("PropDesc_UiaTriggerAssignments")]
+    [JsonInclude]
+    [ObservableProperty]
+    public partial ObservableCollection<UiaTriggerAssignment> UiaTriggerAssignments { get; internal set; } = [];
+
+    partial void OnUiaTriggerAssignmentsChanging(ObservableCollection<UiaTriggerAssignment> oldValue, ObservableCollection<UiaTriggerAssignment> newValue)
+    {
+        if (oldValue == newValue)
+            return;
+        oldValue?.CollectionChanged -= UiaTriggerAssignments_CollectionChanged;
+        newValue?.CollectionChanged += UiaTriggerAssignments_CollectionChanged;
+    }
+
+    /// <summary>購読済みの割り当て行（保持する理由は <see cref="_subscribedRecorders"/> と同じ）。</summary>
+    private readonly List<UiaTriggerAssignment> _subscribedAssignments = [];
+
+    private void SubscribeAssignment(UiaTriggerAssignment a)
+    {
+        if (_subscribedAssignments.Contains(a))
+            return;
+        a.PropertyChanged += AssignmentsChild_PropertyChanged;
+        _subscribedAssignments.Add(a);
+    }
+
+    private void UnsubscribeAssignment(UiaTriggerAssignment a)
+    {
+        if (!_subscribedAssignments.Remove(a))
+            return;
+        a.PropertyChanged -= AssignmentsChild_PropertyChanged;
+    }
+
+    private void UiaTriggerAssignments_CollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
+    {
+        switch (e.Action)
+        {
+            case NotifyCollectionChangedAction.Add:
+                if (e.NewItems is not null)
+                    foreach (UiaTriggerAssignment a in e.NewItems)
+                        SubscribeAssignment(a);
+                break;
+            case NotifyCollectionChangedAction.Remove:
+                if (e.OldItems is not null)
+                    foreach (UiaTriggerAssignment a in e.OldItems)
+                        UnsubscribeAssignment(a);
+                break;
+            case NotifyCollectionChangedAction.Replace:
+                if (e.OldItems is not null && e.NewItems is not null
+                    && !e.OldItems.OfType<UiaTriggerAssignment>().SequenceEqual(
+                        e.NewItems.OfType<UiaTriggerAssignment>()))
+                {
+                    foreach (UiaTriggerAssignment a in e.OldItems)
+                        UnsubscribeAssignment(a);
+                    foreach (UiaTriggerAssignment a in e.NewItems)
+                        SubscribeAssignment(a);
+                }
+                break;
+            case NotifyCollectionChangedAction.Reset:
+                foreach (var a in _subscribedAssignments)
+                    a.PropertyChanged -= AssignmentsChild_PropertyChanged;
+                _subscribedAssignments.Clear();
+                break;
+        }
+
+        // デバウンス保存の契機。AttachAutoSave から直接購読しない理由は
+        // Recorders_CollectionChanged のコメント参照（プロパティごと差し替わりうる）。
+        RequestSave();
+    }
+
+    private void AssignmentsChild_PropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
+    {
+        int idx = UiaTriggerAssignments.IndexOf((UiaTriggerAssignment)sender!);
+        if (0 <= idx)
+            UiaTriggerAssignments[idx] = UiaTriggerAssignments[idx];
+    }
     /// <summary>
     /// settings.json を読み直して、このインスタンスの各プロパティへ反映する。
     ///
@@ -359,6 +485,10 @@ public partial class AppSettings : JsonSettingsBase<AppSettings>
         OutputDirectory = loaded.OutputDirectory;
         RecordingRetentionDays = loaded.RecordingRetentionDays;
         RecordingCleanupIntervalHours = loaded.RecordingCleanupIntervalHours;
+        UiaTriggersEnabled = loaded.UiaTriggersEnabled;
+        UiaTriggerList = loaded.UiaTriggerList;
+        // トリガ定義は差し替え運用（要素を in-place 変更しない）なので参照コピーでよい
+        UiaTriggers = loaded.UiaTriggers;
         DataVersion = loaded.DataVersion;
         // loaded 側の OnLoaded() が static ストアへの復元まで済ませている。
         // ここは永続化用の器を揃えるだけ。
@@ -371,6 +501,10 @@ public partial class AppSettings : JsonSettingsBase<AppSettings>
         Recorders.Clear();
         foreach (var r in loaded.Recorders)
             Recorders.Add(r);
+
+        UiaTriggerAssignments.Clear();
+        foreach (var a in loaded.UiaTriggerAssignments)
+            UiaTriggerAssignments.Add(a);
     }
 
     protected override void OnLoaded()

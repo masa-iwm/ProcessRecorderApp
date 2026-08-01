@@ -100,6 +100,12 @@ public partial class App : Application
         });
         cleanup.Start();
 
+        // UIA トリガ監視。置き場所は cleanup と同じ理由（常駐ワーカーで一度だけ、
+        // エンジンが出来てから・ウィンドウ生成より前）。トリガ未設定なら監視スレッドは
+        // 作られないので、Launch-to-Tray でも E2E でも害が無い。
+        var triggers = Services.UiaTriggerService.Start(
+            Microsoft.UI.Dispatching.DispatcherQueue.GetForCurrentThread());
+
         _mainWindow = new MainWindow();
         // MainWindow の ctor が Window.Title を設定済み（詳細はそちらのコメント）。
         // ここで AppWindow へも入れるのは、WinUIEx がトレイアイコンのツールチップに
@@ -110,6 +116,8 @@ public partial class App : Application
         _mainWindow.AppWindow.Destroying += (_, __) =>
         {
             Settings.AppSettings.Default.Save();
+            // トリガ監視をエンジンより先に止める ── 以後レコーダーへ新しい開始/停止を積ませない。
+            triggers.Dispose();
             // 掃除タスクを先に止める。順序に意味は無い（互いに触るものが無い）が、
             // 「掃除の途中でプロセスが消える」のを避けるため終了経路で待つ。
             cleanup.Dispose();

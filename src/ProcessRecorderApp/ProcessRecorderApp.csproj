@@ -57,6 +57,11 @@
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" />
     <!-- Variables ペインのキー/値グリッド表示・編集に使用。MIT License -->
     <PackageReference Include="WinUI.TableView" Version="1.4.1" />
+    <!-- 別アプリの UIA 変化を録画トリガ・テンプレート変数にする（監視 API と編集 UI）。
+         取得元は GitHub Packages（nuget.config を参照。読み取りにも認証が要る）。
+         プレリリースのため Version は完全固定。MIT License -->
+    <PackageReference Include="UiaTrigger.Core" Version="0.1.0-preview.3" />
+    <PackageReference Include="UiaTrigger.Picker.WinUI" Version="0.1.0-preview.3" />
   </ItemGroup>
 
   <ItemGroup>
@@ -137,11 +142,11 @@
           DependsOnTargets="GetWindowsAppSDKNativePlatform"
           Condition="'@(WindowsAppSdkComponentPackages)' != ''">
     <PropertyGroup>
-      <_UiaTriggerWinAppSdkNative>runtimes-framework\win-$(NativePlatform)\native</_UiaTriggerWinAppSdkNative>
+      <_WinAppSdkNativeMuiRoot>runtimes-framework\win-$(NativePlatform)\native</_WinAppSdkNativeMuiRoot>
     </PropertyGroup>
     <ItemGroup>
       <MicrosoftWindowsAppSDKFilesExcluded
-          Include="%(WindowsAppSdkComponentPackages.Identity)$(_UiaTriggerWinAppSdkNative)\**\*.mui" />
+          Include="%(WindowsAppSdkComponentPackages.Identity)$(_WinAppSdkNativeMuiRoot)\**\*.mui" />
       <!-- 対応している 2 つだけ差し戻す。NeutralLanguage=en-US / サテライトは ja に揃えてある -->
       <MicrosoftWindowsAppSDKFilesExcluded
           Remove="@(MicrosoftWindowsAppSDKFilesExcluded)"

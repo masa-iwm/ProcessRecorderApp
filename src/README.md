@@ -274,7 +274,8 @@ GOP は固定値とし、想定される最低フレームレート（15fps）�
 - `{ENV.変数名}` — 環境変数
 - 上記以外 — `EventRecorder.TemplateVariables`（`static ConcurrentDictionary<string, string>`）
   に登録されたユーザー定義変数。CLI の `--set`/`--get`（後述）と Variables 画面
-  （`TemplateVariablesViewModel.cs`）はこの同じ辞書を操作する。
+  （`TemplateVariablesViewModel.cs`）、UIA トリガの発火（`{トリガID}`。後述
+  「UIA トリガ（UiaTrigger 連携）」）はこの同じ辞書を操作する。
   **この辞書が実行時の真実**であり、settings.json の `TemplateVariables` は
   その保存／復元のための器。
   値の型が `string` なのは Native AOT の都合 ── `object` 値は
@@ -922,6 +923,79 @@ GUIサブシステム（`OutputType=WinExe`）だと、**対話コマンドプ�
 そのハンドルが長時間稼働する常駐ワーカーへ漏れ、ランチャー終了後もシェルが常駐ワーカーの終了まで
 待ち続けてしまうためである（ハンドルを継承しない ShellExecuteEx 経由ではこの問題は起きない）。
 
+## UIA トリガ（UiaTrigger 連携）
+
+別アプリの UI 要素の出現・削除・プロパティ変化（UI Automation）を、テンプレート変数の更新と
+録画の開始・停止のトリガにする。監視はライブラリ
+[UiaTrigger](https://github.com/masa-iwm/UiaTrigger)（`UiaTrigger.Core` /
+`UiaTrigger.Picker.WinUI`、NuGet 参照）が行い、アプリ側で UiaTrigger の型に触れるのは
+`Services/UiaTriggerService.cs` と `MainPage.BuildSettingsValueAsync`（編集ボタン）の 2 箇所だけ。
+発火 1 回を「書くべき変数」「実行すべきアクション」へ写す規則は
+`Components/TriggerFiringRules.cs`（純関数）にあり、L1（`TriggerFiringRulesTests` /
+`TriggerAssignmentReconcilerTests`）が守る。
+
+### 発火で何が起こるか
+
+- **変数の反映（常時・無条件）**: `{トリガID}` = NewValue を
+  `EventRecorder.SetTemplateVariable` へ書く。句が 2 つ以上ある複合トリガでは、値が読めた句
+  （Matched / NotMatched）だけ `{トリガID.句名}` = 句の値も書く
+  （Unreadable / NotEvaluated は書かない ── 読めていない値で既存の変数を潰さない）。
+  書いた変数は Variables 画面とファイル名テンプレートから見える。
+- **録画アクション（設定したものだけ）**: `UiaTriggerAssignments`（トリガ ID ごとの行）の
+  Action（なし / 開始 / 停止）と対象レコーダー（空欄 = 全レコーダー一括）に従う。
+  行の増減はトリガ一覧の編集に自動追随する（`TriggerAssignmentReconciler`。
+  手動で行を増減する UI は無い）。
+
+処理順は**変数 → アクション**。テンプレートの展開は録画開始の瞬間（`EventRecorder.Start`）
+なので、この順でだけ「発火した値がその録画のファイル名に載る」が成立する。
+
+### スレッドと寿命
+
+- `UiaTriggerService` は常駐ワーカーで 1 つ（`App.OnLaunched` で生成、`AppWindow.Destroying` で
+  **エンジンより先に** Dispose ── 以後レコーダーへ新規アクションを積ませない）。
+- 発火は UiaTrigger の監視ワーカースレッドで直列に届く。変数ストアと `ActivityLog` は
+  スレッドセーフなのでそこから直接呼び、録画アクションだけを `TryEnqueue`（**戻り値を検査**。
+  `SingleInstanceManager.OnActivationRedirected` と同じ規律）で UI スレッドへ運ぶ。
+  開始・停止は必ず `CanStart/CanStopRecording(All)` を通す ── 通さないと例外か、
+  排出待ち（`WaitForPendingStop`）で UI スレッドが最大約 10 秒固まる。停止後は
+  `LastStopOutcome` を検査し、使えない成果物（Empty / NotFinalized）は成功として記録しない。
+- 設定変更（トリガ定義・有効スイッチ）は「新モニタを `StartAsync` できてから旧を破棄」。
+  定義エラー（`ArgumentException`）や壊れた設定では現状を維持し、アプリの中核（録画）を
+  殺さない。トリガ 0 件・無効スイッチでは監視スレッド自体を作らない
+  （E2E はトリガを設定しないので自動的に不活性になる）。
+
+### 設定の持ち方
+
+- トリガ定義の正本は `AppSettings.UiaTriggers`（settings.json に内包。`TriggerDefinition` は
+  素の POCO で、`AppSettingsJsonContext` のグラフ走査がそのまま扱う）。編集は Settings 画面の
+  `UiaTriggerList` 行の「…」ボタン → `TriggerListEditorWindow`（**非モーダル**。開いている
+  あいだは再入ガードで 2 枚目を開かせない）だけで、確定は**リストごとの差し替え**
+  ── その `PropertyChanged` がデバウンス保存と監視の再起動を連鎖させる。
+- 割り当ての選択肢（Action・対象レコーダー）は `MainPage.ProvideChoices` が供給する
+  （保存値は英字のまま・表示だけローカライズ。`PropertyGridChoice` の Value/Display 分離）。
+  選択肢は**項目の生成時に 1 回だけ**確定するので、開いたままの一覧にはレコーダーの改名が
+  反映されない（コレクションの変更や SelectedObject の再代入で作り直される）。
+- トリガ ID が `[\w.-]+`（.NET の `\w` は日本語を含む。ドット・ハイフンも可 ──
+  ハイフンは UiaTrigger のトリガ ID に自然に入る）の外だと、変数は書かれるが
+  テンプレートの `{キー}` から参照できない ── `trigger.name warn` をキーごとに 1 回記録する。
+
+### 発火しないとき
+
+監視はイベント購読式で、**相手アプリが UIA のイベントを上げなければ発火しない**。
+プロパティによっては PropertyChanged を一切上げないアプリがあり、その場合はトリガ単位の
+`PollInterval`（ピッカーで設定できる）で解決済み要素だけが読み直される。
+経緯の診断は activity.log の `trigger.*` イベントで行う:
+
+| イベント | 意味 |
+|---|---|
+| `trigger.monitor start` / `trigger.monitor stop` / `trigger.monitor fail` | 監視の開始（トリガ数付き）・停止・起動失敗（定義エラー等。旧モニタは続投） |
+| `trigger.fire` | 発火（ID と NewValue） |
+| `trigger.resolve` | 対象要素の解決状態の変化 |
+| `trigger.start` / `trigger.stop` / `trigger.stop failed` | 実行した録画アクション（停止は成果物の使える/使えないでイベント名を分ける） |
+| `trigger.action skip` / `trigger.action fail` / `trigger.action drop` | Can* ガードで弾いた / 対象レコーダー不在・エンジン未準備 / ディスパッチャ停止中 |
+| `trigger.name warn` | テンプレートから参照できないキー |
+| `trigger.error` | 監視・発火処理の例外 |
+
 ## 設定・ログの保存先
 
 - アプリ設定: `%LOCALAPPDATA%\ProcessRecorderApp\settings.json`
@@ -929,7 +1003,8 @@ GUIサブシステム（`OutputType=WinExe`）だと、**対話コマンドプ�
   ウィンドウサイズ、Preview 画面のプロパティペイン幅・折りたたみ状態、`NavigationView` の
   ペイン表示モード、レコーダー削除時の確認要否、レコーダー一覧（`EventRecorderSettings`）、
   保存先と自動削除（`OutputDirectory` / `RecordingRetentionDays` /
-  `RecordingCleanupIntervalHours`）、テンプレート変数（`TemplateVariables`）等）。
+  `RecordingCleanupIntervalHours`）、テンプレート変数（`TemplateVariables`）、
+  UIA トリガ（`UiaTriggers` / `UiaTriggerAssignments` / `UiaTriggersEnabled`）等）。
 
   保存契機は3つ: **ウィンドウ破棄時・トレイ格納時・変更から約1秒のデバウンス**
   （`AttachAutoSave`。`AppSettings.PropertyChanged` / `Recorders.CollectionChanged` /
@@ -1251,6 +1326,28 @@ error APPX0002: Task 'WinAppSdkExpandPriContent' failed. Could not find file
 - 対処は**置き場所を浅くする**こと（`C:\src\...` など）。
   なお `HKLM\SYSTEM\CurrentControlSet\Control\FileSystem\LongPathsEnabled` を立てても
   **MakePri に効くかは未検証**。
+
+### UiaTrigger パッケージの取得（GitHub Packages）
+
+`UiaTrigger.Core` / `UiaTrigger.Picker.WinUI` は当面 GitHub Packages
+（`https://nuget.pkg.github.com/masa-iwm/index.json`）から取得する。
+リポジトリルートの `nuget.config` が `packageSourceMapping` で `UiaTrigger.*` だけを
+このフィードへ向けており、他のパッケージの解決経路は変わらない。
+
+**GitHub Packages は読み取りにも認証が必須**（無認証の index.json は 401）。
+資格情報は環境変数で与える:
+
+```powershell
+# PAT (classic) を read:packages スコープのみで発行しておくこと
+setx GITHUB_PACKAGES_USER masa-iwm
+setx GITHUB_PACKAGES_TOKEN <PAT>
+```
+
+未設定のときの症状は「github ソースだけ 401/403 になり、`UiaTrigger.*` の解決だけが
+`NU1301` で失敗する」（他プロジェクトの復元は成功する）。CI では `GITHUB_TOKEN` を
+同じ環境変数へ写して復元する（[docs/ci.md](../docs/ci.md)）。
+UiaTrigger を nuget.org へ公開したら、`nuget.config` の github の 3 ブロックを消し、
+csproj の `Version` を更新するだけでよい。
 
 ### 必要な Windows SDK
 

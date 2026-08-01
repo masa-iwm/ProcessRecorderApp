@@ -341,6 +341,39 @@
   <data name="PropDesc_Recorders" xml:space="preserve">
     <value>List of configured recorders.</value>
   </data>
+  <data name="PropCat_Triggers" xml:space="preserve">
+    <value>Triggers</value>
+  </data>
+  <data name="PropDesc_UiaTriggersEnabled" xml:space="preserve">
+    <value>Enable the UI Automation triggers that watch other applications' UI. Turning this off stops the monitoring thread entirely: template variables stop updating and no trigger starts or stops recording.</value>
+  </data>
+  <data name="PropDesc_UiaTriggerList" xml:space="preserve">
+    <value>Edit the trigger definitions with the "..." button. Each trigger watches a UI element of another application and fires when its condition is met. The text of this row itself has no meaning.</value>
+  </data>
+  <data name="PropDesc_UiaTriggerAssignments" xml:space="preserve">
+    <value>What each trigger does to recording when it fires. Rows follow the trigger list automatically. The fired values are always written to the template variables regardless of this setting.</value>
+  </data>
+  <data name="PropDesc_Trigger_TriggerId" xml:space="preserve">
+    <value>Id of the trigger definition this row belongs to.</value>
+  </data>
+  <data name="PropDesc_Trigger_Action" xml:space="preserve">
+    <value>Recording action performed when the trigger fires.</value>
+  </data>
+  <data name="PropDesc_Trigger_TargetRecorder" xml:space="preserve">
+    <value>Recorder the action applies to. Leave empty to apply it to every recorder.</value>
+  </data>
+  <data name="TriggerAction_None" xml:space="preserve">
+    <value>(none)</value>
+  </data>
+  <data name="TriggerAction_Start" xml:space="preserve">
+    <value>Start recording</value>
+  </data>
+  <data name="TriggerAction_Stop" xml:space="preserve">
+    <value>Stop recording</value>
+  </data>
+  <data name="TriggerTarget_AllRecorders" xml:space="preserve">
+    <value>(all recorders)</value>
+  </data>
 
   <!-- GStreamer.GirCore/SrcPipelineBuilder.cs: Pipeline Builder のソースカタログ -->
   <data name="Src_ScreenCapture_DisplayName" xml:space="preserve">

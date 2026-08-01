@@ -46,6 +46,8 @@ public sealed partial class MainPage : Page
         // InitializeComponent の時点で評価される）に終わっているが、
         // PropertyGridView 側が代入時に作り直すので順序に依存しない。
         settingsPanel.ChoiceProvider = ProvideChoices;
+        // トリガ一覧エディタ（View の責務）を設定画面の「…」ボタンへ接続する
+        settingsPanel.ValueBuilder = BuildSettingsValueAsync;
         Bindings.Update();
 
         // プレビュー用パイプライン（d3d12swapchainsink）を初期化し、生成されたコンポジション
@@ -123,6 +125,7 @@ public sealed partial class MainPage : Page
         if (ViewModel is not null)
             ViewModel.GstController.ConfirmRecorderRemovalAsync = null;
         recorderPropertyGrid.ValueBuilder = null;
+        settingsPanel.ValueBuilder = null;
 
         ViewModel?.Dispose();
     }
@@ -154,13 +157,61 @@ public sealed partial class MainPage : Page
     {
         // 具体型を明示する。CsWinRT の解析（CsWinRT1032）が、非可変インターフェイスを
         // 対象にしたコレクション式を「トリミング／AOT で安全でない」として弾く。
-        if (!string.Equals(key, AppSettings.EncoderChoiceListKey, StringComparison.Ordinal))
-            return System.Array.Empty<Controls.PropertyGridChoice>();
+        if (string.Equals(key, AppSettings.EncoderChoiceListKey, StringComparison.Ordinal))
+        {
+            return GStreamer.EncoderCatalog
+                .ChoicesFor(currentValue, GStreamer.EncoderCatalog.LastProbe)
+                .Select(c => new Controls.PropertyGridChoice { Value = c.Value, Display = DescribeChoice(c) })
+                .ToArray();
+        }
 
-        return GStreamer.EncoderCatalog
-            .ChoicesFor(currentValue, GStreamer.EncoderCatalog.LastProbe)
-            .Select(c => new Controls.PropertyGridChoice { Value = c.Value, Display = DescribeChoice(c) })
-            .ToArray();
+        if (string.Equals(key, UiaTriggerAssignment.ActionChoiceListKey, StringComparison.Ordinal))
+            return TriggerActionChoices(currentValue);
+
+        if (string.Equals(key, UiaTriggerAssignment.TargetRecorderChoiceListKey, StringComparison.Ordinal))
+            return TriggerTargetChoices(currentValue);
+
+        return System.Array.Empty<Controls.PropertyGridChoice>();
+    }
+
+    /// <summary>
+    /// トリガ割り当ての Action の選択肢。保存値は <see cref="UiaTriggerAssignment"/> の定数のまま、
+    /// 表示だけをローカライズする（Value/Display の分離。enum にしない理由は ChoiceListAttribute 参照）。
+    /// </summary>
+    private static IReadOnlyList<Controls.PropertyGridChoice> TriggerActionChoices(string currentValue)
+    {
+        var choices = new List<Controls.PropertyGridChoice>(4)
+        {
+            new() { Value = UiaTriggerAssignment.ActionNone, Display = Localization.GetString("Resources/TriggerAction_None") },
+            new() { Value = UiaTriggerAssignment.ActionStart, Display = Localization.GetString("Resources/TriggerAction_Start") },
+            new() { Value = UiaTriggerAssignment.ActionStop, Display = Localization.GetString("Resources/TriggerAction_Stop") },
+        };
+        AppendRawValueIfMissing(choices, currentValue);
+        return choices;
+    }
+
+    /// <summary>トリガ割り当ての対象レコーダーの選択肢。空値 =（全レコーダー）＋現在のレコーダー名。</summary>
+    private static IReadOnlyList<Controls.PropertyGridChoice> TriggerTargetChoices(string currentValue)
+    {
+        var choices = new List<Controls.PropertyGridChoice>
+        {
+            new() { Value = "", Display = Localization.GetString("Resources/TriggerTarget_AllRecorders") },
+        };
+        foreach (var recorder in AppSettings.Default.Recorders)
+            choices.Add(new() { Value = recorder.Name, Display = recorder.Name });
+        AppendRawValueIfMissing(choices, currentValue);
+        return choices;
+    }
+
+    /// <summary>
+    /// 一覧に無い現在値（改名済みのレコーダー・手で編集された設定）を素の選択肢として末尾へ差し込む。
+    /// 入れないとコンボボックスが空を表示し、他の行に触れた瞬間に値が消える
+    /// （ChoiceListAttribute の設計。EncoderChoice の Unknown と同じ配慮）。
+    /// </summary>
+    private static void AppendRawValueIfMissing(List<Controls.PropertyGridChoice> choices, string currentValue)
+    {
+        if (!choices.Any(c => string.Equals(c.Value, currentValue, StringComparison.Ordinal)))
+            choices.Add(new() { Value = currentValue, Display = currentValue });
     }
 
     /// <summary>選択肢1件の表示文言。<b>印は「分かっていること」だけを言う。</b></summary>
@@ -298,5 +349,49 @@ public sealed partial class MainPage : Page
             }
         }
         return dialog.ResultPipeline;
+    }
+
+    /// <summary>
+    /// トリガ一覧エディタ（<c>TriggerListEditorWindow</c>）が開いているあいだ true。
+    /// WinUI のエディタは<b>非モーダル</b>（窓単位のモーダルが無い）なので、
+    /// 開いたまま「…」をもう一度押せてしまう ── 2 枚目を開かせないためのガード。
+    /// </summary>
+    private bool _uiaTriggerEditorOpen;
+
+    /// <summary>
+    /// 設定画面の値ビルダー(「…」ボタン)から呼ばれる。key=UiaTriggerBuilderKey のとき
+    /// トリガ一覧エディタを開き、確定なら正本（<see cref="AppSettings.UiaTriggers"/>）を
+    /// 丸ごと差し替えて割り当て行を追随させる。
+    ///
+    /// 戻り値は常に null ── UiaTriggerList プロパティの文字列値に意味は無く、
+    /// 何もコミットしない。差し替えの PropertyChanged が自動保存と
+    /// <c>UiaTriggerService</c> の監視再起動を連鎖させる（ここから直接は呼ばない）。
+    /// </summary>
+    private async System.Threading.Tasks.Task<string?> BuildSettingsValueAsync(string key, string current)
+    {
+        if (!string.Equals(key, AppSettings.UiaTriggerBuilderKey, StringComparison.Ordinal))
+            return null;
+        if (_uiaTriggerEditorOpen)
+            return null;
+        _uiaTriggerEditorOpen = true;
+        try
+        {
+            // エディタは渡したリストに触れず写しを返す。ピッカー（要素の採取）も
+            // エディタが内包しているので、ここでは 1 窓だけ扱えばよい。
+            IReadOnlyList<UiaTrigger.Models.TriggerDefinition>? edited =
+                await UiaTrigger.Picker.WinUI.TriggerListEditorWindow.EditAsync(AppSettings.Default.UiaTriggers);
+            if (edited is null)
+                return null; // 取り消し。正本は変わっていない
+
+            AppSettings.Default.UiaTriggers = [.. edited];
+            TriggerAssignmentReconciler.Reconcile(
+                AppSettings.Default.UiaTriggerAssignments,
+                edited.Select(d => d.Id).ToArray());
+            return null;
+        }
+        finally
+        {
+            _uiaTriggerEditorOpen = false;
+        }
     }
 }

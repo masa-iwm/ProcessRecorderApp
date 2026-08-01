@@ -246,7 +246,7 @@ public sealed partial class PropertyGridView : UserControl
         _collectionItems = [.. items.Where(i => i.EditKind == PropertyEditKind.Collection)];
         foreach (PropertyGridItem item in _collectionItems)
         {
-            item.AttachCollection(DispatcherQueue);
+            item.AttachCollection(DispatcherQueue, ChoiceProvider);
         }
 
         // Builder 項目の「…」ボタン押下時にホスト提供の ValueBuilder へ橋渡しする処理を接続する。

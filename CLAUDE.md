@@ -13,6 +13,9 @@ dotnet test tests/ProcessRecorderApp.E2E -c Release                # L2/L3 E2E�
 dotnet publish src/ProcessRecorderApp/ProcessRecorderApp.csproj -p:PublishProfile=win-x64-aot
 ```
 
+restore には `GITHUB_PACKAGES_USER` / `GITHUB_PACKAGES_TOKEN`（read:packages の PAT）が要る
+── `UiaTrigger.*` を GitHub Packages から取得するため（src/README.md「UiaTrigger パッケージの取得」）。
+
 テストの層構成・E2E の前提と運用は [tests/README.md](tests/README.md)、
 CI の構成と理由は [docs/ci.md](docs/ci.md)。
 

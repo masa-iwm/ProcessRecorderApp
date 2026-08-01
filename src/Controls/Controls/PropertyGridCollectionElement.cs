@@ -77,7 +77,8 @@ public sealed partial class PropertyGridCollectionElement : INotifyPropertyChang
         object element,
         IList collection,
         DispatcherQueue dispatcherQueue,
-        Action<PropertyGridCollectionElement>? onExpanded = null)
+        Action<PropertyGridCollectionElement>? onExpanded = null,
+        Func<string, string, IReadOnlyList<PropertyGridChoice>>? choiceProvider = null)
     {
         Element = element;
         _collection = collection;
@@ -86,7 +87,7 @@ public sealed partial class PropertyGridCollectionElement : INotifyPropertyChang
 
         if (element is IPropertyAccess access)
         {
-            Properties = (PropertyGridItem[])[.. PropertyGridView.BuildItems(access)];
+            Properties = (PropertyGridItem[])[.. PropertyGridView.BuildItems(access, choiceProvider)];
             _nameProperty = access.GetProperties()
                 .FirstOrDefault(p => p.Name == "Name" && p.PropertyType == typeof(string) && p.CanRead);
         }

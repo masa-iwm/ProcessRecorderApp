@@ -31,10 +31,12 @@ public static partial class FilenameTemplate
     /// （展開後に <c>Replace("{{", "{")</c> を後掛けすると、展開結果に含まれる波括弧まで
     /// 巻き込んでしまうため）。
     ///
-    /// キーの文字クラスが <c>[\w.]</c> なのは <c>{ENV.USERNAME}</c> のようにドットを含むキーを
-    /// 受けるため（<c>\w</c> はドットを含まない）。
+    /// キーの文字クラスが <c>[\w.-]</c> なのは、<c>{ENV.USERNAME}</c> のようにドットを含むキーと、
+    /// <c>{my-trigger}</c> のようにハイフンを含むキーを受けるため（<c>\w</c> はどちらも含まない）。
+    /// ハイフンは UIA トリガの ID に自然に入る ── トリガの発火値は
+    /// <c>EventRecorder.TemplateVariables</c> へトリガ ID をキーに書かれ、ここから参照される。
     /// </summary>
-    [GeneratedRegex(@"\{\{|\}\}|\{([\w.]+)(?::([^{}]*))?\}")]
+    [GeneratedRegex(@"\{\{|\}\}|\{([\w.-]+)(?::([^{}]*))?\}")]
     private static partial Regex PlaceholderRegex();
 
     /// <summary>環境変数を参照するキーの接頭辞。</summary>

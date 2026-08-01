@@ -152,6 +152,7 @@ public sealed partial class PropertyGridItem : INotifyPropertyChanged
 
     private DispatcherQueue? _dispatcherQueue;
     private WeakCollectionChangedListener? _collectionListener;
+    private Func<string, string, IReadOnlyList<PropertyGridChoice>>? _choiceProvider;
 
     /// <summary>コレクションの各要素に対応する表示用 VM。Collection 項目以外では null。</summary>
     public ObservableCollection<PropertyGridCollectionElement>? Elements { get; }
@@ -383,8 +384,12 @@ public sealed partial class PropertyGridItem : INotifyPropertyChanged
     /// <summary>
     /// コレクションの CollectionChanged 購読を開始し、Elements を現在の内容で構築する。
     /// PropertyGridView.AttachSource から呼ばれる。
+    /// choiceProvider を渡すと、要素のネストしたプロパティでも ChoiceListAttribute が
+    /// コンボボックスになる（渡さないとテキスト編集に落ちる）。
     /// </summary>
-    internal void AttachCollection(DispatcherQueue dispatcherQueue)
+    internal void AttachCollection(
+        DispatcherQueue dispatcherQueue,
+        Func<string, string, IReadOnlyList<PropertyGridChoice>>? choiceProvider = null)
     {
         if (EditKind != PropertyEditKind.Collection || _collection is null || Elements is null)
         {
@@ -393,6 +398,7 @@ public sealed partial class PropertyGridItem : INotifyPropertyChanged
 
         DetachCollection();
         _dispatcherQueue = dispatcherQueue;
+        _choiceProvider = choiceProvider;
         RebuildElements();
 
         if (_collection is INotifyCollectionChanged notifying)
@@ -436,7 +442,7 @@ public sealed partial class PropertyGridItem : INotifyPropertyChanged
         {
             if (element is not null)
             {
-                Elements.Add(new PropertyGridCollectionElement(element, _collection, _dispatcherQueue, OnElementExpanded));
+                Elements.Add(new PropertyGridCollectionElement(element, _collection, _dispatcherQueue, OnElementExpanded, _choiceProvider));
             }
         }
 
@@ -500,7 +506,7 @@ public sealed partial class PropertyGridItem : INotifyPropertyChanged
                         if (e.NewItems[i] is object element)
                         {
                             Elements.Insert(e.NewStartingIndex + i,
-                                new PropertyGridCollectionElement(element, _collection, _dispatcherQueue, OnElementExpanded));
+                                new PropertyGridCollectionElement(element, _collection, _dispatcherQueue, OnElementExpanded, _choiceProvider));
                         }
                     }
                 }
@@ -537,7 +543,7 @@ public sealed partial class PropertyGridItem : INotifyPropertyChanged
                         if (e.NewItems[i] is object element)
                         {
                             Elements[e.NewStartingIndex + i] =
-                                new PropertyGridCollectionElement(element, _collection, _dispatcherQueue, OnElementExpanded);
+                                new PropertyGridCollectionElement(element, _collection, _dispatcherQueue, OnElementExpanded, _choiceProvider);
                         }
                     }
                 }

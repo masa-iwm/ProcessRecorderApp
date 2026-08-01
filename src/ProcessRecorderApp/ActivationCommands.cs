@@ -355,7 +355,8 @@ internal static class ActivationCommands
     /// 待ちは <see cref="ReadyWaitTimeout"/> の範囲で UI スレッドを解放しながら行い、
     /// タイムアウトした場合は <see langword="null"/> を返す。
     /// </summary>
-    private static async Task<GstControllerViewModel?> WaitForControllerAsync()
+    // internal なのは UiaTriggerService が同じ「IsReady まで待つ」を再利用するため（同一アセンブリ）。
+    internal static async Task<GstControllerViewModel?> WaitForControllerAsync()
     {
         long deadline = Environment.TickCount64 + (long)ReadyWaitTimeout.TotalMilliseconds;
         while (GstControllerViewModel.Current is not { IsReady: true })

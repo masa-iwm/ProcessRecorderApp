@@ -104,6 +104,17 @@ public class FilenameTemplateTests
             "v1.mp4",
             Format("{Build}.mp4", variables: new Dictionary<string, string> { ["Build"] = "v1" }));
 
+    /// <summary>
+    /// ハイフンを含むキーの参照。UIA トリガの発火値はトリガ ID をキーに変数へ書かれ、
+    /// UiaTrigger の ID にはハイフンが自然に入る ── キーの文字クラスから外すと
+    /// そのトリガの値だけ黙って原文のまま残る。
+    /// </summary>
+    [Fact]
+    public void Variable_KeyContainingHyphen_IsSubstituted()
+        => Assert.Equal(
+            "ready.mp4",
+            Format("{my-trigger}.mp4", variables: new Dictionary<string, string> { ["my-trigger"] = "ready" }));
+
     [Fact]
     public void Variable_UnknownKey_IsLeftVerbatim()
         => Assert.Equal("{Nope}.mp4", Format("{Nope}.mp4"));

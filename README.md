@@ -25,6 +25,12 @@ already-running instance to start and stop recordings.
 - **Filename templates** — the output name is given as a template such as
   `{Now:yyyyMMdd_HHmmss}_{Name}.mp4`, and can embed the date and time, the recorder name,
   environment variables, and user-defined variables.
+- **Triggers from another application's UI (UIA triggers)** — watch another application's UI
+  elements through UI Automation and start or stop recording automatically when a condition is
+  met. The fired value is always written to a variable (`{trigger id}`), so it can be embedded
+  in the filename as well. Triggers are created on the Settings screen with a picker that
+  captures elements on screen (powered by the
+  [UiaTrigger](https://github.com/masa-iwm/UiaTrigger) library).
 - **Automatic recovery from errors** — if the video source fails, recording is restarted
   automatically after a delay.
 
@@ -49,7 +55,7 @@ The menu along the top of the window switches between these screens.
 | **Preview** | Live preview and settings per recorder (video source, buffer length, filename template, and so on). You edit the properties on the left and the video appears on the right. Recorders are added and removed here too. |
 | **Log** | Shows the app's internal activity log. |
 | **Variables** | Lists and edits the variables (key and value) used by filename templates. |
-| **Settings** | Application-wide settings such as the window size. |
+| **Settings** | Application-wide settings such as the window size. This is also where UIA triggers are created and edited (the "..." button opens the editor and the picker) and where each trigger's recording action (none / start / stop) and target recorder are assigned. |
 
 At the bottom of the window, below the menu, there are also **buttons that start and stop every
 recorder at once**. Individual recorders are started and stopped from their own controls on the

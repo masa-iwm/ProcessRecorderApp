@@ -53,10 +53,20 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# UiaTrigger.* を GitHub Packages から復元するため packages: read が要る。
+# permissions を書いた時点で未記載のスコープは none になるので、必要な read を明示する。
+permissions:
+  contents: read
+  packages: read
+
 env:
   DOTNET_NOLOGO: 'true'
   DOTNET_CLI_TELEMETRY_OPTOUT: 'true'
   DOTNET_SKIP_FIRST_TIME_EXPERIENCE: 'true'
+  # UiaTrigger.* の復元認証（nuget.config が参照する）。restore は明示の 1 箇所だけでなく
+  # publish / test の暗黙復元でも走るため、ステップ単位ではなくワークフロー全体へ与える。
+  GITHUB_PACKAGES_USER: ${{ github.actor }}
+  GITHUB_PACKAGES_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
 jobs:
   build-and-test:
