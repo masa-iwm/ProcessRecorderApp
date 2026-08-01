@@ -1,0 +1,65 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    L1（単体）テスト。
+
+    src/ 配下ではなく tests/ に置いているのは、src/Directory.Build.props が
+    UseWinUI / IsAotCompatible / RuntimeIdentifiers を全プロジェクトへ強制するため。
+    テストホストにはそれらを継承させたくないので、意図的に外へ出している。
+
+    TargetFramework と WindowsSdkPackageVersion は被テストプロジェクト
+    （src/Directory.Build.props が唯一の定義元）と必ず一致させること。
+    ずれると WinRT.Runtime のバージョンが食い違い、ビルドは MSB3277 の警告だけで通るのに
+    テスト実行時に全件が
+      FileNotFoundException: Could not load file or assembly 'WinRT.Runtime, Version=...'
+    で落ちる（RAR は「プライマリ」側＝こちらが引いた古い方を選ぶため）。
+  -->
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
+    <WindowsSdkPackageVersion>10.0.19041.87</WindowsSdkPackageVersion>
+    <Platforms>x64</Platforms>
+    <PlatformTarget>x64</PlatformTarget>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
+
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+
+    <!-- テストホストでは AOT/トリミングを有効にしない（解析対象は製品側プロジェクト） -->
+    <IsAotCompatible>false</IsAotCompatible>
+    <EnableTrimAnalyzer>false</EnableTrimAnalyzer>
+
+    <!-- 製品側は InvariantGlobalization=true だが、テストでは書式・比較の検証に
+         カルチャを使う場合があるため既定（false）のままにする -->
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="xunit.v3" Version="3.1.0" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Components\Components.csproj" />
+    <ProjectReference Include="..\..\src\GStreamer.GirCore\GStreamer.GirCore.csproj" />
+    <ProjectReference Include="..\..\src\SingleInstance\SingleInstance.csproj" />
+  </ItemGroup>
+
+  <!--
+    ローカライズ検証（L4）は、リポジトリ内の .resw / README を「ファイルとして」直接読む
+    （MRT ランタイムを起動しないので高速かつ安定）。そのためリポジトリルートの絶対パスを
+    アセンブリメタデータとしてコンパイル時に埋め込み、テストから解決する。
+  -->
+  <PropertyGroup>
+    <RepositoryRootDir>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)..\..\'))</RepositoryRootDir>
+  </PropertyGroup>
+  <ItemGroup>
+    <AssemblyMetadata Include="RepositoryRoot" Value="$(RepositoryRootDir)" />
+  </ItemGroup>
+
+</Project>

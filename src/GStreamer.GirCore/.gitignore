@@ -1,0 +1,8 @@
+# GStreamer のランタイム一式はリポジトリに置かない。
+#
+# 同梱ランタイムの木は追跡しない（追跡すると clone とチェックアウトが重くなりすぎる）。
+# 取得は tools/Fetch-GStreamerRuntime.ps1 ──
+# 同梱ビルドを作るときだけ、それでここへ展開する。
+# 手元で開発するだけなら不要 ── GStreamer(MinGW) か MSYS2(UCRT64) を入れておけば
+# Controller.StaticInitialize() がそちらを見つける（src/README.md の「GStreamer の解決経路」）。
+runtimes/

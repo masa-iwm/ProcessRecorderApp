@@ -1,0 +1,34 @@
+# Upstream sources for the license texts under licenses/third-party/.
+#
+# One row per license file. Both tools/Fetch-ThirdPartyLicenses.ps1 (which downloads
+# them) and ThirdPartyLicenseTests (which verifies them) read THIS file, so the pinned
+# hashes live in exactly one place.
+#
+# Columns (tab separated):
+#   Project        directory under licenses/third-party/
+#   Version        the version actually bundled (see THIRD-PARTY-NOTICES.md)
+#   File           file name, kept as upstream names it (note PCRE2's British LICENCE)
+#   Sha256         SHA256 of the license file itself
+#   Uri            where to fetch it; for ArchiveMember rows this is the source archive
+#   ArchiveSha256  SHA256 of the archive (empty when Uri is the file itself)
+#   ArchiveMember  path inside the archive (empty when Uri is the file itself)
+#
+# gitlab.freedesktop.org and gcc.gnu.org are behind bot protection that answers plain
+# HTTP with an HTML challenge page, so the GStreamer/GNOME/GCC/mingw-w64 rows use each
+# project's own GitHub mirror. The libffi row uses the tarball from GStreamer's own
+# mirror, and its ArchiveSha256 is the value cerbero pins in recipes/libffi.recipe --
+# i.e. the very archive the bundled libffi-7.dll was built from.
+Project	Version	File	Sha256	Uri	ArchiveSha256	ArchiveMember
+gstreamer	1.28.4	COPYING	AD2EEC519EBD4B5DF86EA84DFF24AE3BFA2EDEA846A703B58902DD221AE375DB	https://raw.githubusercontent.com/GStreamer/gstreamer/1.28.4/subprojects/gstreamer/COPYING
+gst-plugins-base	1.28.4	COPYING	AD2EEC519EBD4B5DF86EA84DFF24AE3BFA2EDEA846A703B58902DD221AE375DB	https://raw.githubusercontent.com/GStreamer/gstreamer/1.28.4/subprojects/gst-plugins-base/COPYING
+gst-plugins-good	1.28.4	COPYING	6095E9FFA777DD22839F7801AA845B31C9ED07F3D6BF8A26DC5D2DEC8CCC0EF3	https://raw.githubusercontent.com/GStreamer/gstreamer/1.28.4/subprojects/gst-plugins-good/COPYING
+gst-plugins-bad	1.28.4	COPYING	DC626520DCD53A22F727AF3EE42C770E56C97A64FE3ADB063799D8AB032FE551	https://raw.githubusercontent.com/GStreamer/gstreamer/1.28.4/subprojects/gst-plugins-bad/COPYING
+glib	2.82.4	LGPL-2.1-or-later.txt	FA6F36630BB1E0C571D34B2BBDF188D08495C9DBF58F28CAC112F303FC1F58FB	https://raw.githubusercontent.com/GNOME/glib/2.82.4/LICENSES/LGPL-2.1-or-later.txt
+proxy-libintl	0.5	COPYING	D245807F90032872D1438D741ED21E2490E1175DC8AA3AFA5DDB6C8E529B58E5	https://raw.githubusercontent.com/frida/proxy-libintl/0.5/COPYING
+libffi	meson-3.2.9999.5	LICENSE	0F4D7A0BFB83C37465D42DC305F124189196CC0CC2CC8D6F8461103682AEBBC5	https://gstreamer.freedesktop.org/src/mirror/libffi/libffi-meson-3.2.9999.5.tar.bz2	B4D403932A8860589E571300E807E40BB4F7D9D2630C8EC19C29FB9E7B0FD227	libffi-meson-3.2.9999.5/LICENSE
+orc	0.4.42	COPYING	4F5DABB1B44BB6FC5CD53820B1F103147AD61B395A57903991325BD1B85D97BF	https://raw.githubusercontent.com/GStreamer/orc/0.4.42/COPYING
+pcre2	10.42	LICENCE	87D884ECEB7FC54611470CE9F74280D28612B0C877ADFC767E9676892A638987	https://raw.githubusercontent.com/PCRE2Project/pcre2/pcre2-10.42/LICENCE
+zlib	1.3.1	LICENSE	845EFC77857D485D91FB3E0B884AAA929368C717AE8186B66FE1ED2495753243	https://raw.githubusercontent.com/madler/zlib/v1.3.1/LICENSE
+gcc-runtime	14.2.0	COPYING3	8CEB4B9EE5ADEDDE47B31E975C1D90C73AD27B6B165A1DCD80C7C545EB65B903	https://raw.githubusercontent.com/gcc-mirror/gcc/releases/gcc-14.2.0/COPYING3
+gcc-runtime	14.2.0	COPYING.RUNTIME	9D6B43CE4D8DE0C878BF16B54D8E7A10D9BD42B75178153E3AF6A815BDC90F74	https://raw.githubusercontent.com/gcc-mirror/gcc/releases/gcc-14.2.0/COPYING.RUNTIME
+mingw-w64-winpthreads	12.0.0	COPYING	63263614CDD29F2F93CBA85E992F041B31F9FC7B4033692F31269489A8A1B177	https://raw.githubusercontent.com/mingw-w64/mingw-w64/v12.0.0/mingw-w64-libraries/winpthreads/COPYING

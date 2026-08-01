@@ -1,0 +1,17 @@
+{
+  "profiles": {
+    "ProcessRecorderApp(worker)": {
+      "commandName": "Project",
+      "commandLineArgs": "--__resident-worker",
+      "environmentVariables": {
+        "GST_DEBUG": "4",
+        "GST_DEBUG_DUMP_DOT_DIR": "$(TargetDir)\\dots"
+      },
+      "debugEngines": "managed"
+    },
+    "ProcessRecorderApp": {
+      "commandName": "Project",
+      "commandLineArgs": "activate"
+    }
+  }
+}

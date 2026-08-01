@@ -1,0 +1,282 @@
+<UserControl
+    x:Class="ProcessRecorderApp.Controls.PropertyGridView"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:local="using:ProcessRecorderApp.Controls"
+    xmlns:au="using:Microsoft.UI.Xaml.Automation"
+    xmlns:d="http://schemas.microsoft.com/winfx/2006/xaml/presentation/design"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d">
+
+    <UserControl.Resources>
+        <!-- IsSourceGrouped=True で、コードビハインドから Source に List<PropertyGridItemGroup> を渡す -->
+        <CollectionViewSource x:Key="GroupedItemsSource"
+                               x:Name="GroupedItemsSource"
+                               IsSourceGrouped="True" />
+
+        <!-- 文字列/数値/日付など: テキストボックスで編集。長い値は折り返し、さらに ToolTip でも全文を表示する -->
+        <DataTemplate x:Key="TextEditTemplate" x:DataType="local:PropertyGridItem">
+            <StackPanel Spacing="2" HorizontalAlignment="Stretch">
+                <!--
+                    ToolTipService.ToolTip は TextBox に直接付けるとポインター操作(テキスト選択/キャレット)に
+                    奪われてホバー表示が発火しないことがあるため、透明な Border 側に付ける。
+                -->
+                <Border Background="Transparent"
+                        ToolTipService.ToolTip="{x:Bind Value, Mode=OneWay}"
+                        ToolTipService.Placement="Mouse">
+                    <TextBox Text="{x:Bind Value, Mode=TwoWay}"
+                             IsEnabled="{x:Bind IsEditable}"
+                             HorizontalAlignment="Stretch"
+                             TextWrapping="Wrap"
+                             AcceptsReturn="False"
+                             MaxHeight="120"
+                             ScrollViewer.VerticalScrollBarVisibility="Auto"
+                             au:AutomationProperties.Name="{x:Bind Name}"
+                             au:AutomationProperties.AutomationId="{x:Bind PropertyName}" />
+                </Border>
+                <TextBlock Text="{x:Bind ErrorMessage, Mode=OneWay}"
+                           Foreground="{ThemeResource SystemFillColorCriticalBrush}"
+                           FontSize="11"
+                           TextWrapping="Wrap"
+                           Visibility="{x:Bind ErrorVisibility, Mode=OneWay}" />
+            </StackPanel>
+        </DataTemplate>
+
+        <!--
+            文字列＋外部ビルダー: テキスト編集に加え、右端の「…」ボタンで編集支援ダイアログを起動する。
+            TextEditTemplate と同じ表示/折り返し/エラー表示を踏襲しつつ、ボタン列を追加している。
+        -->
+        <DataTemplate x:Key="BuilderTextEditTemplate" x:DataType="local:PropertyGridItem">
+            <StackPanel Spacing="2" HorizontalAlignment="Stretch">
+                <Grid ColumnSpacing="4">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <Border Grid.Column="0"
+                            Background="Transparent"
+                            ToolTipService.ToolTip="{x:Bind Value, Mode=OneWay}"
+                            ToolTipService.Placement="Mouse">
+                        <TextBox Text="{x:Bind Value, Mode=TwoWay}"
+                                 IsEnabled="{x:Bind IsEditable}"
+                                 HorizontalAlignment="Stretch"
+                                 TextWrapping="Wrap"
+                                 AcceptsReturn="False"
+                                 MaxHeight="120"
+                                 ScrollViewer.VerticalScrollBarVisibility="Auto"
+                                 au:AutomationProperties.Name="{x:Bind Name}"
+                                 au:AutomationProperties.AutomationId="{x:Bind PropertyName}" />
+                    </Border>
+                    <!-- 「…」= 編集支援ダイアログの起動 -->
+                    <Button Grid.Column="1"
+                            Content="&#x2026;"
+                            Command="{x:Bind BuildCommand}"
+                            IsEnabled="{x:Bind IsEditable}"
+                            VerticalAlignment="Top"
+                            au:AutomationProperties.Name="{x:Bind local:PropertyGridStrings.Build}"
+                            au:AutomationProperties.AutomationId="{x:Bind BuilderButtonAutomationId}" />
+                </Grid>
+                <TextBlock Text="{x:Bind ErrorMessage, Mode=OneWay}"
+                           Foreground="{ThemeResource SystemFillColorCriticalBrush}"
+                           FontSize="11"
+                           TextWrapping="Wrap"
+                           Visibility="{x:Bind ErrorVisibility, Mode=OneWay}" />
+            </StackPanel>
+        </DataTemplate>
+
+        <!-- bool: チェックボックスで編集 -->
+        <DataTemplate x:Key="BoolEditTemplate" x:DataType="local:PropertyGridItem">
+            <ToggleSwitch IsOn="{x:Bind BoolValue, Mode=TwoWay}"
+                      IsEnabled="{x:Bind IsEditable}"
+                      au:AutomationProperties.Name="{x:Bind Name}"
+                      au:AutomationProperties.AutomationId="{x:Bind PropertyName}" />
+        </DataTemplate>
+
+        <!-- enum: コンボボックスで編集(同じ理由でToolTipはBorder側に付ける) -->
+        <DataTemplate x:Key="EnumEditTemplate" x:DataType="local:PropertyGridItem">
+            <Border Background="Transparent"
+                    ToolTipService.ToolTip="{x:Bind Value, Mode=OneWay}"
+                    ToolTipService.Placement="Mouse">
+                <ComboBox ItemsSource="{x:Bind EnumValues}"
+                          SelectedItem="{x:Bind Value, Mode=TwoWay}"
+                          IsEnabled="{x:Bind IsEditable}"
+                          HorizontalAlignment="Stretch"
+                          au:AutomationProperties.Name="{x:Bind Name}"
+                          au:AutomationProperties.AutomationId="{x:Bind PropertyName}" />
+            </Border>
+        </DataTemplate>
+
+        <!-- Choice: ホスト供給の選択肢をコンボボックスで編集する。
+             表示は ItemTemplate の x:Bind で行う ── DisplayMemberPath / SelectedValuePath は
+             どちらも文字列のパスを実行時リフレクションで解決するので Native AOT では消えうる。
+             SelectedItem は PropertyGridItem.SelectedChoice（Choices 内の実体を返す）へ双方向で繋ぐ。
+             ToolTip に保存値そのものを出す ── 表示名に印が付いていても、
+             実際に何が保存されるのかを利用者が確認できるようにする。 -->
+        <DataTemplate x:Key="ChoiceEditTemplate" x:DataType="local:PropertyGridItem">
+            <Border Background="Transparent"
+                    ToolTipService.ToolTip="{x:Bind Value, Mode=OneWay}"
+                    ToolTipService.Placement="Mouse">
+                <ComboBox ItemsSource="{x:Bind Choices}"
+                          SelectedItem="{x:Bind SelectedChoice, Mode=TwoWay}"
+                          IsEnabled="{x:Bind IsEditable}"
+                          HorizontalAlignment="Stretch"
+                          au:AutomationProperties.Name="{x:Bind Name}"
+                          au:AutomationProperties.AutomationId="{x:Bind PropertyName}">
+                    <ComboBox.ItemTemplate>
+                        <DataTemplate x:DataType="local:PropertyGridChoice">
+                            <TextBlock Text="{x:Bind Display}" />
+                        </DataTemplate>
+                    </ComboBox.ItemTemplate>
+                </ComboBox>
+            </Border>
+        </DataTemplate>
+
+        <!-- ICommand: ボタンで実行。CanExecute に応じた有効/無効は Button(ICommandSource) が自動制御する -->
+        <DataTemplate x:Key="CommandEditTemplate" x:DataType="local:PropertyGridItem">
+            <Button Content="{x:Bind local:PropertyGridStrings.Exec}"
+                    Command="{x:Bind Command}"
+                    HorizontalAlignment="Left"
+                    au:AutomationProperties.Name="{x:Bind Name}"
+                    au:AutomationProperties.AutomationId="{x:Bind PropertyName}" />
+        </DataTemplate>
+
+        <!--
+            コレクション: Expander ヘッダに件数と Add ボタン、中身は要素ごとの Expander(要素名 + Remove ボタン)。
+            ネスト部分は ListView の入れ子によるスクロール競合を避けるため ItemsControl(非仮想化)で構成し、
+            値エディタは既存の ValueTemplateSelector を再利用する
+            (DataTemplate 内の StaticResource は展開時に解決されるため、後方定義のセレクタも参照できる)。
+        -->
+        <DataTemplate x:Key="CollectionEditTemplate" x:DataType="local:PropertyGridItem">
+            <!-- コレクション本体の Expander は既定で展開しておく(要素側はアコーディオンで既定折りたたみ) -->
+            <Expander HorizontalAlignment="Stretch"
+                      HorizontalContentAlignment="Stretch"
+                      IsExpanded="True">
+                <Expander.Header>
+                    <StackPanel Orientation="Horizontal" Spacing="12">
+                        <TextBlock Text="{x:Bind CountText, Mode=OneWay}"
+                                   VerticalAlignment="Center" />
+                        <Button Content="{x:Bind local:PropertyGridStrings.Add}"
+                                Command="{x:Bind AddItemCommand}"
+                                Visibility="{x:Bind AddButtonVisibility}" />
+                    </StackPanel>
+                </Expander.Header>
+                <ItemsControl ItemsSource="{x:Bind Elements}"
+                              HorizontalAlignment="Stretch">
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate x:DataType="local:PropertyGridCollectionElement">
+                            <!-- IsExpanded の TwoWay バインドでアコーディオン動作(展開は同時に1要素のみ)を実現する -->
+                            <Expander HorizontalAlignment="Stretch"
+                                      HorizontalContentAlignment="Stretch"
+                                      IsExpanded="{x:Bind IsExpanded, Mode=TwoWay}"
+                                      Margin="0,2">
+                                <Expander.Header>
+                                    <StackPanel Orientation="Horizontal" Spacing="12">
+                                        <TextBlock Text="{x:Bind Header, Mode=OneWay}"
+                                                   VerticalAlignment="Center" />
+                                        <Button Content="{x:Bind local:PropertyGridStrings.Remove}"
+                                                Command="{x:Bind RemoveCommand}" />
+                                    </StackPanel>
+                                </Expander.Header>
+                                <ItemsControl ItemsSource="{x:Bind Properties}"
+                                              HorizontalAlignment="Stretch">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate x:DataType="local:PropertyGridItem">
+                                            <!-- 外側 ListView の ItemTemplate と同じ 2 カラム構成 -->
+                                            <Grid Padding="8,6" ColumnSpacing="12">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="1*" MinWidth="120" />
+                                                    <ColumnDefinition Width="1.5*" />
+                                                </Grid.ColumnDefinitions>
+
+                                                <TextBlock Grid.Column="0"
+                                                           Text="{x:Bind Name}"
+                                                           ToolTipService.ToolTip="{x:Bind ToolTipText}"
+                                                           VerticalAlignment="Center"
+                                                           TextWrapping="Wrap"
+                                                           TextTrimming="CharacterEllipsis"
+                                                           MaxLines="3" />
+
+                                                <ContentControl Grid.Column="1"
+                                                                 Content="{x:Bind}"
+                                                                 ContentTemplateSelector="{StaticResource ValueTemplateSelector}"
+                                                                 HorizontalAlignment="Stretch"
+                                                                 HorizontalContentAlignment="Stretch"
+                                                                 VerticalAlignment="Top" />
+                                            </Grid>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </Expander>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+            </Expander>
+        </DataTemplate>
+
+        <local:PropertyValueTemplateSelector x:Key="ValueTemplateSelector"
+            TextTemplate="{StaticResource TextEditTemplate}"
+            BoolTemplate="{StaticResource BoolEditTemplate}"
+            EnumTemplate="{StaticResource EnumEditTemplate}"
+            CommandTemplate="{StaticResource CommandEditTemplate}"
+            CollectionTemplate="{StaticResource CollectionEditTemplate}"
+            BuilderTemplate="{StaticResource BuilderTextEditTemplate}"
+            ChoiceTemplate="{StaticResource ChoiceEditTemplate}" />
+    </UserControl.Resources>
+
+    <ListView x:Name="RootListView"
+              ItemsSource="{x:Bind GroupedItemsSource.View, Mode=OneWay}"
+              SelectionMode="None"
+              IsItemClickEnabled="False"
+              TabNavigation="Once"
+              VerticalAlignment="Stretch"
+              ScrollViewer.VerticalScrollBarVisibility="Auto"
+              ScrollViewer.VerticalScrollMode="Enabled">
+
+        <ListView.GroupStyle>
+            <GroupStyle HidesIfEmpty="True">
+                <GroupStyle.HeaderTemplate>
+                    <DataTemplate x:DataType="local:PropertyGridItemGroup">
+                        <Border Background="{ThemeResource LayerFillColorDefaultBrush}"
+                                Padding="8,4">
+                            <TextBlock Text="{x:Bind Category}"
+                                       FontWeight="SemiBold" />
+                        </Border>
+                    </DataTemplate>
+                </GroupStyle.HeaderTemplate>
+            </GroupStyle>
+        </ListView.GroupStyle>
+
+        <ListView.ItemTemplate>
+            <DataTemplate x:DataType="local:PropertyGridItem">
+                <Grid Padding="8,6" ColumnSpacing="12">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="1*" MinWidth="120" />
+                        <ColumnDefinition Width="1.5*" />
+                    </Grid.ColumnDefinitions>
+
+                    <TextBlock Grid.Column="0"
+                               Text="{x:Bind Name}"
+                               ToolTipService.ToolTip="{x:Bind ToolTipText}"
+                               VerticalAlignment="Center"
+                               TextWrapping="Wrap"
+                               TextTrimming="CharacterEllipsis"
+                               MaxLines="3" />
+
+                    <ContentControl Grid.Column="1"
+                                     Content="{x:Bind}"
+                                     ContentTemplateSelector="{StaticResource ValueTemplateSelector}"
+                                     HorizontalAlignment="Stretch"
+                                     HorizontalContentAlignment="Stretch"
+                                     VerticalAlignment="Top" />
+                </Grid>
+            </DataTemplate>
+        </ListView.ItemTemplate>
+
+        <ListView.ItemContainerStyle>
+            <Style TargetType="ListViewItem">
+                <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                <Setter Property="Padding" Value="0" />
+            </Style>
+        </ListView.ItemContainerStyle>
+    </ListView>
+</UserControl>

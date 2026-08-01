@@ -1,0 +1,67 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    L2（E2E）テスト。
+
+    このプロジェクトは製品側プロジェクトを**一切参照しない**。発行済みの
+    ProcessRecorderApp.exe を外からプロセス起動し、CLI の終了コード・標準出力・
+    生成された MP4・activity.log だけを見て契約を検証する
+    ── インプロセスで検証できるものは L1（ProcessRecorderApp.Tests）の担当。
+
+    参照を持たない結果として、環境変数名（PROCESSRECORDERAPP_DATA_DIR 等）や
+    終了コードの値はこちら側にも定数として書いてある。これは重複ではなく
+    「外から見た契約」の表明で、L1 の AppEnvironmentTests / CommandOutcomeTests が
+    製品側の値を固定しているため、片方だけ変えると必ずどちらかが落ちる。
+
+    TFM は src と揃えてある（FlaUI が net*-windows を要求するため、L3（GUI・UIA）で必要になる）。
+    製品側を参照しないので、L1 の csproj が警告している WinRT.Runtime のバージョン
+    衝突はこのプロジェクトでは起きない。
+  -->
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
+    <WindowsSdkPackageVersion>10.0.19041.87</WindowsSdkPackageVersion>
+    <Platforms>x64</Platforms>
+    <PlatformTarget>x64</PlatformTarget>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
+
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+
+    <IsAotCompatible>false</IsAotCompatible>
+    <EnableTrimAnalyzer>false</EnableTrimAnalyzer>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="xunit.v3" Version="3.1.0" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
+    <!--
+      L3（GUI・UIA）。FlaUI は純 .NET の UIA3 ラッパーで、別サーバープロセスを
+      必要としない（WinAppDriver は保守停止・Appium 経由だと別プロセスが要る）。
+      アンパッケージ配布の WinUI3 アプリでも動く。
+    -->
+    <PackageReference Include="FlaUI.UIA3" Version="5.0.0" />
+  </ItemGroup>
+
+  <!--
+    発行物の場所と、言語強制マトリクスの期待値（`Strings/<locale>/Resources.resw`）は
+    「ビルド時に埋め込んだリポジトリルート」から解決する。
+    AppContext.BaseDirectory からの相対パスで書くと、出力ディレクトリの深さ
+    （構成・TFM・RID）が変わった瞬間に壊れる ── ローカルで緑のまま CI だけ赤になる典型。
+    CI が AOT 発行物に対して同じテストを流せるよう、環境変数
+    PROCESSRECORDERAPP_E2E_PUBLISH_DIR での上書きも受け付ける（PublishedApp を参照）。
+  -->
+  <PropertyGroup>
+    <RepositoryRootDir>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)..\..\'))</RepositoryRootDir>
+  </PropertyGroup>
+  <ItemGroup>
+    <AssemblyMetadata Include="RepositoryRoot" Value="$(RepositoryRootDir)" />
+  </ItemGroup>
+
+</Project>

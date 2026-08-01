@@ -1,0 +1,110 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!--
+      コンソールサブシステム（Exe）でビルドする。
+      GUIサブシステム（WinExe）だと、対話コマンドプロンプトが本プロセスの終了を待たず
+      %ERRORLEVEL% で終了コードを取得できないため。
+      （トレードオフ：エクスプローラー等のGUIからの起動時にコンソール窓が一瞬表示されるが、
+        ランチャーは即終了するため許容。常駐ワーカーは UseShellExecute=true +
+        WindowStyle=Hidden で起動されるため表示されない
+        ── SingleInstanceManager.Launcher.cs の
+        StartResidentWorkerAndWaitForRegistration を参照）
+    -->
+    <OutputType>Exe</OutputType>
+    <RootNamespace>ProcessRecorderApp</RootNamespace>
+    <AssemblyName>ProcessRecorderApp</AssemblyName>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <!-- exeファイル自体のアイコン（エクスプローラー/タスクバー表示用） -->
+    <ApplicationIcon>Assets\AppIcon.ico</ApplicationIcon>
+
+    <!--
+      WinUI3標準のXAML生成Main()を無効化し、Program.cs内で
+      単一インスタンス制御用のカスタムMain()を定義する。
+      （公式の「アプリインスタンス管理」サンプルと同じ手法）
+    -->
+    <DefineConstants>$(DefineConstants);DISABLE_XAML_GENERATED_MAIN</DefineConstants>
+
+    <!-- MSIXを使わないアンパッケージ配布。ビルド時に自動でランタイム初期化コードが注入される -->
+    <WindowsPackageType>None</WindowsPackageType>
+    <!-- 単一ファイル発行(win-x64-singlefileプロファイル)で埋め込みresources.priの生成に必要 -->
+    <EnableMsixTooling>true</EnableMsixTooling>
+    
+    <!-- Native AOT -->
+    <OptimizationPreference>Size</OptimizationPreference>
+    <IlcMaxVectorTBitWidth>512</IlcMaxVectorTBitWidth>
+    <TrimMode>full</TrimMode>
+    <StripSymbols>true</StripSymbols>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.28000.2270" />
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.3.1" />
+    <PackageReference Include="Microsoft.WindowsAppSDK.AI" Version ="2.3.4">
+      <ExcludeAssets>all</ExcludeAssets>
+    </PackageReference>
+    <PackageReference Include="Microsoft.WindowsAppSDK.ML" Version ="2.1.74">
+      <ExcludeAssets>all</ExcludeAssets>
+    </PackageReference>
+    <PackageReference Include="Microsoft.Windows.AI.MachineLearning" Version ="2.1.74">
+      <ExcludeAssets>all</ExcludeAssets>
+    </PackageReference>
+    <!-- タスクトレイアイコン（WindowManager.IsVisibleInTray等、MainWindowのサイズ変更検知に使用）。MIT License -->
+    <PackageReference Include="WinUIEx" Version="2.9.2" />
+    <!-- 起動引数（コマンドライン）の解析に使用。MIT License（.NET Foundation / dotnet/command-line-api） -->
+    <PackageReference Include="System.CommandLine" Version="2.0.10" />
+    <!-- MVVM 実装のために使用 -->
+    <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" />
+    <!-- Variables ペインのキー/値グリッド表示・編集に使用。MIT License -->
+    <PackageReference Include="WinUI.TableView" Version="1.4.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Manifest Include="$(ApplicationManifest)" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- ウィンドウ/トレイアイコンが実行時にファイルとして参照するため、出力/発行先へコピーする
+         （既定ではNone扱いでコピーされず、発行版でアイコンが表示されない） -->
+    <Content Include="Assets\AppIcon.ico">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
+  <!--
+    ライセンス文を配布物に入れる。
+
+    リポジトリの root に置いてあるだけでは配布 zip には入らない
+    ── release.yml が固めるのは publish ディレクトリの中身だけだからである。
+    この ItemGroup を消すと **配布物からライセンス文が消える**（本体の MIT すら）。
+
+    同梱物（GStreamer）の第三者ライセンス文は配布形態によって要否が変わるので、
+    こちらではなく GStreamer.GirCore.csproj 側に、同梱の切り替えと同じ条件で書いてある。
+  -->
+  <ItemGroup>
+    <Content Include="$(MSBuildThisFileDirectory)..\..\license.txt" Link="license.txt">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="$(MSBuildThisFileDirectory)..\..\THIRD-PARTY-NOTICES.md" Link="THIRD-PARTY-NOTICES.md">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Controls\Controls.csproj" />
+    <ProjectReference Include="..\GStreamer.GirCore\GStreamer.GirCore.csproj" />
+    <ProjectReference Include="..\SingleInstance\SingleInstance.csproj" />
+  </ItemGroup>
+
+  <!-- ローカライズ文字列(en-US/ja-JP)。Strings\**\*.resw は既定の PRIResource グロブで自動的に含まれるため、
+       明示的な ItemGroup は追加しない(NETSDK1022 の重複エラーとなる)。 -->
+
+  <!--
+    Defining the "HasPackageAndPublishMenuAddedByProject" property here allows the Solution
+    Explorer "Package and Publish" context menu entry to be enabled for this project even if
+    the Windows App SDK Nuget package has not yet been restored.
+  -->
+  <PropertyGroup Condition="'$(DisableHasPackageAndPublishMenuAddedByProject)'!='true' and '$(EnableMsixTooling)'=='true'">
+    <HasPackageAndPublishMenu>true</HasPackageAndPublishMenu>
+  </PropertyGroup>
+</Project>

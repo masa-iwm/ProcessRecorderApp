@@ -1,0 +1,5 @@
+// CsWin32 (Microsoft.Windows.CsWin32) が読み込む生成対象API一覧。
+// 1行につきAPI名（またはマクロ名）を1つ指定する。
+// 参照: https://microsoft.github.io/CsWin32/docs/getting-started.html
+
+MessageBox

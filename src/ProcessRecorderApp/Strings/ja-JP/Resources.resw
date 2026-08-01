@@ -1,0 +1,379 @@
+<?xml version="1.0" encoding="utf-8"?>
+<root>
+  <resheader name="resmimetype">
+    <value>text/microsoft-resx</value>
+  </resheader>
+  <resheader name="version">
+    <value>2.0</value>
+  </resheader>
+  <resheader name="reader">
+    <value>System.Resources.ResXResourceReader, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value>
+  </resheader>
+  <resheader name="writer">
+    <value>System.Resources.ResXResourceWriter, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value>
+  </resheader>
+
+  <!-- MainPage.xaml -->
+  <data name="MainPage_PreviewNav.Content" xml:space="preserve">
+    <value>プレビュー</value>
+  </data>
+  <data name="EncoderChoice_Automatic" xml:space="preserve">
+    <value>(自動選択)</value>
+  </data>
+  <data name="EncoderChoice_NotFound" xml:space="preserve">
+    <value>{0} (この PC には見つかりません)</value>
+  </data>
+  <data name="EncoderChoice_NotInCatalog" xml:space="preserve">
+    <value>{0} (既知のエンコーダー名ではありません)</value>
+  </data>
+  <data name="MainPage_NoPreview.Text" xml:space="preserve">
+    <value>表示できる映像がありません。このレコーダーは初期化されていません。</value>
+  </data>
+  <data name="MainPage_PreviewSurface.[using:Microsoft.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve">
+    <value>ライブプレビュー</value>
+  </data>
+  <data name="MainPage_LogNav.Content" xml:space="preserve">
+    <value>ログ</value>
+  </data>
+  <data name="MainPage_VariablesNav.Content" xml:space="preserve">
+    <value>変数</value>
+  </data>
+  <data name="MainPage_AddRecorder" xml:space="preserve">
+    <value>レコーダーを追加</value>
+  </data>
+  <data name="MainPage_StartAll.[using:Microsoft.UI.Xaml.Controls]ToolTipService.ToolTip" xml:space="preserve">
+    <value>すべて録画開始</value>
+  </data>
+  <data name="MainPage_StopAll.[using:Microsoft.UI.Xaml.Controls]ToolTipService.ToolTip" xml:space="preserve">
+    <value>すべて録画停止</value>
+  </data>
+  <data name="MainPage_TogglePane.[using:Microsoft.UI.Xaml.Controls]ToolTipService.ToolTip" xml:space="preserve">
+    <value>プロパティペインの表示切替</value>
+  </data>
+  <data name="MainPage_RemoveRecorder.[using:Microsoft.UI.Xaml.Controls]ToolTipService.ToolTip" xml:space="preserve">
+    <value>選択中のレコーダーを削除</value>
+  </data>
+
+  <!-- AutomationProperties.Name(スクリーンリーダー用の名前。既存のToolTip/Content文言を再利用) -->
+  <data name="MainPage_StartAll.[using:Microsoft.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve">
+    <value>すべて録画開始</value>
+  </data>
+  <data name="MainPage_StopAll.[using:Microsoft.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve">
+    <value>すべて録画停止</value>
+  </data>
+  <data name="MainPage_TogglePane.[using:Microsoft.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve">
+    <value>プロパティペインの表示切替</value>
+  </data>
+  <data name="MainPage_RemoveRecorder.[using:Microsoft.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve">
+    <value>選択中のレコーダーを削除</value>
+  </data>
+  <data name="MainPage_LogList.[using:Microsoft.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve">
+    <value>ログ</value>
+  </data>
+  <data name="MainPage_VariablesTable.[using:Microsoft.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve">
+    <value>変数</value>
+  </data>
+
+  <data name="MainPage_AutoScroll.Content" xml:space="preserve">
+    <value>自動スクロール</value>
+  </data>
+  <data name="MainPage_Clear.Content" xml:space="preserve">
+    <value>クリア</value>
+  </data>
+  <data name="MainPage_VarAdd.Content" xml:space="preserve">
+    <value>追加</value>
+  </data>
+  <data name="MainPage_VarRemove.Content" xml:space="preserve">
+    <value>削除</value>
+  </data>
+  <data name="MainPage_KeyColumn.Header" xml:space="preserve">
+    <value>キー</value>
+  </data>
+  <data name="MainPage_ValueColumn.Header" xml:space="preserve">
+    <value>値</value>
+  </data>
+  <data name="MainPage_PersistColumn.Header" xml:space="preserve">
+    <value>保存</value>
+  </data>
+
+  <!-- PipelineBuilderDialog.xaml -->
+  <data name="PipelineDialog.Title" xml:space="preserve">
+    <value>ソースパイプラインの編集</value>
+  </data>
+  <data name="PipelineDialog.PrimaryButtonText" xml:space="preserve">
+    <value>OK</value>
+  </data>
+  <data name="PipelineDialog.CloseButtonText" xml:space="preserve">
+    <value>キャンセル</value>
+  </data>
+  <data name="PipelineDialog_Source.Text" xml:space="preserve">
+    <value>ソース</value>
+  </data>
+  <data name="PipelineDialog_Properties.Text" xml:space="preserve">
+    <value>プロパティ</value>
+  </data>
+  <data name="PipelineDialog_SpecifyCaps.Content" xml:space="preserve">
+    <value>Caps を指定</value>
+  </data>
+  <data name="PipelineDialog_ParseWarning.Message" xml:space="preserve">
+    <value>既存のパイプラインを解析できませんでした。生成結果を確認してください。</value>
+  </data>
+  <data name="PipelineDialog_Generated.Text" xml:space="preserve">
+    <value>生成されたパイプライン</value>
+  </data>
+  <data name="PipelineDialog_SourceCombo.[using:Microsoft.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve">
+    <value>ソース</value>
+  </data>
+  <data name="PipelineDialog_GeneratedText.[using:Microsoft.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve">
+    <value>生成されたパイプライン</value>
+  </data>
+
+  <!-- MainPage.xaml.cs: recorder removal confirmation dialog -->
+  <data name="Dialog_RemoveRecorder_Title" xml:space="preserve">
+    <value>レコーダーの削除</value>
+  </data>
+  <data name="Dialog_RemoveRecorder_Content" xml:space="preserve">
+    <value>「{0}」を削除しますか？</value>
+  </data>
+  <data name="Common_Remove" xml:space="preserve">
+    <value>削除</value>
+  </data>
+  <data name="Common_Cancel" xml:space="preserve">
+    <value>キャンセル</value>
+  </data>
+
+  <!-- ActivationCommands.cs / SingleInstanceManager.Launcher.cs: CLI -->
+  <data name="Cli_RecorderNotAvailable" xml:space="preserve">
+    <value>レコーダーはまだ利用できません。</value>
+  </data>
+  <data name="Cli_RecorderNotFound" xml:space="preserve">
+    <value>レコーダー '{0}' が見つかりません。</value>
+  </data>
+  <data name="Cli_CannotStartInState" xml:space="preserve">
+    <value>レコーダー '{0}' は現在の状態では録画を開始できません。</value>
+  </data>
+  <data name="Cli_CannotStopInState" xml:space="preserve">
+    <value>レコーダー '{0}' は現在の状態では録画を停止できません。</value>
+  </data>
+  <data name="Cli_RecordingProducedNothing" xml:space="preserve">
+    <value>レコーダー '{0}' は停止しましたが、映像が1フレームも記録されていません（中身の無いファイルです）。成果物として使用しないでください。詳細は activity.log の recording.stop empty を参照してください。</value>
+  </data>
+  <data name="Cli_RecordingNotFinalized" xml:space="preserve">
+    <value>レコーダー '{0}' は停止しましたが、ファイルが確定していません（索引 moov が書かれていない、または途中で切れている可能性があります）。成果物として使用しないでください。録画データ自体は救済できる場合があります。詳細は activity.log の recording.stop timeout / recording.stop error を参照してください。</value>
+  </data>
+  <data name="Cli_RootDesc" xml:space="preserve">
+    <value>Process Recorder App - プロセス録画（イベント録画）アプリケーション</value>
+  </data>
+  <data name="Cli_SetDesc" xml:space="preserve">
+    <value>ファイル名テンプレートで使うテンプレート変数を設定します（Key=Value 形式、繰り返し指定可）。</value>
+  </data>
+  <data name="Cli_InvalidSet" xml:space="preserve">
+    <value>--set の値 '{0}' が不正です。Key=Value 形式で指定してください。</value>
+  </data>
+  <data name="Cli_GetDesc" xml:space="preserve">
+    <value>テンプレート変数を取得します。キー省略時は全件を Key=Value 形式で、キー指定時は値のみを出力します。</value>
+  </data>
+  <data name="Cli_PersistDesc" xml:space="preserve">
+    <value>指定したテンプレート変数を settings.json に保存し、再起動後も残すようにします。複数指定するときはオプションを繰り返してください。</value>
+  </data>
+  <data name="Cli_NoPersistDesc" xml:space="preserve">
+    <value>指定したテンプレート変数を settings.json に保存しないようにします。変数自体はこのセッションの間は残ります。</value>
+  </data>
+  <data name="Cli_PingDesc" xml:space="preserve">
+    <value>生存確認用のログを記録します（ウィンドウ表示・通知なし）。</value>
+  </data>
+  <data name="Cli_ActivateDesc" xml:space="preserve">
+    <value>メインウィンドウを表示します。</value>
+  </data>
+  <data name="Cli_StartAllDesc" xml:space="preserve">
+    <value>すべてのレコーダーで録画を開始します。</value>
+  </data>
+  <data name="Cli_NoRecorderCanStart" xml:space="preserve">
+    <value>開始可能なレコーダーがありません。</value>
+  </data>
+  <data name="Cli_StopAllDesc" xml:space="preserve">
+    <value>すべてのレコーダーで録画を停止します。</value>
+  </data>
+  <data name="Cli_NoRecorderCanStop" xml:space="preserve">
+    <value>停止可能なレコーダーがありません。</value>
+  </data>
+  <data name="Cli_StartTargetArg" xml:space="preserve">
+    <value>開始対象のレコーダー。数値ならインデックス（0 始まり）、それ以外は名前。</value>
+  </data>
+  <data name="Cli_StartDesc" xml:space="preserve">
+    <value>指定したレコーダーで録画を開始します。</value>
+  </data>
+  <data name="Cli_StopTargetArg" xml:space="preserve">
+    <value>停止対象のレコーダー。数値ならインデックス（0 始まり）、それ以外は名前。</value>
+  </data>
+  <data name="Cli_StopDesc" xml:space="preserve">
+    <value>指定したレコーダーで録画を停止します。</value>
+  </data>
+  <data name="Cli_StatusDesc" xml:space="preserve">
+    <value>レコーダーごとの状態（名前・初期化済み・録画中・直近のファイル・直近の障害）を出力します。</value>
+  </data>
+  <data name="Cli_RecorderError" xml:space="preserve">
+    <value>レコーダー '{0}' は正常ではありません: {1}</value>
+  </data>
+  <data name="Cli_RecorderNotInitialized" xml:space="preserve">
+    <value>初期化されていません</value>
+  </data>
+  <data name="Cli_NoVariables" xml:space="preserve">
+    <value>（変数なし）</value>
+  </data>
+  <data name="Cli_VariableNotFound" xml:space="preserve">
+    <value>テンプレート変数 '{0}' は定義されていません。</value>
+  </data>
+  <data name="Cli_WorkerStartTimeout" xml:space="preserve">
+    <value>常駐ワーカーの起動に失敗しました（タイムアウト）。</value>
+  </data>
+
+  <data name="Cli_WorkerShuttingDown" xml:space="preserve">
+    <value>常駐ワーカーが終了処理中のため、コマンドは実行されませんでした。再実行してください。</value>
+  </data>
+
+  <data name="Cli_LauncherBusy" xml:space="preserve">
+    <value>先行する実行が時間内に終わらなかったため、コマンドは実行されませんでした。再実行してください。繰り返し発生する場合は、タスクトレイのアイコンからアプリを終了してからやり直してください。</value>
+  </data>
+
+  <!-- SingleInstanceManager.cs: タスクトレイアイコンのコンテキストメニュー -->
+  <data name="Tray_Show" xml:space="preserve">
+    <value>表示</value>
+  </data>
+  <data name="Tray_Quit" xml:space="preserve">
+    <value>終了</value>
+  </data>
+
+  <!-- PropertyGrid: Category/Description（属性値をリソースキーとして間接解決する） -->
+  <data name="PropCat_Debug" xml:space="preserve">
+    <value>デバッグ</value>
+  </data>
+  <data name="PropCat_Recorders" xml:space="preserve">
+    <value>レコーダー</value>
+  </data>
+  <data name="PropCat_General" xml:space="preserve">
+    <value>全般</value>
+  </data>
+  <data name="PropCat_Encoding" xml:space="preserve">
+    <value>エンコード</value>
+  </data>
+  <data name="PropCat_Output" xml:space="preserve">
+    <value>出力</value>
+  </data>
+  <data name="PropDesc_OutputDirectory" xml:space="preserve">
+    <value>録画ファイルの保存先フォルダー。空欄の場合は実行ファイルのあるフォルダーになります。相対パスを指定した場合も同じフォルダーからの相対として解決します。ファイル名テンプレートに絶対パスを書いているレコーダーではこの設定は使われません。</value>
+  </data>
+  <data name="PropDesc_RecordingRetentionDays" xml:space="preserve">
+    <value>保存先フォルダー内の .mp4 を、この日数を過ぎたら自動削除します。0 の場合は削除しません。サブフォルダーも対象で、削除の結果からになったサブフォルダーは併せて削除されます。有効にするときは保存先に録画専用のフォルダーを指定してください。空欄のままだと実行ファイルのあるフォルダー以下すべてが対象になります。</value>
+  </data>
+  <data name="PropDesc_RecordingCleanupIntervalHours" xml:space="preserve">
+    <value>自動削除を実行する間隔（時間）。起動直後にも1回実行するため、間隔を長くしても起動のたびに掃除されます。1 未満の値は 1 として扱います。</value>
+  </data>
+  <data name="PropDesc_PreferredEncoder" xml:space="preserve">
+    <value>優先する H.264 エンコーダーの要素ファクトリ名（例: x264enc、qsvh264enc）。空欄の場合は、この実機で利用できるエンコーダーから自動選択します。指定した要素が利用できない場合は自動選択の優先順位にフォールバックします。実際に採用されたエンコーダーは各レコーダーの「実際のエンコード設定」に表示されます。</value>
+  </data>
+  <data name="PropDesc_GstDebug" xml:space="preserve">
+    <value>起動時に環境変数 GST_DEBUG を設定します（既に設定済みの場合は上書きしません）。</value>
+  </data>
+  <data name="PropDesc_GstDebugDumpDotDir" xml:space="preserve">
+    <value>起動時に環境変数 GST_DEBUG_DUMP_DOT_DIR を設定します（既に設定済みの場合は上書きしません）。相対パスは実行ファイルのあるディレクトリを基準に解決されます。</value>
+  </data>
+  <data name="PropDesc_DebugLogFile" xml:space="preserve">
+    <value>デバッグログ出力の保存先ファイルパス。変更時に即時反映されます。空欄にすると保存を無効化します。</value>
+  </data>
+  <data name="PropDesc_Rec_Name" xml:space="preserve">
+    <value>レコーダーの表示名。</value>
+  </data>
+  <data name="PropDesc_Rec_BufferDuration" xml:space="preserve">
+    <value>録画前バッファの長さ（ミリ秒）。</value>
+  </data>
+  <data name="PropDesc_Rec_FilenameTemplate" xml:space="preserve">
+    <value>出力ファイル名のテンプレート。{Now:...} や {Name} などのプレースホルダーが使えます。</value>
+  </data>
+  <data name="PropDesc_Rec_Type" xml:space="preserve">
+    <value>録画に使用するキャプチャ方式（System / D3d12）。</value>
+  </data>
+  <data name="PropDesc_Rec_SrcPipeline" xml:space="preserve">
+    <value>キャプチャに使う GStreamer ソースパイプライン記述。</value>
+  </data>
+  <data name="PropDesc_Rec_EncodingProperties" xml:space="preserve">
+    <value>録画パイプラインに適用するエンコード設定。</value>
+  </data>
+  <data name="PropDesc_Rec_LastFilename" xml:space="preserve">
+    <value>直近に録画したファイルのパス。</value>
+  </data>
+  <data name="PropDesc_Rec_IsRecording" xml:space="preserve">
+    <value>録画中かどうか。切り替えると録画を開始／停止します。</value>
+  </data>
+  <data name="PropDesc_Rec_IsInitialized" xml:space="preserve">
+    <value>レコーダーのパイプラインが初期化済みかどうか。</value>
+  </data>
+  <data name="PropDesc_Rec_ActualType" xml:space="preserve">
+    <value>実行中のパイプラインで実際に使われているキャプチャ方式。</value>
+  </data>
+  <data name="PropDesc_Rec_ActualSrcPipeline" xml:space="preserve">
+    <value>実行中のパイプラインで実際に使われているソースパイプライン。</value>
+  </data>
+  <data name="PropDesc_Rec_ActualEncodingProperties" xml:space="preserve">
+    <value>実行中のパイプラインで実際に使われているエンコード設定。</value>
+  </data>
+  <data name="PropDesc_StopFinalizeTimeout" xml:space="preserve">
+    <value>録画停止時に、パイプラインの排出を待つ上限（ミリ秒）。50000 以下にしてください ── ランチャーは60秒で結果待ちを諦めるため、これに近づけると stop-recording がタイムアウトの終了コードを返し始めます。</value>
+  </data>
+  <data name="PropDesc_Rec_LastError" xml:space="preserve">
+    <value>このレコーダーで直近に検出した障害（正常時は空欄）。録画を開始すると消去されます。</value>
+  </data>
+  <data name="PropDesc_Rec_StartRecording" xml:space="preserve">
+    <value>録画を開始します。</value>
+  </data>
+  <data name="PropDesc_Rec_StopRecording" xml:space="preserve">
+    <value>録画を停止します。</value>
+  </data>
+  <data name="PropDesc_Rec_Initialize" xml:space="preserve">
+    <value>レコーダーのパイプラインを初期化します。</value>
+  </data>
+  <data name="PropDesc_ConfirmRecorderRemoval" xml:space="preserve">
+    <value>レコーダー削除前に確認ダイアログを表示します。</value>
+  </data>
+  <data name="PropDesc_PaneDisplayMode" xml:space="preserve">
+    <value>ナビゲーションペインの表示モード（Top / Left など）。</value>
+  </data>
+  <data name="PropDesc_Recorders" xml:space="preserve">
+    <value>設定済みレコーダーの一覧。</value>
+  </data>
+
+  <!-- GStreamer.GirCore/SrcPipelineBuilder.cs: Pipeline Builder のソースカタログ -->
+  <data name="Src_ScreenCapture_DisplayName" xml:space="preserve">
+    <value>画面キャプチャ (d3d12screencapturesrc)</value>
+  </data>
+  <data name="Src_Camera_DisplayName" xml:space="preserve">
+    <value>カメラ (mfvideosrc)</value>
+  </data>
+  <data name="Src_TestPatternD3d12_DisplayName" xml:space="preserve">
+    <value>テストパターン (d3d12testsrc)</value>
+  </data>
+  <data name="Src_TestPatternSystem_DisplayName" xml:space="preserve">
+    <value>テストパターン (videotestsrc)</value>
+  </data>
+  <data name="Src_MonitorIndex_Desc" xml:space="preserve">
+    <value>キャプチャするモニターのインデックス</value>
+  </data>
+  <data name="Src_ShowCursor_Desc" xml:space="preserve">
+    <value>マウスカーソルを含めるかどうか</value>
+  </data>
+  <data name="Src_DeviceIndex_Desc" xml:space="preserve">
+    <value>キャプチャデバイスのインデックス</value>
+  </data>
+  <data name="Src_DeviceName_Desc" xml:space="preserve">
+    <value>キャプチャデバイスのフレンドリ名</value>
+  </data>
+  <data name="Src_IsLive_Desc" xml:space="preserve">
+    <value>ライブソースとして動作させる</value>
+  </data>
+  <data name="Src_DoTimestamp_Desc" xml:space="preserve">
+    <value>バッファにタイムスタンプを付与する</value>
+  </data>
+  <data name="Src_Pattern_Desc" xml:space="preserve">
+    <value>表示するテストパターン</value>
+  </data>
+</root>

@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<Project>
+  <PropertyGroup>
+    <PlatformTarget Condition="'$(PlatformTarget)' == ''">x64</PlatformTarget>
+
+    <!-- TFM/RID -->
+    <!-- TargetPlatformVersion は「参照する Windows SDK 投影のバージョン」であり、
+         動作対象OSの下限は TargetPlatformMinVersion が決める（両者は独立）。
+         参照アセンブリは NuGet の Microsoft.Windows.SDK.NET.Ref 由来なので、
+         このバージョンの Windows SDK がインストールされている必要は無い。 -->
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
+    <!-- 検証時の .NET SDK（10.0.302）の既定は 10.0.19041.57（CsWinRT 2.2）だが、.87 は CsWinRT 2.3.1 の
+         WinRT.Runtime と AOT ソースジェネレーターを同梱している。
+         WinRT.DynamicWindowsRuntimeCast（AOT 用の動的キャスト注釈）が 2.3 以降にしか無く、
+         本リポジトリは複数箇所で使っているため、このピン留めが必要。
+         これにより Microsoft.Windows.CsWinRT パッケージ自体が不要になり、同パッケージが
+         毎ビルド走らせていた cswinrt.exe（本リポジトリでは空の projection を吐くだけ）も消える
+         ── cswinrt.exe は Windows Kits\10\Platforms\UAP\<ver>\Platform.xml を読むため、
+         参照している間はビルドが「開発機にインストール済みの Windows SDK のバージョン」に
+         縛られていた（VS 開発者環境では $(WindowsSDKVersion) が優先されるため VS からは通り、
+         素の dotnet build だけが落ちる、という出方をする）。
+         TFM とビルド番号は必ず揃えること（19041 ↔ 19041.87）。リビジョン .87 が CsWinRT の
+         バージョンを、19041 の側が API サーフェスを決めるため、揃えないと
+         「19041 を名乗りながら 26100 の API が見える」不整合になる。
+         なおこのピン留めは手動更新が必要。.NET SDK の WindowsSdkSupportedTargetPlatformVersion 表が
+         10.0.19041.0 → .87 以降を指すようになればこの行は削除できる（10.0.302 時点では .57）。 -->
+    <WindowsSdkPackageVersion>10.0.19041.87</WindowsSdkPackageVersion>
+    <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
+    <AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
+
+    <!-- WinUI 3 -->
+    <UseWinUI>true</UseWinUI>
+    <!-- 単一ファイル発行時、埋め込みresources.pri生成に必要（VS発行ではPublishSingleFileが参照プロジェクトにも伝播し、未設定だとエラー） -->
+    <EnableMsixTooling>true</EnableMsixTooling>
+    <!-- MSIXツーリングが単一ファイル発行時にNone/Content全件を発行対象へ強制追加するのを抑止
+         （NativeMethods.txt等が他プロジェクトと同名衝突しNETSDK1152になるため） -->
+    <AutoIncludeCopyToPublishDirectoryItems>false</AutoIncludeCopyToPublishDirectoryItems>
+
+    <!-- Language -->
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <!-- CsWinRT の AOT ソースジェネレーターは、ジェネリックな WinRT インターフェイス
+         （ObservableCollection<T> や string[] を x:Bind で ABI 越しに渡す箇所）の
+         マーシャリングコードを unsafe で生成する。未許可だと生成が省略され、
+         CsWinRT1030 の警告だけ出て AOT で実行時に壊れる。
+         Microsoft.Windows.CsWinRT パッケージを参照していた頃は同パッケージの targets が
+         参照先の全プロジェクトでこれを立てていたので、同じ範囲をここで維持する。 -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+
+    <!-- Localization -->
+    <!-- 「en-US がニュートラル、ja-JP がサテライト」を明示する。名前は似ているが別の仕組み:
+           DefaultLanguage … MRT/PRI のフォールバック言語。
+           NeutralLanguage … マネージドアセンブリのメタデータ
+                             （NeutralResourcesLanguageAttribute）。
+         実測（`dotnet msbuild -getProperty:` で確認できる）:
+         `DefaultLanguage` は WinUI/MSIX ツーリングが既定値として en-US を与えるため、
+         明示しても発行物の挙動は変わらない（de-DE 起動のフォールバックも成立する）。
+         `NeutralLanguage` はツーリングの既定では未設定（空）。
+         それでも両方書いておくのは、暗黙の既定値に依存せず意図を宣言しておくため
+         ── ツーリングの既定が変わったときに黙って壊れる種類の依存だから。
+         フォールバックの実動は LanguageMatrixTests が検証している。判定の注意は
+         docs/test-harness.md の言語強制マトリクスの説明を参照
+         （PROCESSRECORDERAPP_LANG で表示言語を強制できる）。 -->
+    <DefaultLanguage>en-US</DefaultLanguage>
+    <NeutralLanguage>en-US</NeutralLanguage>
+
+    <!-- AOT -->
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <IsAotCompatible>true</IsAotCompatible>
+    <EnableTrimAnalyzer>true</EnableTrimAnalyzer>
+    <CsWinRTAotWarningLevel>3</CsWinRTAotWarningLevel>
+  </PropertyGroup>
+  
+	<PropertyGroup>
+    <Authors>masa-iwm</Authors>
+    <Company>ProcessRecorderApp</Company>
+
+    <PackageProjectUrl>https://github.com/masa-iwm/ProcessRecorderApp</PackageProjectUrl>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+
+    <VersionPrefix>1.0.0</VersionPrefix>
+	</PropertyGroup>
+  
+  
+  <Target Name="SyncRuntimeIdentifierForMultiRids" BeforeTargets="BeforeBuild">
+    <PropertyGroup Condition="'$(PublishRuntimeIdentifier)' != ''">
+      <RuntimeIdentifier>$(PublishRuntimeIdentifier)</RuntimeIdentifier>
+    </PropertyGroup>
+  </Target>
+</Project>

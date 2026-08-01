@@ -1,0 +1,379 @@
+<?xml version="1.0" encoding="utf-8"?>
+<root>
+  <resheader name="resmimetype">
+    <value>text/microsoft-resx</value>
+  </resheader>
+  <resheader name="version">
+    <value>2.0</value>
+  </resheader>
+  <resheader name="reader">
+    <value>System.Resources.ResXResourceReader, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value>
+  </resheader>
+  <resheader name="writer">
+    <value>System.Resources.ResXResourceWriter, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value>
+  </resheader>
+
+  <!-- MainPage.xaml -->
+  <data name="MainPage_PreviewNav.Content" xml:space="preserve">
+    <value>Preview</value>
+  </data>
+  <data name="EncoderChoice_Automatic" xml:space="preserve">
+    <value>(automatic)</value>
+  </data>
+  <data name="EncoderChoice_NotFound" xml:space="preserve">
+    <value>{0} (not found on this PC)</value>
+  </data>
+  <data name="EncoderChoice_NotInCatalog" xml:space="preserve">
+    <value>{0} (not a known encoder name)</value>
+  </data>
+  <data name="MainPage_NoPreview.Text" xml:space="preserve">
+    <value>Nothing to preview. This recorder is not initialized.</value>
+  </data>
+  <data name="MainPage_PreviewSurface.[using:Microsoft.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve">
+    <value>Live preview</value>
+  </data>
+  <data name="MainPage_LogNav.Content" xml:space="preserve">
+    <value>Log</value>
+  </data>
+  <data name="MainPage_VariablesNav.Content" xml:space="preserve">
+    <value>Variables</value>
+  </data>
+  <data name="MainPage_AddRecorder" xml:space="preserve">
+    <value>Add recorder</value>
+  </data>
+  <data name="MainPage_StartAll.[using:Microsoft.UI.Xaml.Controls]ToolTipService.ToolTip" xml:space="preserve">
+    <value>Start recording all</value>
+  </data>
+  <data name="MainPage_StopAll.[using:Microsoft.UI.Xaml.Controls]ToolTipService.ToolTip" xml:space="preserve">
+    <value>Stop recording all</value>
+  </data>
+  <data name="MainPage_TogglePane.[using:Microsoft.UI.Xaml.Controls]ToolTipService.ToolTip" xml:space="preserve">
+    <value>Toggle property pane</value>
+  </data>
+  <data name="MainPage_RemoveRecorder.[using:Microsoft.UI.Xaml.Controls]ToolTipService.ToolTip" xml:space="preserve">
+    <value>Remove selected recorder</value>
+  </data>
+
+  <!-- AutomationProperties.Name(スクリーンリーダー用の名前。既存のToolTip/Content文言を再利用) -->
+  <data name="MainPage_StartAll.[using:Microsoft.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve">
+    <value>Start recording all</value>
+  </data>
+  <data name="MainPage_StopAll.[using:Microsoft.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve">
+    <value>Stop recording all</value>
+  </data>
+  <data name="MainPage_TogglePane.[using:Microsoft.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve">
+    <value>Toggle property pane</value>
+  </data>
+  <data name="MainPage_RemoveRecorder.[using:Microsoft.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve">
+    <value>Remove selected recorder</value>
+  </data>
+  <data name="MainPage_LogList.[using:Microsoft.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve">
+    <value>Log</value>
+  </data>
+  <data name="MainPage_VariablesTable.[using:Microsoft.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve">
+    <value>Variables</value>
+  </data>
+
+  <data name="MainPage_AutoScroll.Content" xml:space="preserve">
+    <value>Auto Scroll</value>
+  </data>
+  <data name="MainPage_Clear.Content" xml:space="preserve">
+    <value>Clear</value>
+  </data>
+  <data name="MainPage_VarAdd.Content" xml:space="preserve">
+    <value>Add</value>
+  </data>
+  <data name="MainPage_VarRemove.Content" xml:space="preserve">
+    <value>Remove</value>
+  </data>
+  <data name="MainPage_KeyColumn.Header" xml:space="preserve">
+    <value>Key</value>
+  </data>
+  <data name="MainPage_ValueColumn.Header" xml:space="preserve">
+    <value>Value</value>
+  </data>
+  <data name="MainPage_PersistColumn.Header" xml:space="preserve">
+    <value>Keep</value>
+  </data>
+
+  <!-- PipelineBuilderDialog.xaml -->
+  <data name="PipelineDialog.Title" xml:space="preserve">
+    <value>Edit source pipeline</value>
+  </data>
+  <data name="PipelineDialog.PrimaryButtonText" xml:space="preserve">
+    <value>OK</value>
+  </data>
+  <data name="PipelineDialog.CloseButtonText" xml:space="preserve">
+    <value>Cancel</value>
+  </data>
+  <data name="PipelineDialog_Source.Text" xml:space="preserve">
+    <value>Source</value>
+  </data>
+  <data name="PipelineDialog_Properties.Text" xml:space="preserve">
+    <value>Properties</value>
+  </data>
+  <data name="PipelineDialog_SpecifyCaps.Content" xml:space="preserve">
+    <value>Specify caps</value>
+  </data>
+  <data name="PipelineDialog_ParseWarning.Message" xml:space="preserve">
+    <value>Could not parse the existing pipeline. Please review the generated result.</value>
+  </data>
+  <data name="PipelineDialog_Generated.Text" xml:space="preserve">
+    <value>Generated pipeline</value>
+  </data>
+  <data name="PipelineDialog_SourceCombo.[using:Microsoft.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve">
+    <value>Source</value>
+  </data>
+  <data name="PipelineDialog_GeneratedText.[using:Microsoft.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve">
+    <value>Generated pipeline</value>
+  </data>
+
+  <!-- MainPage.xaml.cs: recorder removal confirmation dialog -->
+  <data name="Dialog_RemoveRecorder_Title" xml:space="preserve">
+    <value>Remove recorder</value>
+  </data>
+  <data name="Dialog_RemoveRecorder_Content" xml:space="preserve">
+    <value>Remove '{0}'?</value>
+  </data>
+  <data name="Common_Remove" xml:space="preserve">
+    <value>Remove</value>
+  </data>
+  <data name="Common_Cancel" xml:space="preserve">
+    <value>Cancel</value>
+  </data>
+
+  <!-- ActivationCommands.cs / SingleInstanceManager.Launcher.cs: CLI -->
+  <data name="Cli_RecorderNotAvailable" xml:space="preserve">
+    <value>Recorder is not available yet.</value>
+  </data>
+  <data name="Cli_RecorderNotFound" xml:space="preserve">
+    <value>Recorder '{0}' not found.</value>
+  </data>
+  <data name="Cli_CannotStartInState" xml:space="preserve">
+    <value>Recorder '{0}' cannot start recording in the current state.</value>
+  </data>
+  <data name="Cli_CannotStopInState" xml:space="preserve">
+    <value>Recorder '{0}' cannot stop recording in the current state.</value>
+  </data>
+  <data name="Cli_RecordingProducedNothing" xml:space="preserve">
+    <value>Recorder '{0}' stopped, but no video frame was recorded: the file has no media data. Do not use it as an artifact. See recording.stop empty in activity.log for details.</value>
+  </data>
+  <data name="Cli_RecordingNotFinalized" xml:space="preserve">
+    <value>Recorder '{0}' stopped, but the file was not finalized: it may be missing its index (moov) or truncated. Do not use it as an artifact; recorded data may still be recoverable. See recording.stop timeout / recording.stop error in activity.log for details.</value>
+  </data>
+  <data name="Cli_RootDesc" xml:space="preserve">
+    <value>Process Recorder App - Process recording (event recording) Application</value>
+  </data>
+  <data name="Cli_SetDesc" xml:space="preserve">
+    <value>Set a template variable used in the filename template (Key=Value). Can be repeated.</value>
+  </data>
+  <data name="Cli_InvalidSet" xml:space="preserve">
+    <value>Invalid --set value '{0}'. Expected format: Key=Value</value>
+  </data>
+  <data name="Cli_GetDesc" xml:space="preserve">
+    <value>Get template variables. Without keys, prints all variables as Key=Value; with keys, prints values only.</value>
+  </data>
+  <data name="Cli_PersistDesc" xml:space="preserve">
+    <value>Keep the named template variable in settings.json across restarts. Repeat the option for several keys.</value>
+  </data>
+  <data name="Cli_NoPersistDesc" xml:space="preserve">
+    <value>Stop keeping the named template variable in settings.json. The variable itself stays for this session.</value>
+  </data>
+  <data name="Cli_PingDesc" xml:space="preserve">
+    <value>Records a log to confirm the process is running (no window display or notifications).</value>
+  </data>
+  <data name="Cli_ActivateDesc" xml:space="preserve">
+    <value>Activate main window.</value>
+  </data>
+  <data name="Cli_StartAllDesc" xml:space="preserve">
+    <value>Start recording on all recorders.</value>
+  </data>
+  <data name="Cli_NoRecorderCanStart" xml:space="preserve">
+    <value>No recorder can start recording.</value>
+  </data>
+  <data name="Cli_StopAllDesc" xml:space="preserve">
+    <value>Stop recording on all recorders.</value>
+  </data>
+  <data name="Cli_NoRecorderCanStop" xml:space="preserve">
+    <value>No recorder can stop recording.</value>
+  </data>
+  <data name="Cli_StartTargetArg" xml:space="preserve">
+    <value>Recorder to start: a numeric index (0-based) or a recorder name.</value>
+  </data>
+  <data name="Cli_StartDesc" xml:space="preserve">
+    <value>Start recording on the specified recorder.</value>
+  </data>
+  <data name="Cli_StopTargetArg" xml:space="preserve">
+    <value>Recorder to stop: a numeric index (0-based) or a recorder name.</value>
+  </data>
+  <data name="Cli_StopDesc" xml:space="preserve">
+    <value>Stop recording on the specified recorder.</value>
+  </data>
+  <data name="Cli_StatusDesc" xml:space="preserve">
+    <value>Report the state of every recorder (name, initialized, recording, last file, last failure).</value>
+  </data>
+  <data name="Cli_RecorderError" xml:space="preserve">
+    <value>Recorder '{0}' is not healthy: {1}</value>
+  </data>
+  <data name="Cli_RecorderNotInitialized" xml:space="preserve">
+    <value>not initialized</value>
+  </data>
+  <data name="Cli_NoVariables" xml:space="preserve">
+    <value>(no variables)</value>
+  </data>
+  <data name="Cli_VariableNotFound" xml:space="preserve">
+    <value>Template variable '{0}' is not defined.</value>
+  </data>
+  <data name="Cli_WorkerStartTimeout" xml:space="preserve">
+    <value>Failed to start the resident worker (timeout).</value>
+  </data>
+
+  <data name="Cli_WorkerShuttingDown" xml:space="preserve">
+    <value>The resident worker is shutting down; the command was not executed. Retry it.</value>
+  </data>
+
+  <data name="Cli_LauncherBusy" xml:space="preserve">
+    <value>Another instance did not finish in time, so the command was not executed. Retry it; if it keeps happening, quit the app from the tray icon and try again.</value>
+  </data>
+
+  <!-- SingleInstanceManager.cs: タスクトレイアイコンのコンテキストメニュー -->
+  <data name="Tray_Show" xml:space="preserve">
+    <value>Show</value>
+  </data>
+  <data name="Tray_Quit" xml:space="preserve">
+    <value>Quit</value>
+  </data>
+
+  <!-- PropertyGrid: Category/Description（属性値をリソースキーとして間接解決する） -->
+  <data name="PropCat_Debug" xml:space="preserve">
+    <value>Debug</value>
+  </data>
+  <data name="PropCat_Recorders" xml:space="preserve">
+    <value>Recorders</value>
+  </data>
+  <data name="PropCat_General" xml:space="preserve">
+    <value>General</value>
+  </data>
+  <data name="PropCat_Encoding" xml:space="preserve">
+    <value>Encoding</value>
+  </data>
+  <data name="PropCat_Output" xml:space="preserve">
+    <value>Output</value>
+  </data>
+  <data name="PropDesc_OutputDirectory" xml:space="preserve">
+    <value>Folder the recordings are written to. Leave empty to use the folder the executable is in. A relative path is resolved against that same folder. A recorder whose filename template is an absolute path ignores this setting.</value>
+  </data>
+  <data name="PropDesc_RecordingRetentionDays" xml:space="preserve">
+    <value>Delete .mp4 files under the output folder once they are older than this many days. 0 deletes nothing. Sub-folders are searched too, and a sub-folder is removed when deleting left it empty. Point the output folder at a directory used only for recordings before turning this on — left empty it covers everything under the folder the executable is in.</value>
+  </data>
+  <data name="PropDesc_RecordingCleanupIntervalHours" xml:space="preserve">
+    <value>How often the deletion runs, in hours. It also runs once right after startup, so a long interval still gets a sweep every time the app starts. Values below 1 are treated as 1.</value>
+  </data>
+  <data name="PropDesc_PreferredEncoder" xml:space="preserve">
+    <value>Element factory name of the preferred H.264 encoder (for example x264enc or qsvh264enc). Leave empty to pick automatically from the encoders available on this machine. If the specified element is not available, the automatic order is used instead. The encoder actually used is shown in each recorder's Actual Encoding Properties.</value>
+  </data>
+  <data name="PropDesc_GstDebug" xml:space="preserve">
+    <value>Sets the GST_DEBUG environment variable at startup (not overwritten if already set).</value>
+  </data>
+  <data name="PropDesc_GstDebugDumpDotDir" xml:space="preserve">
+    <value>Sets the GST_DEBUG_DUMP_DOT_DIR environment variable at startup (not overwritten if already set). Relative paths are resolved against the executable directory.</value>
+  </data>
+  <data name="PropDesc_DebugLogFile" xml:space="preserve">
+    <value>File path to save debug log output. Applied immediately on change. Leave empty to disable saving.</value>
+  </data>
+  <data name="PropDesc_Rec_Name" xml:space="preserve">
+    <value>Display name of the recorder.</value>
+  </data>
+  <data name="PropDesc_Rec_BufferDuration" xml:space="preserve">
+    <value>Length of the pre-recording buffer, in milliseconds.</value>
+  </data>
+  <data name="PropDesc_Rec_FilenameTemplate" xml:space="preserve">
+    <value>Template for the output file name. Supports placeholders such as {Now:...} and {Name}.</value>
+  </data>
+  <data name="PropDesc_Rec_Type" xml:space="preserve">
+    <value>Capture method used for recording (System or D3d12).</value>
+  </data>
+  <data name="PropDesc_Rec_SrcPipeline" xml:space="preserve">
+    <value>GStreamer source pipeline description used for capture.</value>
+  </data>
+  <data name="PropDesc_Rec_EncodingProperties" xml:space="preserve">
+    <value>Encoding properties applied to the recording pipeline.</value>
+  </data>
+  <data name="PropDesc_Rec_LastFilename" xml:space="preserve">
+    <value>Path of the most recently recorded file.</value>
+  </data>
+  <data name="PropDesc_Rec_IsRecording" xml:space="preserve">
+    <value>Whether recording is currently in progress. Toggling starts or stops recording.</value>
+  </data>
+  <data name="PropDesc_Rec_IsInitialized" xml:space="preserve">
+    <value>Whether the recorder pipeline has been initialized.</value>
+  </data>
+  <data name="PropDesc_Rec_ActualType" xml:space="preserve">
+    <value>Capture method actually in use by the running pipeline.</value>
+  </data>
+  <data name="PropDesc_Rec_ActualSrcPipeline" xml:space="preserve">
+    <value>Source pipeline actually in use by the running pipeline.</value>
+  </data>
+  <data name="PropDesc_Rec_ActualEncodingProperties" xml:space="preserve">
+    <value>Encoding properties actually in use by the running pipeline.</value>
+  </data>
+  <data name="PropDesc_StopFinalizeTimeout" xml:space="preserve">
+    <value>Maximum time (ms) to wait for the recording pipeline to drain when stopping. Keep this at or below 50000: the launcher gives up after 60 seconds, so values close to that make stop-recording return a timeout exit code.</value>
+  </data>
+  <data name="PropDesc_Rec_LastError" xml:space="preserve">
+    <value>The most recent problem detected on this recorder (empty when healthy). Cleared when a new recording starts.</value>
+  </data>
+  <data name="PropDesc_Rec_StartRecording" xml:space="preserve">
+    <value>Start recording.</value>
+  </data>
+  <data name="PropDesc_Rec_StopRecording" xml:space="preserve">
+    <value>Stop recording.</value>
+  </data>
+  <data name="PropDesc_Rec_Initialize" xml:space="preserve">
+    <value>Initialize the recorder pipeline.</value>
+  </data>
+  <data name="PropDesc_ConfirmRecorderRemoval" xml:space="preserve">
+    <value>Show a confirmation dialog before removing a recorder.</value>
+  </data>
+  <data name="PropDesc_PaneDisplayMode" xml:space="preserve">
+    <value>Navigation pane display mode (Top, Left, etc.).</value>
+  </data>
+  <data name="PropDesc_Recorders" xml:space="preserve">
+    <value>List of configured recorders.</value>
+  </data>
+
+  <!-- GStreamer.GirCore/SrcPipelineBuilder.cs: Pipeline Builder のソースカタログ -->
+  <data name="Src_ScreenCapture_DisplayName" xml:space="preserve">
+    <value>Screen capture (d3d12screencapturesrc)</value>
+  </data>
+  <data name="Src_Camera_DisplayName" xml:space="preserve">
+    <value>Camera (mfvideosrc)</value>
+  </data>
+  <data name="Src_TestPatternD3d12_DisplayName" xml:space="preserve">
+    <value>Test pattern (d3d12testsrc)</value>
+  </data>
+  <data name="Src_TestPatternSystem_DisplayName" xml:space="preserve">
+    <value>Test pattern (videotestsrc)</value>
+  </data>
+  <data name="Src_MonitorIndex_Desc" xml:space="preserve">
+    <value>Index of the monitor to capture</value>
+  </data>
+  <data name="Src_ShowCursor_Desc" xml:space="preserve">
+    <value>Whether to include the mouse cursor</value>
+  </data>
+  <data name="Src_DeviceIndex_Desc" xml:space="preserve">
+    <value>Index of the capture device</value>
+  </data>
+  <data name="Src_DeviceName_Desc" xml:space="preserve">
+    <value>Friendly name of the capture device</value>
+  </data>
+  <data name="Src_IsLive_Desc" xml:space="preserve">
+    <value>Behave as a live source</value>
+  </data>
+  <data name="Src_DoTimestamp_Desc" xml:space="preserve">
+    <value>Timestamp buffers</value>
+  </data>
+  <data name="Src_Pattern_Desc" xml:space="preserve">
+    <value>Test pattern to display</value>
+  </data>
+</root>

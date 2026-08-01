@@ -1,0 +1,187 @@
+using System.Globalization;
+using System.Text;
+using System.Text.RegularExpressions;
+
+namespace ProcessRecorderApp.E2E;
+
+/// <summary>
+/// <c>activity.log</c> の読み取り（1イベント＝1行・書式はインバリアント固定）。
+///
+/// <para>
+/// <b>イベント名の照合を単純な前方一致で書いてはいけない。</b> 製品は成功と失敗を
+/// イベント名で分けており（<c>recording.stop</c> と <c>recording.stop timeout</c>、
+/// <c>recorder.init ok</c> と <c>recorder.init fail</c>）、前方一致だと
+/// 「成功したか」を見るつもりの照合が失敗行にも一致してしまう。
+/// そのため<b>既知のイベント名を表として持ち、最長一致で切り出す</b>。
+/// </para>
+/// </summary>
+public static class ActivityLogFile
+{
+    /// <summary>
+    /// 製品が記録するイベント名（src/README.md の <c>activity.log</c> のイベント表に
+    /// 契約として明記されているもの）。
+    /// 空白を含む名前があるため、1行の「イベント名」はこの表との最長一致で決める。
+    /// </summary>
+    public static readonly IReadOnlyList<string> KnownEvents =
+    [
+        "app.start",
+        "app.exit",
+        "app.error",
+        "cli",
+        "ping",
+        "gst.runtime",
+        "gst.encoders",
+        "gst.encoder selected",
+        "gst.encoder fallback-from",
+        "gst.encoder candidate-failed",
+        "recorder.init ok",
+        "recorder.init fail",
+        "recorder.error",
+        "recorder.warning",
+        "recorder.eos",
+        "recorder.restart",
+        "recorder.leak",
+        "recording.start",
+        "recording.start fail",
+        "recording.stop",
+        "recording.stop slow",
+        "recording.stop timeout",
+        "recording.stop error",
+        // 1フレームも書けずに終わった停止。**この表に足すのを忘れないこと** ──
+        // 忘れると EventNameOf が最長一致で "recording.stop" に丸め、
+        // 「recording.stop が2件」を数えている既存の表明が黙って3件になる。
+        "recording.stop empty",
+        "recording.aborted",
+    ];
+
+    private static readonly string[] LongestFirst = [.. KnownEvents.OrderByDescending(e => e.Length)];
+
+    private static readonly Regex PidPattern = new(@"\bpid=(\d+)", RegexOptions.Compiled);
+
+    private static readonly Regex ExitCodePattern = new(@"\bexitCode=(-?\d+)", RegexOptions.Compiled);
+
+    /// <summary>行の先頭 23 文字はタイムスタンプ（<c>yyyy-MM-dd HH:mm:ss.fff</c>）。</summary>
+    private const int TimestampLength = 23;
+
+    public static IReadOnlyList<string> ReadLines(string path)
+    {
+        if (!File.Exists(path))
+            return [];
+        try
+        {
+            // 常駐ワーカーが書いている最中でも読めるように共有を許す。
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            using var reader = new StreamReader(stream, Encoding.UTF8);
+            var lines = new List<string>();
+            while (reader.ReadLine() is { } line)
+                lines.Add(line);
+            return lines;
+        }
+        catch (IOException)
+        {
+            return [];
+        }
+    }
+
+    /// <summary>1行のイベント名（既知の表との最長一致）。書式に合わない行は null。</summary>
+    public static string? EventNameOf(string line)
+    {
+        string? rest = AfterLevel(line);
+        if (rest is null)
+            return null;
+
+        foreach (string candidate in LongestFirst)
+        {
+            if (rest.Equals(candidate, StringComparison.Ordinal) ||
+                rest.StartsWith(candidate + " ", StringComparison.Ordinal))
+            {
+                return candidate;
+            }
+        }
+
+        // 表に無いイベント名（製品側に追加されたばかり）は最初のトークンとして返す。
+        // 黙って null にすると「イベントが1件も無い」と読めてしまう。
+        int space = rest.IndexOf(' ');
+        return space < 0 ? rest : rest[..space];
+    }
+
+    /// <summary>1行のレベル（<c>INFO</c> / <c>WARN</c> / <c>ERROR</c>）。</summary>
+    public static string? LevelOf(string line)
+    {
+        if (line.Length <= TimestampLength + 1)
+            return null;
+        string tail = line[(TimestampLength + 1)..];
+        int space = tail.IndexOf(' ');
+        return space < 0 ? tail : tail[..space];
+    }
+
+    /// <summary>イベント名の後ろに続く詳細（無ければ空文字）。</summary>
+    public static string DetailOf(string line)
+    {
+        string? rest = AfterLevel(line);
+        if (rest is null || EventNameOf(line) is not { } name)
+            return "";
+        return rest.Length > name.Length ? rest[(name.Length + 1)..] : "";
+    }
+
+    /// <summary>行のタイムスタンプ。</summary>
+    public static DateTime? TimestampOf(string line)
+    {
+        if (line.Length < TimestampLength)
+            return null;
+        return DateTime.TryParseExact(line[..TimestampLength], "yyyy-MM-dd HH:mm:ss.fff",
+            CultureInfo.InvariantCulture, DateTimeStyles.None, out var value) ? value : null;
+    }
+
+    /// <summary>指定したイベント名に<b>完全一致</b>する行だけを返す。</summary>
+    public static IReadOnlyList<string> Events(IEnumerable<string> lines, string eventName) =>
+        [.. lines.Where(l => EventNameOf(l) == eventName)];
+
+    /// <summary>
+    /// <c>app.start</c> 行に記録された常駐ワーカーの pid。
+    ///
+    /// <para>
+    /// <b>ここへ <c>app.exit</c> の pid を足してはいけない。</b> この列は
+    /// <c>KillWorkers</c>（殺す相手）と <c>ListWorkerWindows</c>（ウィンドウの持ち主）が
+    /// 使っており、<b>終了済みの pid は OS に再利用される</b>。
+    /// 殺す側は <c>ProcessName</c> で守られているが、ウィンドウ側は守られておらず、
+    /// 再利用された pid の別プロセスのウィンドウを<b>アプリのものとして誤って帰属</b>する。
+    /// 終了の会計は <see cref="WorkerExits"/> で別に行うこと。
+    /// </para>
+    /// </summary>
+    public static IEnumerable<int> WorkerPids(IEnumerable<string> lines) =>
+        Events(lines, "app.start")
+            .Select(l => PidPattern.Match(l))
+            .Where(m => m.Success)
+            .Select(m => int.Parse(m.Groups[1].Value, CultureInfo.InvariantCulture))
+            .Distinct();
+
+    /// <summary>
+    /// <c>app.exit</c> 行に記録された終了（pid と終了コード）。
+    ///
+    /// <para>
+    /// <b>これは <see cref="WorkerPids"/> の部分集合ではない。</b> 単一インスタンスの
+    /// キー登録に負けたワーカーは <c>app.start</c> を書かずに終了する
+    /// （<c>app.start</c> の記録はキーを取れた側の初期化コールバックの中にあるため）が、
+    /// <c>app.exit ... exitCode=3</c> は書く。したがって<b>親を持たない <c>app.exit</c></b> が
+    /// 実在し、それが「起動しようとして弾かれたワーカーが何回居たか」の唯一の痕跡になる。
+    /// </para>
+    /// </summary>
+    public static IEnumerable<(int Pid, int ExitCode)> WorkerExits(IEnumerable<string> lines) =>
+        Events(lines, "app.exit")
+            .Select(l => (Pid: PidPattern.Match(l), Exit: ExitCodePattern.Match(l)))
+            .Where(m => m.Pid.Success && m.Exit.Success)
+            .Select(m => (
+                int.Parse(m.Pid.Groups[1].Value, CultureInfo.InvariantCulture),
+                int.Parse(m.Exit.Groups[1].Value, CultureInfo.InvariantCulture)))
+            .Distinct();
+
+    private static string? AfterLevel(string line)
+    {
+        if (line.Length <= TimestampLength + 1)
+            return null;
+        string tail = line[(TimestampLength + 1)..];
+        int space = tail.IndexOf(' ');
+        return space < 0 ? null : tail[(space + 1)..];
+    }
+}

@@ -1,0 +1,12 @@
+# 上流のライセンス全文は1バイトも変えない。
+#
+# この機械の core.autocrlf は system で true。この指定が無いと git は
+# 「LF will be replaced by CRLF the next time Git touches it」と警告し、
+# **チェックアウトのたびに改行を書き換える** ── その瞬間
+# licenses/third-party/SOURCES.tsv のハッシュ照合が通らなくなり、
+# 手元（既に LF で置いてある）は緑のまま CI だけが赤くなる。
+#
+# ライセンス文は「上流の原文そのもの」であることに意味があるので、
+# 表示上の都合で書き換えてよいものではない。台帳の .tsv も同じ扱いにして、
+# 「この配下は一切変換しない」という1つの規則で済ませる。
+licenses/third-party/** -text

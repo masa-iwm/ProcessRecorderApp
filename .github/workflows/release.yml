@@ -1,0 +1,202 @@
+# 配布物の作成（同梱 / 非同梱の2形態。どちらも Native AOT 発行）。
+#
+# なぜ build.yml と分けるか: ここは同梱用の GStreamer を毎回取ってくるので、
+# push のたびに走らせる価値が無い。build.yml は「壊れていないこと」、こちらは
+# 「配れるものを作ること」が目的。
+#
+# 発行は win-x64-aot プロファイル（build.yml の publish-aot ジョブと同じ形態）。
+# 配布物は AOT 版のみ ── selfcontained(ReadyToRun) は CI の検証用で、配布しない。
+#
+# 2形態:
+#   - 非同梱（`ProcessRecorderApp-<tag>-win-x64.zip`）
+#       利用者側に GStreamer(MinGW) か MSYS2(UCRT64) が要る。軽い。
+#   - 同梱  （`ProcessRecorderApp-<tag>-win-x64-gstreamer.zip`）
+#       削減した runtimes（45 ファイル・49.7MB）を同梱する。
+#       **x264 と libav を含まないので GPL を持ち込まない。** Type=System は
+#       `mfh264enc` に落ちる（**openh264 は特許の都合で同梱しない**
+#       ── THIRD-PARTY-NOTICES.md「2.」。同梱版の GPU 実機検証で、System の
+#       自動選択が `mfh264enc` を選んで有効な MP4 を出すことは観測済み
+#       ── docs/gpu-verification.md）。
+#
+# **同梱物の検証はここでしかできない。** 開発機には GStreamer が入っており、
+# 解決順（元の PATH → 環境変数 → レジストリ → MSYS2 → 同梱物）の都合で
+# 同梱物は必ず負ける。このジョブは MSYS2 を入れないので、
+# ランナーでは同梱物が唯一の候補になり `selected=bundled` を実際に踏める。
+# ただし流せるのは**エンコーダーに依存しないケースだけ** ── L2 のハーネスは
+# `SettingsFile.DefaultEncoder = "x264enc"` を固定しており、同梱物に x264 は無い。
+
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+env:
+  DOTNET_NOLOGO: 'true'
+  DOTNET_CLI_TELEMETRY_OPTOUT: 'true'
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: 'true'
+  # 同梱用ランタイムの置き場。Release アセット（prerelease）として上げてある。
+  # tools/Fetch-GStreamerRuntime.ps1 の既定値と揃えること（更新手順は docs/runtime-update.md）。
+  # 中身は licenses/third-party/COMPONENTS.tsv が正本で、下の検証がそれと突き合わせる。
+  GSTREAMER_RUNTIME_TAG: 'gstreamer-runtime-v1.28.4'
+  GSTREAMER_RUNTIME_ASSET: 'gstreamer-runtime-win-x64-v1.28.4.zip'
+
+jobs:
+  package:
+    runs-on: windows-latest
+    # AOT のネイティブリンクを2回（非同梱・同梱）行うため、selfcontained 発行より厚く取る。
+    timeout-minutes: 90
+    permissions:
+      contents: write     # Release にアセットを添付するため
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      # zip の名前に入れる文字列。タグからの実行では ref_name がそのままタグ名になるが、
+      # **workflow_dispatch でブランチから流すと `feature/xxx` のように `/` を含む**
+      # ── そのまま DestinationPath に入れると存在しないディレクトリを指し、
+      # Compress-Archive が落ちる。
+      - name: Compute the package name
+        run: |
+          $name = '${{ github.ref_name }}' -replace '[\\/]', '-'
+          "PKG_REF=$name" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "package name segment: $name"
+
+      # --- 非同梱 ---------------------------------------------------------
+      # 明示的に false を渡す。既定は「runtimes/ に本体 DLL があれば同梱」なので、
+      # 取得ステップの後に発行順が入れ替わると黙って同梱版になる。
+      # AOT のネイティブリンクに要る MSVC / vswhere は windows-latest では標準の場所で
+      # 解決される（win-x64-aot.pubxml のコメントを参照）。
+      - name: Publish (Native AOT, without GStreamer)
+        run: >
+          dotnet publish src/ProcessRecorderApp/ProcessRecorderApp.csproj
+          -p:PublishProfile=win-x64-aot
+          -p:BundleGStreamerRuntime=false
+
+      - name: Package (without GStreamer)
+        run: |
+          $dir = 'src/ProcessRecorderApp/bin/Release/win-x64/publish/aot'
+          if (Test-Path "$dir/runtimes") { throw "expected no bundled runtime under $dir" }
+          # 本体のライセンスは配布形態によらず入る。第三者の分は入らない
+          # ── 非同梱版はそれらを1つも含まないため。
+          foreach ($f in @('license.txt', 'THIRD-PARTY-NOTICES.md')) {
+            if (-not (Test-Path (Join-Path $dir $f))) { throw "not in the package: $f" }
+          }
+          if (Test-Path "$dir/licenses/third-party") { throw "third-party licenses in the non-bundled package" }
+          New-Item -ItemType Directory -Force artifacts | Out-Null
+          Compress-Archive -Path "$dir/*" -DestinationPath "artifacts/ProcessRecorderApp-$env:PKG_REF-win-x64.zip"
+
+      # --- 同梱 -----------------------------------------------------------
+      - name: Fetch the bundled GStreamer runtime
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download $env:GSTREAMER_RUNTIME_TAG -p $env:GSTREAMER_RUNTIME_ASSET -D $env:RUNNER_TEMP
+          ./tools/Fetch-GStreamerRuntime.ps1 -ArchivePath (Join-Path $env:RUNNER_TEMP $env:GSTREAMER_RUNTIME_ASSET)
+
+      - name: Publish (Native AOT, with GStreamer)
+        run: >
+          dotnet publish src/ProcessRecorderApp/ProcessRecorderApp.csproj
+          -p:PublishProfile=win-x64-aot
+          -p:BundleGStreamerRuntime=true
+          -p:PublishDir=bin\Release\win-x64\publish\bundled\
+
+      # 「同梱版」を名乗ったまま中身が無い zip を配らない。
+      #
+      # 件数の下限ではなく **licenses/third-party/COMPONENTS.tsv と
+      # 過不足なく一致すること**を見る。下限では「多い分」を捕まえられず、
+      # ライセンス文の無いものが黙って混ざる。件数の下限に戻さないこと ──
+      # 同梱物の構成を変えるたびに下限値が古くなり、正しい構成を弾くようになる。
+      #
+      # **ここが「配布物にライセンス文が入っている」ことを見る唯一の場所である。**
+      # L1（ThirdPartyLicenseTests）が見られるのはリポジトリ内の整合だけ。
+      - name: Verify the bundled output
+        run: |
+          $dir = 'src/ProcessRecorderApp/bin/Release/win-x64/publish/bundled'
+          $core = "$dir/runtimes/win-x64/bin/libgstreamer-1.0-0.dll"
+          if (-not (Test-Path $core)) { throw "bundled runtime missing: $core" }
+
+          $expected = @(Get-Content 'licenses/third-party/COMPONENTS.tsv' |
+            Where-Object { $_ -notmatch '^#' -and $_.Trim() -ne '' } |
+            Select-Object -Skip 1 |
+            ForEach-Object { ($_ -split "`t")[0] }) | Sort-Object
+          if ($expected.Count -eq 0) { throw 'COMPONENTS.tsv からファイル一覧を読めなかった' }
+
+          $runtimeRoot = "$dir/runtimes/win-x64"
+          $actual = @(Get-ChildItem $runtimeRoot -Recurse -File |
+            ForEach-Object { $_.FullName.Substring((Resolve-Path $runtimeRoot).Path.Length + 1).Replace('\', '/') }) | Sort-Object
+
+          $missing = @($expected | Where-Object { $actual -notcontains $_ })
+          $extra   = @($actual   | Where-Object { $expected -notcontains $_ })
+          if ($missing.Count -or $extra.Count) {
+            $missing | ForEach-Object { Write-Host "  MISSING $_" }
+            $extra   | ForEach-Object { Write-Host "  EXTRA   $_" }
+            throw "bundled runtime does not match COMPONENTS.tsv (missing=$($missing.Count) extra=$($extra.Count))"
+          }
+          Write-Host "bundled runtime: $($actual.Count) files, matches COMPONENTS.tsv"
+
+          # ライセンス文がリポジトリのものと同一のまま入っていること。
+          $repoLicenses = @(Get-ChildItem 'licenses/third-party' -Recurse -File)
+          $shipped = "$dir/licenses/third-party"
+          foreach ($f in $repoLicenses) {
+            $rel = $f.FullName.Substring((Resolve-Path 'licenses/third-party').Path.Length + 1)
+            $target = Join-Path $shipped $rel
+            if (-not (Test-Path $target)) { throw "license text not shipped: $rel" }
+            if ((Get-FileHash $target).Hash -ne (Get-FileHash $f.FullName).Hash) { throw "license text differs: $rel" }
+          }
+          Write-Host "license texts  : $($repoLicenses.Count) files"
+
+          foreach ($f in @('license.txt', 'THIRD-PARTY-NOTICES.md')) {
+            if (-not (Test-Path (Join-Path $dir $f))) { throw "not in the package: $f" }
+          }
+
+      # このジョブは MSYS2 を入れていないので、同梱物が唯一の候補になる。
+      # ここが `selected=bundled` を実際に踏む唯一の場所（上の冒頭コメントを参照）。
+      - name: Smoke-test the bundled build
+        env:
+          PROCESSRECORDERAPP_E2E_PUBLISH_DIR: ${{ github.workspace }}/src/ProcessRecorderApp/bin/Release/win-x64/publish/bundled
+          PROCESSRECORDERAPP_E2E_KEEP: '1'
+          TMP: ${{ runner.temp }}
+          TEMP: ${{ runner.temp }}
+        run: >
+          dotnet test tests/ProcessRecorderApp.E2E
+          -c Release
+          --filter "FullyQualifiedName~SmokeTests|FullyQualifiedName~RuntimeResolutionTests"
+          --logger "trx;LogFileName=release-smoke.trx"
+
+      - name: Package (with GStreamer)
+        run: |
+          $dir = 'src/ProcessRecorderApp/bin/Release/win-x64/publish/bundled'
+          Compress-Archive -Path "$dir/*" -DestinationPath "artifacts/ProcessRecorderApp-$env:PKG_REF-win-x64-gstreamer.zip"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: packages
+          path: artifacts/*.zip
+
+      - name: Attach to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload ${{ github.ref_name }} artifacts/*.zip --clobber
+
+      - name: Upload smoke diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-smoke-diagnostics
+          path: |
+            ${{ runner.temp }}/pra-e2e-*/*.log
+            ${{ runner.temp }}/pra-e2e-*/*.json
+            **/TestResults/*.trx
+          if-no-files-found: ignore

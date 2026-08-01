@@ -1,0 +1,9 @@
+CreatePipe
+CreateNamedPipe
+CreateFile
+GetStdHandle
+SetStdHandle
+DuplicateHandle
+GetCurrentProcess
+FILE_FLAGS_AND_ATTRIBUTES
+GENERIC_ACCESS_RIGHTS

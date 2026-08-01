@@ -1,0 +1,133 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ContentDialog
+    x:Class="ProcessRecorderApp.Views.PipelineBuilderDialog"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:vm="using:ProcessRecorderApp.ViewModels"
+    xmlns:v="using:ProcessRecorderApp.Views"
+    xmlns:au="using:Microsoft.UI.Xaml.Automation"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d"
+    x:Uid="PipelineDialog"
+    DefaultButton="Primary"
+    PrimaryButtonClick="OnPrimaryButtonClick">
+
+    <ContentDialog.Resources>
+        <!-- bool 行: 有効チェック＋名前＋ToggleSwitch -->
+        <DataTemplate x:Key="BoolFieldTemplate" x:DataType="vm:PipelineFieldRow">
+            <Grid ColumnSpacing="8" Margin="0,2">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="150" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <CheckBox Grid.Column="0" MinWidth="0" IsChecked="{x:Bind Enabled, Mode=TwoWay}"
+                          au:AutomationProperties.Name="{x:Bind Name}"
+                          au:AutomationProperties.AutomationId="{x:Bind EnabledAutomationId}" />
+                <TextBlock Grid.Column="1" Text="{x:Bind Name}" ToolTipService.ToolTip="{x:Bind Description}"
+                           VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                <ToggleSwitch Grid.Column="2" IsOn="{x:Bind BoolValue, Mode=TwoWay}"
+                              IsEnabled="{x:Bind Enabled, Mode=OneWay}"
+                              au:AutomationProperties.Name="{x:Bind Name}"
+                              au:AutomationProperties.AutomationId="{x:Bind Name}" />
+            </Grid>
+        </DataTemplate>
+
+        <!-- choice 行: 有効チェック＋名前＋ComboBox(候補) -->
+        <DataTemplate x:Key="ChoiceFieldTemplate" x:DataType="vm:PipelineFieldRow">
+            <Grid ColumnSpacing="8" Margin="0,2">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="150" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <CheckBox Grid.Column="0" MinWidth="0" IsChecked="{x:Bind Enabled, Mode=TwoWay}"
+                          au:AutomationProperties.Name="{x:Bind Name}"
+                          au:AutomationProperties.AutomationId="{x:Bind EnabledAutomationId}" />
+                <TextBlock Grid.Column="1" Text="{x:Bind Name}" ToolTipService.ToolTip="{x:Bind Description}"
+                           VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                <ComboBox Grid.Column="2" ItemsSource="{x:Bind Choices}" SelectedItem="{x:Bind Value, Mode=TwoWay}"
+                          IsEnabled="{x:Bind Enabled, Mode=OneWay}" HorizontalAlignment="Stretch"
+                          au:AutomationProperties.Name="{x:Bind Name}"
+                          au:AutomationProperties.AutomationId="{x:Bind Name}" />
+            </Grid>
+        </DataTemplate>
+
+        <!-- text 行: 有効チェック＋名前＋TextBox -->
+        <DataTemplate x:Key="TextFieldTemplate" x:DataType="vm:PipelineFieldRow">
+            <Grid ColumnSpacing="8" Margin="0,2">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="150" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <CheckBox Grid.Column="0" MinWidth="0" IsChecked="{x:Bind Enabled, Mode=TwoWay}"
+                          au:AutomationProperties.Name="{x:Bind Name}"
+                          au:AutomationProperties.AutomationId="{x:Bind EnabledAutomationId}" />
+                <TextBlock Grid.Column="1" Text="{x:Bind Name}" ToolTipService.ToolTip="{x:Bind Description}"
+                           VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                <TextBox Grid.Column="2" Text="{x:Bind Value, Mode=TwoWay}"
+                         IsEnabled="{x:Bind Enabled, Mode=OneWay}"
+                         au:AutomationProperties.Name="{x:Bind Name}"
+                         au:AutomationProperties.AutomationId="{x:Bind Name}" />
+            </Grid>
+        </DataTemplate>
+
+        <v:FieldRowTemplateSelector x:Key="FieldRowSelector"
+            BoolTemplate="{StaticResource BoolFieldTemplate}"
+            ChoiceTemplate="{StaticResource ChoiceFieldTemplate}"
+            TextTemplate="{StaticResource TextFieldTemplate}" />
+    </ContentDialog.Resources>
+
+    <ScrollViewer MaxHeight="540" VerticalScrollBarVisibility="Auto">
+        <StackPanel Width="460" Spacing="14">
+
+            <!-- ソース選択 -->
+            <StackPanel Spacing="4">
+                <TextBlock x:Uid="PipelineDialog_Source" FontWeight="SemiBold" />
+                <ComboBox x:Uid="PipelineDialog_SourceCombo"
+                          au:AutomationProperties.AutomationId="PipelineSourceCombo"
+                          ItemsSource="{x:Bind Vm.Sources}"
+                          SelectedItem="{x:Bind Vm.SelectedSource, Mode=TwoWay}"
+                          HorizontalAlignment="Stretch" />
+            </StackPanel>
+
+            <!-- プロパティ -->
+            <StackPanel Spacing="4">
+                <TextBlock x:Uid="PipelineDialog_Properties" FontWeight="SemiBold" />
+                <ItemsControl ItemsSource="{x:Bind Vm.PropertyRows}"
+                              ItemTemplateSelector="{StaticResource FieldRowSelector}" />
+            </StackPanel>
+
+            <!-- caps -->
+            <StackPanel Spacing="4">
+                <CheckBox x:Uid="PipelineDialog_SpecifyCaps"
+                          au:AutomationProperties.AutomationId="PipelineSpecifyCaps"
+                          IsChecked="{x:Bind Vm.CapsEnabled, Mode=TwoWay}" />
+                <ItemsControl ItemsSource="{x:Bind Vm.CapsRows}"
+                              ItemTemplateSelector="{StaticResource FieldRowSelector}"
+                              IsEnabled="{x:Bind Vm.CapsEnabled, Mode=OneWay}" />
+            </StackPanel>
+
+            <!-- 自動解析できなかった場合の警告 -->
+            <InfoBar x:Uid="PipelineDialog_ParseWarning"
+                     IsOpen="{x:Bind Vm.NotRecognized, Mode=OneWay}"
+                     Severity="Warning"
+                     IsClosable="False" />
+
+            <!-- 生成プレビュー(手動微修正も可能) -->
+            <StackPanel Spacing="4">
+                <TextBlock x:Uid="PipelineDialog_Generated" FontWeight="SemiBold" />
+                <TextBox x:Uid="PipelineDialog_GeneratedText"
+                         au:AutomationProperties.AutomationId="PipelineGeneratedText"
+                         Text="{x:Bind Vm.Preview, Mode=TwoWay}"
+                         TextWrapping="Wrap"
+                         AcceptsReturn="True"
+                         MinHeight="80"
+                         FontFamily="Consolas" />
+            </StackPanel>
+
+        </StackPanel>
+    </ScrollViewer>
+</ContentDialog>

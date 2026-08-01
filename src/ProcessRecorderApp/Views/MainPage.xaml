@@ -1,0 +1,297 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Page
+    x:Class="ProcessRecorderApp.Views.MainPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:local="using:ProcessRecorderApp"
+    xmlns:lc="using:ProcessRecorderApp.Controls"
+    xmlns:vm="using:ProcessRecorderApp.ViewModels"
+    xmlns:v="using:ProcessRecorderApp.Views"
+    xmlns:wx="using:WinUIEx"
+    xmlns:i="using:Microsoft.Xaml.Interactivity"
+    xmlns:lb="using:ProcessRecorderApp.Behaviors"
+    xmlns:ctwc="using:CommunityToolkit.WinUI.Controls"
+    xmlns:tv="using:WinUI.TableView"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d">
+
+    <Page.Resources>
+        <!-- Preview サブメニューの Recorder 項目表示（Name 変更に追従） -->
+        <DataTemplate x:Key="RecorderNavItemContentTemplate" x:DataType="vm:GstEventRecorderViewModel">
+            <TextBlock Text="{x:Bind Name, Mode=OneWay}" />
+        </DataTemplate>
+    </Page.Resources>
+
+    <NavigationView x:Name="navView"
+                         PaneDisplayMode="{x:Bind vm:MainPageViewModel.Settings.PaneDisplayMode, Mode=OneWay}"
+                         IsBackButtonVisible="Collapsed"
+                         IsSettingsVisible="True">
+        <i:Interaction.Behaviors>
+            <!-- Recorder サブメニューの生成/同期と選択連携（メニュー構築ロジックは Behavior 側に集約） -->
+            <lb:RecorderNavViewBehavior Recorders="{x:Bind ViewModel.GstController.Recorders, Mode=OneWay}"
+                                        RecorderTemplate="{StaticResource RecorderNavItemContentTemplate}"
+                                        AddRecorderCommand="{x:Bind ViewModel.GstController.AddRecorderCommand, Mode=OneWay}"
+                                        SelectedRecorder="{x:Bind ViewModel.GstController.SelectedRecorder, Mode=TwoWay}"
+                                        SelectedSection="{x:Bind ViewModel.SelectedSection, Mode=TwoWay}"
+                                        IsMenuOpen="{x:Bind ViewModel.IsNavMenuOpen, Mode=TwoWay}"
+                                        PreviewItem="{x:Bind previewNavItem}"
+                                        LogItem="{x:Bind logNavItem}"
+                                        VariablesItem="{x:Bind variablesNavItem}" />
+        </i:Interaction.Behaviors>
+        <NavigationView.MenuItems>
+            <!-- Preview のサブ項目（各 Recorder + Add recorder）は RecorderNavViewBehavior が生成・同期する -->
+            <NavigationViewItem x:Name="previewNavItem" x:Uid="MainPage_PreviewNav" SelectsOnInvoked="False"
+                                     Icon="Video" />
+            <NavigationViewItem x:Name="logNavItem" x:Uid="MainPage_LogNav">
+                <NavigationViewItem.Icon>
+                    <FontIcon Glyph="&#xE756;" />
+                </NavigationViewItem.Icon>
+            </NavigationViewItem>
+            <NavigationViewItem x:Name="variablesNavItem" x:Uid="MainPage_VariablesNav">
+                <NavigationViewItem.Icon>
+                    <FontIcon Glyph="&#xE943;" />
+                </NavigationViewItem.Icon>
+            </NavigationViewItem>
+        </NavigationView.MenuItems>
+        <NavigationView.PaneFooter>
+            <!-- 全Recorderの録画 開始/終了。録画状態は開始ボタンのアイコンで表示（停止中=Record2/テーマ色, 録画中=Record/赤）。
+                 Top モードでは横並び、それ以外（Left/LeftCompact/LeftMinimal/Auto）は縦並びに切り替える -->
+            <StackPanel Orientation="{x:Bind v:MainPage.PaneFooterOrientation(vm:MainPageViewModel.Settings.PaneDisplayMode), Mode=OneWay}"
+                        Spacing="4" Margin="4"
+                        HorizontalAlignment="Left" VerticalAlignment="Center">
+                <!-- 全Recorderの録画 開始（アイコンで録画状態を表示） -->
+                <Button x:Uid="MainPage_StartAll"
+                        AutomationProperties.AutomationId="StartAllButton"
+                        Command="{x:Bind ViewModel.GstController.StartRecordingAllCommand, Mode=OneWay}">
+                    <FontIcon Glyph="{x:Bind v:MainPage.RecordAllGlyph(ViewModel.GstController.IsRecordingAll), Mode=OneWay}"
+                              Foreground="{x:Bind v:MainPage.RecordAllBrush(ViewModel.GstController.IsRecordingAll), Mode=OneWay}"
+                              FontSize="14" />
+                </Button>
+                <!-- 全Recorderの録画 終了 -->
+                <Button x:Uid="MainPage_StopAll"
+                        AutomationProperties.AutomationId="StopAllButton"
+                        Command="{x:Bind ViewModel.GstController.StopRecordingAllCommand, Mode=OneWay}">
+                    <FontIcon Glyph="&#xE71A;" FontSize="14" />
+                </Button>
+            </StackPanel>
+        </NavigationView.PaneFooter>
+        <Grid>
+            <!-- Preview 画面: 折りたたみ可能なプロパティペイン + プレビュー（SwapChainPanel は右列の全高を使用） -->
+            <Grid x:Name="previewPanel" Visibility="{x:Bind ViewModel.IsPreviewSelected, Mode=OneWay}">
+                <Grid.ColumnDefinitions>
+                    <!-- 幅の永続化は TwoWay ではなくコードビハインドで行う（折りたたみ時の値を SettingsWidth に保存しないため）。
+                         列幅/最小幅は折りたたみ状態に応じて x:Bind 関数で切り替える -->
+                    <ColumnDefinition x:Name="settingsColumn"
+                                      Width="{x:Bind v:MainPage.PaneColumnWidth(ViewModel.IsPropertyPaneCollapsed), Mode=OneWay}"
+                                      MinWidth="{x:Bind v:MainPage.PaneColumnMinWidth(ViewModel.IsPropertyPaneCollapsed), Mode=OneWay}"
+                                      MaxWidth="600" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <Grid RowDefinitions="Auto,*" Margin="5">
+                    <!-- ヘッダー行: 展開時は横並び、折りたたみ時は縦並び -->
+                    <StackPanel Orientation="{x:Bind v:MainPage.PaneHeaderOrientation(ViewModel.IsPropertyPaneCollapsed), Mode=OneWay}" Spacing="5">
+                        <Button x:Uid="MainPage_TogglePane"
+                                AutomationProperties.AutomationId="TogglePaneButton"
+                                Command="{x:Bind ViewModel.TogglePropertyPaneCommand}">
+                            <FontIcon Glyph="{x:Bind v:MainPage.PaneToggleGlyph(ViewModel.IsPropertyPaneCollapsed), Mode=OneWay}" FontSize="14" />
+                        </Button>
+                        <Button x:Uid="MainPage_RemoveRecorder"
+                                AutomationProperties.AutomationId="RemoveRecorderButton"
+                                Command="{x:Bind ViewModel.GstController.RemoveSelectedRecorderCommand}">
+                            <FontIcon Glyph="&#xE738;" FontSize="14" />
+                        </Button>
+                        <!-- 折りたたみ時のみ、選択中 Recorder 名を左90°回転（下から上）で表示する -->
+                        <ctwc:LayoutTransformControl Visibility="{x:Bind ViewModel.IsPropertyPaneCollapsed, Mode=OneWay}"
+                                                     HorizontalAlignment="Center">
+                            <ctwc:LayoutTransformControl.Transform>
+                                <RotateTransform Angle="-90" />
+                            </ctwc:LayoutTransformControl.Transform>
+                            <TextBlock Text="{x:Bind ViewModel.GstController.SelectedRecorder.Name, Mode=OneWay}" />
+                        </ctwc:LayoutTransformControl>
+                    </StackPanel>
+                    <lc:PropertyGridView x:Name="recorderPropertyGrid"
+                                         Grid.Row="1"
+                                         Visibility="{x:Bind v:MainPage.PaneContentVisibility(ViewModel.IsPropertyPaneCollapsed), Mode=OneWay}"
+                                         SizeChanged="RecorderPropertyGrid_SizeChanged"
+                                         SelectedObject="{x:Bind ViewModel.GstController.SelectedRecorder, Mode=OneWay}"/>
+                </Grid>
+                <ctwc:GridSplitter Grid.Column="1"
+                              Visibility="{x:Bind v:MainPage.PaneContentVisibility(ViewModel.IsPropertyPaneCollapsed), Mode=OneWay}"
+                              Width="5"
+                              HorizontalAlignment="Center"
+                              VerticalAlignment="Stretch"
+                              Background="DarkGray"/>
+                <!-- プレビューは NativeSwapChainPanel（XAML ビジュアルツリー内で合成）へ描画する。
+                     GStreamer の d3d12swapchainsink が生成したスワップチェーンを SwapChainHandle にバインドする。
+
+                     未初期化のレコーダー（または未選択）のときは畳む。スワップチェーンは
+                     プロセス内で1面を共有しており、フレームを push するのは選択中のレコーダーだけなので、
+                     何も push されなければ**前のレコーダーの最後の画がそのまま残り続ける**
+                     ── 利用者からは「別のレコーダーの映像が映っている」ようにしか見えない。
+                     重ねて隠すのではなく畳むのは、そうしないと「隠せているか」を
+                     UIA から確かめられないため（PreviewPlaceholderTests）。
+                     SwapChainHandle は MainPage_Unloaded でしか外さないので、
+                     畳んで戻してもバインドは切れない。ResizeSwapChain は幅・高さ 0 を弾く。 -->
+                <!-- AccessibilityView="Control" が要る。SwapChainPanel は Panel であって
+                     コントロールではないので、既定では UIA のコントロールビューに現れない
+                     ＝ AutomationId を付けても探索から見えない（実測）。
+                     露出させること自体がアクセシビリティの改善でもある
+                     ── 映像面が支援技術から一切見えないのは、それ自体が欠陥。 -->
+                <lc:NativeSwapChainPanel x:Name="swapChainPanel" Grid.Column="2"
+                                x:Uid="MainPage_PreviewSurface"
+                                AutomationProperties.AutomationId="PreviewSurface"
+                                AutomationProperties.AccessibilityView="Control"
+                                Visibility="{x:Bind v:MainPage.PreviewSurfaceVisibility(ViewModel.GstController.SelectedRecorder.IsInitialized), Mode=OneWay}"
+                                HorizontalAlignment="Stretch"
+                                VerticalAlignment="Stretch"/>
+                <!-- 「表示するものが無い」ことを明示する。無言で黒くするだけだと、
+                     初期化に失敗しているのか単に映像が暗いのか区別が付かない -->
+                <TextBlock x:Name="noPreviewText" x:Uid="MainPage_NoPreview" Grid.Column="2"
+                           AutomationProperties.AutomationId="NoPreviewText"
+                           Visibility="{x:Bind v:MainPage.NoPreviewVisibility(ViewModel.GstController.SelectedRecorder.IsInitialized), Mode=OneWay}"
+                           HorizontalAlignment="Center" VerticalAlignment="Center"
+                           Margin="12" TextWrapping="Wrap" TextAlignment="Center"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+            </Grid>
+            <!-- Log 画面 -->
+            <RelativePanel x:Name="logPanel" Visibility="{x:Bind ViewModel.IsLogSelected, Mode=OneWay}">
+                <StackPanel x:Name="logSide" Orientation="Horizontal"
+                            RelativePanel.AlignTopWithPanel="True"
+                            RelativePanel.AlignLeftWithPanel="True"
+                            RelativePanel.AlignRightWithPanel="True"
+                            HorizontalAlignment="Right">
+                    <!-- 自動スクロール（最下部追従）の ON/OFF 表示と切り替え -->
+                    <ToggleButton x:Uid="MainPage_AutoScroll"
+                                  AutomationProperties.AutomationId="AutoScrollToggle"
+                                  Margin="0,0,5,0"
+                                  IsChecked="{Binding ElementName=logListView, Path=(lb:AutoScrollToBottomBehavior.IsAutoScrollEnabled), Mode=TwoWay}" />
+                    <Button x:Uid="MainPage_Clear" AutomationProperties.AutomationId="ClearLogButton"
+                            Command="{x:Bind ViewModel.ClearLogCommand}" />
+                </StackPanel>
+                <!-- ログ表示は Windows Terminal 既定（Campbell スキーム）の配色に固定する -->
+                <ListView
+                    x:Name="logListView"
+                    x:Uid="MainPage_LogList"
+                    RelativePanel.Below="logSide"
+                    RelativePanel.AlignLeftWithPanel="True"
+                    RelativePanel.AlignRightWithPanel="True"
+                    RelativePanel.AlignBottomWithPanel="True"
+                    ScrollViewer.VerticalScrollBarVisibility="Visible"
+                    ScrollViewer.VerticalScrollMode="Enabled"
+                    ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                    ScrollViewer.HorizontalScrollMode="Auto"
+                    SelectionMode="Extended"
+                    Padding="0,0,0,16"
+                    Background="#0C0C0C"
+                    RequestedTheme="Dark"
+                    ItemsSource="{x:Bind ViewModel.LogItems, Mode=OneWay}">
+                    <ListView.Resources>
+                        <!-- 背景 #0C0C0C 固定のため、システムテーマ（ライト）の選択ブラシでは視認できない。
+                             選択行は Windows Terminal 風の半透明白ハイライトとする -->
+                        <SolidColorBrush x:Key="ListViewItemBackgroundSelected" Color="#4DFFFFFF" />
+                        <SolidColorBrush x:Key="ListViewItemBackgroundSelectedPointerOver" Color="#59FFFFFF" />
+                        <SolidColorBrush x:Key="ListViewItemBackgroundSelectedPressed" Color="#66FFFFFF" />
+                    </ListView.Resources>
+                    <i:Interaction.Behaviors>
+                        <!-- Visibility ベースのパネル切替では Loaded/SizeChanged で表示遷移を検知できないため、
+                             表示状態 (IsLogSelected) を明示的に渡す -->
+                        <lb:AutoScrollToBottomBehavior IsActive="{x:Bind ViewModel.IsLogSelected, Mode=OneWay}" />
+                        <lb:ListViewCopyBehavior />
+                    </i:Interaction.Behaviors>
+                    <ListView.ItemContainerStyle>
+                        <Style TargetType="ListViewItem">
+                            <Setter Property="Padding" Value="0"/>
+                            <Setter Property="MinHeight" Value="0"/>
+                            <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+                            <Setter Property="VerticalContentAlignment" Value="Center"/>
+                        </Style>
+                    </ListView.ItemContainerStyle>
+                    <ListView.ItemTemplate>
+                        <DataTemplate x:DataType="x:String">
+                            <TextBlock lb:AnsiText.Source="{x:Bind}"
+                               Foreground="#CCCCCC"
+                               FontFamily="Consolas"
+                               FontSize="12"
+                               Padding="4,1"/>
+                        </DataTemplate>
+                    </ListView.ItemTemplate>
+                </ListView>
+            </RelativePanel>
+            <!-- Variables 画面: EventRecorder.TemplateVariables のキー/値を一覧表示・編集する -->
+            <Grid x:Name="variablesPanel" Margin="5" RowDefinitions="Auto,*" RowSpacing="5"
+                  Visibility="{x:Bind ViewModel.IsVariablesSelected, Mode=OneWay}">
+                <StackPanel Orientation="Horizontal" Spacing="5" HorizontalAlignment="Right">
+                    <Button x:Uid="MainPage_VarAdd" AutomationProperties.AutomationId="AddVariableButton"
+                            Command="{x:Bind ViewModel.TemplateVariables.AddCommand}" />
+                    <Button x:Uid="MainPage_VarRemove" AutomationProperties.AutomationId="RemoveVariableButton"
+                            Command="{x:Bind ViewModel.TemplateVariables.RemoveSelectedCommand}" />
+                </StackPanel>
+                <tv:TableView Grid.Row="1"
+                              x:Uid="MainPage_VariablesTable"
+                              AutomationProperties.AutomationId="VariablesTable"
+                              ItemsSource="{x:Bind ViewModel.TemplateVariables.Items, Mode=OneWay}"
+                              SelectedItem="{x:Bind ViewModel.TemplateVariables.SelectedItem, Mode=TwoWay}"
+                              SelectionMode="Single"
+                              SelectionUnit="Row"
+                              AutoGenerateColumns="False"
+                              CanDragItems="False"
+                              CanFilterColumns="False"
+                              CanReorderColumns="False"
+                              CanSortColumns="False">
+                    <i:Interaction.Behaviors>
+                        <!-- TemplateColumn の編集要素はラッパー ContentControl にフォーカスされ内側 TextBox に入力できないため、
+                             編集開始時に TextBox へフォーカスを移す（Tab 移動先を含む） -->
+                        <lb:TableViewEditFocusBehavior />
+                    </i:Interaction.Behaviors>
+                    <tv:TableView.Columns>
+                        <!-- TextColumn の {Binding} はトリミング/AOT警告(WMC1510)となるため、
+                             TemplateColumn + x:Bind(コンパイル済みバインディング)で構成する -->
+                        <tv:TableViewTemplateColumn x:Uid="MainPage_KeyColumn" Width="200">
+                            <tv:TableViewTemplateColumn.CellTemplate>
+                                <DataTemplate x:DataType="vm:TemplateVariableViewModel">
+                                    <TextBlock Text="{x:Bind Key, Mode=OneWay}" VerticalAlignment="Center" />
+                                </DataTemplate>
+                            </tv:TableViewTemplateColumn.CellTemplate>
+                            <tv:TableViewTemplateColumn.EditingTemplate>
+                                <DataTemplate x:DataType="vm:TemplateVariableViewModel">
+                                    <TextBox AutomationProperties.AutomationId="VariableKeyEditor"
+                                             Text="{x:Bind Key, Mode=TwoWay}" />
+                                </DataTemplate>
+                            </tv:TableViewTemplateColumn.EditingTemplate>
+                        </tv:TableViewTemplateColumn>
+                        <tv:TableViewTemplateColumn x:Uid="MainPage_ValueColumn" Width="*">
+                            <tv:TableViewTemplateColumn.CellTemplate>
+                                <DataTemplate x:DataType="vm:TemplateVariableViewModel">
+                                    <TextBlock Text="{x:Bind Value, Mode=OneWay}" VerticalAlignment="Center" />
+                                </DataTemplate>
+                            </tv:TableViewTemplateColumn.CellTemplate>
+                            <tv:TableViewTemplateColumn.EditingTemplate>
+                                <DataTemplate x:DataType="vm:TemplateVariableViewModel">
+                                    <TextBox AutomationProperties.AutomationId="VariableValueEditor"
+                                             Text="{x:Bind Value, Mode=TwoWay}" />
+                                </DataTemplate>
+                            </tv:TableViewTemplateColumn.EditingTemplate>
+                        </tv:TableViewTemplateColumn>
+                        <!-- 永続化するかどうかは変数ごとの明示指定。既定はオフ（セッション限り）。
+                             CheckBox は編集モードに入らなくても直接押せるので EditingTemplate は要らない。 -->
+                        <tv:TableViewTemplateColumn x:Uid="MainPage_PersistColumn" Width="120">
+                            <tv:TableViewTemplateColumn.CellTemplate>
+                                <DataTemplate x:DataType="vm:TemplateVariableViewModel">
+                                    <CheckBox AutomationProperties.AutomationId="VariablePersistToggle"
+                                              IsChecked="{x:Bind IsPersistent, Mode=TwoWay}"
+                                              MinWidth="0" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                </DataTemplate>
+                            </tv:TableViewTemplateColumn.CellTemplate>
+                        </tv:TableViewTemplateColumn>
+                    </tv:TableView.Columns>
+                </tv:TableView>
+            </Grid>
+            <!-- Settings 画面: AppSettings を全面表示する -->
+            <lc:PropertyGridView x:Name="settingsPanel" Margin="5"
+                                 Visibility="{x:Bind ViewModel.IsSettingsSelected, Mode=OneWay}"
+                                 SelectedObject="{x:Bind vm:MainPageViewModel.Settings}" />
+        </Grid>
+    </NavigationView>
+</Page>
