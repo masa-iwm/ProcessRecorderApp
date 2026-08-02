@@ -4,8 +4,10 @@ using System;
 using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 using System.IO;
+using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.Json.Serialization.Metadata;
 using System.Threading;
 
 namespace ProcessRecorderApp.Settings;
@@ -15,8 +17,34 @@ public partial class AppSettings : JsonSettingsBase<AppSettings>
     // 保存先は AppEnvironment が解決する（テストは PROCESSRECORDERAPP_DATA_DIR で隔離する）
     private static readonly string FilePath = AppEnvironment.GetDataFilePath("settings.json");
 
+    /// <summary>
+    /// settings.json の読み書きに使う型情報。<b>人が開いて読み・手で直すファイル</b>なので、
+    /// 既定（1行・非 ASCII は <c>\uXXXX</c>）ではなくインデント付き・生の UTF-8 で書く。
+    ///
+    /// <para>
+    /// <b><c>[JsonSourceGenerationOptions]</c> では書けない。</b> 属性の引数はコンパイル時
+    /// 定数に限られ、<see cref="JavaScriptEncoder.UnsafeRelaxedJsonEscaping"/> はインスタンス
+    /// だからである。ソース生成器が出す <c>AppSettingsJsonContext(JsonSerializerOptions)</c> で
+    /// 組み立てるのが唯一の道で、<c>WriteIndented</c> だけ属性側へ分けたりはしない
+    /// （設定の定義元を2つにしない）。<b>Native AOT でも解決器はソース生成のままなので、
+    /// リフレクションのフォールバックには落ちない。</b>
+    /// </para>
+    /// <para>
+    /// <b><see cref="JsonSerializerDefaults.Web"/> を使ってはいけない。</b> キーが camelCase に
+    /// なり、既存の settings.json（PascalCase）が丸ごと読めなくなる。
+    /// </para>
+    /// </summary>
+    private static readonly JsonTypeInfo<AppSettings> SettingsTypeInfo =
+        new AppSettingsJsonContext(new JsonSerializerOptions
+        {
+            WriteIndented = true,
+            // 書き出し先は HTML ではなく設定ファイルなので、< > & ' を \uXXXX へ
+            // 逃がす必要が無い（「Unsafe」はその HTML 文脈での意味）。
+            Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+        }).AppSettings;
+
     private static readonly Lazy<AppSettings> _default = new(
-        () => LoadOrCreate(FilePath, AppSettingsJsonContext.Default.AppSettings, () => new()));
+        () => LoadOrCreate(FilePath, SettingsTypeInfo, () => new()));
 
     public static AppSettings Default => _default.Value;
 
@@ -476,22 +504,24 @@ public partial class AppSettings : JsonSettingsBase<AppSettings>
     /// settings.json を読み直して、このインスタンスの各プロパティへ反映する。
     ///
     /// <para>
-    /// <b>現時点で呼び出し元は無い（意図的に残している。消さないこと）。</b>
-    /// デッドコードとして削除するのではなく、「設定を破棄して読み直す」操作を
-    /// 将来 UI／CLI から生やすときの受け皿として保持する。
-    /// <b>だから「呼ばれていないから壊れていても構わない」とは扱わないこと。</b>
+    /// 呼び出し元は Settings 画面の「再読み込み」ボタン
+    /// （<c>MainPageViewModel.ReloadSettingsCommand</c>）。
+    /// <b>録画中・排出中は押せないようにしてある</b> ── 下の <see cref="Recorders"/> の
+    /// <c>Clear()</c> が動いているエンジンをその場で破棄し、UI スレッドが排出の完了まで
+    /// 固まるため（<c>GstControllerViewModel.IsIdleAll</c>）。
     /// </para>
     /// <para>
     /// <b>全プロパティを手書きでコピーしている</b>ので、プロパティを増やしたときに
-    /// 追記を忘れるとその値だけ黙って既定値へ戻る。呼び出し元が無い以上 L2 でも
-    /// 実行できないため、<c>tests/ProcessRecorderApp.Tests/AppSettingsReloadTests.cs</c> が
+    /// 追記を忘れるとその値だけ黙って既定値へ戻る。L3 からは実行できるが、
+    /// <b>どのプロパティが写ったかまでは外から見えない</b>ため、
+    /// <c>tests/ProcessRecorderApp.Tests/AppSettingsReloadTests.cs</c> が
     /// <b>ソースをテキストとして</b>突き合わせて追記漏れを検出する
     /// （実際に <see cref="ExtensionData"/> のコピー漏れが1件見つかっている）。
     /// </para>
     /// </summary>
     public void Reload()
     {
-        AppSettings loaded = LoadOrCreate(FilePath, AppSettingsJsonContext.Default.AppSettings, () => new());
+        AppSettings loaded = LoadOrCreate(FilePath, SettingsTypeInfo, () => new());
         IsFirstRun = loaded.IsFirstRun;
 
         WindowWidth = loaded.WindowWidth;
@@ -644,7 +674,7 @@ public partial class AppSettings : JsonSettingsBase<AppSettings>
                 TemplateVariables.Remove(key);   // 変数そのものが消された
         }
 
-        Save(FilePath, AppSettingsJsonContext.Default.AppSettings);
+        Save(FilePath, SettingsTypeInfo);
     }
 
     private System.Threading.Timer? _saveDebounce;

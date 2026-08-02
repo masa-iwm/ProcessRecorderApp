@@ -55,6 +55,51 @@ public sealed class PersistenceTests(PublishedApp app, ITestOutputHelper output)
     }
 
     /// <summary>
+    /// settings.json が<b>人の手で直せる書式</b>で書かれること
+    /// ── インデント付きで、非 ASCII を <c>\uXXXX</c> へ逃がさない。
+    ///
+    /// <para>
+    /// <b>L1 では確認できない。</b> 書式を決めている <c>AppSettingsJsonContext</c> は
+    /// <c>internal</c> で WinUI アプリプロジェクトにあり、L1 のテストプロジェクトは
+    /// それを参照していない（参照させると WinUI がテストホストに載る）。
+    /// 実際に書かれたファイルを見られるのはこの層だけ。
+    /// </para>
+    /// <para>
+    /// <b>AOT 発行物に対して流したときにこそ効く</b> ── 書式指定は
+    /// <c>JsonSerializerOptions</c> を渡してソース生成コンテキストを組み立てる形なので、
+    /// 「AOT でソース生成の解決器から外れる」種類の壊れ方をここで捕まえられる。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void Settings_AreWrittenInAHumanEditableShape()
+    {
+        var settings = new SettingsFile();
+        // 非 ASCII を含む値を種として置く（保存時にそのまま書き戻される）
+        settings.AddRecorder("録画テスト");
+
+        using var instance = AppInstance.Create(app, settings);
+
+        // 保存を実際に起こす。この変数はディスクに出るので「保存が走った」証拠にもなる。
+        Assert.Equal(0, instance.Run("--set", "Kept=on-disk").ExitCode);
+        Assert.Equal(0, instance.Run("--persist", "Kept").ExitCode);
+
+        Thread.Sleep(DebounceMargin);
+        instance.KillWorkers();
+
+        string saved = File.ReadAllText(instance.SettingsPath);
+        output.WriteLine(saved);
+
+        // 保存が実際に走ったことの証拠（これが無いと以下は「初期ファイルを見ただけ」になる）
+        Assert.Contains("on-disk", saved, StringComparison.Ordinal);
+
+        Assert.Contains("録画テスト", saved, StringComparison.Ordinal);
+        Assert.DoesNotContain("\\u9332", saved, StringComparison.Ordinal);
+
+        // 改行はハードコードしない（Utf8JsonWriter の改行はプラットフォーム既定になりうる）
+        Assert.Contains("\n  \"", saved.Replace("\r\n", "\n"), StringComparison.Ordinal);
+    }
+
+    /// <summary>
     /// <c>--set</c> しただけの変数はディスクに出ないこと（セッション限り）。
     ///
     /// <para>

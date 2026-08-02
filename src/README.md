@@ -1074,6 +1074,13 @@ GUIサブシステム（`OutputType=WinExe`）だと、**対話コマンドプ�
   `RecordingCleanupIntervalHours`）、テンプレート変数（`TemplateVariables`）、
   UIA トリガ（`UiaTriggers` / `UiaTriggerAssignments` / `UiaTriggersEnabled`）等）。
 
+  **書式は「人が開いて手で直せること」を優先している** ── インデント付き・非 ASCII を
+  `\uXXXX` へ逃がさない・UTF-8（BOM 無し）。指定は `AppSettings.SettingsTypeInfo` の
+  1 か所（`Encoder` は属性では書けないのでコンテキストをインスタンス生成している）。
+  裏返しの制約として、**手で直した後に ANSI／Shift-JIS で保存すると壊れた JSON になり**、
+  `JsonSettingsBase.LoadOrCreate` がそれを黙って既定値へフォールバックする
+  （＝全設定が初期化されたように見える）。編集は UTF-8 のまま保存すること。
+
   保存契機は3つ: **ウィンドウ破棄時・トレイ格納時・変更から約1秒のデバウンス**
   （`AttachAutoSave`。`AppSettings.PropertyChanged` / `Recorders.CollectionChanged` /
   `EventRecorder.TemplateVariablesChanged` が契機）。

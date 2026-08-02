@@ -264,7 +264,9 @@ public sealed class SettingsFile
             recorders.Add(recorder.ToJson(recordingsDir));
         root["Recorders"] = recorders;
 
-        // 製品側の設定は System.Text.Json の既定（UTF-8・PascalCase）で読み書きされる。
+        // 製品側の設定は UTF-8（BOM 無し）・PascalCase・インデント付きで読み書きされる
+        // （AppSettings.SettingsTypeInfo。非 ASCII は \uXXXX へ逃がさない）。
+        // ここは読ませる側なので書式は問われない ── 揃えてあるのは差分を読みやすくするため。
         File.WriteAllText(path, root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }), new UTF8Encoding(false));
     }
 }
