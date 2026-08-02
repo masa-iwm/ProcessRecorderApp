@@ -86,6 +86,9 @@
   <data name="MainPage_VarRemove.Content" xml:space="preserve">
     <value>Remove</value>
   </data>
+  <data name="MainPage_ReloadSettings.Content" xml:space="preserve">
+    <value>Reload</value>
+  </data>
   <data name="MainPage_KeyColumn.Header" xml:space="preserve">
     <value>Key</value>
   </data>
@@ -140,6 +143,15 @@
   </data>
   <data name="Common_Cancel" xml:space="preserve">
     <value>Cancel</value>
+  </data>
+  <data name="Common_Reload" xml:space="preserve">
+    <value>Reload</value>
+  </data>
+  <data name="Dialog_ReloadSettings_Title" xml:space="preserve">
+    <value>Reload settings.json</value>
+  </data>
+  <data name="Dialog_ReloadSettings_Content" xml:space="preserve">
+    <value>Changes that have not been written yet, and template variables that are not marked to persist, will be discarded.</value>
   </data>
 
   <!-- ActivationCommands.cs / SingleInstanceManager.Launcher.cs: CLI -->

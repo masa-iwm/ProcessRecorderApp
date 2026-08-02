@@ -48,6 +48,11 @@ public sealed partial class MainPage : Page
         settingsPanel.ChoiceProvider = ProvideChoices;
         // トリガ一覧エディタ（View の責務）を設定画面の「…」ボタンへ接続する
         settingsPanel.ValueBuilder = BuildSettingsValueAsync;
+        // 設定の再読み込み: 確認ダイアログ（View の責務）と、読み直した後の作り直し。
+        // 選択肢はレコーダー名を項目生成時に焼き込むので、作り直さないと古い名前が残る
+        // （トリガ一覧の編集後に同じことをしている。BuildSettingsValueAsync 参照）。
+        ViewModel.ConfirmSettingsReloadAsync = ConfirmSettingsReloadAsync;
+        ViewModel.SettingsReloaded = () => settingsPanel.ChoiceProvider = ProvideChoices;
         Bindings.Update();
 
         // プレビュー用パイプライン（d3d12swapchainsink）を初期化し、生成されたコンポジション
@@ -123,7 +128,11 @@ public sealed partial class MainPage : Page
         // 外さないと死んだページと XamlRoot が永久に参照され、後から CLI／トレイ経由で
         // 削除コマンドが走ったときに破棄済みビジュアルツリー上で ContentDialog を出そうとする。
         if (ViewModel is not null)
+        {
             ViewModel.GstController.ConfirmRecorderRemovalAsync = null;
+            ViewModel.ConfirmSettingsReloadAsync = null;
+            ViewModel.SettingsReloaded = null;
+        }
         recorderPropertyGrid.ValueBuilder = null;
         settingsPanel.ValueBuilder = null;
 
@@ -330,6 +339,25 @@ public sealed partial class MainPage : Page
             Title = Localization.GetString("Resources/Dialog_RemoveRecorder_Title"),
             Content = Localization.GetString("Resources/Dialog_RemoveRecorder_Content", recorder.Name),
             PrimaryButtonText = Localization.GetString("Resources/Common_Remove"),
+            CloseButtonText = Localization.GetString("Resources/Common_Cancel"),
+            DefaultButton = ContentDialogButton.Close,
+        };
+        return await dialog.ShowAsync() == ContentDialogResult.Primary;
+    }
+
+    /// <summary>
+    /// settings.json 再読み込み前の確認ダイアログ（ReloadSettingsCommand から呼ばれる）。
+    /// <b>「戻せない」ことを伝えるためのダイアログ</b> ── 読み直しは、まだ書き出されていない
+    /// 変更と、<c>--persist</c> していないセッション限りのテンプレート変数を捨てる。
+    /// </summary>
+    private async Task<bool> ConfirmSettingsReloadAsync()
+    {
+        ContentDialog dialog = new()
+        {
+            XamlRoot = this.XamlRoot,
+            Title = Localization.GetString("Resources/Dialog_ReloadSettings_Title"),
+            Content = Localization.GetString("Resources/Dialog_ReloadSettings_Content"),
+            PrimaryButtonText = Localization.GetString("Resources/Common_Reload"),
             CloseButtonText = Localization.GetString("Resources/Common_Cancel"),
             DefaultButton = ContentDialogButton.Close,
         };

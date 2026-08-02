@@ -333,10 +333,22 @@ public partial class RecorderNavViewBehavior : BehaviorBase<NavigationView>
         }
     }
 
-    /// <summary>VM 側の選択変更（自動先頭選択、追加/削除後の選択移動）を NavigationView に反映する。</summary>
+    /// <summary>
+    /// VM 側の選択変更（自動先頭選択、追加/削除後の選択移動）を NavigationView に反映する。
+    ///
+    /// <para>
+    /// <b>Settings 画面を見ているあいだは選択を横取りしない。</b> レコーダーの増減は
+    /// VM 発の選択移動を起こし、それで <c>SelectedItem</c> を動かすと
+    /// <see cref="NavView_SelectionChanged"/> 経由で画面が Preview へ飛ぶ
+    /// ── 設定の再読み込みは<b>レコーダーを総入れ替えする</b>ので、
+    /// Settings のボタンを押した直後に画面が変わることになる（CLI からの追加でも同じ）。
+    /// この間はナビの強調表示だけが選択中のレコーダーと合わなくなるが、
+    /// 利用者が次にレコーダーを選んだ時点で揃う。
+    /// </para>
+    /// </summary>
     private void ApplySelectedRecorder()
     {
-        if (AssociatedObject is null)
+        if (AssociatedObject is null || SelectedSection == MainSection.Settings)
             return;
         var navItem = FindRecorderNavItem(SelectedRecorder);
         if (!ReferenceEquals(AssociatedObject.SelectedItem, navItem))

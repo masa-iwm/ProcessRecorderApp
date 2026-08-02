@@ -58,7 +58,7 @@ The menu along the top of the window switches between these screens.
 | **Preview** | Live preview and settings per recorder (video source, buffer length, filename template, and so on). You edit the properties on the left and the video appears on the right. Recorders are added and removed here too. |
 | **Log** | Shows the app's internal activity log. |
 | **Variables** | Lists and edits the variables (key and value) used by filename templates. |
-| **Settings** | Application-wide settings such as the window size. This is also where UIA triggers are created and edited (the "..." button opens the editor and the picker) and where each trigger's recording action (none / start / stop / record while matching) and target recorder are assigned. |
+| **Settings** | Application-wide settings such as the window size. This is also where UIA triggers are created and edited (the "..." button opens the editor and the picker) and where each trigger's recording action (none / start / stop / record while matching) and target recorder are assigned. The **Reload** button at the top right re-reads `settings.json` from disk, for when you have edited the file by hand. It is disabled while any recorder is recording or still writing out a file. |
 
 At the bottom of the window, below the menu, there are also **buttons that start and stop every
 recorder at once**. Individual recorders are started and stopped from their own controls on the

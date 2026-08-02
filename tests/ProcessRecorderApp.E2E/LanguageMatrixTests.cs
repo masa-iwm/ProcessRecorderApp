@@ -82,6 +82,9 @@ public sealed class LanguageMatrixTests(PublishedApp app, ITestOutputHelper outp
         // 見ないので、画面まで届いていることを見るのはここだけ。
         // 見出しには AutomationId が無いので、可視の Name を集めて照合する。
         ui.SwitchTo(UiSection.Settings);
+        // 設定画面で唯一 AutomationId を持つ文言（他は PropertyGrid の行と見出し）。
+        AssertLocalizedName(ui, expectedLocale, "ReloadSettingsButton", "MainPage_ReloadSettings.Content");
+
         string expectedCategory = UiResources.Get(expectedLocale, "PropCat_Debug");
         var texts = ui.VisibleTexts();
         Assert.True(

@@ -383,6 +383,15 @@ Windows App SDK 側の `Microsoft.Windows.Storage.Pickers` を使う** ── �
     Windows Terminal Campbell 配色、Consolas フォント）。
   - Variables 画面: `WinUI.TableView` による Key/Value グリッド（`TemplateVariablesViewModel.cs`）。
   - Settings 画面: `PropertyGridView` で `Settings/AppSettings.Default` を編集。
+    右上の「再読み込み」ボタン（`MainPageViewModel.ReloadSettingsCommand`）が
+    `AppSettings.Reload()` を呼ぶ ── 手で settings.json を直したときの反映口。
+    **録画中・排出中は無効**（`GstControllerViewModel.IsIdleAll`。レコーダーを
+    丸ごと作り直すため）で、押すと確認ダイアログが出る。
+    再読み込みで反映されないものが3つある: `GstDebug` / `GstDebugDumpDotDir`
+    （`ApplyStartupEnvironmentVariables` が「環境変数が未設定のときだけ」設定するので
+    プロセスの再起動が要る）、ウィンドウサイズとプロパティペインの折りたたみ状態
+    （起動時に1回だけ読む）、そして**保存の指定をしていないテンプレート変数は消える**
+    （`OnLoaded()` が実行時ストアを作り直すため。確認ダイアログの本文がこれを指す）。
 - **ViewModel**: `ViewModels/GstControllerViewModel.cs`（`static Current` を保持。全レコーダーの
   一括開始/終了、CLI コマンドからも参照される）、`GstEventRecorderViewModel.cs`
   （レコーダー単位、`CanStartRecording`/`CanStopRecording` などの実行可否ガード）、
@@ -1341,6 +1350,7 @@ UIA テストは要素を `AutomationProperties.Name` で探すと壊れる ─�
 | プロパティペイン開閉／レコーダー削除 | `TogglePaneButton` / `RemoveRecorderButton` |
 | Log 画面の自動スクロール／クリア | `AutoScrollToggle` / `ClearLogButton` |
 | Variables 画面の追加／削除／表 | `AddVariableButton` / `RemoveVariableButton` / `VariablesTable` |
+| Settings 画面の再読み込み | `ReloadSettingsButton` |
 | Variables 表の編集用テキストボックス | `VariableKeyEditor` / `VariableValueEditor` |
 | ナビの「Add recorder」項目 | `AddRecorderNavItem` |
 | **PropertyGrid の各行の値エディタ** | **元の CLR プロパティ名**（`FilenameTemplate` / `BufferDuration` など。`PropertyGridItem.PropertyName`） |

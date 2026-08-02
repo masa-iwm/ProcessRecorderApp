@@ -90,6 +90,10 @@ namespace ProcessRecorderApp.ViewModels
                         UnsubscribeAllRecorders();
                         break;
                 }
+
+                // レコーダーが増減すれば「1台も動いていないか」も変わりうる
+                // （録画中の1台を消した直後など）。個々の状態変化だけでは追えない。
+                OnPropertyChanged(nameof(IsIdleAll));
             };
             SelectedRecorder = Recorders[Model.SelectedRecorder];
             Model.PropertyChanged += Model_PropertyChanged;
@@ -138,10 +142,16 @@ namespace ProcessRecorderApp.ViewModels
             {
                 case nameof(GstEventRecorderViewModel.CanStartRecording): StartRecordingAllCommand.NotifyCanExecuteChanged(); break;
                 case nameof(GstEventRecorderViewModel.CanStopRecording): StopRecordingAllCommand.NotifyCanExecuteChanged(); break;
-                case nameof(GstEventRecorderViewModel.IsRecording): OnPropertyChanged(nameof(IsRecordingAll)); break;
+                case nameof(GstEventRecorderViewModel.IsRecording):
+                    OnPropertyChanged(nameof(IsRecordingAll));
+                    OnPropertyChanged(nameof(IsIdleAll));
+                    break;
                 // 排出が終わるまで CanStartRecording は false のままなので、
                 // 「すべて録画開始」も戻せない。IsStopping の変化でも問い直す。
-                case nameof(GstEventRecorderViewModel.IsStopping): StartRecordingAllCommand.NotifyCanExecuteChanged(); break;
+                case nameof(GstEventRecorderViewModel.IsStopping):
+                    StartRecordingAllCommand.NotifyCanExecuteChanged();
+                    OnPropertyChanged(nameof(IsIdleAll));
+                    break;
             }
         }
 
@@ -357,6 +367,26 @@ namespace ProcessRecorderApp.ViewModels
 
         /// <summary>いずれかのRecorderが録画中か（録画中インジケータ表示用）。</summary>
         public bool IsRecordingAll => Recorders.Any(r => r.IsRecording);
+
+        /// <summary>
+        /// どのレコーダーも録画中でも排出中でもないか。
+        /// <b>レコーダーを丸ごと作り直すような破壊的操作の可否</b>に使う
+        /// （設定の再読み込みなど）。
+        ///
+        /// <para>
+        /// <b><see cref="IsRecordingAll"/> の否定では足りない。</b> 停止を受け付けた時点で
+        /// <c>IsRecording</c> は同期的に false になるが、その後の排出
+        /// （<c>IsStopping</c>）が終わるまでパイプラインは生きている
+        /// ── そこで破棄すると、停止直後という一番踏みやすい瞬間に
+        /// UI スレッドが <c>StopFinalizeTimeoutMs</c> だけ固まる。
+        /// </para>
+        /// <para>
+        /// <b><c>CanStartRecording</c> の否定も使わない。</b> あちらは
+        /// <c>IsInitialized</c> を含むので、初期化に失敗したレコーダーが1台でも居ると
+        /// 「永久に動いている」ことになってしまう。
+        /// </para>
+        /// </summary>
+        public bool IsIdleAll => !Recorders.Any(r => r.IsRecording || r.IsStopping);
 
 
         private bool disposedValue;

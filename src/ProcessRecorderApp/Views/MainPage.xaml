@@ -288,10 +288,19 @@
                     </tv:TableView.Columns>
                 </tv:TableView>
             </Grid>
-            <!-- Settings 画面: AppSettings を全面表示する -->
-            <lc:PropertyGridView x:Name="settingsPanel" Margin="5"
-                                 Visibility="{x:Bind ViewModel.IsSettingsSelected, Mode=OneWay}"
-                                 SelectedObject="{x:Bind vm:MainPageViewModel.Settings}" />
+            <!-- Settings 画面: AppSettings を全面表示する。
+                 再読み込みボタンの有効/無効は Command の CanExecute が決める
+                 ── ButtonBase は Command を持つと CanExecuteChanged のたびに IsEnabled を
+                 自分で設定し直すので、IsEnabled を x:Bind で書いても上書きされて効かない。 -->
+            <Grid Margin="5" RowDefinitions="Auto,*" RowSpacing="5"
+                  Visibility="{x:Bind ViewModel.IsSettingsSelected, Mode=OneWay}">
+                <StackPanel Orientation="Horizontal" Spacing="5" HorizontalAlignment="Right">
+                    <Button x:Uid="MainPage_ReloadSettings" AutomationProperties.AutomationId="ReloadSettingsButton"
+                            Command="{x:Bind ViewModel.ReloadSettingsCommand}" />
+                </StackPanel>
+                <lc:PropertyGridView x:Name="settingsPanel" Grid.Row="1"
+                                     SelectedObject="{x:Bind vm:MainPageViewModel.Settings}" />
+            </Grid>
         </Grid>
     </NavigationView>
 </Page>
