@@ -56,12 +56,12 @@ jobs:
 
     steps:
       - name: Check out
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 1
 
       - name: Set up .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v6
         with:
           dotnet-version: '10.0.x'
 
@@ -182,11 +182,15 @@ jobs:
           $dir = 'src/ProcessRecorderApp/bin/Release/win-x64/publish/bundled'
           Compress-Archive -Path "$dir/*" -DestinationPath "artifacts/ProcessRecorderApp-$env:PKG_REF-win-x64-gstreamer.zip"
 
+      # ここだけ ignore ではなく error にする。診断の収集と違って、
+      # **配布する zip が 1 つも無いのは異常**であり、既定の warn では
+      # 「緑のまま中身が空の Release」を作ってしまう。
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: packages
           path: artifacts/*.zip
+          if-no-files-found: error
 
       - name: Attach to the release
         if: startsWith(github.ref, 'refs/tags/v')
@@ -196,7 +200,7 @@ jobs:
 
       - name: Upload smoke diagnostics
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-smoke-diagnostics
           path: |

@@ -82,14 +82,14 @@ jobs:
 
     steps:
       - name: Check out
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           # 履歴は使わないので浅く取る（pack は 1MB 未満なので実利は小さいが、
           # 取る理由が無いものは取らない）。
           fetch-depth: 1
 
       - name: Set up .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v6
         with:
           dotnet-version: '10.0.x'
 
@@ -276,7 +276,7 @@ jobs:
 
       - name: Upload test results
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: test-results
           path: '**/TestResults/*.trx'
@@ -290,7 +290,7 @@ jobs:
       # 生成された MP4 は数十MBになるので含めない。
       - name: Upload E2E diagnostics
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-diagnostics
           path: |
@@ -315,7 +315,7 @@ jobs:
       # **「ARMED かつダンプ0件」＝クラッシュ無しが成果物だけで判定できる。**
       - name: Upload crash dumps
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: crash-dumps
           # wer-status.log も一緒に上げる。**「ダンプが無い」は、
@@ -332,7 +332,7 @@ jobs:
       # **ランナーのビルドと一致する PDB はそのランナーの上にしか無い。**
       - name: Upload crash symbols
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: crash-symbols
           path: |
@@ -354,12 +354,12 @@ jobs:
 
     steps:
       - name: Check out
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 1
 
       - name: Set up .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v6
         with:
           dotnet-version: '10.0.x'
 
@@ -485,7 +485,7 @@ jobs:
 
       - name: Upload AOT E2E diagnostics
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-aot-diagnostics
           path: |
@@ -500,7 +500,7 @@ jobs:
       # パターンは残す ── **出ないことも観測のうち。**
       - name: Upload AOT crash dumps
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: crash-dumps-aot
           path: |
@@ -510,7 +510,7 @@ jobs:
 
       - name: Upload AOT crash symbols
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: crash-symbols-aot
           path: |
