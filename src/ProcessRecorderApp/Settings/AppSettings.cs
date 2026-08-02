@@ -115,6 +115,19 @@ public partial class AppSettings : JsonSettingsBase<AppSettings>
     public partial string DebugLogFile { get; set; } = "";
 
     /// <summary>
+    /// Log 画面が保持する行数の上限。超えた分は古い側から破棄し、
+    /// <b>破棄した行数は画面へ明示する</b>（無言で消さない）。
+    /// 値の丸めは <see cref="Components.LogBuffer.MaxLines"/> 側で行う
+    /// ── setter で丸めると <c>[ObservableProperty]</c> の再入になる。
+    /// </summary>
+    [System.ComponentModel.Category("PropCat_Debug")]
+    [System.ComponentModel.Description("PropDesc_LogScrollbackLines")]
+    [ObservableProperty]
+    public partial int LogScrollbackLines { get; set; } = Components.LogBuffer.DefaultMaxLines;
+    partial void OnLogScrollbackLinesChanged(int value)
+        => Components.LogBuffer.Shared.MaxLines = value;
+
+    /// <summary>
     /// 優先する H.264 エンコーダーの要素ファクトリ名（空欄なら実機に存在するものから自動選択）。
     /// 指定した要素が実機に存在しない場合は、黙って自動選択へフォールバックする
     /// （設定ミスで録画が一切できなくなる方が有害なため）。
@@ -533,6 +546,7 @@ public partial class AppSettings : JsonSettingsBase<AppSettings>
         GstDebug = loaded.GstDebug;
         GstDebugDumpDotDir = loaded.GstDebugDumpDotDir;
         DebugLogFile = loaded.DebugLogFile;
+        LogScrollbackLines = loaded.LogScrollbackLines;
         PreferredH264Encoder = loaded.PreferredH264Encoder;
         StopFinalizeTimeoutMs = loaded.StopFinalizeTimeoutMs;
         OutputDirectory = loaded.OutputDirectory;
@@ -582,6 +596,7 @@ public partial class AppSettings : JsonSettingsBase<AppSettings>
         GStreamer.EventRecorder.PreferredH264Encoder = PreferredH264Encoder;
         GStreamer.EventRecorder.StopFinalizeTimeoutMs = StopFinalizeTimeoutMs;
         GStreamer.EventRecorder.OutputDirectory = Components.AppDirectories.ResolveOrBase(OutputDirectory);
+        Components.LogBuffer.Shared.MaxLines = LogScrollbackLines;
 
         // テンプレート変数を実行時ストアへ復元する。
         // **SetTemplateVariable は使わない** ── TemplateVariablesChanged が飛んで

@@ -10,3 +10,9 @@
 # 表示上の都合で書き換えてよいものではない。台帳の .tsv も同じ扱いにして、
 # 「この配下は一切変換しない」という1つの規則で済ませる。
 licenses/third-party/** -text
+
+# 同梱している xterm.js（Log 画面のターミナル表示）も上流の配布物そのもの。
+# 改行を書き換えると SHA256（Assets/Terminal/SOURCES.md）の照合が通らなくなり、
+# 上と同じ「手元は緑・CI だけ赤」になる。自作の index.html / terminal.js は
+# この配下に置かないので、フォルダー単位の1規則で済む。
+src/ProcessRecorderApp/Assets/Terminal/vendor/** -text

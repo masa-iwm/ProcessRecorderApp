@@ -70,6 +70,9 @@
   <data name="MainPage_LogList.[using:Microsoft.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve">
     <value>Log</value>
   </data>
+  <data name="MainPage_LogTerminal.[using:Microsoft.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve">
+    <value>Log terminal</value>
+  </data>
   <data name="MainPage_VariablesTable.[using:Microsoft.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve">
     <value>Variables</value>
   </data>
@@ -79,6 +82,15 @@
   </data>
   <data name="MainPage_Clear.Content" xml:space="preserve">
     <value>Clear</value>
+  </data>
+  <data name="MainPage_CopyAllLog.Content" xml:space="preserve">
+    <value>Copy All</value>
+  </data>
+  <data name="MainPage_TerminalUnavailable.Text" xml:space="preserve">
+    <value>The WebView2 Runtime is not available, so the log is shown in the simple list view.</value>
+  </data>
+  <data name="Log_LinesDropped" xml:space="preserve">
+    <value>-- {0} older lines were dropped --</value>
   </data>
   <data name="MainPage_VarAdd.Content" xml:space="preserve">
     <value>Add</value>
@@ -292,6 +304,9 @@
   </data>
   <data name="PropDesc_DebugLogFile" xml:space="preserve">
     <value>File path to save debug log output. Applied immediately on change. Leave empty to disable saving.</value>
+  </data>
+  <data name="PropDesc_LogScrollbackLines" xml:space="preserve">
+    <value>Maximum number of lines kept in the Log screen. Older lines are discarded and the discarded count is reported in the log.</value>
   </data>
   <data name="PropDesc_Rec_Name" xml:space="preserve">
     <value>Display name of the recorder.</value>

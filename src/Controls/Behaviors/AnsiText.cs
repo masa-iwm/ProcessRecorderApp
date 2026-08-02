@@ -25,31 +25,25 @@ namespace ProcessRecorderApp.Behaviors
     {
         private AnsiText() { }
 
-        /// <summary>Windows Terminal 既定（Campbell スキーム）の 16 色パレット</summary>
-        private static readonly Color[] Palette =
-        [
-            Color.FromArgb(0xFF, 0x0C, 0x0C, 0x0C), // 0: Black
-            Color.FromArgb(0xFF, 0xC5, 0x0F, 0x1F), // 1: Red
-            Color.FromArgb(0xFF, 0x13, 0xA1, 0x0E), // 2: Green
-            Color.FromArgb(0xFF, 0xC1, 0x9C, 0x00), // 3: Yellow
-            Color.FromArgb(0xFF, 0x00, 0x37, 0xDA), // 4: Blue
-            Color.FromArgb(0xFF, 0x88, 0x17, 0x98), // 5: Magenta
-            Color.FromArgb(0xFF, 0x3A, 0x96, 0xDD), // 6: Cyan
-            Color.FromArgb(0xFF, 0xCC, 0xCC, 0xCC), // 7: White
-            Color.FromArgb(0xFF, 0x76, 0x76, 0x76), // 8: Bright Black
-            Color.FromArgb(0xFF, 0xE7, 0x48, 0x56), // 9: Bright Red
-            Color.FromArgb(0xFF, 0x16, 0xC6, 0x0C), // 10: Bright Green
-            Color.FromArgb(0xFF, 0xF9, 0xF1, 0xA5), // 11: Bright Yellow
-            Color.FromArgb(0xFF, 0x3B, 0x78, 0xFF), // 12: Bright Blue
-            Color.FromArgb(0xFF, 0xB4, 0x00, 0x9E), // 13: Bright Magenta
-            Color.FromArgb(0xFF, 0x61, 0xD6, 0xD6), // 14: Bright Cyan
-            Color.FromArgb(0xFF, 0xF2, 0xF2, 0xF2), // 15: Bright White
-        ];
+        /// <summary>
+        /// Windows Terminal 既定（Campbell スキーム）の 16 色パレット。
+        /// 色そのものは <see cref="CampbellPalette"/> が正本 ──
+        /// ログの表示経路は端末（xterm.js）とこの ListView の 2 つあり、
+        /// 色を両方に書くと片方だけ直して見た目が食い違う
+        /// </summary>
+        private static readonly Color[] Palette = [.. CampbellPalette.Colors.Select(ParseHexColor)];
 
         /// <summary>Campbell スキームの既定前景色（#CCCCCC）</summary>
-        private static readonly Color DefaultForeground = Palette[7];
+        private static readonly Color DefaultForeground = ParseHexColor(CampbellPalette.DefaultForeground);
         /// <summary>Campbell スキームの既定背景色（#0C0C0C）</summary>
-        private static readonly Color DefaultBackground = Palette[0];
+        private static readonly Color DefaultBackground = ParseHexColor(CampbellPalette.DefaultBackground);
+
+        /// <summary>"#RRGGBB" を不透明の <see cref="Color"/> にする</summary>
+        private static Color ParseHexColor(string hex) => Color.FromArgb(
+            0xFF,
+            Convert.ToByte(hex.Substring(1, 2), 16),
+            Convert.ToByte(hex.Substring(3, 2), 16),
+            Convert.ToByte(hex.Substring(5, 2), 16));
 
         // Brush はイミュータブルに使うため色ごとにキャッシュする（UIスレッドからのみ参照）
         private static readonly Dictionary<Color, SolidColorBrush> BrushCache = [];

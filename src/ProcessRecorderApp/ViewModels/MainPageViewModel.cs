@@ -17,8 +17,6 @@ namespace ProcessRecorderApp.ViewModels;
 /// </summary>
 public partial class MainPageViewModel : ObservableObject, IDisposable
 {
-    private readonly DispatcherQueue _dispatcherQueue;
-
     /// <summary>
     /// プライマリコンストラクタにしていないのは、<see cref="GstController"/> の
     /// <c>PropertyChanged</c> を購読する場所が要るため
@@ -26,7 +24,6 @@ public partial class MainPageViewModel : ObservableObject, IDisposable
     /// </summary>
     public MainPageViewModel(DispatcherQueue dispatcherQueue, GstControllerViewModel gstController)
     {
-        _dispatcherQueue = dispatcherQueue;
         GstController = gstController;
         TemplateVariables = new(dispatcherQueue);
         GstController.PropertyChanged += GstController_PropertyChanged;
@@ -78,21 +75,26 @@ public partial class MainPageViewModel : ObservableObject, IDisposable
     [RelayCommand]
     private void TogglePropertyPane() => IsPropertyPaneCollapsed = !IsPropertyPaneCollapsed;
 
-    public DispatcherCollection<string> LogItems
-    {
-        get
-        {
-            _logItems ??= new DispatcherCollection<string>(Program.LogItems, _dispatcherQueue);
-            return _logItems;
-        }
-    }
-    private static DispatcherCollection<string>? _logItems;
+    /// <summary>
+    /// Log 画面の最下部追従。<b>表示経路が 2 つある（端末とリスト）ので、状態はここが持つ</b>
+    /// ── どちらか一方に持たせると、切り替えたときにトグルの表示と実際がずれる
+    /// </summary>
+    [ObservableProperty]
+    public partial bool IsLogFollowEnabled { get; set; } = true;
 
+    /// <summary>
+    /// WebView2 を諦めてリスト表示に落ちた。<see cref="LogTerminalView.FallbackActivated"/> で立つ。
+    /// 立つと Log 画面が注記と <c>ListView</c> を出し、<c>ListViewCopyBehavior</c> の Ctrl+C も戻る
+    /// </summary>
+    [ObservableProperty]
+    public partial bool IsLogFallbackActive { get; set; }
 
     [RelayCommand]
     public static void ClearLog()
     {
-        Program.LogItems.Clear();
+        // 消えたことは世代番号で表示側へ伝わる（別経路で「消せ」を送ると
+        // 直後の書き込みを追い越して新しい行まで消しかねない）
+        LogBuffer.Shared.Clear();
     }
 
     /// <summary>
@@ -144,11 +146,6 @@ public partial class MainPageViewModel : ObservableObject, IDisposable
                 // 自分が初期化したプレビュー面だけを閉じる。
                 GstController.ShutdownPreview();
                 TemplateVariables.Dispose();
-                // static キャッシュなので null 化まで行う。破棄済みのまま残すと、
-                // ページが再生成されたときに Program.LogItems をミラーしない
-                // 死んだコレクションを Log 画面へ返してしまう。
-                _logItems?.Dispose();
-                _logItems = null;
             }
 
             disposedValue = true;

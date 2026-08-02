@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<!-- 埋め込み専用のページ。外部へは一切出ない（C# 側が自ホスト以外の遷移を拒否する） -->
+<meta name="color-scheme" content="dark">
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:">
+<link rel="stylesheet" href="vendor/xterm.css">
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #0C0C0C; }
+  #term { position: absolute; inset: 0; }
+  /* ドラッグ＆ドロップでファイルを開かせない（表示専用のため） */
+  * { -webkit-user-drag: none; }
+</style>
+</head>
+<body>
+<div id="term"></div>
+<!-- UMD。読み込み順は固定: コア → アドオン → 自作のブリッジ -->
+<script src="vendor/xterm.js"></script>
+<script src="vendor/addon-fit.js"></script>
+<script src="vendor/addon-webgl.js"></script>
+<script src="terminal.js"></script>
+</body>
+</html>

@@ -21,6 +21,26 @@ namespace ProcessRecorderApp.Behaviors
         private bool _dragMoved = false;                                     // 押下後にアンカー行以外へドラッグしたか
         private KeyboardAccelerator? _copyAccelerator;                       // Ctrl+C のコピー用アクセラレータ
 
+        /// <summary>
+        /// この ListView のコピーを有効にするか。既定は true（従来の利用者の挙動は変わらない）。
+        ///
+        /// <para>
+        /// <b><see cref="KeyboardAccelerator"/> は <c>ScopeOwner</c> を持たない＝ウィンドウ全域に効く。</b>
+        /// Log 画面が WebView2 の端末を表示しているあいだにこれが有効だと、
+        /// 端末側の選択コピー（Ctrl+C）を横取りして <c>Handled</c> にしてしまう
+        /// ── 利用者からは「選択したのにコピーされない」ようにしか見えない。
+        /// リスト表示へフォールバックしているときだけ true にすること。
+        /// </para>
+        /// </summary>
+        public static readonly DependencyProperty IsActiveProperty =
+            DependencyProperty.Register(nameof(IsActive), typeof(bool),
+                typeof(ListViewCopyBehavior), new PropertyMetadata(true));
+
+        public bool IsActive
+        {
+            get => (bool)GetValue(IsActiveProperty);
+            set => SetValue(IsActiveProperty, value);
+        }
 
         protected override bool Initialize()
         {
@@ -233,8 +253,11 @@ namespace ProcessRecorderApp.Behaviors
 
         private void CopyAccelerator_Invoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
         {
-            // Log タブ非表示中は処理せず、他のコントロールの Ctrl+C を妨げない
-            if (AssociatedObject == null || !AssociatedObject.IsLoaded) return;
+            // Log タブ非表示中は処理せず、他のコントロールの Ctrl+C を妨げない。
+            // IsActive が false のあいだも Handled を立てずに素通しする
+            // ── アクセラレータはウィンドウ全域に効くので、
+            //    端末（WebView2）表示中に握ると向こうの選択コピーが死ぬ
+            if (AssociatedObject == null || !AssociatedObject.IsLoaded || !IsActive) return;
 
             args.Handled = true;
             CopySelectedItems();

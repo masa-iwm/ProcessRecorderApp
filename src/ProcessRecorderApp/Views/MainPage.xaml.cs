@@ -63,6 +63,10 @@ public sealed partial class MainPage : Page
         // 生成され次第バインドできるよう、成功するまで毎フレーム再試行する。
         ViewModel.GstController.InitializePreview();
         swapChainPanel.SwapChainSizeRequested += SwapChainPanel_SwapChainSizeRequested;
+
+        // Log 画面のターミナル。初期化も排出も IsActive（＝Log 画面の表示）が駆動するので、
+        // ここでは「使えなかったとき」の受け口だけ張る
+        logTerminal.FallbackActivated += LogTerminal_FallbackActivated;
         _swapChainBindAttempts = 0;
         if (!TryBindSwapChain())
             Microsoft.UI.Xaml.Media.CompositionTarget.Rendering += OnRenderingBindSwapChain;
@@ -119,6 +123,20 @@ public sealed partial class MainPage : Page
 
     private void MainPage_Unloaded(object sender, RoutedEventArgs e)
     {
+        // ブラウザープロセスをページと一緒に畳む（開き直しても積み上がらないこと）。
+        // プロセス寿命の LogBuffer にページ寿命のデリゲートを残さないのは、
+        // プレビュー面の SwapChainHandle = 0 と同じ理由
+        logTerminal.FallbackActivated -= LogTerminal_FallbackActivated;
+        if (ViewModel is not null)
+            ViewModel.PropertyChanged -= LogFollow_ViewModelPropertyChanged;
+        if (_autoScrollCallbackToken != -1)
+        {
+            logListView.UnregisterPropertyChangedCallback(
+                Behaviors.AutoScrollToBottomBehavior.IsAutoScrollEnabledProperty, _autoScrollCallbackToken);
+            _autoScrollCallbackToken = -1;
+        }
+        logTerminal.Stop();
+
         swapChainPanel.SwapChainSizeRequested -= SwapChainPanel_SwapChainSizeRequested;
         Microsoft.UI.Xaml.Media.CompositionTarget.Rendering -= OnRenderingBindSwapChain;
         // パイプライン破棄前にパネルのスワップチェーン参照を外す
@@ -137,6 +155,52 @@ public sealed partial class MainPage : Page
         settingsPanel.ValueBuilder = null;
 
         ViewModel?.Dispose();
+    }
+
+    // ---- Log 画面（ターミナル / フォールバックのリスト表示） ----
+
+    /// <summary>ターミナルを出すのはフォールバックしていないときだけ。フォールバック側の裏</summary>
+    internal static Visibility LogTerminalVisibility(bool fallbackActive)
+        => fallbackActive ? Visibility.Collapsed : Visibility.Visible;
+
+    private void CopyAllLog_Click(object sender, RoutedEventArgs e) => logTerminal.CopyAll();
+
+    /// <summary><see cref="Behaviors.AutoScrollToBottomBehavior.IsAutoScrollEnabledProperty"/> の購読トークン</summary>
+    private long _autoScrollCallbackToken = -1;
+
+    /// <summary>
+    /// WebView2 を諦めたので、リスト表示へ切り替える。
+    ///
+    /// <para>
+    /// 自動スクロールの状態を <c>ListView</c> の添付プロパティへ<b>ここで</b>結び直す。
+    /// XAML で束ねないのは、<c>AutoScrollToBottomBehavior</c> 自身がスクロール判定で
+    /// 同じ添付プロパティを書くため ── バインドしていると黙って上書きされ、
+    /// 添付プロパティを対象にした <c>x:Bind Mode=TwoWay</c> は効かないことがある。
+    /// フォールバックは稀な経路なので、こちら側で1回だけ配線する。
+    /// </para>
+    /// </summary>
+    private void LogTerminal_FallbackActivated(object? sender, EventArgs e)
+    {
+        if (ViewModel is null)
+            return;
+
+        ViewModel.IsLogFallbackActive = true;
+        Behaviors.AutoScrollToBottomBehavior.SetIsAutoScrollEnabled(logListView, ViewModel.IsLogFollowEnabled);
+        _autoScrollCallbackToken = logListView.RegisterPropertyChangedCallback(
+            Behaviors.AutoScrollToBottomBehavior.IsAutoScrollEnabledProperty, LogFollow_ListChanged);
+        ViewModel.PropertyChanged += LogFollow_ViewModelPropertyChanged;
+    }
+
+    private void LogFollow_ListChanged(DependencyObject sender, DependencyProperty dp)
+    {
+        if (ViewModel is not null)
+            ViewModel.IsLogFollowEnabled = Behaviors.AutoScrollToBottomBehavior.GetIsAutoScrollEnabled(logListView);
+    }
+
+    private void LogFollow_ViewModelPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName == nameof(MainPageViewModel.IsLogFollowEnabled) && ViewModel is not null)
+            Behaviors.AutoScrollToBottomBehavior.SetIsAutoScrollEnabled(logListView, ViewModel.IsLogFollowEnabled);
     }
 
     // ---- ペイン折りたたみ状態 (ViewModel.IsPropertyPaneCollapsed) をレイアウトへ変換する x:Bind 関数群 ----

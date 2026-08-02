@@ -1,6 +1,5 @@
 using ProcessRecorderApp.Components;
 using ProcessRecorderApp.SingleInstance;
-using System.Collections.ObjectModel;
 using WinRT;
 
 namespace ProcessRecorderApp;
@@ -24,10 +23,6 @@ public static class Program
     // ネイティブDLL・マネージドDLL の標準出力/標準エラーを捕捉する（アプリ寿命のため Dispose しない）
     private static StandardStreamRedirector? _stdRedirector;
 
-    private static Task? _stdRedirectorTask;
-
-    public static ObservableCollection<string> LogItems { get; } = [];
-
     [STAThread]
     private static int Main(string[] args)
     {
@@ -45,7 +40,16 @@ public static class Program
         {
             var result = SingleInstanceManager.StartResidentWorker(KeyPrefix, () => new App(), () =>
             {
-                _stdRedirector = new StandardStreamRedirector();
+                // 捕捉先はプロセス寿命の有界リング。受け口をコンストラクターで渡すのは、
+                // ここから購読するまでの間の出力（直後の app.start を含む）を落とさないため
+                _stdRedirector = new StandardStreamRedirector(LogBuffer.Shared.Append);
+
+                // 破棄マーカーの文言をローカライズする。呼ばれるのは実際に破棄が起きたときだけなので、
+                // リソースの解決もそのときまで遅らせる
+                LogBuffer.DropMarkerFormatter = dropped => string.Format(
+                    System.Globalization.CultureInfo.CurrentCulture,
+                    Localization.GetString("Resources/Log_LinesDropped"),
+                    dropped);
 
                 // activity.log の初期化は StandardStreamRedirector の生成後（複写した行が
                 // アプリ内 Log 画面と DebugLogFile へ届くようにするため）、かつ
@@ -76,21 +80,6 @@ public static class Program
                 // GStreamer 初期化前にデバッグ用環境変数を反映する（既に指定済みの場合は上書きしない）
                 Settings.AppSettings.Default.ApplyStartupEnvironmentVariables();
 
-                _stdRedirectorTask = Task.Run(() =>
-                {
-                    try
-                    {
-                        foreach (var line in _stdRedirector!.Lines.GetConsumingEnumerable())
-                        {
-                            var text = line.TrimEnd();
-                            // 空行として表示されるようにスペースを設定するようにする。
-                            LogItems.Add(string.IsNullOrEmpty(text) ? " " : text);
-                        }
-                    }
-                    catch (OperationCanceledException) { }
-                    catch (ObjectDisposedException) { }
-                });
-
                 GStreamer.Controller.StaticInitialize();
             });
 
@@ -101,11 +90,7 @@ public static class Program
             // なお強制終了（Stop-Process -Force）ではどちらの経路も通らない。
             ActivityLog.Info("app.exit", $"pid={Environment.ProcessId} exitCode={result}");
 
-            if (_stdRedirector is not null)
-            {
-                _stdRedirector.Dispose();
-                _stdRedirectorTask?.Wait(1000);
-            }
+            _stdRedirector?.Dispose();
 
             return result;
         }

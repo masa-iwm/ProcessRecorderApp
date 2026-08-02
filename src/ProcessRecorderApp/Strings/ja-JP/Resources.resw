@@ -70,6 +70,9 @@
   <data name="MainPage_LogList.[using:Microsoft.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve">
     <value>ログ</value>
   </data>
+  <data name="MainPage_LogTerminal.[using:Microsoft.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve">
+    <value>ログターミナル</value>
+  </data>
   <data name="MainPage_VariablesTable.[using:Microsoft.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve">
     <value>変数</value>
   </data>
@@ -79,6 +82,15 @@
   </data>
   <data name="MainPage_Clear.Content" xml:space="preserve">
     <value>クリア</value>
+  </data>
+  <data name="MainPage_CopyAllLog.Content" xml:space="preserve">
+    <value>すべてコピー</value>
+  </data>
+  <data name="MainPage_TerminalUnavailable.Text" xml:space="preserve">
+    <value>WebView2 ランタイムが利用できないため、ログを簡易リスト表示に切り替えました。</value>
+  </data>
+  <data name="Log_LinesDropped" xml:space="preserve">
+    <value>-- 古いログ {0} 行を破棄しました --</value>
   </data>
   <data name="MainPage_VarAdd.Content" xml:space="preserve">
     <value>追加</value>
@@ -292,6 +304,9 @@
   </data>
   <data name="PropDesc_DebugLogFile" xml:space="preserve">
     <value>デバッグログ出力の保存先ファイルパス。変更時に即時反映されます。空欄にすると保存を無効化します。</value>
+  </data>
+  <data name="PropDesc_LogScrollbackLines" xml:space="preserve">
+    <value>Log 画面が保持する行数の上限。超えた分は古い側から破棄し、破棄した行数をログに表示します。</value>
   </data>
   <data name="PropDesc_Rec_Name" xml:space="preserve">
     <value>レコーダーの表示名。</value>

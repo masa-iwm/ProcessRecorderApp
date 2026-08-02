@@ -1,5 +1,4 @@
 using Microsoft.Win32.SafeHandles;
-using System.Collections.Concurrent;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using System.Text;
@@ -12,8 +11,17 @@ using Windows.Win32.System.Pipes;
 namespace ProcessRecorderApp.Components;
 
 /// <summary>
-/// ネイティブDLL内・マネージドDLL内からの標準出力/標準エラー出力を
-/// 行単位で <see cref="BlockingCollection{T}"/> にリダイレクトする。
+/// ネイティブDLL内・マネージドDLL内からの標準出力/標準エラー出力を捕捉し、
+/// <b>デコードしたテキストのまま</b>（<c>\r</c> やエスケープシーケンスを保ったまま）
+/// コンストラクターで受け取った受け口へ流す。
+///
+/// <para>
+/// <b>行には切らない。</b> 表示側は端末（xterm.js）なので、<c>\r</c> による行上書き・
+/// カーソル制御を解釈できるのは端末自身であり、ここで行へ割ると再現できなくなる。
+/// 行が要るのはデバッグログファイルと元標準エラーへの複写だけなので、
+/// そちらは <see cref="IncrementalLineSplitter"/> を内部で通す
+/// （どちらも無効なあいだは分割自体を行わない）。
+/// </para>
 ///
 /// 匿名パイプを1本作成し、以下の3層をパイプの書き込み側へ差し替えることで、
 /// 出力経路によらず捕捉できるようにする：
@@ -34,8 +42,13 @@ namespace ProcessRecorderApp.Components;
 [SupportedOSPlatform("windows5.1.2600")]
 public sealed partial class StandardStreamRedirector : IDisposable
 {
-    /// <summary>捕捉した行（改行文字は含まない）。stdout / stderr の区別はしない</summary>
-    public BlockingCollection<string> Lines { get; } = [];
+    /// <summary>
+    /// 捕捉したテキストの流し込み先。stdout / stderr の区別はしない。
+    /// <b>イベントではなくコンストラクター引数で受け取る</b> ──
+    /// 後から購読する形にすると、生成から購読までの間の出力が黙って消える。
+    /// その窓には <c>app.start</c> の記録が入るため、実害がある
+    /// </summary>
+    private readonly LogChunkHandler _sink;
 
     // パイプのハンドル（書き込み側を閉じると読み取りスレッドが終了する）
     private readonly SafeFileHandle _pipeWriteHandle;
@@ -56,8 +69,14 @@ public sealed partial class StandardStreamRedirector : IDisposable
     private bool _disposed;
 
     /// <summary>リダイレクトを開始する</summary>
-    public StandardStreamRedirector()
+    /// <param name="sink">
+    /// 捕捉したテキストの流し込み先。<b>読み取りスレッドから同期に呼ばれる</b>ので
+    /// ブロックしてはならず、渡された span を保持してもいけない
+    /// </param>
+    public StandardStreamRedirector(LogChunkHandler sink)
     {
+        _sink = sink;
+
         // 1. パイプを作成（stdout / stderr 共用）。
         //    色付き出力を得るため mintty 命名の名前付きパイプを優先し、失敗時は匿名パイプへフォールバック
         //    （フォールバック時は捕捉は継続するが、GLib 等は非TTY判定となり色は付かない）
@@ -91,35 +110,89 @@ public sealed partial class StandardStreamRedirector : IDisposable
         //     元のハンドルへ書き戻す。
         _originalStdErrWriter = TryCreateOriginalStdErrWriter(_originalStdErrorHandle);
 
-        // 5. 読み取りスレッド：パイプから行単位で読み取り Lines へ追加する。
-        //    書き込み側ハンドルがすべて閉じられると ReadLine が null を返して終了する
-        var readerThread = new Thread(() =>
-        {
-            try
-            {
-                using var reader = new StreamReader(
-                    new FileStream(pipeReadHandle, FileAccess.Read), Encoding.UTF8);
-                while (reader.ReadLine() is { } line)
-                {
-                    Lines.Add(line);
-                    WriteToLogFile(line);
-                    MirrorToOriginalStdErr(line);
-                }
-            }
-            catch (Exception)
-            {
-                // パイプ破断等の例外は無視（プロセス終了時など）
-            }
-            finally
-            {
-                Lines.CompleteAdding();
-            }
-        })
+        // 5. 読み取りスレッド：パイプから生バイトを読み、UTF-8 として増分デコードして受け口へ流す。
+        //    書き込み側ハンドルがすべて閉じられると Read が 0 を返して終了する
+        var readerThread = new Thread(() => ReadLoop(pipeReadHandle))
         {
             IsBackground = true,
             Name = "StandardStreamRedirector.Reader",
         };
         readerThread.Start();
+    }
+
+    /// <summary>
+    /// パイプから生バイトを読み、UTF-8 として増分デコードして流す。
+    ///
+    /// <para>
+    /// <b>デコーダーは状態を持たせる</b>（<c>flush: false</c>）── チャンク境界に落ちた
+    /// マルチバイト文字は次の読み取りで揃うので、途中で U+FFFD を作ってはいけない。
+    /// 不正なバイト列（ロケール依存の出力が混ざった場合）は既定の置換フォールバックで
+    /// U+FFFD になる。例外にすると 1 バイトの混入でログ全体が止まる。
+    /// </para>
+    /// </summary>
+    private void ReadLoop(SafeFileHandle pipeReadHandle)
+    {
+        const int BufferBytes = 16 * 1024;
+        var bytes = new byte[BufferBytes];
+        var chars = new char[Encoding.UTF8.GetMaxCharCount(BufferBytes)];
+        var decoder = Encoding.UTF8.GetDecoder();
+        var splitter = new IncrementalLineSplitter();
+        var atStreamStart = true;
+
+        try
+        {
+            using var stream = new FileStream(pipeReadHandle, FileAccess.Read);
+            int read;
+            while ((read = stream.Read(bytes, 0, bytes.Length)) > 0)
+            {
+                var count = decoder.GetChars(bytes, 0, read, chars, 0, flush: false);
+                var start = 0;
+                if (atStreamStart && count > 0)
+                {
+                    atStreamStart = false;
+                    // StreamReader が既定で落としていた BOM をここでも落とす
+                    if (chars[0] == '\uFEFF')
+                    {
+                        start = 1;
+                    }
+                }
+                if (count - start <= 0)
+                {
+                    continue; // マルチバイトの途中。次の読み取りで揃う
+                }
+
+                var chunk = new ReadOnlySpan<char>(chars, start, count - start);
+                _sink(chunk);
+                if (NeedsLines)
+                {
+                    splitter.Push(chunk, EmitLine);
+                }
+            }
+        }
+        catch (Exception)
+        {
+            // パイプ破断等の例外は無視（プロセス終了時など）
+        }
+        finally
+        {
+            try
+            {
+                splitter.Eof(EmitLine);
+            }
+            catch (Exception)
+            {
+                // 終端処理の失敗は無視
+            }
+        }
+    }
+
+    /// <summary>行への分割が要るのは、デバッグログファイルか元標準エラーへの複写が有効なときだけ</summary>
+    private bool NeedsLines => _logWriter is not null || _originalStdErrWriter is not null;
+
+    private void EmitLine(ReadOnlySpan<char> line)
+    {
+        WriteToLogFile(line);
+        MirrorToOriginalStdErr(line);
     }
 
     /// <summary>
@@ -144,17 +217,18 @@ public sealed partial class StandardStreamRedirector : IDisposable
     }
 
     /// <summary>捕捉した行をログファイルへ書き込む（読み取りスレッドから呼ばれる）</summary>
-    private void WriteToLogFile(string line)
+    private void WriteToLogFile(ReadOnlySpan<char> line)
     {
         if (_logWriter is null)
         {
             return; // 未設定時はロックを取らず早期リターン
         }
+        var stripped = AnsiEscape.Strip(line.ToString());
         lock (_logFileLock)
         {
             try
             {
-                _logWriter?.WriteLine(AnsiEscape.Strip(line));
+                _logWriter?.WriteLine(stripped);
 
                 // **1行ごとに Flush する。** このログの主用途は「プロセスが突然死んだときに
                 // 何が起きていたか」を後から読むことで、そのとき欲しいのは常に**最後の1行**
@@ -214,7 +288,7 @@ public sealed partial class StandardStreamRedirector : IDisposable
     }
 
     /// <summary>捕捉した行を、差し替える前の標準エラーへ複写する（読み取りスレッドから呼ばれる）</summary>
-    private void MirrorToOriginalStdErr(string line)
+    private void MirrorToOriginalStdErr(ReadOnlySpan<char> line)
     {
         if (_originalStdErrWriter is null)
         {
@@ -329,8 +403,7 @@ public sealed partial class StandardStreamRedirector : IDisposable
 
     /// <summary>
     /// リダイレクトを解除して元の状態を復元する。
-    /// 書き込み側ハンドルが閉じられることで読み取りスレッドが終了し、
-    /// <see cref="Lines"/> は CompleteAdding される
+    /// 書き込み側ハンドルが閉じられることでパイプが破断し、読み取りスレッドが終了する
     /// </summary>
     public void Dispose()
     {
@@ -366,9 +439,6 @@ public sealed partial class StandardStreamRedirector : IDisposable
 
         // 書き込み側を閉じる（CRT が保持する複製 fd も上の freopen で解放済みのためパイプが破断する）
         _pipeWriteHandle.Dispose();
-
-        // Lines への追加終了を通知
-        Lines.CompleteAdding();
 
         // ログファイル出力を停止（最終 Flush してクローズ）
         SetLogFile(null);

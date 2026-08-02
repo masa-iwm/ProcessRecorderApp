@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<UserControl
+    x:Class="ProcessRecorderApp.Controls.LogTerminalView"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:wv="using:Microsoft.UI.Xaml.Controls"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d">
+
+    <Grid Background="#0C0C0C">
+        <!-- Source は XAML にもコードにも設定しない。設定すると暗黙の初期化が先に走り、
+             こちらが用意した環境を渡す EnsureCoreWebView2Async(environment) が例外になる。
+             遷移は CoreWebView2.Navigate で行う。
+
+             AccessibilityView="Control" を付けて UIA のコントロールビューへ出す
+             （NativeSwapChainPanel と同じ配慮）。ただし**中身のテキストは UIA から読めない**
+             ── WebView2 はブラウザープロセス側に別のツリーを持ち、WebGL レンダラーでは
+             文字が GPU テクスチャになる。E2E はこのサブツリーへ降りない
+             （AppUi.OpaqueSubtrees / docs/test-harness.md）。 -->
+        <wv:WebView2 x:Name="webView"
+                     AutomationProperties.AutomationId="logTerminalView"
+                     AutomationProperties.AccessibilityView="Control"
+                     Visibility="Collapsed" />
+    </Grid>
+</UserControl>

@@ -77,6 +77,30 @@
   </ItemGroup>
 
   <!--
+    Log 画面のターミナル表示（xterm.js）の静的ファイル。
+
+    実行時に WebView2 が SetVirtualHostNameToFolderMapping でこのフォルダを
+    **ディスク上の実ディレクトリとして**見るため、単一ファイル発行でも
+    バンドルへ埋めずルーズに置く（ExcludeFromSingleFile）。
+
+    ライセンス文（MIT）は同じフォルダの vendor\ に置いてある。
+    licenses\third-party\ へは入れないこと ── あちらは同梱 GStreamer 専用の台帳で、
+    ThirdPartyLicenseTests がディスクと SOURCES.tsv を、release.yml が COMPONENTS.tsv と
+    発行物の runtimes\win-x64 を双方向で突き合わせる。xterm.js は同梱・非同梱の
+    両方に入るので、あの台帳に載せると必ず赤になる。
+
+    フォルダー名を runtimes にしないこと（release.yml が非同梱発行物に
+    runtimes があると throw する）。
+  -->
+  <ItemGroup>
+    <Content Include="Assets\Terminal\**\*">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+      <ExcludeFromSingleFile>true</ExcludeFromSingleFile>
+    </Content>
+  </ItemGroup>
+
+  <!--
     ライセンス文を配布物に入れる。
 
     リポジトリの root に置いてあるだけでは配布 zip には入らない

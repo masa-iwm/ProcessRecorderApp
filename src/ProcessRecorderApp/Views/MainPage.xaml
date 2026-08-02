@@ -162,62 +162,96 @@
                             RelativePanel.AlignLeftWithPanel="True"
                             RelativePanel.AlignRightWithPanel="True"
                             HorizontalAlignment="Right">
-                    <!-- 自動スクロール（最下部追従）の ON/OFF 表示と切り替え -->
+                    <!-- 自動スクロール（最下部追従）の ON/OFF 表示と切り替え。
+                         表示経路が2つ（端末とリスト）あるので、状態は ViewModel が持つ -->
                     <ToggleButton x:Uid="MainPage_AutoScroll"
                                   AutomationProperties.AutomationId="AutoScrollToggle"
                                   Margin="0,0,5,0"
-                                  IsChecked="{Binding ElementName=logListView, Path=(lb:AutoScrollToBottomBehavior.IsAutoScrollEnabled), Mode=TwoWay}" />
+                                  IsChecked="{x:Bind ViewModel.IsLogFollowEnabled, Mode=TwoWay}" />
+                    <!-- 全文コピー。正本はリングバッファ（端末の描画バッファではない）。
+                         端末の描画バッファはそのときのウィンドウ幅で折り返されているので、
+                         貼り付け結果がウィンドウサイズで変わってしまう -->
+                    <Button x:Uid="MainPage_CopyAllLog" AutomationProperties.AutomationId="CopyAllLogButton"
+                            Margin="0,0,5,0"
+                            Click="CopyAllLog_Click" />
                     <Button x:Uid="MainPage_Clear" AutomationProperties.AutomationId="ClearLogButton"
                             Command="{x:Bind ViewModel.ClearLogCommand}" />
                 </StackPanel>
-                <!-- ログ表示は Windows Terminal 既定（Campbell スキーム）の配色に固定する -->
-                <ListView
-                    x:Name="logListView"
-                    x:Uid="MainPage_LogList"
-                    RelativePanel.Below="logSide"
-                    RelativePanel.AlignLeftWithPanel="True"
-                    RelativePanel.AlignRightWithPanel="True"
-                    RelativePanel.AlignBottomWithPanel="True"
-                    ScrollViewer.VerticalScrollBarVisibility="Visible"
-                    ScrollViewer.VerticalScrollMode="Enabled"
-                    ScrollViewer.HorizontalScrollBarVisibility="Auto"
-                    ScrollViewer.HorizontalScrollMode="Auto"
-                    SelectionMode="Extended"
-                    Padding="0,0,0,16"
-                    Background="#0C0C0C"
-                    RequestedTheme="Dark"
-                    ItemsSource="{x:Bind ViewModel.LogItems, Mode=OneWay}">
-                    <ListView.Resources>
-                        <!-- 背景 #0C0C0C 固定のため、システムテーマ（ライト）の選択ブラシでは視認できない。
-                             選択行は Windows Terminal 風の半透明白ハイライトとする -->
-                        <SolidColorBrush x:Key="ListViewItemBackgroundSelected" Color="#4DFFFFFF" />
-                        <SolidColorBrush x:Key="ListViewItemBackgroundSelectedPointerOver" Color="#59FFFFFF" />
-                        <SolidColorBrush x:Key="ListViewItemBackgroundSelectedPressed" Color="#66FFFFFF" />
-                    </ListView.Resources>
-                    <i:Interaction.Behaviors>
-                        <!-- Visibility ベースのパネル切替では Loaded/SizeChanged で表示遷移を検知できないため、
-                             表示状態 (IsLogSelected) を明示的に渡す -->
-                        <lb:AutoScrollToBottomBehavior IsActive="{x:Bind ViewModel.IsLogSelected, Mode=OneWay}" />
-                        <lb:ListViewCopyBehavior />
-                    </i:Interaction.Behaviors>
-                    <ListView.ItemContainerStyle>
-                        <Style TargetType="ListViewItem">
-                            <Setter Property="Padding" Value="0"/>
-                            <Setter Property="MinHeight" Value="0"/>
-                            <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
-                            <Setter Property="VerticalContentAlignment" Value="Center"/>
-                        </Style>
-                    </ListView.ItemContainerStyle>
-                    <ListView.ItemTemplate>
-                        <DataTemplate x:DataType="x:String">
-                            <TextBlock lb:AnsiText.Source="{x:Bind}"
-                               Foreground="#CCCCCC"
-                               FontFamily="Consolas"
-                               FontSize="12"
-                               Padding="4,1"/>
-                        </DataTemplate>
-                    </ListView.ItemTemplate>
-                </ListView>
+                <!-- 既定の表示は WebView2 の中の xterm.js。生の出力をそのまま流すので
+                     \r による行上書き・カーソル制御・256色/TrueColor がそのまま効く。
+                     配色は Campbell（Components.CampbellPalette が正本） -->
+                <lc:LogTerminalView x:Name="logTerminal"
+                                    x:Uid="MainPage_LogTerminal"
+                                    RelativePanel.Below="logSide"
+                                    RelativePanel.AlignLeftWithPanel="True"
+                                    RelativePanel.AlignRightWithPanel="True"
+                                    RelativePanel.AlignBottomWithPanel="True"
+                                    IsActive="{x:Bind ViewModel.IsLogSelected, Mode=OneWay}"
+                                    IsFollowEnabled="{x:Bind ViewModel.IsLogFollowEnabled, Mode=TwoWay}"
+                                    ScrollbackLines="{x:Bind vm:MainPageViewModel.Settings.LogScrollbackLines, Mode=OneWay}"
+                                    Visibility="{x:Bind v:MainPage.LogTerminalVisibility(ViewModel.IsLogFallbackActive), Mode=OneWay}" />
+                <!-- WebView2 が使えないときだけ出る簡易表示。**重ねて隠すのではなく畳む**
+                     ── そうしないと「どちらが出ているか」を UIA から確かめられない -->
+                <Grid x:Name="logFallbackPanel"
+                      RelativePanel.Below="logSide"
+                      RelativePanel.AlignLeftWithPanel="True"
+                      RelativePanel.AlignRightWithPanel="True"
+                      RelativePanel.AlignBottomWithPanel="True"
+                      RowDefinitions="Auto,*"
+                      Background="#0C0C0C"
+                      Visibility="{x:Bind ViewModel.IsLogFallbackActive, Mode=OneWay}">
+                    <!-- 無言で見た目が変わると「なぜか古い表示」にしか見えないので、理由を書く -->
+                    <TextBlock x:Uid="MainPage_TerminalUnavailable"
+                               AutomationProperties.AutomationId="LogTerminalUnavailableText"
+                               Margin="8,4" TextWrapping="Wrap"
+                               Foreground="#F9F1A5" />
+                    <ListView
+                        x:Name="logListView"
+                        x:Uid="MainPage_LogList"
+                        Grid.Row="1"
+                        ScrollViewer.VerticalScrollBarVisibility="Visible"
+                        ScrollViewer.VerticalScrollMode="Enabled"
+                        ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                        ScrollViewer.HorizontalScrollMode="Auto"
+                        SelectionMode="Extended"
+                        Padding="0,0,0,16"
+                        Background="#0C0C0C"
+                        RequestedTheme="Dark"
+                        ItemsSource="{x:Bind logTerminal.FallbackItems, Mode=OneTime}">
+                        <ListView.Resources>
+                            <!-- 背景 #0C0C0C 固定のため、システムテーマ（ライト）の選択ブラシでは視認できない。
+                                 選択行は Windows Terminal 風の半透明白ハイライトとする -->
+                            <SolidColorBrush x:Key="ListViewItemBackgroundSelected" Color="#4DFFFFFF" />
+                            <SolidColorBrush x:Key="ListViewItemBackgroundSelectedPointerOver" Color="#59FFFFFF" />
+                            <SolidColorBrush x:Key="ListViewItemBackgroundSelectedPressed" Color="#66FFFFFF" />
+                        </ListView.Resources>
+                        <i:Interaction.Behaviors>
+                            <!-- Visibility ベースのパネル切替では Loaded/SizeChanged で表示遷移を検知できないため、
+                                 表示状態を明示的に渡す。フォールバックしていないときは動かさない -->
+                            <lb:AutoScrollToBottomBehavior IsActive="{x:Bind ViewModel.IsLogFallbackActive, Mode=OneWay}" />
+                            <!-- Ctrl+C のアクセラレータはウィンドウ全域に効く。端末表示中に有効だと
+                                 向こうの選択コピーを横取りするので、フォールバック中だけ有効にする -->
+                            <lb:ListViewCopyBehavior IsActive="{x:Bind ViewModel.IsLogFallbackActive, Mode=OneWay}" />
+                        </i:Interaction.Behaviors>
+                        <ListView.ItemContainerStyle>
+                            <Style TargetType="ListViewItem">
+                                <Setter Property="Padding" Value="0"/>
+                                <Setter Property="MinHeight" Value="0"/>
+                                <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+                                <Setter Property="VerticalContentAlignment" Value="Center"/>
+                            </Style>
+                        </ListView.ItemContainerStyle>
+                        <ListView.ItemTemplate>
+                            <DataTemplate x:DataType="x:String">
+                                <TextBlock lb:AnsiText.Source="{x:Bind}"
+                                   Foreground="#CCCCCC"
+                                   FontFamily="Consolas"
+                                   FontSize="12"
+                                   Padding="4,1"/>
+                            </DataTemplate>
+                        </ListView.ItemTemplate>
+                    </ListView>
+                </Grid>
             </RelativePanel>
             <!-- Variables 画面: EventRecorder.TemplateVariables のキー/値を一覧表示・編集する -->
             <Grid x:Name="variablesPanel" Margin="5" RowDefinitions="Auto,*" RowSpacing="5"
