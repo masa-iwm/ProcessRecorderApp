@@ -1,6 +1,7 @@
 # Third-party notices
 
-このファイルは **同梱（bundled）配布に含まれる第三者コンポーネント**の一覧です。
+このファイルは **同梱（bundled）配布に含まれる第三者コンポーネント**と、
+**配布形態によらず入る Web アセット**の一覧です。
 
 - **非同梱配布には適用されません。** あちらは GStreamer を同梱せず、利用者が別途
   インストールしたものを実行時に解決します（`GStreamerRuntimeLocator`）。
@@ -142,6 +143,32 @@
 **削減で減らせるのはここではありません** ── 同梱物は改変しない方針なので、
 `strip` も部分リンクもしていません。
 
+## アプリ本体に同梱する Web アセット（同梱・非同梱の両方に入る）
+
+上の一覧は GStreamer ランタイムを同梱する配布にだけ適用されます。以下は
+**配布形態によらず**発行物へ入るものです（GStreamer の同梱可否とは無関係のため）。
+
+Log 画面のターミナル表示は **xterm.js** を WebView2 の中で動かしています。
+上流の最小化済みビルドを**改変せず** `Assets/Terminal/vendor/` に置いてあります。
+
+| ファイル | プロジェクト・版 | ライセンス | 全文 |
+|---|---|---|---|
+| `Assets/Terminal/vendor/xterm.js`, `xterm.css` | xterm.js 6.0.0 | MIT License | `Assets/Terminal/vendor/LICENSE-xterm.txt` |
+| `Assets/Terminal/vendor/addon-webgl.js` | @xterm/addon-webgl 0.19.0 | MIT License | `Assets/Terminal/vendor/LICENSE-xterm-addon-webgl.txt` |
+| `Assets/Terminal/vendor/addon-fit.js` | @xterm/addon-fit 0.11.0 | MIT License | `Assets/Terminal/vendor/LICENSE-xterm-addon-fit.txt` |
+
+取得元 URL と SHA256 は
+[`src/ProcessRecorderApp/Assets/Terminal/SOURCES.md`](src/ProcessRecorderApp/Assets/Terminal/SOURCES.md) が正本です。
+ライセンス文は 3 つとも内容が異なる（著作権表示が違う）ので 1 つにまとめていません。
+
+> **`licenses/third-party/` には置いていません。** あちらは同梱 GStreamer 専用の台帳で、
+> `ThirdPartyLicenseTests` がディスクと `SOURCES.tsv` を、`release.yml` が `COMPONENTS.tsv` と
+> 発行物の `runtimes/win-x64` を双方向で突き合わせます。xterm.js はそこに現れないので、
+> あの台帳に載せると必ず赤になります。
+
+> **WebView2 ランタイム自体は同梱していません。** 利用者の機械にある Evergreen ランタイムを使い、
+> 無ければ Log 画面は従来のリスト表示に落ちます。
+
 ## 版とソースの入手先
 
 LGPL は「対応するソースの入手先を示すこと」を求めます。同梱しているのは
@@ -239,7 +266,8 @@ Cisco のロイヤリティフリー枠は「**Cisco が公開しているバイ
 
 ### 5. 非同梱配布という選択肢
 
-非同梱版はここに挙げたものを**1つも含みません**（`license.txt` と本ファイルだけが入ります）。
+非同梱版は**上記の GStreamer 由来のものを1つも含みません**。入るのは `license.txt`・本ファイル・
+`Assets/Terminal/` の Web アセットとそのライセンス文（下記「アプリ本体に同梱する Web アセット」）だけです。
 
 ### 6. 同梱ランタイムからファイルを削るときに確かめること
 

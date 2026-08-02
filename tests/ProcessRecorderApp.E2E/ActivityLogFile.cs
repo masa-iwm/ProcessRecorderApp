@@ -52,6 +52,9 @@ public static class ActivityLogFile
         // 「recording.stop が2件」を数えている既存の表明が黙って3件になる。
         "recording.stop empty",
         "recording.aborted",
+        // Log 画面のターミナル。**どちらのレンダラーで描いているかは画面から見分けが付かない**ので、
+        // ここが「WebView2 が実際に起きた」ことを確かめられる唯一の自動的な観測点になる。
+        "log.terminal",
     ];
 
     private static readonly string[] LongestFirst = [.. KnownEvents.OrderByDescending(e => e.Length)];

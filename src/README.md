@@ -378,9 +378,13 @@ Windows App SDK 側の `Microsoft.Windows.Storage.Pickers` を使う** ── �
   - Preview 画面: `Controls/PropertyGridView`（選択レコーダーのプロパティ編集、`Actual*` 系は
     読み取り専用で実行中の実値を表示）＋ `NativeSwapChainPanel`。`SrcPipeline` の値ビルダー
     ボタンから `Views/PipelineBuilderDialog.xaml`（`ViewModels/PipelineBuilderViewModel.cs`）を開く。
-  - Log 画面: `Program.LogItems`（後述の `StandardStreamRedirector` が捕捉した GStreamer の
-    デバッグ/標準出力）を ANSI カラー付きで表示（`Controls/Behaviors/AnsiText`、
-    Windows Terminal Campbell 配色、Consolas フォント）。
+  - Log 画面: 既定は `Controls/LogTerminalView`（WebView2 の中の xterm.js）。
+    `StandardStreamRedirector` が捕捉した出力を**生のまま**流すので、`
+` による行上書き・
+    カーソル制御・256 色/TrueColor がそのまま効く。WebView2 が使えないときだけ
+    従来の `ListView`（`Controls/Behaviors/AnsiText`）へ落ちる。
+    配色は両経路とも Windows Terminal Campbell（`Components/CampbellPalette` が正本）、
+    フォントは Consolas 12。詳細は下記「Log 画面のターミナル表示」の節。
   - Variables 画面: `WinUI.TableView` による Key/Value グリッド（`TemplateVariablesViewModel.cs`）。
   - Settings 画面: `PropertyGridView` で `Settings/AppSettings.Default` を編集。
     右上の「再読み込み」ボタン（`MainPageViewModel.ReloadSettingsCommand`）が
@@ -1073,6 +1077,122 @@ GUIサブシステム（`OutputType=WinExe`）だと、**対話コマンドプ�
 | `trigger.name warn` | テンプレートから参照できないキー |
 | `trigger.error` | 監視・発火処理の例外 |
 
+## Log 画面のターミナル表示（xterm.js / WebView2）
+
+Log 画面は既定で **WebView2 の中の xterm.js** に描く。`ListView` は WebView2 が使えないときの
+フォールバックとして残してある。
+
+### なぜ端末なのか
+
+捕捉している出力は GStreamer のデバッグ出力そのもので、`\r` による行上書き（進捗表示）や
+カーソル制御を含む。従来は `StreamReader.ReadLine()` で行に切っていたため、
+**それらは UI へ届く前に失われていた**。生のバイト列をそのまま端末へ流せば、
+解釈は端末がやる ── 256 色・TrueColor も自前パーサーの範囲に縛られない。
+
+### 経路
+
+```
+パイプ → StandardStreamRedirector（生バイト→ UTF-8 増分デコード）
+   ├→ LogBuffer（有界リング。唯一の保管場所）→ LogTerminalView →（post）→ xterm.js
+   └→ IncrementalLineSplitter → debug ログファイル／元 stderr への複写
+```
+
+行に切るのはデバッグログファイルと元標準エラーへの複写のためだけで、表示側は通らない。
+
+### 同梱アセット
+
+`Assets/Terminal/` に置き、発行物へそのまま運ぶ（`ProcessRecorderApp.csproj` の `Content`）。
+`vendor/` の中身は上流の配布物を**無改変**で置いたもので、取得元・版・SHA256 は
+[`Assets/Terminal/SOURCES.md`](ProcessRecorderApp/Assets/Terminal/SOURCES.md) が正本。
+UMD なのでバンドラーは要らず、グローバル名は `Terminal` / `FitAddon.FitAddon` /
+`WebglAddon.WebglAddon`。
+
+- **`licenses/third-party/` には入れない。** あちらは同梱 GStreamer 専用の台帳で、
+  `ThirdPartyLicenseTests` がディスクと `SOURCES.tsv` を、`release.yml` が `COMPONENTS.tsv` と
+  発行物の `runtimes/win-x64` を双方向で突き合わせる。xterm.js は同梱・非同梱の**両方**に
+  入るので、載せると必ず赤になる。ライセンス文は `Assets/Terminal/vendor/` に同梱する。
+- **`ExcludeFromSingleFile=true` は必須。** `SetVirtualHostNameToFolderMapping` は
+  ディスク上の実ディレクトリしか受け取らないので、単一ファイル発行でバンドルへ埋めると解決できない。
+- `.gitattributes` で `-text` にしてある。改行を書き換えると `SOURCES.md` の SHA256 が合わなくなる。
+
+### 起動の順序（この順序でないと成立しない）
+
+1. Log 画面が表示されたときに初めて初期化する（`IsActive`）。
+   見ていない画面のためにブラウザープロセスを起こさない。
+2. `CoreWebView2Environment.GetAvailableBrowserVersionString()` → 空/例外ならランタイム不在。
+   ここで諦めればブラウザーを 1 本も起こさずに済む。
+3. `DefaultBackgroundColor` を **`EnsureCoreWebView2Async` より前に**入れる
+   （コントローラー生成時に一度だけ流し込まれる。既定は白なので入れないと黒画面に白が閃く）。
+4. ユーザーデータフォルダーは `%LOCALAPPDATA%\ProcessRecorderApp\WebView2`。
+   既定（実行ファイルの隣）のままだと `Program Files` 配下で書き込めず初期化ごと失敗する。
+5. **初期化は一度きり**（`_initAttempted`）。失敗経路では WinUI 内部の生成中フラグが戻らず、
+   2 回目の `EnsureCoreWebView2Async` は永久に返らない。
+6. `EnsureCoreWebView2Async` が**正常完了しても `CoreWebView2` が null のまま**という経路がある
+   ── ランタイム不在の主経路はこれで、例外ではない。
+7. `SetVirtualHostNameToFolderMapping` で `https://log-terminal.invalid/` に写して `Navigate`。
+   `file://` は使わない。
+8. ハンドシェイクは 3 往復: JS `h`（スクリプトが走った）→ C# `i`（配色と上限）→
+   JS `y`（端末が出来た）→ C# `w`（ここで初めて本文）。
+   `y` より前に本文を送らないのは、初期サイズ 80×24 のまま書き込むと長い行が誤った桁で折り返されるため。
+9. JS 側は **`term.open()` を `loadAddon(WebglAddon)` より前**に呼ぶ。逆にすると
+   `activate()` が `onWillOpen` へ遅延され、**try/catch を素通りして DOM レンダラーへ落ちられない**。
+
+`AddHostObjectToScript` は使わない（IDispatch/リフレクション経由で Native AOT では成立しない。
+`NativeSwapChainPanel` と同じ方針）。ブリッジは `PostWebMessageAsString` と
+`WebMessageReceived` だけで、区切りは U+001F。JSON を通さないので
+`JsonSerializerContext` を増やさずに済む。
+
+### 背圧と上限
+
+`PostWebMessageAsString` はプロセスを跨ぐマーシャルで、`term.write()` は JS 側の内部キューに積む。
+どちらも投げっぱなしにすると洪水でキューが片側だけ伸びる。そこで
+**33ms 周期で 1 通ずつ送り、`term.write` のコールバックが返す ack を待ってから次を送る**。
+ack が 2 秒来なければ 1 通落ちたものとして進め、3 回続いたらリスト表示へ落ちる。
+
+カーソルは**絶対位置**（追記した総文字数・総行数）なので、ack を待つあいだにバッファが
+溢れても特別扱いが要らない ── 次の `Read` が破棄行数を返し、印が正しく入る。
+
+| 上限 | 単位 | 既定 | 持ち主 |
+|---|---|---:|---|
+| `MaxLines` | セグメント（＝行） | 10000 | `AppSettings.LogScrollbackLines` → `LogBuffer.MaxLines` |
+| `MaxChars` | 保持文字総数 | 8MiB | `LogBuffer`。改行を一切吐かない生産者ではテールが無限に伸びるため必要 |
+| `MaxSegmentChars` | 1 行の長さ | 64KiB | `LogBuffer`。超えたら改行を待たずに確定する |
+| `scrollback` | xterm の行数 | `MaxLines` と同値 | JS。ずらすと退避点が 2 つになり「N 行破棄」が嘘になる |
+
+**破棄マーカー（`Log_LinesDropped`）が数えるのは「一度も表示側へ渡らないまま消えた行」だけ**である。
+表示済みの行がスクロールバックから押し出されるのは欠落ではないので数えない。
+
+### フォールバック
+
+初期化の失敗（上記 2/3/6）・`CoreProcessFailed`・JS 側の致命的エラーのいずれでも
+`FallBackToListView()` に集約する。`ViewModel.IsLogFallbackActive` が立つと、
+XAML がターミナルを畳んで注記と `ListView` を出し、`ListViewCopyBehavior.IsActive` を true にする。
+
+**`ListViewCopyBehavior.IsActive` は必須。** `KeyboardAccelerator` は `ScopeOwner` を持たない
+＝ウィンドウ全域に効くので、ターミナル表示中に有効だと向こうの選択コピー（Ctrl+C）を
+横取りして `Handled` にしてしまう。
+
+フォールバックでも上限・破棄マーカー・全文コピー・自動スクロールは効く。失われるのは
+`\r` による行の**部分**上書きだけで、`LogText.TakeAfterLastCr` により「最後の `\r` 以降」を採る
+（`ListView` は行を書き換えられないため。既知の制約）。
+
+### コピー
+
+- 選択範囲（Ctrl+C）は JS が範囲を C# へ返し、**クリップボードへ入れるのは C# 側**
+  （`navigator.clipboard` の可否に依存させない）。
+- 「すべてコピー」の正本は **`LogBuffer.Snapshot()`** であって端末の描画バッファではない
+  ── 後者はそのときのウィンドウ幅で折り返された結果なので、貼り付け内容がウィンドウサイズで
+  変わってしまい、フォールバック経路では実装もできない。
+  整形は `AnsiEscape.Strip` → `LogText.FlattenCarriageReturns` → `TrimEnd()`。
+
+### UIA からは中身が読めない
+
+WebView2 はブラウザープロセス側に別の UIA ツリーを持ち、WebGL レンダラーでは文字が
+GPU テクスチャになるため**アクセシブルテキストが 1 つも出ない**。E2E は
+`AppUi.OpaqueSubtrees` でこのサブツリーへ降りない。表示内容の確認は目視で行う
+（[docs/coverage-gaps.md](../docs/coverage-gaps.md) の「Log 画面への表示経路」）。
+代わりに `activity.log` の `log.terminal` が「起きたこと」と「どちらのレンダラーか」を残す。
+
 ## 設定・ログの保存先
 
 - アプリ設定: `%LOCALAPPDATA%\ProcessRecorderApp\settings.json`
@@ -1118,8 +1238,10 @@ GUIサブシステム（`OutputType=WinExe`）だと、**対話コマンドプ�
   （`Components/ActivityLog.cs`。詳細は次節）。
 - アプリ内 Log 画面の内容は上記とは別で、`Components/StandardStreamRedirector.cs` が
   GStreamer のネイティブ/マネージド標準出力・標準エラー出力を捕捉し（CsWin32の
-  `CreatePipe`/`GetStdHandle`等を使用）、`Program.LogItems`（`ObservableCollection<string>`）へ
+  `CreatePipe`/`GetStdHandle`等を使用）、`Components/LogBuffer.cs`（**有界リング**）へ
   流し込んだものを表示している（既定では永続化されない。DEBUGビルドのみ `debug.txt` にも記録）。
+  保持行数の上限は `AppSettings.LogScrollbackLines`（既定 10000、100〜1,000,000 に丸める）。
+  **`Reload()` への複写を忘れないこと** ── `AppSettingsReloadTests` が全プロパティを機械的に見る。
 
 保存先の実体は `Components/AppEnvironment.cs` の `DataDirectory` が解決する（後述）。
 
@@ -1166,6 +1288,7 @@ GUIサブシステム（`OutputType=WinExe`）だと、**対話コマンドプ�
 | `recorder.warning` | WARN | 同上 | 両方のバスの `Warning`。連続する同一内容は畳んで `repeated=N` を添える |
 | `recorder.eos` | INFO | 同上 | sink 側バスの `Eos` |
 | `recorder.restart` | INFO / WARN | 同上／`RestartSinkSrc` | 自動復帰の予約と、その結果（`ok` / `failed`） |
+| `log.terminal` | INFO / WARN | `LogTerminalView` | Log 画面のターミナルが起きた（`ready renderer=webgl｜dom`）／WebView2 を諦めてリスト表示に落ちた（`fallback=list`）。**どちらのレンダラーで描いているかは画面から見分けが付かない**ので、ここが唯一の観測点になる |
 | `cli` | INFO | `ActivationCommands.Parse` | コマンドラインと終了コード |
 | `ping` | INFO | `ping` コマンド | 生存確認 |
 
@@ -1341,14 +1464,15 @@ UIA テストは要素を `AutomationProperties.Name` で探すと壊れる ─�
 
 - `x:Name` を持つ要素は WinUI が既定で `x:Name` を `AutomationId` として公開するため、
   明示指定は不要（`navView` / `previewNavItem` / `logNavItem` / `variablesNavItem` /
-  `logListView` / `recorderPropertyGrid` / `settingsPanel` / `swapChainPanel` など）。
+  `logListView` / `logTerminal` / `recorderPropertyGrid` / `settingsPanel` / `swapChainPanel` など）。
 - `x:Name` を持たない要素・`DataTemplate` 内の要素にのみ明示的に付与する。
 
 | 要素 | `AutomationId` |
 |---|---|
 | 一括開始／終了ボタン | `StartAllButton` / `StopAllButton` |
 | プロパティペイン開閉／レコーダー削除 | `TogglePaneButton` / `RemoveRecorderButton` |
-| Log 画面の自動スクロール／クリア | `AutoScrollToggle` / `ClearLogButton` |
+| Log 画面の自動スクロール／全文コピー／クリア | `AutoScrollToggle` / `CopyAllLogButton` / `ClearLogButton` |
+| Log 画面のターミナル／フォールバックの注記 | `logTerminalView` / `LogTerminalUnavailableText` |
 | Variables 画面の追加／削除／表 | `AddVariableButton` / `RemoveVariableButton` / `VariablesTable` |
 | Settings 画面の再読み込み | `ReloadSettingsButton` |
 | Variables 表の編集用テキストボックス | `VariableKeyEditor` / `VariableValueEditor` |

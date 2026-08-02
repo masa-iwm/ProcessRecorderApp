@@ -214,10 +214,20 @@ public sealed class AppUi : IDisposable
     /// <c>ClearLogButton</c>（logListView の兄弟）の探索がそれで落ちていた。
     /// そのため探索は自前の深さ優先walkで行い、このサブツリーだけ展開しない。
     /// </para>
+    /// <para>
+    /// <c>logTerminalView</c> は WebView2 で、<b>ブラウザープロセス側に別の UIA ツリーを持ち込む</b>。
+    /// 同じ罠を踏む見込みが高いので、観測してからではなく先回りで入れてある
+    /// ── 後から足すと、原因が別の変更に誤って帰属される。
+    /// </para>
+    /// <para>
+    /// <b>要素そのものは見つかる。</b> <see cref="SearchTree"/> は AutomationId の一致判定を
+    /// 降下の判定より先に行うので、ここに入れても「在ること・有効であること」は表明できる。
+    /// </para>
     /// </summary>
     private static readonly HashSet<string> OpaqueSubtrees = new(StringComparer.Ordinal)
     {
         "logListView",
+        "logTerminalView",
     };
 
     /// <summary>AutomationId で要素を探す（見つからなければ null）。</summary>

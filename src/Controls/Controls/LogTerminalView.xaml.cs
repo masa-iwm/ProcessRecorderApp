@@ -396,10 +396,17 @@ public sealed partial class LogTerminalView : UserControl
         var body = message.Length > 2 ? message[2..] : string.Empty;
         switch (message[0])
         {
-            case 'y': // ready。ここまで 1 バイトも送っていない
+            case 'h': // hello。スクリプトが走って受信を張り終えた
+                // ここで初めて送れる。これより前の post は受け手が居ないので消える
+                SendInitialize();
+                break;
+
+            case 'y': // ready。端末が出来た。ここまで本文は 1 バイトも送っていない
                 _state = State.Idle;
                 _consecutiveAckTimeouts = 0;
-                SendInitialize();
+                // どちらのレンダラーで描いているかは画面から見分けが付かない。
+                // 「遅い」という申告を受けたときに最初に知りたい値なので記録に残す
+                ActivityLog.Info("log.terminal", $"ready renderer={body}");
                 RequestReplay();
                 break;
 
@@ -538,6 +545,10 @@ public sealed partial class LogTerminalView : UserControl
             return;
         }
         _state = State.Fallback;
+
+        // 「なぜかリスト表示になっている」を後から診断できるようにする。
+        // 画面の注記は今そこに居る人にしか届かない
+        ActivityLog.Warn("log.terminal", "fallback=list");
 
         // ランタイム不在では WinUI が自前の警告表示を描くので、必ず畳む
         webView.Visibility = Visibility.Collapsed;

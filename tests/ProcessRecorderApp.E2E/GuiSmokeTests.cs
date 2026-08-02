@@ -40,6 +40,48 @@ public sealed class GuiSmokeTests(PublishedApp app, ITestOutputHelper output)
     }
 
     /// <summary>
+    /// Log 画面が既定でターミナル（WebView2 + xterm.js）を出していること。
+    ///
+    /// <para>
+    /// <b>ここで表明できるのは「要素が在る・有効である」までで、中身は読めない。</b>
+    /// WebView2 はブラウザープロセス側に別の UIA ツリーを持ち、WebGL レンダラーでは
+    /// 文字が GPU テクスチャになるのでアクセシブルテキストが 1 つも出ない。
+    /// 表示内容の確認は目視（docs/coverage-gaps.md「Log 画面への表示経路」）。
+    /// </para>
+    /// <para>
+    /// それでもこの表明には意味がある ── <b>フォールバックの注記が出ていない</b>ことが、
+    /// WebView2 の初期化が実際に成功したことの唯一の自動的な証拠である。
+    /// アンパッケージ発行での WinRT アクティベーションが壊れると、ここが最初に落ちる。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void TheLogScreen_ShowsTheTerminal_NotTheFallbackList()
+    {
+        var settings = new SettingsFile();
+        settings.AddRecorder("R1");
+
+        using var instance = AppInstance.Create(app, settings);
+        using var ui = AppUi.Activate(instance);
+
+        ui.SwitchTo(UiSection.Log);
+        output.WriteLine(ui.DescribeVisibleElements());
+
+        var terminal = ui.WaitForElement("logTerminalView");
+        Assert.True(terminal.Properties.IsEnabled.ValueOrDefault);
+        _ = ui.WaitForElement("CopyAllLogButton");
+
+        // 注記が出ているなら WebView2 を諦めてリスト表示に落ちている
+        Assert.Null(ui.TryFindElement("LogTerminalUnavailableText", TimeSpan.FromSeconds(2)));
+
+        // 画面からはどちらのレンダラーか分からないので、記録側で確かめる。
+        // ここが「WebView2 が実際に起きて JS が走った」ことの唯一の自動的な証拠
+        var terminalEvents = ActivityLogFile.Events(instance.ReadActivityLog(), "log.terminal");
+        output.WriteLine(string.Join(Environment.NewLine, terminalEvents));
+        Assert.Contains(terminalEvents, e => e.Contains("ready renderer=", StringComparison.Ordinal));
+        Assert.DoesNotContain(terminalEvents, e => e.Contains("fallback=list", StringComparison.Ordinal));
+    }
+
+    /// <summary>
     /// アプリのトップレベルウィンドウの一覧を診断として残す。
     ///
     /// <para>
