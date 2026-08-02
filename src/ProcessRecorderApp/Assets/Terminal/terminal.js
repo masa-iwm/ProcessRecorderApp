@@ -13,6 +13,8 @@
 //     C# 側が「いつスクリプトが走ったか」を知る確実な手段がこれしか無いため。
 //   - 書き込みの ack（'a'）が唯一のフロー制御。C# は ack を待ってから次を送る。
 //     ここを返さないとログが止まるので、write のコールバックからは必ず返すこと。
+//   - 選択範囲のコピーは Ctrl+C も右クリックメニューも 'c' の 1 経路に集約する。
+//     クリップボードへ入れるのは C# 側（navigator.clipboard の可否に依存させない）。
 'use strict';
 
 (function () {
@@ -43,6 +45,9 @@
         brightYellow: colors[11], brightBlue: colors[12], brightMagenta: colors[13],
         brightCyan: colors[14], brightWhite: colors[15],
         selectionBackground: '#4DFFFFFF',
+        // フォーカスが外れているとき（右クリックメニューを出したとき等）の選択色。
+        // 指定しないと xterm 既定の水色になり、Campbell の見た目から浮く
+        selectionInactiveBackground: '#33FFFFFF',
       },
     };
   }
@@ -71,8 +76,12 @@
       disableStdin: true,
       cursorBlink: false,
       cursorInactiveStyle: 'none',
-      // 生の \r\n をそのまま解釈させる。true にすると \n が \r\n 扱いになり二重に効く
-      convertEol: false,
+      // **必須。** 捕捉している出力は GStreamer のデバッグ出力で、行末は LF だけである。
+      // 端末は LF を「1 行下へ・桁はそのまま」と解釈するので、false のままだと
+      // 行が右へ右へと階段状にずれていく（実測。右端で切れているようにも見える）。
+      // true にすると LF を CRLF として扱う。\r 単独の意味（桁 0 へ戻る＝進捗表示の
+      // 上書き）は変わらないので、CR による行上書きは true でもそのまま効く。
+      convertEol: true,
       smoothScrollDuration: 0,
       allowProposedApi: false,
       rightClickSelectsWord: false,
@@ -177,6 +186,11 @@
     }
     if (tag === 'n') {
       term.options.scrollback = parseInt(message.slice(2), 10);
+      return;
+    }
+    if (tag === 'x') {
+      // 右クリックメニューの「コピー」。Ctrl+C とまったく同じ経路へ流す
+      if (term.hasSelection()) { post('c' + US + term.getSelection()); }
       return;
     }
   });

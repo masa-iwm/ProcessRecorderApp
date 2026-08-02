@@ -85,6 +85,7 @@ public sealed partial class LogTerminalView : UserControl
     private int _consecutiveAckTimeouts;
     private int _processFailures;
 
+
     /// <summary>初期化がどこで失敗したか（記録に残す。画面の注記は理由を名指ししない）</summary>
     private string _initializeFailure = "init-failed";
 
@@ -294,7 +295,10 @@ public sealed partial class LogTerminalView : UserControl
         settings.IsScriptEnabled = true;          // 必須
         settings.IsWebMessageEnabled = true;      // 必須（ブリッジ）
         settings.AreDevToolsEnabled = false;
-        settings.AreDefaultContextMenusEnabled = false;
+        // 既定メニュー（再読み込み・ページの保存など）は要らないが、**無効にはしない**
+        // ── 無効にすると ContextMenuRequested が来なくなり、独自の「コピー」も出せない。
+        // 中身は下の ContextMenuRequested で丸ごと差し替える
+        settings.AreDefaultContextMenusEnabled = true;
         settings.IsStatusBarEnabled = false;
         settings.IsZoomControlEnabled = false;
         settings.IsPinchZoomEnabled = false;
@@ -308,7 +312,7 @@ public sealed partial class LogTerminalView : UserControl
 
         core.NewWindowRequested += (_, e) => e.Handled = true;
         core.DownloadStarting += (_, e) => e.Cancel = true;
-        core.ContextMenuRequested += (_, e) => e.Handled = true;
+        core.ContextMenuRequested += OnContextMenuRequested;
         core.NavigationStarting += (_, e) =>
             e.Cancel = !e.Uri.StartsWith($"https://{VirtualHost}/", StringComparison.OrdinalIgnoreCase);
         core.WebMessageReceived += OnWebMessageReceived;
@@ -476,6 +480,36 @@ public sealed partial class LogTerminalView : UserControl
     }
 
     private void SendFollow(bool follow) => Send($"f{Separator}{(follow ? '1' : '0')}");
+
+    /// <summary>
+    /// 右クリックメニューを「コピー」1 項目だけに差し替える
+    /// （リスト表示のときの <c>ListViewCopyBehavior</c> と同じ文言・同じ挙動。
+    /// 文言のリソースキーも同じものを引いている）。
+    ///
+    /// <para>
+    /// <b>項目は常に有効にする。</b> メニューは同期に組み立てなければならず、
+    /// 選択の有無をその場で JS へ問い合わせる余地が無い。状態を先回りで持つ形にすると
+    /// 「選択しているのに押せない」という壊れ方をしうるので、押してから
+    /// 選択が無ければ何もしない側に倒す ── <c>ListViewCopyBehavior.CopySelectedItems</c> も
+    /// 同じ倒し方をしている。コピー自体は Ctrl+C とまったく同じ経路
+    /// （JS へ要求 → <c>'c'</c> で受け取る）。
+    /// </para>
+    /// </summary>
+    private void OnContextMenuRequested(CoreWebView2 sender, CoreWebView2ContextMenuRequestedEventArgs args)
+    {
+        args.MenuItems.Clear();
+        if (_environment is null)
+        {
+            return;
+        }
+
+        var copy = _environment.CreateContextMenuItem(
+            Localization.GetString("Controls/ControlsResources/Common_Copy"),
+            iconStream: null,
+            CoreWebView2ContextMenuItemKind.Command);
+        copy.CustomItemSelected += (_, _) => Send($"x{Separator}");
+        args.MenuItems.Add(copy);
+    }
 
     private void SendScrollback(int lines)
     {
