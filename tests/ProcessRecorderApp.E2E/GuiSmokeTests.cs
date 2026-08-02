@@ -70,15 +70,25 @@ public sealed class GuiSmokeTests(PublishedApp app, ITestOutputHelper output)
         Assert.True(terminal.Properties.IsEnabled.ValueOrDefault);
         _ = ui.WaitForElement("CopyAllLogButton");
 
-        // 注記が出ているなら WebView2 を諦めてリスト表示に落ちている
-        Assert.Null(ui.TryFindElement("LogTerminalUnavailableText", TimeSpan.FromSeconds(2)));
+        // **要素が出た時点ではまだ端末は動いていない。** 初回表示では WebView2 の
+        // コールドスタート（ユーザーデータフォルダーの作成とブラウザープロセスの起動）が
+        // 入るので、決着まで待つ。開発機の暖まった状態では 1 秒台だが、ランナーの
+        // 初回は数十秒かかりうる ── 短く見積もると「まだ出ていない」を
+        // 「起きなかった」と読み違える。
+        Assert.True(
+            instance.WaitForActivityLogEvent("log.terminal", TimeSpan.FromSeconds(120)),
+            "Log 画面を開いたのに log.terminal が 120 秒以内に出ませんでした。" +
+            Environment.NewLine + instance.DiagnosticDump());
 
         // 画面からはどちらのレンダラーか分からないので、記録側で確かめる。
         // ここが「WebView2 が実際に起きて JS が走った」ことの唯一の自動的な証拠
         var terminalEvents = ActivityLogFile.Events(instance.ReadActivityLog(), "log.terminal");
         output.WriteLine(string.Join(Environment.NewLine, terminalEvents));
-        Assert.Contains(terminalEvents, e => e.Contains("ready renderer=", StringComparison.Ordinal));
         Assert.DoesNotContain(terminalEvents, e => e.Contains("fallback=list", StringComparison.Ordinal));
+        Assert.Contains(terminalEvents, e => e.Contains("ready renderer=", StringComparison.Ordinal));
+
+        // 注記が出ているなら WebView2 を諦めてリスト表示に落ちている
+        Assert.Null(ui.TryFindElement("LogTerminalUnavailableText", TimeSpan.FromSeconds(2)));
     }
 
     /// <summary>
