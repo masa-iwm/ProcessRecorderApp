@@ -174,16 +174,30 @@ public partial class AppSettings : JsonSettingsBase<AppSettings>
     public partial bool UiaTriggersEnabled { get; set; } = true;
 
     /// <summary>
-    /// トリガ一覧の編集の起動口。「…」ボタンでトリガ一覧エディタを開く
-    /// （MainPage が <c>PropertyGridView.ValueBuilder</c> にこのキーで応答する）。
-    /// 値そのものに意味は無く、トリガの正本は <see cref="UiaTriggers"/> なので永続化もしない。
+    /// トリガ一覧の編集の起動口。<b>現在のトリガ件数を表示するだけ</b>で、直接は編集できない
+    /// （<c>[ReadOnly(true)]</c> ＋ <c>[ValueBuilder]</c> ＝「ビルダーでのみ変更できる」）。
+    /// 「…」ボタンでトリガ一覧エディタが開く（MainPage が
+    /// <c>PropertyGridView.ValueBuilder</c> にこのキーで応答する）。
+    /// トリガの正本は <see cref="UiaTriggers"/> なので、この値は永続化しない。
     /// </summary>
     [System.ComponentModel.Category("PropCat_Triggers")]
     [System.ComponentModel.Description("PropDesc_UiaTriggerList")]
+    [System.ComponentModel.ReadOnly(true)]
     [ValueBuilder(UiaTriggerBuilderKey)]
     [JsonIgnore]
     [ObservableProperty]
     public partial string UiaTriggerList { get; set; } = "";
+
+    /// <summary>
+    /// <see cref="UiaTriggerList"/> に出す件数の表示文字列。
+    /// キーは文字列リテラルで渡す ── 補間で組むと L4 が参照を拾えず、未参照キーとして報告される。
+    /// </summary>
+    private static string FormatTriggerCount(int count)
+        => Components.Localization.GetString("Resources/TriggerList_Count", count);
+
+    partial void OnUiaTriggersChanged(List<UiaTrigger.Models.TriggerDefinition> value)
+        // null は手で編集された settings.json（"UiaTriggers": null）で起こりうる
+        => UiaTriggerList = FormatTriggerCount(value is null ? 0 : value.Count);
 
     /// <summary>
     /// <see cref="UiaTriggerList"/> のビルダー識別キー。
@@ -486,9 +500,10 @@ public partial class AppSettings : JsonSettingsBase<AppSettings>
         RecordingRetentionDays = loaded.RecordingRetentionDays;
         RecordingCleanupIntervalHours = loaded.RecordingCleanupIntervalHours;
         UiaTriggersEnabled = loaded.UiaTriggersEnabled;
-        UiaTriggerList = loaded.UiaTriggerList;
         // トリガ定義は差し替え運用（要素を in-place 変更しない）なので参照コピーでよい
         UiaTriggers = loaded.UiaTriggers;
+        // UiaTriggerList は表示専用の件数。永続値が無いので loaded からは写さず、ここで組み立てる
+        UiaTriggerList = FormatTriggerCount(UiaTriggers.Count);
         DataVersion = loaded.DataVersion;
         // loaded 側の OnLoaded() が static ストアへの復元まで済ませている。
         // ここは永続化用の器を揃えるだけ。
@@ -516,6 +531,11 @@ public partial class AppSettings : JsonSettingsBase<AppSettings>
         // 後ろに置いてあると「移行前のデータで static ストアを seed してしまう」。
         // 通るテストからは見えない種類の不具合なので、先に置いておく。
         Migrate();
+
+        // 件数の表示を読み込み結果に揃える。**フックだけに任せてはいけない**
+        // ── settings.json に UiaTriggers キーが無いと setter が呼ばれず
+        // OnUiaTriggersChanged も走らないので、空欄のまま残る。
+        UiaTriggerList = FormatTriggerCount(UiaTriggers.Count);
 
         // 読み込み値を GStreamer 層の static ミラーへ反映する。
         // （[ObservableProperty] の OnChanged は「変化した場合」しか走らないため、

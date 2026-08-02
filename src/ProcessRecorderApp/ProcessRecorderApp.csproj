@@ -60,8 +60,8 @@
     <!-- 別アプリの UIA 変化を録画トリガ・テンプレート変数にする（監視 API と編集 UI）。
          取得元は GitHub Packages（nuget.config を参照。読み取りにも認証が要る）。
          プレリリースのため Version は完全固定。MIT License -->
-    <PackageReference Include="UiaTrigger.Core" Version="0.1.0-preview.3" />
-    <PackageReference Include="UiaTrigger.Picker.WinUI" Version="0.1.0-preview.3" />
+    <PackageReference Include="UiaTrigger.Core" Version="0.1.0-preview.4" />
+    <PackageReference Include="UiaTrigger.Picker.WinUI" Version="0.1.0-preview.4" />
   </ItemGroup>
 
   <ItemGroup>

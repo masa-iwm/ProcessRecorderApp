@@ -942,12 +942,33 @@ GUIサブシステム（`OutputType=WinExe`）だと、**対話コマンドプ�
   （Unreadable / NotEvaluated は書かない ── 読めていない値で既存の変数を潰さない）。
   書いた変数は Variables 画面とファイル名テンプレートから見える。
 - **録画アクション（設定したものだけ）**: `UiaTriggerAssignments`（トリガ ID ごとの行）の
-  Action（なし / 開始 / 停止）と対象レコーダー（空欄 = 全レコーダー一括）に従う。
+  Action と対象レコーダー（空欄 = 全レコーダー一括）に従う。
   行の増減はトリガ一覧の編集に自動追随する（`TriggerAssignmentReconciler`。
   手動で行を増減する UI は無い）。
 
 処理順は**変数 → アクション**。テンプレートの展開は録画開始の瞬間（`EventRecorder.Start`）
 なので、この順でだけ「発火した値がその録画のファイル名に載る」が成立する。
+
+#### エッジ（立ち上がり／立ち下がり）
+
+トリガはピッカーで「停止時も通知」を入れると、**条件が成立しなくなったとき**にも発火する
+（`TriggerOn.WhileMatching` のときだけ設定できる）。アプリはこれを
+`TriggerFireEdge`（`Rising` / `Falling`）へ写し、割り当てごとに実行する操作を決める:
+
+| Action | 立ち上がり（条件成立） | 立ち下がり（不成立化） |
+|---|---|---|
+| なし | — | — |
+| 開始 | 録画を開始 | **—** |
+| 停止 | 録画を停止 | **—** |
+| 条件成立中のみ録画 | 録画を開始 | 録画を停止 |
+
+**「開始」「停止」を立ち下がりで実行しないことが要点。** エッジを見ないと、
+「停止時も通知」を入れたトリガに「開始」を割り当てたときに**要素が消えた瞬間にも録画が始まる**。
+規則は `TriggerFiringRules.ResolveActions` にあり L1 が守る。写像は「立ち下がり以外はすべて
+立ち上がり」なので、ライブラリのライフサイクルが増えても安全側に落ちる。
+
+変数の反映はエッジに関係なく常に行う（立ち下がりでも `NewValue` は入る ──
+要素が消えた場合は最後に見えた値）。
 
 ### スレッドと寿命
 
@@ -963,6 +984,20 @@ GUIサブシステム（`OutputType=WinExe`）だと、**対話コマンドプ�
   定義エラー（`ArgumentException`）や壊れた設定では現状を維持し、アプリの中核（録画）を
   殺さない。トリガ 0 件・無効スイッチでは監視スレッド自体を作らない
   （E2E はトリガを設定しないので自動的に不活性になる）。
+- **「条件成立中のみ録画」で自動開始した録画は追跡する**（`_autoStarted`。UI スレッド専用）。
+  監視の構成が変わるたびに、**そのトリガの不成立化を今も追えるか**で止めるかどうかを決める
+  （`ReconcileAutoStartedAsync`）。1 つの規則で 3 つの場合を覆う:
+  監視を止めた → 全部止める／トリガ編集で入れ替わったが当のトリガは健在 → 止めない
+  （`TriggerMonitorOptions.FireOnInitialMatch` が**既定 true**で再評価する）／
+  **当のトリガが消えた・「停止時も通知」が外れた・割り当てが変わった → 止める**
+  （立ち下がりが永久に来ないので、これが無いと録画が残り続ける）。
+  `Dispose`（アプリ終了）では止めない ── `engine.Dispose()` が録画を確定させる。
+  - **限界**: 追跡はレコーダー名の集合であって録画セッションの同一性ではない。
+    トリガで始めた録画を手動で止め、手動で録り直すと、その録画も自動停止に巻き込まれうる。
+  - モニタには**世代**（`_monitorEpoch`）を持たせ、退役したモニタの発火が後から実行されるのを弾く
+    ── 発火の処理は `WaitForControllerAsync` を待つので、「開始が積まれた直後に監視が止まり、
+    後始末が先に走り抜けてから開始が再開する」順序が成立しうる。そうなると
+    **トリガを切ったのに録画が回り続け、追跡もされていない**状態になる。
 
 ### 設定の持ち方
 
@@ -971,6 +1006,13 @@ GUIサブシステム（`OutputType=WinExe`）だと、**対話コマンドプ�
   `UiaTriggerList` 行の「…」ボタン → `TriggerListEditorWindow`（**非モーダル**。開いている
   あいだは再入ガードで 2 枚目を開かせない）だけで、確定は**リストごとの差し替え**
   ── その `PropertyChanged` がデバウンス保存と監視の再起動を連鎖させる。
+- `UiaTriggerList` 行は**現在の件数を表示するだけで直接は編集できない**
+  （`[ReadOnly(true)]` ＋ `[ValueBuilder]` ＝「ビルダーでのみ変更できる」）。
+  `PropertyGridView` の `BuilderTextEditTemplate` がこの意味を実装しており、
+  読み取り専用でもテキストを灰色にせず（選択・コピーを残す）「…」は押せる
+  ── ほかの編集種別は従来どおり無効化される。**意図的な差なので揃えないこと。**
+  件数は `OnUiaTriggersChanged` と `OnLoaded` で同期する（settings.json に
+  `UiaTriggers` キーが無いと setter が走らないので、読み込み完了時の 1 回が要る）。
 - 割り当ての選択肢（Action・対象レコーダー）は `MainPage.ProvideChoices` が供給する
   （保存値は英字のまま・表示だけローカライズ。`PropertyGridChoice` の Value/Display 分離）。
   選択肢は**項目の生成時に 1 回だけ**確定するので、開いたままの一覧にはレコーダーの改名が
@@ -984,14 +1026,22 @@ GUIサブシステム（`OutputType=WinExe`）だと、**対話コマンドプ�
 監視はイベント購読式で、**相手アプリが UIA のイベントを上げなければ発火しない**。
 プロパティによっては PropertyChanged を一切上げないアプリがあり、その場合はトリガ単位の
 `PollInterval`（ピッカーで設定できる）で解決済み要素だけが読み直される。
+**「条件成立中のみ録画」の立ち下がりも同じ制約を受ける** ── 止まらないときはまず
+`PollInterval` の未設定を疑う（症状が「機能が壊れている」と見分けがつかない）。
+
+「停止時も通知」を `WhileMatching` 以外のライフサイクルに付けた定義はライブラリが拒否し、
+`StartAsync` が例外になる → `trigger.monitor fail` が出て**旧モニタが続投する**
+（＝設定を変えたのに反映されない、という形で現れる）。
+
 経緯の診断は activity.log の `trigger.*` イベントで行う:
 
 | イベント | 意味 |
 |---|---|
 | `trigger.monitor start` / `trigger.monitor stop` / `trigger.monitor fail` | 監視の開始（トリガ数付き）・停止・起動失敗（定義エラー等。旧モニタは続投） |
-| `trigger.fire` | 発火（ID と NewValue） |
+| `trigger.fire` | 発火（ID・**エッジ**・NewValue）。`edge=Falling` が「条件が成立しなくなった」 |
 | `trigger.resolve` | 対象要素の解決状態の変化 |
-| `trigger.start` / `trigger.stop` / `trigger.stop failed` | 実行した録画アクション（停止は成果物の使える/使えないでイベント名を分ける） |
+| `trigger.start` / `trigger.stop` / `trigger.stop failed` | 実行した録画アクション（停止は成果物の使える/使えないでイベント名を分ける）。監視の構成変更に伴う自動停止は `reason=monitor-stop` が付く |
+| `trigger.assign warn` | 「条件成立中のみ録画」を割り当てたのに、そのトリガが不成立化を通知できない（`WhileMatching` ＋「停止時も通知」になっていない）── **開始しても止まらない** |
 | `trigger.action skip` / `trigger.action fail` / `trigger.action drop` | Can* ガードで弾いた / 対象レコーダー不在・エンジン未準備 / ディスパッチャ停止中 |
 | `trigger.name warn` | テンプレートから参照できないキー |
 | `trigger.error` | 監視・発火処理の例外 |
@@ -1335,15 +1385,28 @@ error APPX0002: Task 'WinAppSdkExpandPriContent' failed. Could not find file
 このフィードへ向けており、他のパッケージの解決経路は変わらない。
 
 **GitHub Packages は読み取りにも認証が必須**（無認証の index.json は 401）。
-資格情報は環境変数で与える:
+資格情報は環境変数で与える。**専用の PAT を作る必要は無い** ── gh CLI のトークンに
+スコープを足して使えば、実体は gh が Windows 資格情報マネージャーで保管し、
+作成・保管・失効管理をこちらで持たずに済む:
 
 ```powershell
-# PAT (classic) を read:packages スコープのみで発行しておくこと
-setx GITHUB_PACKAGES_USER masa-iwm
-setx GITHUB_PACKAGES_TOKEN <PAT>
+gh auth refresh -h github.com -s read:packages   # 1 回だけ（ブラウザで承認）
+
+# 開発シェル（PowerShell プロファイル等）で
+$env:GITHUB_PACKAGES_USER  = 'masa-iwm'
+$env:GITHUB_PACKAGES_TOKEN = gh auth token
 ```
 
-未設定のときの症状は「github ソースだけ 401/403 になり、`UiaTrigger.*` の解決だけが
+**`gh auth token` は既定では `read:packages` を持たない。** その状態は紛らわしい形で現れる
+── フィードの `index.json` は **200** を返すのに、nupkg の取得だけが **403** になる
+（`gh auth status` の Token scopes で確認できる）。
+
+PAT を使う道もある（classic のみ。**GitHub Packages の NuGet レジストリは
+fine-grained PAT に対応していない**）。その場合もスコープは `read:packages` だけにし、
+`setx` での永続化は避ける ── ユーザー環境変数（レジストリ）に平文で残り、
+そのユーザーの全プロセスから読める。
+
+いずれも未設定のときの症状は「github ソースだけ 401/403 になり、`UiaTrigger.*` の解決だけが
 `NU1301` で失敗する」（他プロジェクトの復元は成功する）。CI では `GITHUB_TOKEN` を
 同じ環境変数へ写して復元する（[docs/ci.md](../docs/ci.md)）。
 UiaTrigger を nuget.org へ公開したら、`nuget.config` の github の 3 ブロックを消し、

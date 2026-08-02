@@ -348,7 +348,7 @@
     <value>別アプリの UI を監視する UI Automation トリガ全体の有効/無効。オフにすると監視スレッドごと停止し、テンプレート変数の更新も録画の開始・停止も行われない。</value>
   </data>
   <data name="PropDesc_UiaTriggerList" xml:space="preserve">
-    <value>「…」ボタンでトリガ定義の一覧を編集する。各トリガは別アプリの UI 要素を監視し、条件成立で発火する。この行の文字列そのものに意味はない。</value>
+    <value>トリガ定義の件数を表示する。編集は「…」ボタンから行い、この欄には直接入力できない。各トリガは別アプリの UI 要素を監視し、条件成立で発火する。</value>
   </data>
   <data name="PropDesc_UiaTriggerAssignments" xml:space="preserve">
     <value>トリガが発火したときに録画へ行う操作。行はトリガ一覧に自動で追随する。発火した値のテンプレート変数への反映は、この設定に関係なく常に行われる。</value>
@@ -370,6 +370,12 @@
   </data>
   <data name="TriggerAction_Stop" xml:space="preserve">
     <value>録画を停止</value>
+  </data>
+  <data name="TriggerAction_While" xml:space="preserve">
+    <value>条件成立中のみ録画</value>
+  </data>
+  <data name="TriggerList_Count" xml:space="preserve">
+    <value>トリガ定義 {0} 件</value>
   </data>
   <data name="TriggerTarget_AllRecorders" xml:space="preserve">
     <value>（全レコーダー）</value>

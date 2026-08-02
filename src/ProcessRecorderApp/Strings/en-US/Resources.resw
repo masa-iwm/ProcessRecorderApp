@@ -348,7 +348,7 @@
     <value>Enable the UI Automation triggers that watch other applications' UI. Turning this off stops the monitoring thread entirely: template variables stop updating and no trigger starts or stops recording.</value>
   </data>
   <data name="PropDesc_UiaTriggerList" xml:space="preserve">
-    <value>Edit the trigger definitions with the "..." button. Each trigger watches a UI element of another application and fires when its condition is met. The text of this row itself has no meaning.</value>
+    <value>Shows how many trigger definitions there are. Edit them with the "..." button — the text cannot be typed into. Each trigger watches a UI element of another application and fires when its condition is met.</value>
   </data>
   <data name="PropDesc_UiaTriggerAssignments" xml:space="preserve">
     <value>What each trigger does to recording when it fires. Rows follow the trigger list automatically. The fired values are always written to the template variables regardless of this setting.</value>
@@ -370,6 +370,12 @@
   </data>
   <data name="TriggerAction_Stop" xml:space="preserve">
     <value>Stop recording</value>
+  </data>
+  <data name="TriggerAction_While" xml:space="preserve">
+    <value>Record while matching</value>
+  </data>
+  <data name="TriggerList_Count" xml:space="preserve">
+    <value>{0} trigger(s) defined</value>
   </data>
   <data name="TriggerTarget_AllRecorders" xml:space="preserve">
     <value>(all recorders)</value>

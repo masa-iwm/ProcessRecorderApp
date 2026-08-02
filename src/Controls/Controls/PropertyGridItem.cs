@@ -61,7 +61,16 @@ public sealed partial class PropertyGridItem : INotifyPropertyChanged
     /// <summary>プロパティ名セルの ToolTip 用。長い名前でも全文を確認できるように Description と結合する。</summary>
     public string ToolTipText => string.IsNullOrEmpty(Description) ? Name : $"{Name}\n{Description}";
 
-    /// <summary>true の場合、編集コントロールは無効化され値は変更できない。</summary>
+    /// <summary>
+    /// true の場合、利用者は値を直接編集できない（<see cref="Value"/> の setter もコミットしない）。
+    ///
+    /// <para>
+    /// 見え方は編集の種類で異なる。<see cref="PropertyEditKind.Builder"/> の行だけは
+    /// テキストを無効化せず読み取り専用にし（選択・コピーを残す）、「…」ボタンも押せる
+    /// ── <c>[ReadOnly(true)]</c> ＋ <c>[ValueBuilder]</c> は「直接は編集できないが
+    /// ビルダーでなら変更できる」という意味だからである。ほかの種類は無効化される。
+    /// </para>
+    /// </summary>
     public bool IsReadOnly { get; init; }
     public bool IsEditable => !IsReadOnly;
 

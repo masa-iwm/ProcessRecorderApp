@@ -45,6 +45,14 @@
         <!--
             文字列＋外部ビルダー: テキスト編集に加え、右端の「…」ボタンで編集支援ダイアログを起動する。
             TextEditTemplate と同じ表示/折り返し/エラー表示を踏襲しつつ、ボタン列を追加している。
+
+            **読み取り専用の扱いが TextEditTemplate と意図的に違う。**
+            `[ReadOnly(true)]` ＋ `[ValueBuilder]` は「直接は編集できないが、ビルダーでなら変更できる」
+            という意味なので、こちらでは
+              - テキストは IsEnabled ではなく IsReadOnly で止める（灰色にせず、選択・コピーを残す）
+              - 「…」は IsEditable に縛らない（読み取り専用でも押せなければビルダーへ到達できない）
+            としている。TextEditTemplate は従来どおり IsEnabled で無効化する。
+            **この差は意図であって、揃えないこと。**
         -->
         <DataTemplate x:Key="BuilderTextEditTemplate" x:DataType="local:PropertyGridItem">
             <StackPanel Spacing="2" HorizontalAlignment="Stretch">
@@ -58,7 +66,7 @@
                             ToolTipService.ToolTip="{x:Bind Value, Mode=OneWay}"
                             ToolTipService.Placement="Mouse">
                         <TextBox Text="{x:Bind Value, Mode=TwoWay}"
-                                 IsEnabled="{x:Bind IsEditable}"
+                                 IsReadOnly="{x:Bind IsReadOnly}"
                                  HorizontalAlignment="Stretch"
                                  TextWrapping="Wrap"
                                  AcceptsReturn="False"
@@ -67,11 +75,10 @@
                                  au:AutomationProperties.Name="{x:Bind Name}"
                                  au:AutomationProperties.AutomationId="{x:Bind PropertyName}" />
                     </Border>
-                    <!-- 「…」= 編集支援ダイアログの起動 -->
+                    <!-- 「…」= 編集支援ダイアログの起動。読み取り専用でも押せる（上のコメント参照） -->
                     <Button Grid.Column="1"
                             Content="&#x2026;"
                             Command="{x:Bind BuildCommand}"
-                            IsEnabled="{x:Bind IsEditable}"
                             VerticalAlignment="Top"
                             au:AutomationProperties.Name="{x:Bind local:PropertyGridStrings.Build}"
                             au:AutomationProperties.AutomationId="{x:Bind BuilderButtonAutomationId}" />

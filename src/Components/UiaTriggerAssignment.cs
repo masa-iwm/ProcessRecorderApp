@@ -34,6 +34,18 @@ public partial class UiaTriggerAssignment : ObservableObject, IPropertyAccess
     /// <summary><see cref="Action"/> の保存値: 録画を停止する。</summary>
     public const string ActionStop = "Stop";
 
+    /// <summary>
+    /// <see cref="Action"/> の保存値: 条件が成立している間だけ録画する
+    /// （成立で開始・不成立で停止）。
+    ///
+    /// <para>
+    /// これが効くのは<b>トリガが不成立化を通知できるときだけ</b> ── UiaTrigger 側で
+    /// ライフサイクルが <c>WhileMatching</c> かつ「停止時も通知」が入っている必要がある
+    /// （満たさない割り当ては開始しても止まらないので、監視の起動時に警告を出す）。
+    /// </para>
+    /// </summary>
+    public const string ActionWhile = "While";
+
     /// <summary>PropertyGridView 向けのプロパティ列挙(自型の public インスタンスプロパティを返す)。</summary>
     public IEnumerable<PropertyInfo> GetProperties()
         => typeof(UiaTriggerAssignment).GetProperties(BindingFlags.Instance | BindingFlags.Public);
@@ -49,8 +61,8 @@ public partial class UiaTriggerAssignment : ObservableObject, IPropertyAccess
 
     /// <summary>
     /// 発火時の録画アクション。保存値は <see cref="ActionNone"/> / <see cref="ActionStart"/> /
-    /// <see cref="ActionStop"/>（表示名はホストの ChoiceProvider がローカライズする。
-    /// enum にしない理由は <see cref="ChoiceListAttribute"/> を参照）。
+    /// <see cref="ActionStop"/> / <see cref="ActionWhile"/>（表示名はホストの ChoiceProvider が
+    /// ローカライズする。enum にしない理由は <see cref="ChoiceListAttribute"/> を参照）。
     /// </summary>
     [Description("PropDesc_Trigger_Action")]
     [ChoiceList(ActionChoiceListKey)]

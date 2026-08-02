@@ -57,6 +57,29 @@ public sealed partial class UiaTriggerService : IDisposable
     private readonly SemaphoreSlim _gate = new(1, 1);
     /// <summary>テンプレートから参照できないキーの警告を 1 回に抑える。lock して使う。</summary>
     private readonly HashSet<string> _warnedKeys = [];
+
+    /// <summary>
+    /// 「条件成立中のみ録画」で自動開始した録画。<b>UI スレッドでのみ触る</b>
+    /// （<see cref="ExecuteActionsAsync"/> 系と <see cref="ReconcileAutoStartedAsync"/> だけが読み書きする）。
+    /// 監視が条件を追えなくなったときに止めてよいのはここに載っているものだけである。
+    /// </summary>
+    private readonly HashSet<(string TriggerId, string Recorder)> _autoStarted = [];
+
+    /// <summary>不成立化を通知できないトリガへの警告を 1 回に抑える。<b>UI スレッド専用</b>。</summary>
+    private readonly HashSet<string> _warnedWhileTriggers = [];
+
+    /// <summary>
+    /// モニタの世代。入れ替え・破棄のたびに <see cref="_gate"/> の中で増やす。
+    ///
+    /// <para>
+    /// 発火の処理は <c>WaitForControllerAsync</c> を待つので、
+    /// 「立ち上がりの開始が積まれた直後に監視が止まる → 後始末が先に走り抜ける →
+    /// その後で開始が再開する」順序が成立しうる。そうなると<b>トリガを切ったのに録画が回り続け、
+    /// しかも追跡もされていない</b>。世代が変わっていたら実行しないことで塞ぐ。
+    /// </para>
+    /// </summary>
+    private int _monitorEpoch;
+
     private TriggerMonitor? _monitor;
     private volatile bool _disposed;
 
@@ -94,8 +117,9 @@ public sealed partial class UiaTriggerService : IDisposable
                 return;
 
             bool enabled = Settings.AppSettings.Default.UiaTriggersEnabled;
-            // UiaTriggers は差し替え運用（AppSettings 側のコメント参照）なので参照読みで安全
-            List<TriggerDefinition> definitions = Settings.AppSettings.Default.UiaTriggers;
+            // UiaTriggers は差し替え運用（AppSettings 側のコメント参照）なので参照読みで安全。
+            // null は手で編集された settings.json（"UiaTriggers": null）で起こりうる。
+            List<TriggerDefinition> definitions = Settings.AppSettings.Default.UiaTriggers ?? [];
 
             if (!enabled || definitions.Count == 0)
             {
@@ -106,9 +130,14 @@ public sealed partial class UiaTriggerService : IDisposable
                     await old.DisposeAsync().ConfigureAwait(false);
                     ActivityLog.Info("trigger.monitor stop");
                 }
+                // 条件を追える定義が 1 つも無くなったので、自動開始した録画はすべて止める
+                EnqueueReconcile(new HashSet<string>(StringComparer.Ordinal));
                 return;
             }
 
+            // FireOnInitialMatch は既定 true のまま使う（明示していない既定値への依存）。
+            // これが効くので、トリガ編集による入れ替えの直後に条件が成立していれば
+            // 立ち上がりが届き、「条件成立中のみ録画」が録り直される。
             var monitor = new TriggerMonitor(new TriggerMonitorOptions
             {
                 Session = new UiaTrigger.UiaSessionOptions { ThreadName = "UiaTriggerMonitor" },
@@ -144,6 +173,13 @@ public sealed partial class UiaTriggerService : IDisposable
                 if (!TriggerFiringRules.IsTemplateReferencable(definition.Id))
                     WarnKeyOnce(definition.Id);
             }
+
+            // 不成立化を通知できる定義だけを渡す。割り当ての側（UI スレッド所有の
+            // ObservableCollection）はここでは読まず、突き合わせは UI スレッドで行う。
+            EnqueueReconcile(definitions
+                .Where(d => d.On == TriggerOn.WhileMatching && d.NotifyOnStoppedMatching)
+                .Select(d => d.Id)
+                .ToHashSet(StringComparer.Ordinal));
         }
         catch (Exception ex)
         {
@@ -167,15 +203,21 @@ public sealed partial class UiaTriggerService : IDisposable
                 clauses[i] = new(reading.Name, reading.Value.Value ?? "", MapOutcome(reading.Outcome));
             }
 
+            // 変数の反映はエッジに関係なく常に行う。立ち下がりでも NewValue は入る
+            // （要素が消えた場合は最後に見えた値）。
             foreach (var pair in TriggerFiringRules.BuildVariables(e.TriggerId, e.NewValue.Value ?? "", clauses))
             {
                 GStreamer.EventRecorder.SetTemplateVariable(pair.Key, pair.Value);
                 if (!TriggerFiringRules.IsTemplateReferencable(pair.Key))
                     WarnKeyOnce(pair.Key);
             }
-            ActivityLog.Info("trigger.fire", $"id='{e.TriggerId}' value='{e.NewValue.Value}'");
 
-            if (!_dispatcherQueue.TryEnqueue(() => _ = ExecuteActionsAsync(e.TriggerId)))
+            TriggerFireEdge edge = MapEdge(e.On);
+            // エッジを出さないと、立ち下がりが届いているのかどうかをログから判定できない。
+            ActivityLog.Info("trigger.fire", $"id='{e.TriggerId}' edge={edge} value='{e.NewValue.Value}'");
+
+            int epoch = Volatile.Read(ref _monitorEpoch);
+            if (!_dispatcherQueue.TryEnqueue(() => _ = ExecuteActionsAsync(e.TriggerId, edge, epoch)))
             {
                 // false はディスパッチャのシャットダウン中＝終了経路。黙って捨てない。
                 ActivityLog.Warn("trigger.action drop", $"id='{e.TriggerId}' dispatcher unavailable");
@@ -187,6 +229,13 @@ public sealed partial class UiaTriggerService : IDisposable
             ActivityLog.Error("trigger.error", ex.ToString());
         }
     }
+
+    /// <summary>
+    /// 上流のライフサイクルをエッジへ写す。<b>立ち下がり以外はすべて立ち上がり扱い</b>にして、
+    /// 上流に値が増えても安全側（通常の発火）へ落ちるようにする。
+    /// </summary>
+    private static TriggerFireEdge MapEdge(TriggerOn on)
+        => on == TriggerOn.StoppedMatching ? TriggerFireEdge.Falling : TriggerFireEdge.Rising;
 
     /// <summary>
     /// 上流の <see cref="ClauseOutcome"/> を Components のミラーへ写す。
@@ -202,16 +251,16 @@ public sealed partial class UiaTriggerService : IDisposable
     };
 
     /// <summary>割り当てに従って録画を開始/停止する（UI スレッド）。</summary>
-    private async Task ExecuteActionsAsync(string triggerId)
+    private async Task ExecuteActionsAsync(string triggerId, TriggerFireEdge edge, int epoch)
     {
         try
         {
-            if (_disposed)
+            if (_disposed || Volatile.Read(ref _monitorEpoch) != epoch)
                 return;
 
             // ObservableCollection は UI スレッド所有なので、読むのもここでだけ行う
             var requests = TriggerFiringRules.ResolveActions(
-                triggerId, Settings.AppSettings.Default.UiaTriggerAssignments);
+                triggerId, edge, Settings.AppSettings.Default.UiaTriggerAssignments);
             if (requests.Count == 0)
                 return;
 
@@ -222,10 +271,14 @@ public sealed partial class UiaTriggerService : IDisposable
                 return;
             }
 
+            // 待っている間に監視が止まった／入れ替わったなら、この発火はもう我々のものではない。
+            if (_disposed || Volatile.Read(ref _monitorEpoch) != epoch)
+                return;
+
             foreach (var request in requests)
             {
                 if (request.TargetRecorder.Length == 0)
-                    await ExecuteForAllAsync(triggerId, request.Kind, controller);
+                    await ExecuteForAllAsync(triggerId, request, controller);
                 else
                     await ExecuteForSingleAsync(triggerId, request, controller);
             }
@@ -236,9 +289,9 @@ public sealed partial class UiaTriggerService : IDisposable
         }
     }
 
-    private static async Task ExecuteForAllAsync(string triggerId, TriggerActionKind kind, GstControllerViewModel controller)
+    private async Task ExecuteForAllAsync(string triggerId, TriggerActionRequest request, GstControllerViewModel controller)
     {
-        if (kind == TriggerActionKind.Start)
+        if (request.Kind == TriggerActionKind.Start)
         {
             // Can* ガードは必須 ── 通さないと InvalidOperationException か、
             // 排出待ち（WaitForPendingStop）で UI スレッドが最大約 10 秒固まる。
@@ -247,14 +300,22 @@ public sealed partial class UiaTriggerService : IDisposable
                 ActivityLog.Info("trigger.action skip", $"id='{triggerId}' start target=all: no recorder can start");
                 return;
             }
+            // 実際に開始するものをここで確定してから動かす（停止側の stopping と同じ形）
+            var starting = controller.Recorders.Where(r => r.CanStartRecording).Select(r => r.Name).ToList();
             controller.StartRecordingAll();
             ActivityLog.Info("trigger.start", $"id='{triggerId}' target=all");
+            if (request.TracksCondition)
+                foreach (string name in starting)
+                    _autoStarted.Add((triggerId, name));
             return;
         }
 
         if (!controller.CanStopRecordingAll)
         {
             ActivityLog.Info("trigger.action skip", $"id='{triggerId}' stop target=all: no recorder can stop");
+            // 止められなかった場合も追跡は畳む（このトリガの録画はもう我々が面倒を見ない）
+            if (request.TracksCondition)
+                _autoStarted.RemoveWhere(x => x.TriggerId == triggerId);
             return;
         }
         // 停止対象をここで確定してから待つ（停止後に LastStopOutcome を読む相手を間違えない）
@@ -262,9 +323,11 @@ public sealed partial class UiaTriggerService : IDisposable
         await controller.StopRecordingAllAsync();
         foreach (var recorder in stopping)
             LogStopOutcome(triggerId, recorder);
+        if (request.TracksCondition)
+            _autoStarted.RemoveWhere(x => x.TriggerId == triggerId);
     }
 
-    private static async Task ExecuteForSingleAsync(string triggerId, TriggerActionRequest request, GstControllerViewModel controller)
+    private async Task ExecuteForSingleAsync(string triggerId, TriggerActionRequest request, GstControllerViewModel controller)
     {
         // 名前解決は CLI と同じ「完全一致・先勝ち」（ActivationCommands.ExecuteRecorderCommandAsync）
         var recorder = controller.Recorders.FirstOrDefault(r => r.Name == request.TargetRecorder);
@@ -283,25 +346,121 @@ public sealed partial class UiaTriggerService : IDisposable
             }
             recorder.StartRecording();
             ActivityLog.Info("trigger.start", $"id='{triggerId}' target='{recorder.Name}'");
+            if (request.TracksCondition)
+                _autoStarted.Add((triggerId, recorder.Name));
             return;
         }
 
         if (!recorder.CanStopRecording)
         {
             ActivityLog.Info("trigger.action skip", $"id='{triggerId}' stop '{recorder.Name}': not stoppable");
+            if (request.TracksCondition)
+                _autoStarted.Remove((triggerId, recorder.Name));
             return;
         }
         await recorder.StopRecordingAsync();
         LogStopOutcome(triggerId, recorder);
+        if (request.TracksCondition)
+            _autoStarted.Remove((triggerId, recorder.Name));
     }
 
     /// <summary>停止は成果物の使える/使えないをイベント名で分けて記録する（cleanup.* と同じ規則）。</summary>
-    private static void LogStopOutcome(string triggerId, GstEventRecorderViewModel recorder)
+    private static void LogStopOutcome(string triggerId, GstEventRecorderViewModel recorder, string? reason = null)
     {
+        string tail = reason is null ? "" : $" reason={reason}";
         if (GStreamer.RecordingStopRules.IsUsableArtifact(recorder.LastStopOutcome))
-            ActivityLog.Info("trigger.stop", $"id='{triggerId}' target='{recorder.Name}' file='{recorder.LastFilename}'");
+            ActivityLog.Info("trigger.stop", $"id='{triggerId}' target='{recorder.Name}' file='{recorder.LastFilename}'{tail}");
         else
-            ActivityLog.Warn("trigger.stop failed", $"id='{triggerId}' target='{recorder.Name}' outcome={recorder.LastStopOutcome} file='{recorder.LastFilename}'");
+            ActivityLog.Warn("trigger.stop failed", $"id='{triggerId}' target='{recorder.Name}' outcome={recorder.LastStopOutcome} file='{recorder.LastFilename}'{tail}");
+    }
+
+    /// <summary>
+    /// 監視構成が変わったので、世代を進めて後始末を UI スレッドへ積む（<see cref="_gate"/> の中で呼ぶ）。
+    /// </summary>
+    /// <param name="fallingCapableIds">
+    /// 不成立化を通知できる（＝「条件成立中のみ録画」を完結できる）トリガ ID。監視を止めるときは空。
+    /// </param>
+    private void EnqueueReconcile(IReadOnlySet<string> fallingCapableIds)
+    {
+        int epoch = Interlocked.Increment(ref _monitorEpoch);
+        if (!_dispatcherQueue.TryEnqueue(() => _ = ReconcileAutoStartedAsync(fallingCapableIds, epoch)))
+            ActivityLog.Warn("trigger.action drop", "reconcile: dispatcher unavailable");
+    }
+
+    /// <summary>
+    /// 監視構成が変わったあとの後始末（UI スレッド）。
+    ///
+    /// <para>
+    /// 割り当ては UI スレッド所有の <c>ObservableCollection</c> なので、
+    /// <see cref="ReloadAsync"/>（バックグラウンド）からは定義側の抽出結果だけを受け取り、
+    /// 割り当てを読むのはここでだけ行う。
+    /// </para>
+    /// <para>
+    /// 止める判断は「監視が完全に止まったか」ではなく<b>「そのトリガの不成立化を今も追えるか」</b>で行う。
+    /// 1 つの規則で 3 つの場合を覆えるためである ── 監視を止めた（集合が空）／トリガ編集で
+    /// 入れ替わったが当のトリガは健在（止めない。既定 true の <c>FireOnInitialMatch</c> が再評価する）／
+    /// <b>当のトリガが消えた・通知が外れた・割り当てが変わった（止める）</b>。
+    /// 最後の場合は立ち下がりが永久に来ないので、これが無いと録画が残り続ける。
+    /// </para>
+    /// </summary>
+    private async Task ReconcileAutoStartedAsync(IReadOnlySet<string> fallingCapableIds, int epoch)
+    {
+        try
+        {
+            if (_disposed || Volatile.Read(ref _monitorEpoch) != epoch)
+                return;
+
+            var whileAssigned = TriggerFiringRules.WhileAssignedTriggerIds(
+                Settings.AppSettings.Default.UiaTriggerAssignments);
+
+            // 「条件成立中のみ録画」なのに不成立化を通知できないトリガを知らせる。
+            // 構成が変わるたびに warn し直す（直った・別のトリガで再発した、が伝わるように）。
+            _warnedWhileTriggers.Clear();
+            foreach (string id in whileAssigned)
+            {
+                if (!fallingCapableIds.Contains(id) && _warnedWhileTriggers.Add(id))
+                {
+                    ActivityLog.Warn("trigger.assign warn",
+                        $"id='{id}' is assigned 'record while matching' but the trigger does not notify when it stops matching (needs WhileMatching + notify-on-stopped); a recording it starts will not stop");
+                }
+            }
+
+            // 今も追えるトリガ＝定義が通知でき、かつ割り当てが「条件成立中のみ」のもの
+            var keep = whileAssigned.Where(fallingCapableIds.Contains).ToHashSet(StringComparer.Ordinal);
+            var orphans = _autoStarted.Where(x => !keep.Contains(x.TriggerId)).ToList();
+            if (orphans.Count == 0)
+                return;
+
+            var controller = await ActivationCommands.WaitForControllerAsync();
+            if (_disposed || Volatile.Read(ref _monitorEpoch) != epoch)
+                return;
+            if (controller is null)
+            {
+                ActivityLog.Warn("trigger.action fail", "reconcile: engine not ready");
+                return;
+            }
+
+            foreach (var orphan in orphans)
+            {
+                _autoStarted.Remove(orphan);
+                var recorder = controller.Recorders.FirstOrDefault(r => r.Name == orphan.Recorder);
+                if (recorder is null)
+                    continue;   // レコーダーごと消えた。止めるものが無い
+                if (!recorder.CanStopRecording)
+                {
+                    // 既に手動・CLI・別のトリガで止まっている
+                    ActivityLog.Info("trigger.action skip",
+                        $"id='{orphan.TriggerId}' stop '{recorder.Name}': not stoppable reason=monitor-stop");
+                    continue;
+                }
+                await recorder.StopRecordingAsync();
+                LogStopOutcome(orphan.TriggerId, recorder, reason: "monitor-stop");
+            }
+        }
+        catch (Exception ex)
+        {
+            ActivityLog.Error("trigger.error", ex.ToString());
+        }
     }
 
     private void OnResolutionChanged(object? sender, TriggerResolutionChangedEventArgs e)
@@ -339,6 +498,9 @@ public sealed partial class UiaTriggerService : IDisposable
         if (_disposed)
             return;
         _disposed = true;
+        // 世代を進めて、積まれている発火・後始末を無効化する。
+        // ここで録画は止めない ── 終了経路では engine.Dispose() が確定させる。
+        Interlocked.Increment(ref _monitorEpoch);
         if (ReferenceEquals(Current, this))
             Current = null;
         Settings.AppSettings.Default.PropertyChanged -= Settings_PropertyChanged;

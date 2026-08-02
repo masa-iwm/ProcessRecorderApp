@@ -185,6 +185,7 @@ public sealed partial class MainPage : Page
             new() { Value = UiaTriggerAssignment.ActionNone, Display = Localization.GetString("Resources/TriggerAction_None") },
             new() { Value = UiaTriggerAssignment.ActionStart, Display = Localization.GetString("Resources/TriggerAction_Start") },
             new() { Value = UiaTriggerAssignment.ActionStop, Display = Localization.GetString("Resources/TriggerAction_Stop") },
+            new() { Value = UiaTriggerAssignment.ActionWhile, Display = Localization.GetString("Resources/TriggerAction_While") },
         };
         AppendRawValueIfMissing(choices, currentValue);
         return choices;
