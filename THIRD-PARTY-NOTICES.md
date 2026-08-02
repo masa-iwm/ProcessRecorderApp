@@ -153,7 +153,7 @@ Log 画面のターミナル表示は **xterm.js** を WebView2 の中で動か�
 
 | ファイル | プロジェクト・版 | ライセンス | 全文 |
 |---|---|---|---|
-| `Assets/Terminal/vendor/xterm.js`, `xterm.css` | xterm.js 6.0.0 | MIT License | `Assets/Terminal/vendor/LICENSE-xterm.txt` |
+| `Assets/Terminal/vendor/xterm.js`, `xterm.css` | @xterm/xterm 6.0.0 | MIT License | `Assets/Terminal/vendor/LICENSE-xterm.txt` |
 | `Assets/Terminal/vendor/addon-webgl.js` | @xterm/addon-webgl 0.19.0 | MIT License | `Assets/Terminal/vendor/LICENSE-xterm-addon-webgl.txt` |
 | `Assets/Terminal/vendor/addon-fit.js` | @xterm/addon-fit 0.11.0 | MIT License | `Assets/Terminal/vendor/LICENSE-xterm-addon-fit.txt` |
 

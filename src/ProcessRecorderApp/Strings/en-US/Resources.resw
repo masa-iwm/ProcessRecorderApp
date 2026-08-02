@@ -87,7 +87,7 @@
     <value>Copy All</value>
   </data>
   <data name="MainPage_TerminalUnavailable.Text" xml:space="preserve">
-    <value>The WebView2 Runtime is not available, so the log is shown in the simple list view.</value>
+    <value>The terminal view could not be started, so the log is shown in the simple list view. The reason is recorded in activity.log.</value>
   </data>
   <data name="Log_LinesDropped" xml:space="preserve">
     <value>-- {0} older lines were dropped --</value>

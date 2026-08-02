@@ -87,7 +87,7 @@
     <value>すべてコピー</value>
   </data>
   <data name="MainPage_TerminalUnavailable.Text" xml:space="preserve">
-    <value>WebView2 ランタイムが利用できないため、ログを簡易リスト表示に切り替えました。</value>
+    <value>ターミナル表示を開始できなかったため、ログを簡易リスト表示にしています。理由は activity.log に記録されます。</value>
   </data>
   <data name="Log_LinesDropped" xml:space="preserve">
     <value>-- 古いログ {0} 行を破棄しました --</value>

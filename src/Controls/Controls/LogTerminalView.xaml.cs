@@ -42,8 +42,12 @@ public sealed partial class LogTerminalView : UserControl
     /// <summary>1 通に載せる最大文字数。大きすぎるとマーシャルで詰まる</summary>
     private const int MaxPostCharacters = 256 * 1024;
 
-    /// <summary>ack を待つ上限。これを超えたら 1 通落ちたものとして進める</summary>
-    private const int AckTimeoutMilliseconds = 2000;
+    /// <summary>
+    /// ack を待つ上限。これを超えたら 1 通落ちたものとして進める。
+    /// <b>短くしすぎない</b> ── 諦めた結果は「恒久的にリスト表示へ落ちる」であって
+    /// 一時的な遅れではない。負荷の高い機械で偶発的に落ちる方が害が大きい
+    /// </summary>
+    private const int AckTimeoutMilliseconds = 5000;
 
     /// <summary>ack の取りこぼしが続いたら端末を諦める回数</summary>
     private const int MaxConsecutiveAckTimeouts = 3;
@@ -81,6 +85,9 @@ public sealed partial class LogTerminalView : UserControl
     private int _consecutiveAckTimeouts;
     private int _processFailures;
 
+    /// <summary>初期化がどこで失敗したか（記録に残す。画面の注記は理由を名指ししない）</summary>
+    private string _initializeFailure = "init-failed";
+
     public LogTerminalView()
     {
         InitializeComponent();
@@ -111,7 +118,7 @@ public sealed partial class LogTerminalView : UserControl
     /// Log 画面が表示されているあいだだけ true にする。
     /// <b>初期化も排出もここで駆動する</b> ── 見ていない画面のために
     /// ブラウザープロセスを起こし続けたり、録画中にメッセージをマーシャルし続けたりしない。
-    /// 履歴はバッファが持っているので、戻ってきたときに先頭から流し直せばよい
+    /// 非表示のあいだに溜まった分は、絶対位置のカーソルが残っているので再表示時に続きから流れる
     /// </summary>
     public static readonly DependencyProperty IsActiveProperty =
         DependencyProperty.Register(nameof(IsActive), typeof(bool), typeof(LogTerminalView),
@@ -184,7 +191,7 @@ public sealed partial class LogTerminalView : UserControl
             _initializeAttempted = true;
             if (!await TryInitializeAsync())
             {
-                FallBackToListView();
+                FallBackToListView(_initializeFailure);
                 _timer.Start();
                 return;
             }
@@ -192,15 +199,23 @@ public sealed partial class LogTerminalView : UserControl
         }
         else if (_state == State.Stopped)
         {
-            // 非表示のあいだに溜まった分は、先頭から流し直して追いつかせる
+            // **ここで流し直してはいけない。** ページは生きたままなので、端末には
+            // 既に描いたものが残っている。カーソルは絶対位置で残っているので、
+            // 続きから送れば非表示のあいだの分に追いつく。先頭へ戻すと
+            // 保持中の全量がもう一度上書きされずに追記され、**行が二重・三重に増える**
+            // （どのテスト層も端末の中身を読めないので、これは緑のまま起こる）。
+            // 非表示のあいだに押し出しが起きていれば、次の Read が破棄行数を返して印が入る。
             _state = State.Idle;
-            RequestReplay();
         }
 
         _timer.Start();
     }
 
-    /// <summary>カーソルを保持窓の先頭へ戻す（再表示・ブラウザー再生成からの復帰）</summary>
+    /// <summary>
+    /// カーソルを保持窓の先頭へ戻す。
+    /// <b>端末が空になったときだけ呼ぶこと</b>（初回の ready と、ブラウザー再生成後の再遷移）。
+    /// 中身が残っている端末に対して呼ぶと、保持中の全量が追記されて行が二重になる
+    /// </summary>
     public void RequestReplay()
     {
         var head = Buffer.Head;
@@ -222,11 +237,13 @@ public sealed partial class LogTerminalView : UserControl
             // ランタイムが無ければブラウザーを 1 本も起こさずに諦める
             if (string.IsNullOrEmpty(CoreWebView2Environment.GetAvailableBrowserVersionString()))
             {
+                _initializeFailure = "runtime-missing";
                 return false;
             }
         }
         catch (Exception)
         {
+            _initializeFailure = "runtime-missing";
             return false;
         }
 
@@ -252,8 +269,9 @@ public sealed partial class LogTerminalView : UserControl
                 });
             await webView.EnsureCoreWebView2Async(_environment);
         }
-        catch (Exception)
+        catch (Exception ex)
         {
+            _initializeFailure = $"init-failed {ex.GetType().Name}";
             return false;
         }
 
@@ -261,6 +279,8 @@ public sealed partial class LogTerminalView : UserControl
         // （WinUI 側が「WebView2 が見つからない」旨の表示を自分の子として描く）
         if (webView.CoreWebView2 is null)
         {
+            // ランタイム不在の主経路。例外にならず正常完了して null のまま返る
+            _initializeFailure = "runtime-missing";
             return false;
         }
 
@@ -325,7 +345,7 @@ public sealed partial class LogTerminalView : UserControl
             // ack を 1 回落としただけでログが永久に止まらないよう、待たずに進める
             if (++_consecutiveAckTimeouts >= MaxConsecutiveAckTimeouts)
             {
-                FallBackToListView();
+                FallBackToListView($"ack-timeout x{_consecutiveAckTimeouts}");
                 return;
             }
             _state = State.Idle;
@@ -364,7 +384,7 @@ public sealed partial class LogTerminalView : UserControl
         }
         catch (Exception)
         {
-            FallBackToListView();
+            FallBackToListView("post-failed");
             return;
         }
 
@@ -433,7 +453,7 @@ public sealed partial class LogTerminalView : UserControl
                 break;
 
             case 'e': // JS 側の致命的エラー
-                FallBackToListView();
+                FallBackToListView($"js-error {body}");
                 break;
         }
     }
@@ -475,7 +495,7 @@ public sealed partial class LogTerminalView : UserControl
         }
         catch (Exception)
         {
-            FallBackToListView();
+            FallBackToListView("post-failed");
         }
     }
 
@@ -514,7 +534,7 @@ public sealed partial class LogTerminalView : UserControl
     {
         if (++_processFailures >= MaxProcessFailures)
         {
-            FallBackToListView();
+            FallBackToListView($"process-failed kind={e.ProcessFailedKind} count={_processFailures}");
             return;
         }
 
@@ -528,17 +548,22 @@ public sealed partial class LogTerminalView : UserControl
             }
             catch (Exception)
             {
-                FallBackToListView();
+                FallBackToListView("renavigate-failed");
             }
             return;
         }
 
         // ブラウザープロセスごと落ちた場合、2 回目の Ensure は危険なので作り直さない
-        FallBackToListView();
+        FallBackToListView($"process-failed kind={e.ProcessFailedKind}");
     }
 
-    /// <summary>端末を諦めてリスト表示へ落ちる。冪等</summary>
-    private void FallBackToListView()
+    /// <summary>
+    /// 端末を諦めてリスト表示へ落ちる。冪等。
+    /// <paramref name="reason"/> は必ず渡すこと ── <b>画面の注記は理由を名指ししない</b>
+    /// （経路が 5 つあり、ランタイム不在はそのうちの 1 つでしかない）ので、
+    /// どれで落ちたかを知る手段はこの記録だけになる
+    /// </summary>
+    private void FallBackToListView(string reason)
     {
         if (_state == State.Fallback)
         {
@@ -548,7 +573,7 @@ public sealed partial class LogTerminalView : UserControl
 
         // 「なぜかリスト表示になっている」を後から診断できるようにする。
         // 画面の注記は今そこに居る人にしか届かない
-        ActivityLog.Warn("log.terminal", "fallback=list");
+        ActivityLog.Warn("log.terminal", $"fallback=list reason={reason}");
 
         // ランタイム不在では WinUI が自前の警告表示を描くので、必ず畳む
         webView.Visibility = Visibility.Collapsed;

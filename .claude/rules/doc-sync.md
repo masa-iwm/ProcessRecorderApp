@@ -10,6 +10,7 @@
 | `RuntimeClosureSeedSyncTests` | 閉包の種リスト ⇔ `tools/Get-GStreamerImportClosure.ps1` |
 | `GpuVerifyScriptParsingTests` | `tools/Verify-GpuEncoders.ps1` 内の正規表現（スクリプトから取り出して .NET で実行するので、規則が2か所に書かれない） |
 | `ThirdPartyLicenseTests` | `THIRD-PARTY-NOTICES.md` ⇔ `licenses/third-party/`（取得元・版・SHA256 の正本は `SOURCES.tsv` 1つ） |
+| `TerminalAssetPinTests` | `src/ProcessRecorderApp/Assets/Terminal/SOURCES.md` ⇔ 同 `vendor/` の実ファイル（**双方向**・SHA256）／版表記 ⇔ `THIRD-PARTY-NOTICES.md`／`.gitattributes` の `vendor/** -text` の存在。**xterm.js は `licenses/third-party/` の台帳には載せられない**（同梱・非同梱の両方に入るため。理由は `SOURCES.md`） |
 
 `tools/` のスクリプトは参考資料ではなく**テスト対象**である。
 
