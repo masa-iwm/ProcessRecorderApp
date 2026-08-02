@@ -142,10 +142,19 @@ public partial class AppSettings : JsonSettingsBase<AppSettings>
     /// </summary>
     [System.ComponentModel.Category("PropCat_Output")]
     [System.ComponentModel.Description("PropDesc_OutputDirectory")]
+    // 「…」でフォルダー選択ダイアログを開く。**読み取り専用にはしない** ── 空欄（＝実行ファイルの
+    // あるディレクトリ）と相対パスはダイアログでは表せないので、直接入力の道を残す。
+    [ValueBuilder(OutputDirectoryBuilderKey)]
     [ObservableProperty]
     public partial string OutputDirectory { get; set; } = "";
     partial void OnOutputDirectoryChanged(string value)
         => GStreamer.EventRecorder.OutputDirectory = Components.AppDirectories.ResolveOrBase(value);
+
+    /// <summary>
+    /// <see cref="OutputDirectory"/> のビルダー識別キー。
+    /// <b><c>PropCat_</c> / <c>PropDesc_</c> で始めてはいけない</b>（<see cref="EncoderChoiceListKey"/> と同じ理由）。
+    /// </summary>
+    public const string OutputDirectoryBuilderKey = "OutputDirectory";
 
     /// <summary>
     /// 保存先の中の mp4 を、この日数を過ぎたら自動削除する。<b>0 なら削除しない</b>（既定）。

@@ -261,7 +261,7 @@
     <value>Output</value>
   </data>
   <data name="PropDesc_OutputDirectory" xml:space="preserve">
-    <value>Folder the recordings are written to. Leave empty to use the folder the executable is in. A relative path is resolved against that same folder. A recorder whose filename template is an absolute path ignores this setting.</value>
+    <value>Folder the recordings are written to. Pick one with the "..." button, or type a path. Leave empty to use the folder the executable is in. A relative path is resolved against that same folder. A recorder whose filename template is an absolute path ignores this setting.</value>
   </data>
   <data name="PropDesc_RecordingRetentionDays" xml:space="preserve">
     <value>Delete .mp4 files under the output folder once they are older than this many days. 0 deletes nothing. Sub-folders are searched too, and a sub-folder is removed when deleting left it empty. Point the output folder at a directory used only for recordings before turning this on — left empty it covers everything under the folder the executable is in.</value>

@@ -8,8 +8,10 @@ when you start a recording the resulting MP4 also contains the seconds — or te
 that led up to it.
 
 The app lives in the notification area and can drive several recordings (recorders) at once.
-You can operate it from the GUI, or launch the same executable with arguments to tell the
-already-running instance to start and stop recordings.
+You can operate it from the GUI, launch the same executable with arguments to tell the
+already-running instance to start and stop recordings, or **have it watch another application's
+UI and start and stop recording on its own** when what you are waiting for appears, changes, or
+goes away.
 
 ## Features
 
@@ -65,6 +67,40 @@ Preview screen.
 Detailed video-source settings — which monitor to capture, the camera resolution, and so on —
 are configured from the property pane on the Preview screen by opening the pipeline editor
 dialog.
+
+### Recording driven by another application's UI
+
+Recording can start and stop by itself when the screen you are waiting for appears, changes, or
+goes away.
+
+1. Open the **Settings** screen and press the **"..." button** on the *trigger list* row. The
+   trigger editor opens.
+2. Press **"Record new…"** to open the element picker. Point the mouse at the element you want to
+   watch (with **"Follow the mouse"** on, the selection tracks the cursor), then press
+   **"Confirm this element"**.
+3. In **"Trigger condition"** below, decide when it fires.
+   - **Fires on**: `ElementAppeared` / `ElementRemoved` / `PropertyChanged` /
+     `WhileMatching` (when the condition starts holding)
+   - To **record only while the condition holds**, choose `WhileMatching` *and* tick
+     **"Also notify when it stops matching"** — without it the **recording never stops**.
+   - If the watched application does not announce its changes, put `1` (or so) in
+     **"Poll interval (s)"** and the element is re-read on that cadence.
+4. Press **"Add trigger"**, then **OK** in the editor to save.
+5. Back on the Settings screen, a row for the new trigger has appeared under
+   **trigger assignments**. Open it and choose:
+   - **Action**: *(none)* / *Start recording* / *Stop recording* / *Record while matching*
+   - **Target recorder**: leave empty for every recorder
+
+   Even with *(none)*, the fired value is still written to a variable.
+6. That value is available as the variable `{trigger id}`, so you can embed it in a filename
+   template (for example `{Now:yyyyMMdd_HHmmss}_{MyTrigger}.mp4`).
+
+> **Try it against the application you actually want to watch.** This relies on that application
+> telling UI Automation that something changed, and **a value visibly changing on screen is not
+> the same as a change being reported**. For applications that stay silent, use the poll interval
+> above. When it does not behave as expected, read the lines starting with `trigger.` in
+> `activity.log` — one line each for what fired, what was started or stopped, and what was
+> skipped and why.
 
 ### Output files
 

@@ -370,6 +370,9 @@ public sealed partial class MainPage : Page
     /// </summary>
     private async System.Threading.Tasks.Task<string?> BuildSettingsValueAsync(string key, string current)
     {
+        if (string.Equals(key, AppSettings.OutputDirectoryBuilderKey, StringComparison.Ordinal))
+            return await PickOutputDirectoryAsync(current);
+
         if (!string.Equals(key, AppSettings.UiaTriggerBuilderKey, StringComparison.Ordinal))
             return null;
         if (_uiaTriggerEditorOpen)
@@ -394,5 +397,38 @@ public sealed partial class MainPage : Page
         {
             _uiaTriggerEditorOpen = false;
         }
+    }
+
+    /// <summary>
+    /// 録画の保存先をフォルダー選択ダイアログで選ぶ。選ばれた絶対パスを返し、取り消しなら null。
+    ///
+    /// <remarks>
+    /// <para>
+    /// <b>UWP の <c>Windows.Storage.Pickers</c> ではなく Windows App SDK 側の
+    /// <c>Microsoft.Windows.Storage.Pickers</c> を使う。</b> あちらはアンパッケージ配布だと
+    /// <c>InitializeWithWindow</c> でウィンドウハンドルを注入しないと実行時に落ちるが、
+    /// こちらは <see cref="Microsoft.UI.WindowId"/> をコンストラクターで受け取るので、
+    /// HWND を持ち回らずに済む。
+    /// </para>
+    /// <para>
+    /// ウィンドウは <c>XamlRoot</c> から辿る ── ページは <c>Window</c> を参照していないし、
+    /// 参照させると（プロセス寿命の）ウィンドウとページの寿命が絡む。
+    /// </para>
+    /// </remarks>
+    /// </summary>
+    private async System.Threading.Tasks.Task<string?> PickOutputDirectoryAsync(string current)
+    {
+        if (XamlRoot?.ContentIslandEnvironment is not { } island)
+            return null;   // まだ表示されていない（この経路は「…」からしか来ないので通常あり得ない）
+
+        var picker = new Microsoft.Windows.Storage.Pickers.FolderPicker(island.AppWindowId);
+        // 現在の設定が指している場所から開く。空欄・相対パスも実行ファイルのあるディレクトリを
+        // 基準に解決する（保存先の解決規則そのものは Components.AppDirectories が持つ）。
+        string start = AppDirectories.ResolveOrBase(current);
+        if (Directory.Exists(start))
+            picker.SuggestedStartFolder = start;
+
+        var result = await picker.PickSingleFolderAsync();
+        return result?.Path;   // null = 取り消し。値は返さず、現在の設定を保つ
     }
 }

@@ -307,7 +307,7 @@ GOP は固定値とし、想定される最低フレームレート（15fps）�
 
 | 設定 | 既定 | 意味 |
 |---|---|---|
-| `OutputDirectory` | 空欄 | 録画の保存先。空欄なら実行ファイルのあるディレクトリ。相対パスもそこからの相対 |
+| `OutputDirectory` | 空欄 | 録画の保存先。空欄なら実行ファイルのあるディレクトリ。相対パスもそこからの相対。Settings 画面では「…」でフォルダー選択ダイアログが開く（後述） |
 | `RecordingRetentionDays` | `0` | この日数を過ぎた mp4 を自動削除する。**0 なら削除しない** |
 | `RecordingCleanupIntervalHours` | `6` | 自動削除の間隔（時間）。1 未満は 1 として扱う |
 
@@ -316,6 +316,16 @@ GOP は固定値とし、想定される最低フレームレート（15fps）�
 ── 既定の保存先が実行ファイルのあるディレクトリなので、無条件に空フォルダーを掃除すると
 インストール先まで巻き込む。保存先そのものは決して消さない。
 1件の削除失敗（録画中のファイルはロックされている）で全体を止めず、理由を記録して続行する。
+
+保存先は Settings 画面の「…」から**フォルダー選択ダイアログ**で選べる
+（`MainPage.PickOutputDirectoryAsync`）。**UWP の `Windows.Storage.Pickers` ではなく
+Windows App SDK 側の `Microsoft.Windows.Storage.Pickers` を使う** ── あちらはアンパッケージ配布だと
+`InitializeWithWindow` で HWND を注入しないと実行時に落ちるが、こちらは `WindowId` を
+コンストラクターで受け取るので HWND を持ち回らずに済む。ウィンドウは
+`XamlRoot.ContentIslandEnvironment.AppWindowId` から辿る（ページに `Window` を参照させると、
+プロセス寿命のウィンドウとページの寿命が絡む）。**行は読み取り専用にしていない**
+── 空欄（＝実行ファイルのあるディレクトリ）と相対パスはダイアログでは表せないので、
+直接入力の道を残してある。取り消すと値は変わらない。
 
 周回は `Services.RecordingCleanupScheduler`（`Task.Run` ＋ `Task.Delay` ＋
 `CancellationTokenSource`。`EventRecorder` の自動復帰の連鎖と同じ形）。
