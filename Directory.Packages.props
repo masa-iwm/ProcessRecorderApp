@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<!--
+  NuGet パッケージのバージョンはここ 1 か所で決める（Central Package Management）。
+
+  **置き場所はリポジトリルートでなければならない。** SDK は Directory.Packages.props を
+  プロジェクトのディレクトリから上へ辿って最初の 1 つを使う。src/ に置くと
+  tests/ の 2 プロジェクトに効かず、版が二重管理に戻る。
+  （なお src/Directory.Build.props をルートへ上げてはいけない ── UseWinUI /
+   IsAotCompatible / RuntimeIdentifiers がテストホストへ漏れる。
+   Directory.Packages.props の探索は Directory.Build.props の位置とは無関係なので、
+   このファイルだけをルートに置けば済む。）
+
+  csproj 側に Version を書くと NU1008 でビルドが落ちる。逆にここへ書き忘れた
+  パッケージを csproj が参照すると NU1010 で落ちる ── どちらも復元段で分かる。
+
+  CentralPackageTransitivePinning は有効にしない。有効にすると推移的依存が
+  直接依存へ昇格して復元グラフが変わる。ここでの目的は版の置き場所を 1 つにすることだけで、
+  解決結果は変えない。
+
+  UiaTrigger.* だけ取得元が GitHub Packages（ルートの nuget.config の
+  packageSourceMapping）。その packageSourceMapping は NU1507（複数ソース + CPM）を
+  出さないための前提でもあるので、消さないこと。
+-->
+<Project>
+  <PropertyGroup>
+    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- WinUI 3 / Windows App SDK -->
+    <PackageVersion Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.28000.2270" />
+    <PackageVersion Include="Microsoft.WindowsAppSDK" Version="2.3.1" />
+    <PackageVersion Include="Microsoft.WindowsAppSDK.AI" Version="2.3.4" />
+    <PackageVersion Include="Microsoft.WindowsAppSDK.ML" Version="2.1.74" />
+    <PackageVersion Include="Microsoft.Windows.AI.MachineLearning" Version="2.1.74" />
+    <PackageVersion Include="Microsoft.Windows.CsWin32" Version="0.3.298" />
+    <PackageVersion Include="WinUIEx" Version="2.9.2" />
+    <PackageVersion Include="WinUI.TableView" Version="1.4.1" />
+    <PackageVersion Include="CommunityToolkit.Mvvm" Version="8.4.2" />
+    <PackageVersion Include="CommunityToolkit.WinUI.Behaviors" Version="8.2.251219" />
+    <PackageVersion Include="CommunityToolkit.WinUI.Controls.LayoutTransformControl" Version="8.2.251219" />
+    <PackageVersion Include="CommunityToolkit.WinUI.Controls.Sizers" Version="8.2.251219" />
+
+    <!-- GStreamer / CLI -->
+    <PackageVersion Include="GirCore.GstApp-1.0" Version="0.8.1" />
+    <PackageVersion Include="GirCore.GstVideo-1.0" Version="0.8.1" />
+    <PackageVersion Include="System.CommandLine" Version="2.0.10" />
+
+    <!-- UIA トリガ（GitHub Packages。プレリリースのため完全固定） -->
+    <PackageVersion Include="UiaTrigger.Core" Version="0.1.0-preview.5" />
+    <PackageVersion Include="UiaTrigger.Picker.WinUI" Version="0.1.0-preview.5" />
+
+    <!-- テスト -->
+    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageVersion Include="xunit.v3" Version="3.1.0" />
+    <PackageVersion Include="xunit.runner.visualstudio" Version="3.1.4" />
+    <PackageVersion Include="FlaUI.UIA3" Version="5.0.0" />
+  </ItemGroup>
+</Project>

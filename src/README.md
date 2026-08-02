@@ -1435,7 +1435,28 @@ fine-grained PAT に対応していない**）。その場合もスコープは 
 `NU1301` で失敗する」（他プロジェクトの復元は成功する）。CI では `GITHUB_TOKEN` を
 同じ環境変数へ写して復元する（[docs/ci.md](../docs/ci.md)）。
 UiaTrigger を nuget.org へ公開したら、`nuget.config` の github の 3 ブロックを消し、
-csproj の `Version` を更新するだけでよい。
+`Directory.Packages.props` の `Version` を更新するだけでよい。
+
+なお `packageSourceMapping` は取得元を絞るためだけのものではない ── パッケージ版の
+集中管理（次項）と複数ソースの組み合わせは、マッピングが無いと `NU1507` を出す。
+消さないこと。
+
+### パッケージ版の集中管理
+
+NuGet パッケージのバージョンは**リポジトリルートの `Directory.Packages.props`** だけが
+持つ（`ManagePackageVersionsCentrally=true`）。各 `.csproj` は
+`<PackageReference Include="..." />` と、`PrivateAssets` / `IncludeAssets` /
+`ExcludeAssets` などのメタデータだけを書く。
+
+- csproj に `Version` を書くと **`NU1008`**、`Directory.Packages.props` に無いものを
+  参照すると **`NU1010`** で復元が落ちる。どちらもビルドより前に分かる。
+- **置き場所はリポジトリルートでなければならない。** SDK はプロジェクトのディレクトリから
+  上へ辿って最初の 1 つを使うので、`src/` に置くと `tests/` の 2 プロジェクトへ効かない
+  （`src/Directory.Build.props` は逆に `src/` 配下だけへ効かせたいので、
+  こちらをルートへ上げてはいけない ── テストホストが `UseWinUI` / `IsAotCompatible` を
+  継承してしまう。2 つのファイルの探索は互いに独立している）。
+- `CentralPackageTransitivePinning` は有効にしていない。有効にすると推移的依存が
+  直接依存へ昇格して解決結果が変わる。
 
 ### 必要な Windows SDK
 

@@ -3,10 +3,10 @@
     <RootNamespace>ProcessRecorderApp.SingleInstance</RootNamespace>
   </PropertyGroup>
   <ItemGroup>
-    <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.28000.2270" />
-    <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.3.1" />
+    <PackageReference Include="Microsoft.Windows.SDK.BuildTools" />
+    <PackageReference Include="Microsoft.WindowsAppSDK" />
     <!-- タスクトレイアイコン（WindowManager.IsVisibleInTray等）に使用。MIT License -->
-    <PackageReference Include="WinUIEx" Version="2.9.2" />
+    <PackageReference Include="WinUIEx" />
   </ItemGroup>
 
   <ItemGroup>

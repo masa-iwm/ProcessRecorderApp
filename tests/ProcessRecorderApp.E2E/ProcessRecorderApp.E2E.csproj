@@ -40,15 +40,15 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
-    <PackageReference Include="xunit.v3" Version="3.1.0" />
-    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit.v3" />
+    <PackageReference Include="xunit.runner.visualstudio" />
     <!--
       L3（GUI・UIA）。FlaUI は純 .NET の UIA3 ラッパーで、別サーバープロセスを
       必要としない（WinAppDriver は保守停止・Appium 経由だと別プロセスが要る）。
       アンパッケージ配布の WinUI3 アプリでも動く。
     -->
-    <PackageReference Include="FlaUI.UIA3" Version="5.0.0" />
+    <PackageReference Include="FlaUI.UIA3" />
   </ItemGroup>
 
   <!--

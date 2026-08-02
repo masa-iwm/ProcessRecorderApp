@@ -4,6 +4,7 @@
   </Configurations>
   <Folder Name="/ソリューション項目/">
     <File Path="Directory.Build.props" />
+    <File Path="../Directory.Packages.props" />
   </Folder>
   <Project Path="Components/Components.csproj" Id="0c73b8c8-8850-4447-81ce-92a998943e78" />
   <Project Path="Controls/Controls.csproj" Id="6089b92c-df28-4759-a939-656eacd020af" />
