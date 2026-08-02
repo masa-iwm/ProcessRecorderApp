@@ -177,7 +177,7 @@ public sealed partial class UiaTriggerService : IDisposable
             // 不成立化を通知できる定義だけを渡す。割り当ての側（UI スレッド所有の
             // ObservableCollection）はここでは読まず、突き合わせは UI スレッドで行う。
             EnqueueReconcile(definitions
-                .Where(d => d.On == TriggerOn.WhileMatching && d.NotifyOnStoppedMatching)
+                .Where(NotifiesOnStoppedMatching)
                 .Select(d => d.Id)
                 .ToHashSet(StringComparer.Ordinal));
         }
@@ -236,6 +236,31 @@ public sealed partial class UiaTriggerService : IDisposable
     /// </summary>
     private static TriggerFireEdge MapEdge(TriggerOn on)
         => on == TriggerOn.StoppedMatching ? TriggerFireEdge.Falling : TriggerFireEdge.Rising;
+
+    /// <summary>
+    /// その定義が「条件が成立しなくなった」ことを通知できるか。
+    /// これが false のトリガに「条件成立中のみ録画」を割り当てても、<b>開始した録画は止まらない</b>。
+    /// </summary>
+    private static bool NotifiesOnStoppedMatching(TriggerDefinition definition)
+        => definition.On == TriggerOn.WhileMatching && definition.NotifyOnStoppedMatching;
+
+    /// <summary>
+    /// トリガ ID を指定して、そのトリガが「条件成立中のみ録画」を完結できるか
+    /// （＝不成立化を通知できるか）を調べる。設定画面が選択肢の文言に注記を付けるのに使う。
+    /// 定義が見つからないときは true を返す ── 「まだ無いもの」を警告しても意味が無い。
+    /// </summary>
+    public static bool CanCompleteWhileRecording(string triggerId)
+    {
+        var definitions = Settings.AppSettings.Default.UiaTriggers;
+        if (definitions is null)
+            return true;
+        foreach (var definition in definitions)
+        {
+            if (string.Equals(definition.Id, triggerId, StringComparison.Ordinal))
+                return NotifiesOnStoppedMatching(definition);
+        }
+        return true;
+    }
 
     /// <summary>
     /// 上流の <see cref="ClauseOutcome"/> を Components のミラーへ写す。

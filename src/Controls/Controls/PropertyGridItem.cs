@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
@@ -13,6 +13,7 @@ using System.Windows.Input;
 using CommunityToolkit.Mvvm.Input;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
+using ProcessRecorderApp.Components;
 
 namespace ProcessRecorderApp.Controls;
 
@@ -161,7 +162,7 @@ public sealed partial class PropertyGridItem : INotifyPropertyChanged
 
     private DispatcherQueue? _dispatcherQueue;
     private WeakCollectionChangedListener? _collectionListener;
-    private Func<string, string, IReadOnlyList<PropertyGridChoice>>? _choiceProvider;
+    private Func<string, string, IPropertyAccess?, IReadOnlyList<PropertyGridChoice>>? _choiceProvider;
 
     /// <summary>コレクションの各要素に対応する表示用 VM。Collection 項目以外では null。</summary>
     public ObservableCollection<PropertyGridCollectionElement>? Elements { get; }
@@ -398,7 +399,7 @@ public sealed partial class PropertyGridItem : INotifyPropertyChanged
     /// </summary>
     internal void AttachCollection(
         DispatcherQueue dispatcherQueue,
-        Func<string, string, IReadOnlyList<PropertyGridChoice>>? choiceProvider = null)
+        Func<string, string, IPropertyAccess?, IReadOnlyList<PropertyGridChoice>>? choiceProvider = null)
     {
         if (EditKind != PropertyEditKind.Collection || _collection is null || Elements is null)
         {

@@ -1027,6 +1027,14 @@ GUIサブシステム（`OutputType=WinExe`）だと、**対話コマンドプ�
   （保存値は英字のまま・表示だけローカライズ。`PropertyGridChoice` の Value/Display 分離）。
   選択肢は**項目の生成時に 1 回だけ**確定するので、開いたままの一覧にはレコーダーの改名が
   反映されない（コレクションの変更や SelectedObject の再代入で作り直される）。
+- **「条件成立中のみ録画」は、そのトリガが不成立化を通知できて初めて完結する。**
+  できない設定のままだと「開始したのに止まらない」になるので、選択肢の表示に括弧書きで注記する
+  （`TriggerAction_WhileCannotStop`。`PreferredH264Encoder` が実在しないエンコーダー名に
+  注記するのと同じ形）。判定は `UiaTriggerService.CanCompleteWhileRecording`。
+  **どの行の選択肢かを知る必要がある**ので、`PropertyGridView.ChoiceProvider` は
+  キーと現在値に加えて**対象オブジェクト**（コレクションでは要素）を渡す。
+  トリガを編集したら `ChoiceProvider` を再代入して項目を作り直す ── そうしないと
+  ピッカーで「成立しなくなった時も通知」を変えても注記が古いまま残る。
 - トリガ ID が `[\w.-]+`（.NET の `\w` は日本語を含む。ドット・ハイフンも可 ──
   ハイフンは UiaTrigger のトリガ ID に自然に入る）の外だと、変数は書かれるが
   テンプレートの `{キー}` から参照できない ── `trigger.name warn` をキーごとに 1 回記録する。

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.ComponentModel;
@@ -78,7 +78,7 @@ public sealed partial class PropertyGridCollectionElement : INotifyPropertyChang
         IList collection,
         DispatcherQueue dispatcherQueue,
         Action<PropertyGridCollectionElement>? onExpanded = null,
-        Func<string, string, IReadOnlyList<PropertyGridChoice>>? choiceProvider = null)
+        Func<string, string, IPropertyAccess?, IReadOnlyList<PropertyGridChoice>>? choiceProvider = null)
     {
         Element = element;
         _collection = collection;

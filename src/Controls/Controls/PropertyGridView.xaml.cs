@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Collections.Specialized;
@@ -81,7 +81,7 @@ public sealed partial class PropertyGridView : UserControl
     /// ホスト側の設定順に依存させないため、<b>コントロール側で作り直す</b>ことにした。
     /// </para>
     /// </remarks>
-    public Func<string, string, IReadOnlyList<PropertyGridChoice>>? ChoiceProvider
+    public Func<string, string, IPropertyAccess?, IReadOnlyList<PropertyGridChoice>>? ChoiceProvider
     {
         get => _choiceProvider;
         set
@@ -95,7 +95,7 @@ public sealed partial class PropertyGridView : UserControl
         }
     }
 
-    private Func<string, string, IReadOnlyList<PropertyGridChoice>>? _choiceProvider;
+    private Func<string, string, IPropertyAccess?, IReadOnlyList<PropertyGridChoice>>? _choiceProvider;
 
     private WeakPropertyChangedListener? _weakListener;
     private Dictionary<string, List<PropertyGridItem>>? _itemsByPropertyName;
@@ -274,7 +274,7 @@ public sealed partial class PropertyGridView : UserControl
 
     internal static IEnumerable<PropertyGridItem> BuildItems(
         IPropertyAccess? source,
-        Func<string, string, IReadOnlyList<PropertyGridChoice>>? choiceProvider = null)
+        Func<string, string, IPropertyAccess?, IReadOnlyList<PropertyGridChoice>>? choiceProvider = null)
     {
         if (source is null)
         {
@@ -350,9 +350,11 @@ public sealed partial class PropertyGridView : UserControl
             {
                 // 選択肢はプロパティの型からは決まらない（その PC に何が在るか等の実行時の状況で
                 // 決まる）ので、ホストのプロバイダーに現在値ごと訊く。
+                // **対象オブジェクトも渡す** ── コレクションの要素では「どの行の選択肢か」で
+                // 出すものが変わりうる（他のプロパティを見て注記を付ける等）。
                 // **一覧が空なら Choice にしない** ── 空のコンボボックスを編集不可で出すと、
                 // 利用者は値を見ることも直すこともできなくなる。テキスト編集に倒す方が安全。
-                var provided = choiceProvider(choiceAttr.Key, rawValue?.ToString() ?? "");
+                var provided = choiceProvider(choiceAttr.Key, rawValue?.ToString() ?? "", source);
                 if (0 < provided.Count)
                 {
                     editKind = PropertyEditKind.Choice;

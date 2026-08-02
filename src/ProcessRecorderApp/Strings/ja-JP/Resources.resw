@@ -374,6 +374,9 @@
   <data name="TriggerAction_While" xml:space="preserve">
     <value>条件成立中のみ録画</value>
   </data>
+  <data name="TriggerAction_WhileCannotStop" xml:space="preserve">
+    <value>{0} (停止しません: このトリガーの「成立しなくなった時も通知」を入れてください)</value>
+  </data>
   <data name="TriggerList_Count" xml:space="preserve">
     <value>トリガ定義 {0} 件</value>
   </data>

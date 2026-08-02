@@ -92,6 +92,9 @@ goes away.
    - **Target recorder**: leave empty for every recorder
 
    Even with *(none)*, the fired value is still written to a variable.
+   *Record while matching* **will not stop** unless step 3's "Also notify when it stops matching"
+   is ticked — for a trigger where it is not, the choice itself says so
+   ("Record while matching (will not stop: …)").
 6. That value is available as the variable `{trigger id}`, so you can embed it in a filename
    template (for example `{Now:yyyyMMdd_HHmmss}_{MyTrigger}.mp4`).
 

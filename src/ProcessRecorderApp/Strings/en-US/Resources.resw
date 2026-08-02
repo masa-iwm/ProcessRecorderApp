@@ -374,6 +374,9 @@
   <data name="TriggerAction_While" xml:space="preserve">
     <value>Record while matching</value>
   </data>
+  <data name="TriggerAction_WhileCannotStop" xml:space="preserve">
+    <value>{0} (will not stop: turn on "Also notify when it stops matching" for this trigger)</value>
+  </data>
   <data name="TriggerList_Count" xml:space="preserve">
     <value>{0} trigger(s) defined</value>
   </data>

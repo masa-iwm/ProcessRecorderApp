@@ -153,7 +153,7 @@ public sealed partial class MainPage : Page
     /// <b>通常のテキスト編集に倒す</b>ので、綴りを間違えても値が編集不能になることはない。
     /// </para>
     /// </summary>
-    private IReadOnlyList<Controls.PropertyGridChoice> ProvideChoices(string key, string currentValue)
+    private IReadOnlyList<Controls.PropertyGridChoice> ProvideChoices(string key, string currentValue, IPropertyAccess? owner)
     {
         // 具体型を明示する。CsWinRT の解析（CsWinRT1032）が、非可変インターフェイスを
         // 対象にしたコレクション式を「トリミング／AOT で安全でない」として弾く。
@@ -166,7 +166,7 @@ public sealed partial class MainPage : Page
         }
 
         if (string.Equals(key, UiaTriggerAssignment.ActionChoiceListKey, StringComparison.Ordinal))
-            return TriggerActionChoices(currentValue);
+            return TriggerActionChoices(currentValue, owner as UiaTriggerAssignment);
 
         if (string.Equals(key, UiaTriggerAssignment.TargetRecorderChoiceListKey, StringComparison.Ordinal))
             return TriggerTargetChoices(currentValue);
@@ -177,15 +177,35 @@ public sealed partial class MainPage : Page
     /// <summary>
     /// トリガ割り当ての Action の選択肢。保存値は <see cref="UiaTriggerAssignment"/> の定数のまま、
     /// 表示だけをローカライズする（Value/Display の分離。enum にしない理由は ChoiceListAttribute 参照）。
+    ///
+    /// <para>
+    /// <b>「条件成立中のみ録画」は、そのトリガが不成立化を通知できて初めて完結する。</b>
+    /// できない設定のまま選ばせると「開始したのに止まらない」になるので、
+    /// <paramref name="assignment"/> の指すトリガを見て括弧書きで注記する
+    /// （<c>PreferredH264Encoder</c> が実在しないエンコーダー名に注記するのと同じ形）。
+    /// 選択肢は項目の生成時に 1 回だけ確定するので、トリガを編集したら作り直す
+    /// （<see cref="BuildSettingsValueAsync"/> が <c>ChoiceProvider</c> を再代入する）。
+    /// </para>
     /// </summary>
-    private static IReadOnlyList<Controls.PropertyGridChoice> TriggerActionChoices(string currentValue)
+    private static IReadOnlyList<Controls.PropertyGridChoice> TriggerActionChoices(
+        string currentValue, UiaTriggerAssignment? assignment)
     {
+        string whileDisplay = Localization.GetString("Resources/TriggerAction_While");
+        if (assignment is not null
+            && !Services.UiaTriggerService.CanCompleteWhileRecording(assignment.TriggerId))
+        {
+            whileDisplay = string.Format(
+                CultureInfo.CurrentCulture,
+                Localization.GetString("Resources/TriggerAction_WhileCannotStop"),
+                whileDisplay);
+        }
+
         var choices = new List<Controls.PropertyGridChoice>(4)
         {
             new() { Value = UiaTriggerAssignment.ActionNone, Display = Localization.GetString("Resources/TriggerAction_None") },
             new() { Value = UiaTriggerAssignment.ActionStart, Display = Localization.GetString("Resources/TriggerAction_Start") },
             new() { Value = UiaTriggerAssignment.ActionStop, Display = Localization.GetString("Resources/TriggerAction_Stop") },
-            new() { Value = UiaTriggerAssignment.ActionWhile, Display = Localization.GetString("Resources/TriggerAction_While") },
+            new() { Value = UiaTriggerAssignment.ActionWhile, Display = whileDisplay },
         };
         AppendRawValueIfMissing(choices, currentValue);
         return choices;
@@ -391,6 +411,11 @@ public sealed partial class MainPage : Page
             TriggerAssignmentReconciler.Reconcile(
                 AppSettings.Default.UiaTriggerAssignments,
                 edited.Select(d => d.Id).ToArray());
+
+            // 選択肢は項目の生成時に 1 回だけ確定するので、作り直さないと
+            // 「条件成立中のみ録画」の注記が編集前のままになる（PropertyGridView は
+            // ChoiceProvider の代入で項目を組み立て直す）。
+            settingsPanel.ChoiceProvider = ProvideChoices;
             return null;
         }
         finally
