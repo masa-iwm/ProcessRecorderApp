@@ -69,7 +69,7 @@ AOT 発行物はランチャーの起動もコマンド往復も速く、同じ�
 - **`logListView` と `logTerminalView` の UIA サブツリーには絶対に降りない**（`AppUi.OpaqueSubtrees`）。Log 画面の ListView は `FindAllChildren()` が 25 秒待っても返らない（他の要素はすべて1桁ミリ秒で応答する）。標準の `FindFirstDescendant` はツリーを網羅するため、Log 画面を出している間は目的の要素が別の場所にあってもタイムアウトする。そのため探索は自前の深さ優先 walk で行い、このサブツリーだけ展開しない。一度でも列挙を試みると、その後は UIA セッション全体が使えなくなる（後続の探索が全て失敗する）ので、診断目的でも触らないこと。原因は未特定 ── スクロールの `VerticalViewSize` は 100（＝全件が収まっている）を返すので、件数説とは整合しない。 `logTerminalView`（WebView2）は**ブラウザープロセス側に別の UIA ツリーを持ち込む**ので、観測してからではなく先回りで同じ扱いにしてある ── 後から足すと、原因が別の変更に誤って帰属される。なお `SearchTree` は AutomationId の一致判定を降下判定より先に行うので、**入れても要素自体は見つかる**（存在と有効性は表明できる）。
 - **Preview は `previewNavItem` を押しても選択されない**（`SelectsOnInvoked="False"`）。選択されるのは配下の Recorder サブ項目なので、先に親を展開してから子を選ぶ（`AppUi.SelectRecorder`）。Recorder 項目は AutomationId が `RecorderNavItem` 共通で、個体は自動化名（＝レコーダー名）で見分ける ── 名前はユーザーデータで改名できるため、AutomationId には焼き込まない。
 - **画面を切り替えたら、切り替わったことを先に表明する**（`AppUi.SwitchTo`）。`Visibility=Collapsed` のパネル配下は UIA ツリーに現れないので、切替に失敗したまま要素を探すと「要素が無い」という形で落ち、原因が製品なのか手順なのか区別が付かない。目印の AutomationId は Preview=`TogglePaneButton` / Log=`ClearLogButton` / Variables=`VariablesTable` / Settings=`GstDebug`。
-- **TextBox への入力は Tab で確定させる**（`AppUi.SetPropertyText`）。WinUI の `TextBox.Text` は TwoWay バインドでも既定ではフォーカスを失うまでソースへ書き戻さない。入力しただけで確認すると「UI には出ているがモデルには届いていない」状態を緑と誤読する。
+- **TextBox への入力は Tab で確定させる**（`AppUi.SetPropertyText`）。WinUI の `TextBox.Text` は TwoWay バインドでも既定ではフォーカスを失うまでソースへ書き戻さない。入力しただけで確認すると「UI には出ているがモデルには届いていない」状態を緑と誤読する。PropertyGrid は **Enter でも確定できる**が、そちらは `PropertyGridView.ValueTextBox_KeyDown` からの明示的なコミットで**経路が別**なので、Enter を見たいテストは `AppUi.SetPropertyTextWithEnter` を使う ── `SetPropertyText` では Enter の配線が外れても落ちない。
 
 これに加えて、L3 の待ち方には共通の規則がある:
 

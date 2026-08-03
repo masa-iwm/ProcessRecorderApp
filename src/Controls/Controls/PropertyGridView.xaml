@@ -26,6 +26,7 @@
                         ToolTipService.Placement="Mouse">
                     <TextBox Text="{x:Bind Value, Mode=TwoWay}"
                              IsEnabled="{x:Bind IsEditable}"
+                             KeyDown="ValueTextBox_KeyDown"
                              HorizontalAlignment="Stretch"
                              TextWrapping="Wrap"
                              AcceptsReturn="False"
@@ -68,6 +69,7 @@
                             ToolTipService.Placement="Mouse">
                         <TextBox Text="{x:Bind Value, Mode=TwoWay}"
                                  IsReadOnly="{x:Bind IsReadOnly}"
+                                 KeyDown="ValueTextBox_KeyDown"
                                  HorizontalAlignment="Stretch"
                                  TextWrapping="Wrap"
                                  AcceptsReturn="False"

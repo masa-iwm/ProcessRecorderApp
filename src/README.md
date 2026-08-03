@@ -489,6 +489,13 @@ Windows の表示言語に自動追従する（アプリ内に言語切替UIは�
 - アプリが自動保存する内部ウィンドウ状態（`AppSettings.WindowWidth`/`WindowHeight`/`SettingsWidth`/
   `IsPropertyPaneCollapsed`）は `[Browsable(false)]` で PropertyGrid から非表示にしている
   （ローカライズ対象外）。
+- **値の確定は「フォーカスを失ったとき」と「Enter」の2経路ある。** 前者は TwoWay バインドの
+  既定、後者は `PropertyGridView.ValueTextBox_KeyDown` が `PropertyGridItem.CommitFromEnter` を
+  呼ぶ。Enter で確定した直後にフォーカスが外れると**バインドが同じ文字列をもう一度書き戻す**
+  ので、`CommitFromEnter` はその 1 回を目印（`_enterEcho`）で無視する
+  ── 無視しないと「入れ直した」と誤認してエラー表示を畳み、**Enter で出した指摘が
+  離れただけで消える**。入力エラーは、変換できない値を入れると出て、表示値は直前の値へ
+  差し戻される（＝画面の値とモデルは常に一致する）。
 
 ---
 

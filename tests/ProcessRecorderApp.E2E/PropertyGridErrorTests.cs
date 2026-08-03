@@ -87,6 +87,77 @@ public sealed class PropertyGridErrorTests(PublishedApp app)
     }
 
     /// <summary>
+    /// <b>Enter でも確定できる</b>こと（フォーカスを外さずにモデルへ届く）。
+    ///
+    /// <para>
+    /// WinUI の <c>TextBox.Text</c> は TwoWay バインドでもフォーカスを失うまで
+    /// ソースへ書き戻さない。<c>PropertyGridView</c> は <c>KeyDown</c> で明示的に
+    /// コミットしており、その配線が外れると<b>入力した値が画面に出たまま
+    /// モデルには届かない</b>という、いちばん気付きにくい壊れ方をする。
+    /// </para>
+    /// <para>
+    /// 届いたことは <c>settings.json</c> で見る ── 画面の表示は入力そのままなので、
+    /// <b>それを見てもコミットされたかどうかは分からない</b>。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void EnterCommitsWithoutLeavingTheField()
+    {
+        var settings = new SettingsFile();
+        settings.AddRecorder("R1");
+
+        using var instance = AppInstance.Create(app, settings);
+        using var ui = AppUi.Activate(instance);
+
+        ui.SwitchTo(UiSection.Settings);
+
+        // 起動・表示に伴うデバウンス保存を出し切らせてから入力する。
+        Thread.Sleep(TimeSpan.FromSeconds(3));
+
+        const string committed = "4321";
+        ui.SetPropertyTextWithEnter(Row, committed);
+
+        // Enter は「離れずに確定する」操作なので、フォーカスは行に残っていること。
+        Assert.True(ui.WaitForPropertyRow(Row).Properties.HasKeyboardFocus.ValueOrDefault,
+            "Enter でフォーカスまで移動しています。");
+
+        Assert.True(WaitForSettingsToContain(instance, $"\"{Row}\": {committed}"),
+            "Enter で確定したのに settings.json へ届いていません。");
+        Assert.Empty(ActivityLogFile.Events(instance.ReadActivityLog(), "app.error"));
+    }
+
+    /// <summary>
+    /// Enter で出したエラーが、<b>フォーカスを外しただけでは消えない</b>こと。
+    ///
+    /// <para>
+    /// TwoWay バインドは、Enter で確定した直後にフォーカスを失うと<b>同じ文字列を
+    /// もう一度書き戻してくる</b>。利用者の操作は 1 回なのに 2 回コミットが来るので、
+    /// 素通しすると「入れ直した」と誤認してエラーを畳んでしまい、
+    /// <b>Enter で出したばかりの指摘が、離れただけで消える</b>。
+    /// Tab だけで確定した場合（<see cref="ReenteringTheRevertedValue_ClearsTheError"/>）と
+    /// 挙動が食い違うのが本質的な問題で、この試験がその差を塞ぐ。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void TheErrorSurvivesLeavingTheFieldAfterEnter()
+    {
+        var settings = new SettingsFile();
+        settings.AddRecorder("R1");
+
+        using var instance = AppInstance.Create(app, settings);
+        using var ui = AppUi.Activate(instance);
+
+        ui.SwitchTo(UiSection.Settings);
+        ui.SetPropertyTextWithEnter(Row, "abc");
+        Assert.NotNull(FindError(ui));
+
+        FlaUI.Core.Input.Keyboard.Press(FlaUI.Core.WindowsAPI.VirtualKeyShort.TAB);
+        Thread.Sleep(700);
+
+        Assert.NotNull(FindError(ui));
+    }
+
+    /// <summary>
     /// エラー文言が<b>表示言語どおりに解決される</b>こと。
     ///
     /// <para>
@@ -123,4 +194,28 @@ public sealed class PropertyGridErrorTests(PublishedApp app)
     /// </summary>
     private static FlaUI.Core.AutomationElements.AutomationElement? FindError(AppUi ui)
         => ui.TryFindElement(ErrorId, TimeSpan.FromSeconds(1));
+
+    /// <summary>
+    /// <c>settings.json</c> に指定の断片が現れるまで待つ。
+    /// <b>固定 sleep で読まない</b> ── 保存は約 1 秒のデバウンス越しに起きる。
+    /// </summary>
+    private static bool WaitForSettingsToContain(AppInstance instance, string fragment)
+    {
+        var deadline = System.Diagnostics.Stopwatch.StartNew();
+        do
+        {
+            try
+            {
+                if (File.ReadAllText(instance.SettingsPath).Contains(fragment, StringComparison.Ordinal))
+                    return true;
+            }
+            catch (IOException)
+            {
+                // 保存の最中。次の周回で読み直す。
+            }
+            Thread.Sleep(200);
+        }
+        while (deadline.Elapsed < TimeSpan.FromSeconds(15));
+        return false;
+    }
 }

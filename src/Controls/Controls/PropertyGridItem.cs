@@ -52,6 +52,13 @@ public sealed partial class PropertyGridItem : INotifyPropertyChanged
     private bool _hasError;
     private string? _errorMessage;
 
+    /// <summary>
+    /// <see cref="CommitFromEnter"/> が確定した直後の表示値。
+    /// フォーカスが外れたときに TwoWay が同じ文字列を書き戻してくるので、
+    /// その 1 回を「利用者の入力し直し」と取り違えないための目印。
+    /// </summary>
+    private string? _enterEcho;
+
     /// <summary>Category が未指定の場合の既定値(リソースキー)。PropertyGridView.BuildItems の既定値と揃える。</summary>
     internal const string DefaultCategoryKey = "PropCat_General";
 
@@ -268,6 +275,12 @@ public sealed partial class PropertyGridItem : INotifyPropertyChanged
         get => _value;
         set
         {
+            // Enter で確定した直後は、フォーカスが外れたときに TwoWay がもう一度
+            // 同じ文字列を書き戻してくる。**利用者の操作は 1 回**なので、2 度目は
+            // 「入力し直した」とは見なさない（下の分岐で使う）。
+            string? echo = _enterEcho;
+            _enterEcho = null;
+
             if (_value == value)
             {
                 // **同じ文字列でもエラー表示は畳む。** 変換に失敗したとき表示値は
@@ -275,7 +288,12 @@ public sealed partial class PropertyGridItem : INotifyPropertyChanged
                 // そこで利用者が入力し直すと必ずここへ来るため、素通ししていると
                 // 「正しい値を入れてもエラーが消えない」になる（L3 の
                 // ReenteringTheRevertedValue_ClearsTheError が守る）。
-                ClearError();
+                //
+                // ただし Enter の echo だけは別。畳むと、Enter で出したばかりの指摘が
+                // **フォーカスを外しただけで消える**（L3 の
+                // TheErrorSurvivesLeavingTheFieldAfterEnter が守る）。
+                if (echo != value)
+                    ClearError();
                 return;
             }
 
@@ -311,6 +329,24 @@ public sealed partial class PropertyGridItem : INotifyPropertyChanged
 
             RaiseValueRelatedChanged();
         }
+    }
+
+    /// <summary>
+    /// Enter による確定（<see cref="PropertyGridView"/> の <c>KeyDown</c> から呼ぶ）。
+    ///
+    /// <para>
+    /// <see cref="Value"/> へ直接代入するのとの違いは、<b>直後に来る書き戻しを
+    /// 1 回だけ無視する</b>ことだけである ── TwoWay バインドはフォーカスを失うときに
+    /// もう一度同じ文字列を押し込んでくるので、素通しすると
+    /// 「Enter で出したエラーが、離れただけで消える」ことになる。
+    /// </para>
+    /// </summary>
+    internal void CommitFromEnter(string value)
+    {
+        Value = value;
+
+        // 差し戻しや丸めのあとに**画面へ残る**文字列を控える。次に来る書き戻しはこれになる。
+        _enterEcho = _value;
     }
 
     /// <summary>EditKind が Bool のときに CheckBox.IsChecked から利用する。</summary>

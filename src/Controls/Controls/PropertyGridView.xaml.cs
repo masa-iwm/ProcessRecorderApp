@@ -257,6 +257,35 @@ public sealed partial class PropertyGridView : UserControl
         }
     }
 
+    /// <summary>
+    /// 値の <c>TextBox</c> で Enter が押されたら、その場でコミットする。
+    ///
+    /// <para>
+    /// <b><c>TwoWay</c> バインドは既定でフォーカスを失うまでソースへ書き戻さない。</b>
+    /// そのため入力して Enter を押しただけでは<b>モデルに何も届かない</b> ──
+    /// 画面には入力した値が出ているので、効いたように見えて効いていない。
+    /// </para>
+    /// <para>
+    /// コミット後に <see cref="PropertyGridItem.Value"/> が丸めや差し戻しで変わると、
+    /// その通知で <c>TextBox</c> の表示も追随する（＝押した結果がその場で見える）。
+    /// フォーカスは動かさない ── Enter は「離れずに確定する」ための操作である。
+    /// </para>
+    /// </summary>
+    // sender は WinRT のランタイムクラスなので、トリミングでメタデータが落ちないよう明示する
+    // （同ファイルの RebuildGroups と同じ理由。無いと AOT/トリム解析がエラーにする）。
+    [WinRT.DynamicWindowsRuntimeCast(typeof(TextBox))]
+    private void ValueTextBox_KeyDown(object sender, Microsoft.UI.Xaml.Input.KeyRoutedEventArgs e)
+    {
+        if (e.Key != Windows.System.VirtualKey.Enter)
+            return;
+
+        if (sender is TextBox box && box.DataContext is PropertyGridItem item)
+        {
+            item.CommitFromEnter(box.Text);
+            e.Handled = true;
+        }
+    }
+
     /// <summary>Builder 項目の「…」ボタンから呼ばれ、ValueBuilder の結果を項目へコミットする。</summary>
     private async System.Threading.Tasks.Task RunBuilderAsync(PropertyGridItem item)
     {

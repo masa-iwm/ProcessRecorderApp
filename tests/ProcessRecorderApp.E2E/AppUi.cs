@@ -1036,6 +1036,26 @@ public sealed class AppUi : IDisposable
         Thread.Sleep(300);
     }
 
+    /// <summary>
+    /// PropertyGrid の行へ値を入力し、<b>Enter で確定する（フォーカスは外さない）</b>。
+    ///
+    /// <para>
+    /// <see cref="SetPropertyText"/> との違いはそこだけで、確定の経路が別である
+    /// ── あちらは TwoWay バインドの LostFocus、こちらは
+    /// <c>PropertyGridView.ValueTextBox_KeyDown</c> からの明示的なコミット。
+    /// <b>Enter が効かなくなる退行は SetPropertyText では捕まらない</b>ので、
+    /// Enter を見たいテストは必ずこちらを使うこと。
+    /// </para>
+    /// </summary>
+    public void SetPropertyTextWithEnter(string propertyName, string value)
+    {
+        var box = WaitForPropertyRow(propertyName).AsTextBox();
+        box.Focus();
+        box.Text = value;
+        Keyboard.Press(VirtualKeyShort.ENTER);
+        Thread.Sleep(300);
+    }
+
     // ---- ウィンドウの開閉 ----
 
     /// <summary>
