@@ -96,23 +96,67 @@ public partial class AppSettings : JsonSettingsBase<AppSettings>
     public partial Microsoft.UI.Xaml.Controls.NavigationViewPaneDisplayMode PaneDisplayMode { get; set; }
         = Microsoft.UI.Xaml.Controls.NavigationViewPaneDisplayMode.Top;
 
-    /// <summary>GStreamer のデバッグ出力レベル（環境変数 GST_DEBUG）。起動時のみ反映。</summary>
+    /// <summary>
+    /// GStreamer のデバッグ出力レベル（環境変数 <c>GST_DEBUG</c> と同じ書式）。<b>変更時に即時反映</b>。
+    ///
+    /// <para>
+    /// <b>起動時と変更時で経路が違う。</b> 起動時は
+    /// <see cref="ApplyStartupEnvironmentVariables"/> が環境変数として渡す
+    /// ── 外部で <c>GST_DEBUG</c> が設定済みならそちらを尊重して上書きしない。
+    /// 変更時は <c>gst_debug_set_threshold_from_string</c> を直接呼ぶので、
+    /// 外部指定があっても利用者の操作が勝つ。この非対称は意図である。
+    /// </para>
+    /// </summary>
     [System.ComponentModel.Category("PropCat_Debug")]
     [System.ComponentModel.Description("PropDesc_GstDebug")]
     [ObservableProperty]
     public partial string GstDebug { get; set; } = "";
+    // 読み込み（逆シリアル化）でもここへ来るが、そのときはまだ Gst.Functions.Init 前なので
+    // TrySetThreshold が false を返して何もしない（起動時の反映は環境変数側の担当）。
+    // UI からの編集と Reload() はウィンドウが立った後なので、必ず Init 後に来る。
+    // **OnLoaded() では再代入しない** ── そこで押し込むと外部の GST_DEBUG を黙って
+    // 上書きすることになり、しかも Init 前なので落ちる。
+    partial void OnGstDebugChanged(string value)
+        => GStreamer.DebugLogEx.TrySetThreshold(value);
 
-    /// <summary>パイプライングラフ(.dot)の出力先ディレクトリ（環境変数 GST_DEBUG_DUMP_DOT_DIR）。相対パスは Exe のあるディレクトリ基準。起動時のみ反映。</summary>
+    /// <summary>
+    /// パイプライングラフ(.dot)の出力先ディレクトリ。相対パスは Exe のあるディレクトリ基準。
+    ///
+    /// <para>
+    /// Log 画面の「グラフを保存」はこの値を<b>押すたびに読む</b>ので即時反映される。
+    /// 一方 <b>GStreamer 内部のダンプに効かせるには起動時の指定が要る</b>
+    /// ── 環境変数 <c>GST_DEBUG_DUMP_DOT_DIR</c> は <c>gst_init</c> の時点でしか
+    /// 読まれず、後から書き換えても反映する手段が GStreamer 側に無い。
+    /// </para>
+    /// </summary>
     [System.ComponentModel.Category("PropCat_Debug")]
     [System.ComponentModel.Description("PropDesc_GstDebugDumpDotDir")]
+    // 「…」でフォルダー選択ダイアログを開く。**読み取り専用にはしない**
+    // （空欄＝データディレクトリ、と相対パスはダイアログでは表せない。OutputDirectory と同じ判断）。
+    [ValueBuilder(GstDebugDumpDotDirBuilderKey)]
     [ObservableProperty]
     public partial string GstDebugDumpDotDir { get; set; } = "";
+
+    /// <summary>
+    /// <see cref="GstDebugDumpDotDir"/> のビルダー識別キー。
+    /// <b><c>PropCat_</c> / <c>PropDesc_</c> で始めてはいけない</b>（<see cref="EncoderChoiceListKey"/> と同じ理由）。
+    /// </summary>
+    public const string GstDebugDumpDotDirBuilderKey = "GstDebugDumpDotDir";
 
     /// <summary>デバッグログの保存先ファイルパス。設定変更時に即時反映。空欄なら保存しない。</summary>
     [System.ComponentModel.Category("PropCat_Debug")]
     [System.ComponentModel.Description("PropDesc_DebugLogFile")]
+    // 「…」でファイル保存ダイアログを開く。**読み取り専用にはしない**（上と同じ理由。
+    // 空欄＝保存しない、は直接入力でしか表せない）。
+    [ValueBuilder(DebugLogFileBuilderKey)]
     [ObservableProperty]
     public partial string DebugLogFile { get; set; } = "";
+
+    /// <summary>
+    /// <see cref="DebugLogFile"/> のビルダー識別キー。
+    /// <b><c>PropCat_</c> / <c>PropDesc_</c> で始めてはいけない</b>（<see cref="EncoderChoiceListKey"/> と同じ理由）。
+    /// </summary>
+    public const string DebugLogFileBuilderKey = "DebugLogFile";
 
     /// <summary>
     /// Log 画面が保持する行数の上限。超えた分は古い側から破棄し、

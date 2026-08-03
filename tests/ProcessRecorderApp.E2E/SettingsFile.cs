@@ -205,6 +205,10 @@ public sealed class SettingsFile
     public int DataVersion { get; set; } = 1;
     public string PreferredH264Encoder { get; set; } = DefaultEncoder;
     public string GstDebug { get; set; } = "";
+
+    /// <summary>グラフ(.dot)の保存先。null なら書かない（＝製品の既定＝空欄＝データディレクトリ）。</summary>
+    public string? GstDebugDumpDotDir { get; set; }
+
     public int? StopFinalizeTimeoutMs { get; set; }
 
     /// <summary>録画の保存先。null なら書かない（＝製品の既定＝実行ファイルのあるディレクトリ）。</summary>
@@ -240,6 +244,9 @@ public sealed class SettingsFile
             ["GstDebug"] = GstDebug,
             ["PreferredH264Encoder"] = PreferredH264Encoder,
         };
+
+        if (GstDebugDumpDotDir is { } dotDir)
+            root["GstDebugDumpDotDir"] = dotDir;
 
         if (StopFinalizeTimeoutMs is { } timeout)
             root["StopFinalizeTimeoutMs"] = timeout;

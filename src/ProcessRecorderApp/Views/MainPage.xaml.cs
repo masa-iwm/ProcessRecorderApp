@@ -482,8 +482,12 @@ public sealed partial class MainPage : Page
     /// </summary>
     private async System.Threading.Tasks.Task<string?> BuildSettingsValueAsync(string key, string current)
     {
-        if (string.Equals(key, AppSettings.OutputDirectoryBuilderKey, StringComparison.Ordinal))
-            return await PickOutputDirectoryAsync(current);
+        if (string.Equals(key, AppSettings.OutputDirectoryBuilderKey, StringComparison.Ordinal) ||
+            string.Equals(key, AppSettings.GstDebugDumpDotDirBuilderKey, StringComparison.Ordinal))
+            return await PickDirectoryAsync(current);
+
+        if (string.Equals(key, AppSettings.DebugLogFileBuilderKey, StringComparison.Ordinal))
+            return await PickLogFileAsync(current);
 
         if (!string.Equals(key, AppSettings.UiaTriggerBuilderKey, StringComparison.Ordinal))
             return null;
@@ -517,7 +521,9 @@ public sealed partial class MainPage : Page
     }
 
     /// <summary>
-    /// 録画の保存先をフォルダー選択ダイアログで選ぶ。選ばれた絶対パスを返し、取り消しなら null。
+    /// ディレクトリをフォルダー選択ダイアログで選ぶ。選ばれた絶対パスを返し、取り消しなら null。
+    /// <c>OutputDirectory</c> と <c>GstDebugDumpDotDir</c> の両方が使う
+    /// （どちらも「空欄なら実行ファイルのあるディレクトリ基準」という同じ規則）。
     ///
     /// <remarks>
     /// <para>
@@ -533,7 +539,7 @@ public sealed partial class MainPage : Page
     /// </para>
     /// </remarks>
     /// </summary>
-    private async System.Threading.Tasks.Task<string?> PickOutputDirectoryAsync(string current)
+    private async System.Threading.Tasks.Task<string?> PickDirectoryAsync(string current)
     {
         if (XamlRoot?.ContentIslandEnvironment is not { } island)
             return null;   // まだ表示されていない（この経路は「…」からしか来ないので通常あり得ない）
@@ -547,5 +553,43 @@ public sealed partial class MainPage : Page
 
         var result = await picker.PickSingleFolderAsync();
         return result?.Path;   // null = 取り消し。値は返さず、現在の設定を保つ
+    }
+
+    /// <summary>
+    /// デバッグログの保存先をファイル保存ダイアログで選ぶ。選ばれた絶対パスを返し、取り消しなら null。
+    ///
+    /// <remarks>
+    /// ピッカーの種類が <see cref="PickDirectoryAsync"/> と違うだけで、<c>Microsoft.Windows.Storage.Pickers</c>
+    /// を使う理由（アンパッケージ配布で <c>InitializeWithWindow</c> が要らない）は同じ。
+    /// <b>選ぶと必ず絶対パスになる</b>が、空欄（＝保存しない）と相対パスはダイアログでは
+    /// 表せないので、直接入力の道は残してある（<c>[ReadOnly]</c> を付けていない）。
+    /// </remarks>
+    /// </summary>
+    private async System.Threading.Tasks.Task<string?> PickLogFileAsync(string current)
+    {
+        if (XamlRoot?.ContentIslandEnvironment is not { } island)
+            return null;
+
+        var picker = new Microsoft.Windows.Storage.Pickers.FileSavePicker(island.AppWindowId);
+        picker.FileTypeChoices.Add("Log", [".txt", ".log"]);
+
+        string trimmed = current?.Trim() ?? string.Empty;
+        if (trimmed.Length > 0)
+        {
+            // 空欄のときは既定名だけ埋めて、開く場所はピッカーに任せる
+            // （空欄は「保存しない」であって「どこか」を指していないため）。
+            string full = AppDirectories.ResolveOrBase(trimmed);
+            string? parent = Path.GetDirectoryName(full);
+            if (parent is not null && Directory.Exists(parent))
+                picker.SuggestedStartFolder = parent;
+            picker.SuggestedFileName = Path.GetFileName(full);
+        }
+        else
+        {
+            picker.SuggestedFileName = "debug.txt";
+        }
+
+        var result = await picker.PickSaveFileAsync();
+        return result?.Path;   // null = 取り消し
     }
 }

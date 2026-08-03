@@ -86,6 +86,9 @@
   <data name="MainPage_CopyAllLog.Content" xml:space="preserve">
     <value>Copy All</value>
   </data>
+  <data name="MainPage_SaveDotFiles.Content" xml:space="preserve">
+    <value>Save Graph</value>
+  </data>
   <data name="MainPage_TerminalUnavailable.Text" xml:space="preserve">
     <value>The terminal view could not be started, so the log is shown in the simple list view. The reason is recorded in activity.log.</value>
   </data>
@@ -297,10 +300,10 @@
     <value>Element factory name of the preferred H.264 encoder (for example x264enc or qsvh264enc). Leave empty to pick automatically from the encoders available on this machine. If the specified element is not available, the automatic order is used instead. The encoder actually used is shown in each recorder's Actual Encoding Properties.</value>
   </data>
   <data name="PropDesc_GstDebug" xml:space="preserve">
-    <value>Sets the GST_DEBUG environment variable at startup (not overwritten if already set).</value>
+    <value>GStreamer debug output level (same format as GST_DEBUG). Applied immediately on change. At startup, an existing GST_DEBUG environment variable takes precedence.</value>
   </data>
   <data name="PropDesc_GstDebugDumpDotDir" xml:space="preserve">
-    <value>Sets the GST_DEBUG_DUMP_DOT_DIR environment variable at startup (not overwritten if already set). Relative paths are resolved against the executable directory.</value>
+    <value>Where pipeline graphs (.dot) are saved. Save Graph on the Log page reads this value each time it is pressed (empty means the data directory). To also affect GStreamer's own dumps, it must be set before startup. Relative paths are resolved against the executable directory.</value>
   </data>
   <data name="PropDesc_DebugLogFile" xml:space="preserve">
     <value>File path to save debug log output. Applied immediately on change. Leave empty to disable saving.</value>

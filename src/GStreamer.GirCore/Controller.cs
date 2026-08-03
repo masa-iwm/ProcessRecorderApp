@@ -190,6 +190,48 @@ namespace ProcessRecorderApp.GStreamer
             GC.SuppressFinalize(this);
         }
 
+        /// <summary>
+        /// いま生きているパイプライン（全レコーダーの sink/src とプレビュー）のグラフを
+        /// <paramref name="directory"/> へ書き出し、書いた絶対パスを返す。
+        ///
+        /// <para>
+        /// 1回の呼び出しで<b>時刻を1つだけ</b>使う ── 同じ操作で出たファイルが
+        /// 名前で1組と分かるようにするため。
+        /// </para>
+        /// <para>
+        /// 途中で失敗しても他を諦めない。<b>失敗はその場で activity.log に残す</b>
+        /// ── 黙って件数が減ると「保存したのに無い」としか見えない。
+        /// </para>
+        /// </summary>
+        public IReadOnlyList<string> WriteDebugGraphs(string directory)
+        {
+            var timestamp = System.DateTime.Now;
+            List<string> written = [];
+
+            foreach (EventRecorder recorder in Recorders)
+            {
+                try
+                {
+                    written.AddRange(recorder.WriteDebugGraphs(directory, timestamp));
+                }
+                catch (Exception ex)
+                {
+                    Components.ActivityLog.Error("gst.dot", $"recorder='{recorder.Name}' error={ex.Message}");
+                }
+            }
+
+            try
+            {
+                written.AddRange(Previewer.WriteDebugGraphs(directory, timestamp));
+            }
+            catch (Exception ex)
+            {
+                Components.ActivityLog.Error("gst.dot", $"preview error={ex.Message}");
+            }
+
+            return written;
+        }
+
         [SupportedOSPlatform("windows5.0")]
         public static void StaticInitialize()
         {
@@ -228,6 +270,11 @@ namespace ProcessRecorderApp.GStreamer
                 NativeLibrary.SetDllImportResolver(typeof(ExtendMethods).Assembly, ImportResolver.Resolve);
                 string[]? args = [];
                 Gst.Functions.Init(ref args);
+
+                // ここから先はネイティブを呼んでよい。**この1行だけが立てる**
+                // ── AppSettings は Init より前に読み込まれ、その setter から
+                // DebugLogEx.TrySetThreshold へ来るので、フラグが早すぎると起動ごと落ちる。
+                DebugLogEx.IsGstInitialized = true;
 
                 // **どこから読まれたか**を1行残す。Init の後でなければ意味が無い
                 // ── ここで見たいのは「自分が選んだ候補」ではなく

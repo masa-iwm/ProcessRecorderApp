@@ -222,6 +222,13 @@ public sealed partial class PropertyGridItem : INotifyPropertyChanged
     /// <summary>「…」（ビルダー起動）ボタンの AutomationId。行ごとに一意にする。</summary>
     public string BuilderButtonAutomationId => $"{PropertyName}.Build";
 
+    /// <summary>
+    /// エラー表示の AutomationId。行ごとに一意にする。
+    /// <b>エラーが「出ること」だけでなく「消えること」を UI 自動化から確かめるために要る</b>
+    /// ── 消えない不具合はモデルを読むだけでは分からない（表示側で止まりうる）。
+    /// </summary>
+    public string ErrorAutomationId => $"{PropertyName}.Error";
+
     internal static PropertyGridItem Create(
         object target,
         PropertyInfo property,
@@ -263,6 +270,12 @@ public sealed partial class PropertyGridItem : INotifyPropertyChanged
         {
             if (_value == value)
             {
+                // **同じ文字列でもエラー表示は畳む。** 変換に失敗したとき表示値は
+                // 差し戻されるので、画面には「正しい値」が出たままエラーだけが残る。
+                // そこで利用者が入力し直すと必ずここへ来るため、素通ししていると
+                // 「正しい値を入れてもエラーが消えない」になる（L3 の
+                // ReenteringTheRevertedValue_ClearsTheError が守る）。
+                ClearError();
                 return;
             }
 
@@ -270,6 +283,7 @@ public sealed partial class PropertyGridItem : INotifyPropertyChanged
             {
                 // コミット先を持たない項目、または読み取り専用項目はローカルの表示値のみ更新する。
                 _value = value;
+                ClearError();
                 RaiseValueRelatedChanged();
                 return;
             }
@@ -282,20 +296,17 @@ public sealed partial class PropertyGridItem : INotifyPropertyChanged
 
                     // setter 側で値が丸められる可能性があるため、実際の値を読み直して表示する。
                     _value = _property.GetValue(_target)?.ToString() ?? "";
-                    HasError = false;
-                    ErrorMessage = null;
+                    ClearError();
                 }
                 catch (Exception ex)
                 {
                     // 書き込み失敗: 表示値は変更前のまま据え置く(=元の値に差し戻す)。
-                    HasError = true;
-                    ErrorMessage = ex.InnerException?.Message ?? ex.Message;
+                    SetError(ex.InnerException?.Message ?? ex.Message);
                 }
             }
             else
             {
-                HasError = true;
-                ErrorMessage = "この値は指定の型に変換できません。";
+                SetError(PropertyGridStrings.ValueConversionFailed);
             }
 
             RaiseValueRelatedChanged();
@@ -341,13 +352,31 @@ public sealed partial class PropertyGridItem : INotifyPropertyChanged
 
         if (_value == newValue)
         {
+            // ここへ来るのは稀（[ObservableProperty] は等値では通知しないので、
+            // 通知が来て文字列が一致するのは setter 側の丸めで ToString() が
+            // 揃った場合など）。それでも畳む ── 表示中の値と食い違うエラーが
+            // 残る方が害が大きい。
+            ClearError();
             return;
         }
 
         _value = newValue;
+        ClearError();
+        RaiseValueRelatedChanged();
+    }
+
+    /// <summary>エラー表示を畳む。<b>コミットを試みた経路は必ずここか <see cref="SetError"/> を通す。</b></summary>
+    private void ClearError()
+    {
         HasError = false;
         ErrorMessage = null;
-        RaiseValueRelatedChanged();
+    }
+
+    /// <inheritdoc cref="ClearError"/>
+    private void SetError(string message)
+    {
+        HasError = true;
+        ErrorMessage = message;
     }
 
     public bool HasError

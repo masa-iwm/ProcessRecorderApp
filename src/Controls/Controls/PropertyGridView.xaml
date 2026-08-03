@@ -38,6 +38,7 @@
                            Foreground="{ThemeResource SystemFillColorCriticalBrush}"
                            FontSize="11"
                            TextWrapping="Wrap"
+                           au:AutomationProperties.AutomationId="{x:Bind ErrorAutomationId}"
                            Visibility="{x:Bind ErrorVisibility, Mode=OneWay}" />
             </StackPanel>
         </DataTemplate>
@@ -87,6 +88,7 @@
                            Foreground="{ThemeResource SystemFillColorCriticalBrush}"
                            FontSize="11"
                            TextWrapping="Wrap"
+                           au:AutomationProperties.AutomationId="{x:Bind ErrorAutomationId}"
                            Visibility="{x:Bind ErrorVisibility, Mode=OneWay}" />
             </StackPanel>
         </DataTemplate>

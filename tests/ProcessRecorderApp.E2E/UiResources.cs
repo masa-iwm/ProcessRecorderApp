@@ -28,28 +28,38 @@ public static class UiResources
 
     private static readonly object Gate = new();
 
-    /// <summary>指定ロケールの <c>Resources.resw</c> から値を取る。</summary>
+    /// <summary>指定ロケールの <c>Resources.resw</c>（アプリ本体）から値を取る。</summary>
     public static string Get(string locale, string name)
+        => Get(locale, name, "Resources.resw",
+               Path.Combine(RepositoryLayout.Root, "src", "ProcessRecorderApp", "Strings", locale, "Resources.resw"));
+
+    /// <summary>
+    /// 指定ロケールの <c>ControlsResources.resw</c>（<c>src/Controls</c>）から値を取る。
+    /// <c>PropertyGridView</c> 自身の文言はこちらにあり、アプリ本体の resw には無い。
+    /// </summary>
+    public static string GetControls(string locale, string name)
+        => Get(locale, name, "ControlsResources.resw",
+               Path.Combine(RepositoryLayout.Root, "src", "Controls", "Strings", locale, "ControlsResources.resw"));
+
+    private static string Get(string locale, string name, string label, string path)
     {
-        var values = Load(locale);
+        var values = Load($"{label}/{locale}", path);
         if (!values.TryGetValue(name, out string? value))
         {
             throw new InvalidOperationException(
-                $"{locale}/Resources.resw にキー '{name}' がありません。" +
+                $"{locale}/{label} にキー '{name}' がありません。" +
                 $" 実在するキーの例: [{string.Join(", ", values.Keys.Order(StringComparer.Ordinal).Take(5))}, ...]");
         }
         return value;
     }
 
-    private static IReadOnlyDictionary<string, string> Load(string locale)
+    private static IReadOnlyDictionary<string, string> Load(string cacheKey, string path)
     {
         lock (Gate)
         {
-            if (Cache.TryGetValue(locale, out var cached))
+            if (Cache.TryGetValue(cacheKey, out var cached))
                 return cached;
 
-            string path = Path.Combine(
-                RepositoryLayout.Root, "src", "ProcessRecorderApp", "Strings", locale, "Resources.resw");
             if (!File.Exists(path))
                 throw new InvalidOperationException($"resw が見つかりません: '{path}'");
 
@@ -65,7 +75,7 @@ public static class UiResources
             if (values.Count == 0)
                 throw new InvalidOperationException($"resw にキーが1件もありません: '{path}'");
 
-            Cache[locale] = values;
+            Cache[cacheKey] = values;
             return values;
         }
     }

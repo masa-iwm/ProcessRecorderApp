@@ -160,6 +160,22 @@ namespace ProcessRecorderApp.GStreamer
         }
 
         /// <summary>
+        /// プレビュー用パイプラインのグラフを <c>.dot</c> として書き出し、書いた絶対パスを返す。
+        /// パイプラインが無ければ空を返す。
+        ///
+        /// <para>
+        /// <see cref="EventRecorder.WriteDebugGraphs"/> と違ってロックを取らない
+        /// ── こちらの <see cref="Close"/> は UI スレッドからしか呼ばれない
+        /// （<c>Controller.ShutdownPreview</c> / <c>Dispose</c>）ので、同じ UI スレッドで
+        /// 走るこのメソッドと競合しない。
+        /// </para>
+        /// </summary>
+        public IReadOnlyList<string> WriteDebugGraphs(string directory, System.DateTime timestamp)
+            => _pipeline is { } pipeline
+                ? (string[])[DebugLogEx.WriteDotFile(pipeline, directory, "preview", timestamp)]
+                : (string[])[];
+
+        /// <summary>
         /// パイプラインを解放する。破棄したフィールドは null 化して冪等にしてある
         /// （<see cref="Initialize"/> の失敗時にも catch から呼ばれるため、
         ///  二重解放を防ぐ必要がある）。

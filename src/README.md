@@ -385,17 +385,28 @@ Windows App SDK 側の `Microsoft.Windows.Storage.Pickers` を使う** ── �
     従来の `ListView`（`Controls/Behaviors/AnsiText`）へ落ちる。
     配色は両経路とも Windows Terminal Campbell（`Components/CampbellPalette` が正本）、
     フォントは Consolas 12。詳細は下記「Log 画面のターミナル表示」の節。
+    右上の「グラフを保存」（`MainPageViewModel.SaveDebugGraphsCommand`）は、いま生きている
+    パイプライン（全レコーダーの sink/src とプレビュー）の `.dot` を
+    `GstDebugDumpDotDir`（空欄ならデータディレクトリ）へ書き、結果を `gst.dot` に残す。
+    **`gst_debug_bin_to_dot_file` は使えない** ── あちらは `gst_init` の時点で控えた
+    `priv_gst_dump_dot_dir` しか見ず、未設定なら無言で何も書かない（既定の起動がそれ）。
+    代わりに `DebugBinToDotData` で受け取ってアプリ側が書く（`GStreamer/DebugLogEx.WriteDotFile`）。
   - Variables 画面: `WinUI.TableView` による Key/Value グリッド（`TemplateVariablesViewModel.cs`）。
   - Settings 画面: `PropertyGridView` で `Settings/AppSettings.Default` を編集。
     右上の「再読み込み」ボタン（`MainPageViewModel.ReloadSettingsCommand`）が
     `AppSettings.Reload()` を呼ぶ ── 手で settings.json を直したときの反映口。
     **録画中・排出中は無効**（`GstControllerViewModel.IsIdleAll`。レコーダーを
     丸ごと作り直すため）で、押すと確認ダイアログが出る。
-    再読み込みで反映されないものが3つある: `GstDebug` / `GstDebugDumpDotDir`
-    （`ApplyStartupEnvironmentVariables` が「環境変数が未設定のときだけ」設定するので
-    プロセスの再起動が要る）、ウィンドウサイズとプロパティペインの折りたたみ状態
-    （起動時に1回だけ読む）、そして**保存の指定をしていないテンプレート変数は消える**
-    （`OnLoaded()` が実行時ストアを作り直すため。確認ダイアログの本文がこれを指す）。
+    再読み込みで反映されないものが2つある: ウィンドウサイズとプロパティペインの
+    折りたたみ状態（起動時に1回だけ読む）、そして**保存の指定をしていない
+    テンプレート変数は消える**（`OnLoaded()` が実行時ストアを作り直すため。
+    確認ダイアログの本文がこれを指す）。
+    `GstDebug` は再読み込みでも変更でも即時反映される（`DebugLogEx.TrySetThreshold` が
+    `gst_debug_set_threshold_from_string` を呼ぶ）。ただし**起動時だけは経路が違い**、
+    `ApplyStartupEnvironmentVariables` が環境変数として渡すので、外部で `GST_DEBUG` が
+    設定済みならそちらが勝つ。`GstDebugDumpDotDir` も「グラフを保存」に対しては
+    即時反映されるが、**GStreamer 内部のダンプ先は `gst_init` で確定する**ので
+    そちらに効かせるには起動時の指定が要る（GStreamer 1.28.4 に変更する API は無い）。
 - **ViewModel**: `ViewModels/GstControllerViewModel.cs`（`static Current` を保持。全レコーダーの
   一括開始/終了、CLI コマンドからも参照される）、`GstEventRecorderViewModel.cs`
   （レコーダー単位、`CanStartRecording`/`CanStopRecording` などの実行可否ガード）、
@@ -1296,6 +1307,8 @@ GPU テクスチャになるため**アクセシブルテキストが 1 つも�
 | `recorder.eos` | INFO | 同上 | sink 側バスの `Eos` |
 | `recorder.restart` | INFO / WARN | 同上／`RestartSinkSrc` | 自動復帰の予約と、その結果（`ok` / `failed`） |
 | `log.terminal` | INFO / WARN | `LogTerminalView` | Log 画面のターミナルが起きた（`ready renderer=webgl｜dom`）／WebView2 を諦めてリスト表示に落ちた（`fallback=list`）。**どちらのレンダラーで描いているかは画面から見分けが付かない**ので、ここが唯一の観測点になる |
+| `gst.debug` | INFO | `DebugLogEx.TrySetThreshold` | `GstDebug` の変更を実行中に適用した（`threshold='...'`）。適用先は GStreamer の内部状態だけで画面にもファイルにも痕跡が残らないので、ここが唯一の観測点になる |
+| `gst.dot` | INFO / ERROR | `MainPageViewModel.SaveDebugGraphs` ／ `Controller.WriteDebugGraphs` | Log 画面の「グラフを保存」の結果（`dir='...' files=N`）／個々のパイプラインの書き出し失敗 |
 | `cli` | INFO | `ActivationCommands.Parse` | コマンドラインと終了コード |
 | `ping` | INFO | `ping` コマンド | 生存確認 |
 
@@ -1478,7 +1491,7 @@ UIA テストは要素を `AutomationProperties.Name` で探すと壊れる ─�
 |---|---|
 | 一括開始／終了ボタン | `StartAllButton` / `StopAllButton` |
 | プロパティペイン開閉／レコーダー削除 | `TogglePaneButton` / `RemoveRecorderButton` |
-| Log 画面の自動スクロール／全文コピー／クリア | `AutoScrollToggle` / `CopyAllLogButton` / `ClearLogButton` |
+| Log 画面の自動スクロール／全文コピー／グラフ保存／クリア | `AutoScrollToggle` / `CopyAllLogButton` / `SaveDotFilesButton` / `ClearLogButton` |
 | Log 画面のターミナル／フォールバックの注記 | `logTerminalView` / `LogTerminalUnavailableText` |
 | Variables 画面の追加／削除／表 | `AddVariableButton` / `RemoveVariableButton` / `VariablesTable` |
 | Settings 画面の再読み込み | `ReloadSettingsButton` |
@@ -1486,6 +1499,7 @@ UIA テストは要素を `AutomationProperties.Name` で探すと壊れる ─�
 | ナビの「Add recorder」項目 | `AddRecorderNavItem` |
 | **PropertyGrid の各行の値エディタ** | **元の CLR プロパティ名**（`FilenameTemplate` / `BufferDuration` など。`PropertyGridItem.PropertyName`） |
 | PropertyGrid の「…」ボタン | `<プロパティ名>.Build`（例: `SrcPipeline.Build`） |
+| PropertyGrid の入力エラー表示 | `<プロパティ名>.Error`（`Visibility=Collapsed` のときは UIA ツリーに出ないので、**有無がそのまま表示の有無**） |
 | パイプライン編集ダイアログ | `PipelineSourceCombo` / `PipelineSpecifyCaps` / `PipelineGeneratedText` |
 | 同ダイアログの各行 | 値エディタ＝GStreamer のプロパティ名／caps フィールド名、有効チェック＝`<名前>.Enabled` |
 

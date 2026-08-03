@@ -683,6 +683,39 @@ public partial class EventRecorder : ObservableObject, IDisposable
         }
     }
 
+    /// <summary>グラフ書き出しのために <c>_stateLock</c> を待つ上限(ms)。</summary>
+    private const int DebugGraphLockTimeoutMs = 500;
+
+    /// <summary>
+    /// sink / src 両パイプラインのグラフを <c>.dot</c> として書き出し、書いた絶対パスを返す。
+    ///
+    /// <para>
+    /// <b><c>_stateLock</c> の下で読む</b> ── 破棄と競合するとネイティブの二重解放になる。
+    /// ただし<b>待ち続けない</b>。排出中の <see cref="Close"/> はロックを
+    /// <see cref="StopFinalizeTimeoutMs"/> まで保持しうるので、UI スレッドから呼ぶと固まる。
+    /// 取れなければ例外にして呼び出し側に報告させる ── <b>無言で件数を減らさない</b>。
+    /// </para>
+    /// </summary>
+    public IReadOnlyList<string> WriteDebugGraphs(string directory, System.DateTime timestamp)
+    {
+        if (!Monitor.TryEnter(_stateLock, DebugGraphLockTimeoutMs))
+            throw new TimeoutException($"'{Name}' is busy (stopping); its graphs were not written.");
+
+        try
+        {
+            List<string> written = [];
+            if (_sinkPipeline is { } sink)
+                written.Add(DebugLogEx.WriteDotFile(sink, directory, $"{Name}.sink", timestamp));
+            if (_srcPipeline is { } src)
+                written.Add(DebugLogEx.WriteDotFile(src, directory, $"{Name}.src", timestamp));
+            return written;
+        }
+        finally
+        {
+            Monitor.Exit(_stateLock);
+        }
+    }
+
     /// <param name="abandonedStop">
     /// 進行中の排出を待ち切れなかった場合 true。src 側のオブジェクトは
     /// まだ排出タスクが使っている可能性があるので <b>Dispose せず参照だけ落とす</b>。

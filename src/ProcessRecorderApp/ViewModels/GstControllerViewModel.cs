@@ -49,6 +49,13 @@ namespace ProcessRecorderApp.ViewModels
 
         public GstEventEventRecorderCollectionViewModel Recorders { get; init; }
 
+        /// <summary>
+        /// いま生きているパイプラインのグラフを <c>.dot</c> として書き出し、書いた絶対パスを返す。
+        /// <see cref="Model"/> は protected なので、View 層からはここを通す。
+        /// </summary>
+        public IReadOnlyList<string> WriteDebugGraphs(string directory)
+            => Model.WriteDebugGraphs(directory);
+
         /// <summary>Settings_Recorders_CollectionChanged の遅延実行用（Initialize を呼んだ UI スレッドのキュー）。</summary>
         private readonly DispatcherQueue _dispatcherQueue;
 

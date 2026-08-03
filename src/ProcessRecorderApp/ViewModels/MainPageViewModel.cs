@@ -98,6 +98,37 @@ public partial class MainPageViewModel : ObservableObject, IDisposable
     }
 
     /// <summary>
+    /// いま生きているパイプラインのグラフを <c>.dot</c> として保存する。
+    ///
+    /// <para>
+    /// 保存先は<b>押すたびに設定から読む</b>ので <see cref="AppSettings.GstDebugDumpDotDir"/> は
+    /// 即時反映される。<b>空欄でも何もしないで終わらせない</b> ── データディレクトリへ出す。
+    /// GStreamer 側の <c>GST_DEBUG_DUMP_DOT_DIR</c> は <c>gst_init</c> 時にしか読まれないので、
+    /// 起動後に効かせる道はこの経路しか無い（<c>GStreamer.DebugLogEx.WriteDotFile</c>）。
+    /// </para>
+    /// <para>
+    /// 結果はダイアログではなく activity.log へ出す。activity.log は Log 画面へ複写されるので、
+    /// <b>押した画面にそのまま保存先が出る</b>。
+    /// </para>
+    /// </summary>
+    [RelayCommand]
+    private void SaveDebugGraphs()
+    {
+        string configured = AppDirectories.ResolveOptional(AppSettings.Default.GstDebugDumpDotDir) ?? "";
+        string directory = configured.Length == 0 ? AppEnvironment.DataDirectory : configured;
+
+        try
+        {
+            IReadOnlyList<string> written = GstController.WriteDebugGraphs(directory);
+            ActivityLog.Info("gst.dot", $"dir='{directory}' files={written.Count}");
+        }
+        catch (Exception ex)
+        {
+            ActivityLog.Error("gst.dot", $"dir='{directory}' error={ex.Message}");
+        }
+    }
+
+    /// <summary>
     /// 再読み込みの確認を View へ委譲するためのコールバック（ダイアログ表示は View の責務）。
     /// true を返した場合のみ読み直す。未設定なら確認なしで読み直す。
     /// </summary>

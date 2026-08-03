@@ -17,4 +17,12 @@ internal static class PropertyGridStrings
 
     /// <summary>「…」ビルダー起動ボタンの AutomationProperties.Name(アイコンのみで文字が無いため必須)。</summary>
     public static string Build => Localization.GetString("Controls/ControlsResources/PropGrid_Build");
+
+    /// <summary>
+    /// 入力を対象プロパティの型へ変換できなかったときのエラー文言
+    /// (<see cref="PropertyGridItem.Value"/> から使う。テンプレートからではないが、
+    ///  <b>利用者に見える文字列を直書きしない</b>という点で扱いは同じ)。
+    /// </summary>
+    public static string ValueConversionFailed
+        => Localization.GetString("Controls/ControlsResources/PropGrid_ValueConversionFailed");
 }

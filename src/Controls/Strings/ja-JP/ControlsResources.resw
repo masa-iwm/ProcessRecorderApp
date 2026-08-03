@@ -26,6 +26,9 @@
   <data name="PropGrid_Build" xml:space="preserve">
     <value>値を編集…</value>
   </data>
+  <data name="PropGrid_ValueConversionFailed" xml:space="preserve">
+    <value>この値は指定の型に変換できません。</value>
+  </data>
 
   <!-- ListViewCopyBehavior.cs / PropertyGridCollectionElement.cs -->
   <data name="Common_Copy" xml:space="preserve">

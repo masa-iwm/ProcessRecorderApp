@@ -55,6 +55,11 @@ public static class ActivityLogFile
         // Log 画面のターミナル。**どちらのレンダラーで描いているかは画面から見分けが付かない**ので、
         // ここが「WebView2 が実際に起きた」ことを確かめられる唯一の自動的な観測点になる。
         "log.terminal",
+        // GST_DEBUG のしきい値を実行中に適用した。適用は GStreamer の内部状態を変えるだけで
+        // 画面にもファイルにも痕跡が残らないので、ここが唯一の観測点になる。
+        "gst.debug",
+        // パイプラインのグラフ(.dot)を保存した。
+        "gst.dot",
     ];
 
     private static readonly string[] LongestFirst = [.. KnownEvents.OrderByDescending(e => e.Length)];

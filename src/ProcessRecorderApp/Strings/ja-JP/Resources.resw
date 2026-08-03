@@ -86,6 +86,9 @@
   <data name="MainPage_CopyAllLog.Content" xml:space="preserve">
     <value>すべてコピー</value>
   </data>
+  <data name="MainPage_SaveDotFiles.Content" xml:space="preserve">
+    <value>グラフを保存</value>
+  </data>
   <data name="MainPage_TerminalUnavailable.Text" xml:space="preserve">
     <value>ターミナル表示を開始できなかったため、ログを簡易リスト表示にしています。理由は activity.log に記録されます。</value>
   </data>
@@ -297,10 +300,10 @@
     <value>優先する H.264 エンコーダーの要素ファクトリ名（例: x264enc、qsvh264enc）。空欄の場合は、この実機で利用できるエンコーダーから自動選択します。指定した要素が利用できない場合は自動選択の優先順位にフォールバックします。実際に採用されたエンコーダーは各レコーダーの「実際のエンコード設定」に表示されます。</value>
   </data>
   <data name="PropDesc_GstDebug" xml:space="preserve">
-    <value>起動時に環境変数 GST_DEBUG を設定します（既に設定済みの場合は上書きしません）。</value>
+    <value>GStreamer のデバッグ出力レベル（GST_DEBUG と同じ書式）。変更時に即時反映されます。起動時は、環境変数 GST_DEBUG が既に設定済みならそちらが優先されます。</value>
   </data>
   <data name="PropDesc_GstDebugDumpDotDir" xml:space="preserve">
-    <value>起動時に環境変数 GST_DEBUG_DUMP_DOT_DIR を設定します（既に設定済みの場合は上書きしません）。相対パスは実行ファイルのあるディレクトリを基準に解決されます。</value>
+    <value>パイプライングラフ(.dot)の保存先。Log 画面の「グラフを保存」は押すたびにこの値を読みます（空欄ならデータディレクトリ）。GStreamer 内部のダンプにも効かせるには、起動時に指定されている必要があります。相対パスは実行ファイルのあるディレクトリを基準に解決されます。</value>
   </data>
   <data name="PropDesc_DebugLogFile" xml:space="preserve">
     <value>デバッグログ出力の保存先ファイルパス。変更時に即時反映されます。空欄にすると保存を無効化します。</value>

@@ -89,6 +89,34 @@ E2E ハーネスは `SettingsFile.DefaultEncoder = "x264enc"` を固定してお
 
 なお **「立ち下がりが届かない」ことそのものは検出できない**（イベントも poll も落ちた場合）。定義の不備（`WhileMatching` ＋「停止時も通知」になっていない）だけは `trigger.assign warn` が知らせる。将来 E2E 化するなら、相手アプリを別途起動せず**アプリ自身のウィンドウを監視対象にする**案が有力。
 
+### デバッグ用パスのピッカー（「…」の先のダイアログ）
+
+**この項目だけ性格が違う。** 他の項目は「退行を注入しても検出できなかった」という実測だが、
+こちらは**そもそも自動で押せない**（下記）ので注入実験に到達していない。
+
+`GstDebugDumpDotDir` / `DebugLogFile` / `OutputDirectory` の「…」が開く
+`Microsoft.Windows.Storage.Pickers` のダイアログは E2E で押していない ── **押すとネイティブの
+モーダルが開き、閉じるまでテストが止まる**。E2E が見ているのは
+`GstDebugLiveTests.TheDebugPathRowsOfferABuilderButton`、すなわち
+「`[ValueBuilder]` の配線が届いて Builder 行（＝「…」ボタン付き）になっていること」までである。
+
+**守られていないのは `MainPage.BuildSettingsValueAsync` の分岐から先**
+（`PickDirectoryAsync` / `PickLogFileAsync` の中身、`SuggestedStartFolder` の与え方、
+取り消し時に現在値を保つこと）。
+
+なお**ダイアログは UIA のデスクトップ直下の子として現れない** ── 開いたことを
+「新しいウィンドウが増えた」で検出しようとすると、**開いているのに 0 件**という
+紛らわしい結果になる（実測）。確かめたいときは製品側に一時的な `ActivityLog` を差し込み、
+`PickSingleFolderAsync` / `PickSaveFileAsync` の**入りと出**を見るのが確実
+（出が来なければモーダルが立っている。`Esc` で `result=null` が返る）。
+
+ここを触ったら発行物で手動確認すること:
+
+1. 3 つの行の「…」がそれぞれ**フォルダー選択**／**フォルダー選択**／**ファイル保存**を開く
+2. 現在値が指す場所から開く（空欄・相対パスでも例外にならない）
+3. 取り消すと値が変わらない
+4. 選ぶと絶対パスが入り、直接入力の空欄・相対パスも従来どおり通る（`[ReadOnly]` にしていない）
+
 ### Mp4Probe.StartsOnASyncSample
 
 `Mp4Probe.StartsOnASyncSample`（`stss` の先頭項目の検査）は**退行検出器ではなく不変条件の表明**である。これが緑であることを「この性質を壊す変更を検出できる」と読まないこと。
