@@ -343,10 +343,10 @@ public sealed partial class UiaTriggerService : IDisposable
                 _autoStarted.RemoveWhere(x => x.TriggerId == triggerId);
             return;
         }
-        // 停止対象をここで確定してから待つ（停止後に LastStopOutcome を読む相手を間違えない）
-        var stopping = controller.Recorders.Where(r => r.CanStopRecording).ToList();
-        await controller.StopRecordingAllAsync();
-        foreach (var recorder in stopping)
+        // 停止対象は StopRecordingAllAsync が確定して返す（停止後に LastStopOutcome を
+        // 読む相手を間違えないため。CLI の stop-recording-all と同じ集合を使う）
+        var stopped = await controller.StopRecordingAllAsync();
+        foreach (var recorder in stopped)
             LogStopOutcome(triggerId, recorder);
         if (request.TracksCondition)
             _autoStarted.RemoveWhere(x => x.TriggerId == triggerId);
@@ -532,6 +532,12 @@ public sealed partial class UiaTriggerService : IDisposable
 
         // Reload と競わない。取れなければ諦める ── UIA スレッドが固まっていても
         // 終了経路を塞がない（プロセス終了で回収される）。
+        //
+        // **_gate は破棄しない。** ここを抜けた後も ReloadAsync が WaitAsync で
+        // 並んでいる可能性があり、破棄するとその finally の Release() が
+        // ObjectDisposedException になって未観測タスク例外になる。
+        // SemaphoreSlim は AvailableWaitHandle を触らない限りアンマネージド資源を
+        // 持たないので、放置して困るものは無い。
         if (!_gate.Wait(TimeSpan.FromSeconds(5)))
             return;
         try

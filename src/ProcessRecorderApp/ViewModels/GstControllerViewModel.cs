@@ -365,10 +365,27 @@ namespace ProcessRecorderApp.ViewModels
         /// 排出は互いに独立なので直列にせず <see cref="System.Threading.Tasks.Task.WhenAll(System.Threading.Tasks.Task[])"/> で並行に待つ
         /// ── 直列にすると、レコーダ数 × <c>StopFinalizeTimeoutMs</c> でランチャーの
         /// 結果待ち（<b>60 秒</b>）を超えて終了コード 2 になる。
+        ///
+        /// <para>
+        /// <b>戻り値は「実際に停止したレコーダー」で、これを返すことに意味がある。</b>
+        /// 呼び出し側は停止後に <c>LastStopOutcome</c> / <c>LastFilename</c> を読むが、
+        /// <b>止めていないレコーダーのそれらは前回の録画のもの</b>である
+        /// ── <see cref="GStreamer.EventRecorder.LastStopOutcome"/> がリセットされるのは
+        /// 次の録画開始のときだけなので、全件を走査すると
+        /// <b>今回は正常に録れたのに、前回失敗した別のレコーダーのせいで失敗が返る</b>。
+        /// バッチから見れば「正常なファイルを捨てろ」と言われるのと同じになる。
+        /// </para>
+        /// <para>
+        /// <b>対象は待つ前に確定させる。</b> 排出が終わると <c>CanStopRecording</c> は
+        /// false へ倒れるので、待った後に数え直すと誰も残らない。
+        /// </para>
         /// </summary>
-        public System.Threading.Tasks.Task StopRecordingAllAsync()
-            => System.Threading.Tasks.Task.WhenAll(
-                Recorders.Where(r => r.CanStopRecording).Select(r => r.StopRecordingAsync()));
+        public async System.Threading.Tasks.Task<IReadOnlyList<GstEventRecorderViewModel>> StopRecordingAllAsync()
+        {
+            var stopping = Recorders.Where(r => r.CanStopRecording).ToList();
+            await System.Threading.Tasks.Task.WhenAll(stopping.Select(r => r.StopRecordingAsync()));
+            return stopping;
+        }
 
         public bool CanStopRecordingAll => Recorders.Any(r => r.CanStopRecording);
 

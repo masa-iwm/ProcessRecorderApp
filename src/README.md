@@ -623,7 +623,7 @@ StartResidentWorker():
 | `13` | 指定したインデックス／名前に一致するレコーダーが存在しない | `ActivationCommands.ExitCode_RecorderNotFound` |
 | `14` | 現在の状態では録画を開始／終了できない（`CanStart/StopRecording` が false） | `ActivationCommands.ExitCode_RecordingNotExecutable` |
 | `15` | `status` で、初期化されていない／直近の障害が残っているレコーダーが1つ以上あった | `ActivationCommands.ExitCode_RecorderUnhealthy` |
-| `16` | `stop-recording` / `stop-recording-all` で、排出は綺麗に終わったが**MP4 に1フレームも入っていなかった**（`-all` は1本でも該当すれば返す）。**捨ててよい**。切り分けは `activity.log` の `recording.stop empty`（`samplesSeen` / `samplesPushed` / `srcState`） | `ActivationCommands.ExitCode_RecordingProducedNothing` |
+| `16` | `stop-recording` / `stop-recording-all` で、排出は綺麗に終わったが**MP4 に1フレームも入っていなかった**（`-all` は**今回停止した分**のうち1本でも該当すれば返す。録画していなかったレコーダーの前回の結果は見ない）。**捨ててよい**。切り分けは `activity.log` の `recording.stop empty`（`samplesSeen` / `samplesPushed` / `srcState`） | `ActivationCommands.ExitCode_RecordingProducedNothing` |
 | `17` | `stop-recording` / `stop-recording-all` で、**排出（ファイルの確定）が完了しなかった** ── 打ち切り・バスのエラー（ディスク満杯・書込権限）・排出中の例外。**捨てる前に救済を検討できる**（`mdat` にデータはあるが `moov` が未確定）。`activity.log` の `recording.stop timeout` / `recording.stop error` | `ActivationCommands.ExitCode_RecordingNotFinalized` |
 | `99` | 常駐ワーカー内でコマンド処理中に予期しない例外が発生した | `SingleInstanceManager.UnexpectedErrorExitCode` |
 
@@ -825,7 +825,7 @@ CommandOutcome { ShowWindow, ToastTitle, ToastMessage, ConsoleOutput, ConsoleErr
 | （未知のサブコマンド・引数のパースエラー） | ✕ | ランチャーがエラー表示して終了コード`4`で終了。常駐ワーカーへはリダイレクトされない |
 | `ping` | ✕ | `activity.log` に記録するだけ（「通知しない引数」の例） |
 | `activate` | ○ | ウィンドウを表示するだけ |
-| `start-recording-all` / `stop-recording-all` | ✕ | 全レコーダーの録画開始／終了。stdout に `名前\tファイル名` の一覧 |
+| `start-recording-all` / `stop-recording-all` | ✕ | 全レコーダーの録画開始／終了。stdout に `名前\tファイル名` の一覧（`stop-recording-all` が出すのは**今回停止した分だけ**。録画していなかったレコーダーの `LastFilename` は前回の録画を指すため） |
 | `start-recording <target>` / `stop-recording <target>` | ✕ | 個別レコーダーの録画開始／終了。`target` は数値ならインデックス(0始)、それ以外は名前 |
 | `status` | ✕ | レコーダーごとの状態を1行ずつ出力。不健全なものがあれば終了コード `15`（後述） |
 | `--set Key=Value`（`Recursive`、繰返可） | — | `EventRecorder.TemplateVariables` へ設定（他コマンドと併用可）。**セッション限り** |

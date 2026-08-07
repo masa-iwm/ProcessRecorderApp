@@ -124,4 +124,47 @@ public sealed class CliContractTests(PublishedApp app, ITestOutputHelper output)
 
         output.WriteLine(missing.ToString());
     }
+
+    /// <summary>
+    /// <b><c>--get</c> は他の出力を消さない。</b>
+    ///
+    /// <para>
+    /// <c>--set</c> / <c>--get</c> / <c>--persist</c> は <c>Recursive</c> なので
+    /// サブコマンドと併用できる。<c>--get</c> の後処理が <c>ConsoleOutput</c> /
+    /// <c>ConsoleError</c> を<b>差し替えて</b>いると、
+    /// <c>status --get</c> では健全性テーブルが丸ごと消え、
+    /// <c>--persist &lt;未定義&gt; --get &lt;定義済み&gt;</c> では
+    /// <b>終了コード 11 だけが返って理由がどこにも出ない</b>という壊れ方をする。
+    /// どちらも「黙って情報が減る」形なので、終了コードだけを見るテストでは拾えない。
+    /// </para>
+    /// <para>
+    /// <b>終了コードは表明しない。</b> <c>status</c> はレコーダーの健全性で
+    /// 0 と 15 のどちらにもなり、それはこの機械に <c>x264enc</c> が在るかどうかで変わる
+    /// ── ここで見たいのは「出力が残っているか」だけである。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void Get_AppendsToTheCommandOutput_InsteadOfReplacingIt()
+    {
+        var settings = new SettingsFile();
+        settings.AddRecorder("R1");
+
+        using var instance = AppInstance.Create(app, settings);
+
+        Assert.Equal(0, instance.Run("--set", "Site=tokyo").ExitCode);
+
+        // ① サブコマンドの標準出力が残ったうえで、変数の値が足されること。
+        var status = instance.Run("status", "--get", "Site");
+        output.WriteLine(status.ToString());
+        Assert.Contains("R1", status.StdOut);        // status の行（1レコーダー＝1行）
+        Assert.Contains("tokyo", status.StdOut);     // --get の出力
+
+        // ② --persist の未定義キーの指摘が、後続の --get に消されないこと。
+        //    判定に使うのは ASCII のキー名だけにする（上の missing と同じ理由）。
+        var persist = instance.Run("--persist", "NoSuchVariable", "--get", "Site");
+        output.WriteLine(persist.ToString());
+        Assert.Equal(ExitVariableNotDefined, persist.ExitCode);
+        Assert.Contains("NoSuchVariable", persist.StdErr);
+        Assert.Contains("tokyo", persist.StdOut);
+    }
 }

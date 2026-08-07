@@ -153,4 +153,53 @@ public sealed class StopOutcomeTests(PublishedApp app, ITestOutputHelper output)
         Assert.Contains("R1", stop.StdErr);
         Assert.Contains(".mp4", stop.StdOut);
     }
+
+    /// <summary>
+    /// <b><c>-all</c> は「今回止めたレコーダー」だけを見ること。</b>
+    ///
+    /// <para>
+    /// <c>LastStopOutcome</c> がリセットされるのは<b>次の録画開始のとき</b>だけなので、
+    /// 録画していないレコーダーは前回の結果を保持し続ける。集計が全件走査だと、
+    /// <b>今回は正常に録れたのに、前に失敗した別のレコーダーのせいで失敗が返る</b>
+    /// ── バッチから見れば「正常なファイルを捨てろ」と言われるのと同じで、
+    /// <c>16</c>（空）を返す以上、実害は「空のファイルを運ぶ」のと対称である。
+    /// </para>
+    /// <para>
+    /// <b>レコーダーが2本要る。</b> 上の 2 件はどちらも1本構成なので、この退行を踏まない
+    /// ── 1本だと「止めた集合」と「全件」がいつも一致する。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void StopRecordingAll_IgnoresTheStaleOutcomeOfARecorderItDidNotStop()
+    {
+        var settings = new SettingsFile();
+        settings.AddRecorder("Good");
+        settings.AddRecorder("Empty").AsSourceThatEnds();
+
+        using var instance = AppInstance.Create(app, settings);
+
+        Assert.True(instance.WaitForActivityLogEvent("recorder.eos", TimeSpan.FromSeconds(60)),
+            "ソースが EOS に達しませんでした。" + Environment.NewLine + instance.DiagnosticDump());
+
+        // ① Empty 側だけを録って停止し、失敗の結果を残す（ここが「古い結果」になる）。
+        instance.AssertExit(0, instance.Run("start-recording", "Empty"));
+        instance.AssertExit(ExitRecordingProducedNothing, instance.Run("stop-recording", "Empty"));
+
+        // ② Good 側だけを録って、-all で停止する。止めたのは Good だけなので成功のはず。
+        instance.AssertExit(0, instance.Run("start-recording", "Good"));
+        Thread.Sleep(RecordingWindow);
+
+        var stop = instance.Run("stop-recording-all");
+        output.WriteLine(stop.ToString());
+
+        instance.AssertExit(0, stop);
+
+        // 出力に載るのも「止めた分」だけ ── 止めていないレコーダーの LastFilename は
+        // 前回の（使えない）ファイルを指しており、バッチがそれを運んでしまう。
+        Assert.Contains("Good", stop.StdOut);
+        Assert.DoesNotContain("Empty", stop.StdOut);
+    }
+
+    /// <summary>Good 側が実際にフレームを書けるだけの録画窓（<c>RecordingTests</c> と同値）。</summary>
+    private static readonly TimeSpan RecordingWindow = TimeSpan.FromSeconds(3);
 }

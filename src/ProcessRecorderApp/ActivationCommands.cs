@@ -228,6 +228,14 @@ internal static class ActivationCommands
     /// キー指定なしの場合は全件を「キー=値」形式で、キー指定ありの場合は値のみを1行ずつ出力する。
     ///
     /// <para>
+    /// <b>既存の出力へ「追記」する。上書きしてはいけない。</b> <c>--get</c> は
+    /// <c>Recursive = true</c> なのでサブコマンドと併用でき、また <c>--persist</c> の
+    /// 未定義キーの指摘（<see cref="ParseCore"/>）が先に標準エラーへ積まれている。
+    /// 差し替えると <c>status --get</c> で健全性テーブルが消え、
+    /// <c>--persist &lt;未定義&gt; --get &lt;定義済み&gt;</c> では
+    /// <b>終了コード 11 だけが返って理由がどこにも出ない</b>状態になる。
+    /// </para>
+    /// <para>
     /// 未定義のキーが1つでもあった場合は、<b>どのキーが未定義だったかを標準エラー出力に</b>
     /// 1行ずつ出し、専用の終了コード（<see cref="ExitCode_VariableNotDefined"/>）を設定する。
     /// 未定義のキーは標準出力に行を出さないため、<b>行番号と引数の位置を対応付けて
@@ -276,11 +284,19 @@ internal static class ActivationCommands
 
         return outcome with
         {
-            ConsoleOutput = output.Length > 0 ? output.ToString() : null,
-            ConsoleError = error.Length > 0 ? error.ToString() : null,
+            ConsoleOutput = AppendConsoleText(outcome.ConsoleOutput, output),
+            ConsoleError = AppendConsoleText(outcome.ConsoleError, error),
             ExitCode = hasUndefinedKey ? ExitCode_VariableNotDefined : outcome.ExitCode,
         };
     }
+
+    /// <summary>
+    /// 既存のコンソール出力文字列へ追記する。<b>足すものが無ければ既存をそのまま返す</b>
+    /// ── <see cref="CommandOutcome.ConsoleOutput"/> は <see langword="null"/> が
+    /// 「出力しない」を意味するので、空文字へ倒さない。
+    /// </summary>
+    private static string? AppendConsoleText(string? existing, StringBuilder added)
+        => added.Length == 0 ? existing : (existing ?? "") + added.ToString();
 
     /// <summary>
     /// レコーダーごとの健全性を機械可読な形で標準出力へ出し、不健全なものが1つでもあれば
@@ -685,17 +701,23 @@ internal static class ActivationCommands
                 return;
             }
             // 停止は完了まで待つ（stop-recording と同じ理由）。排出は並行に走る。
-            await controller.StopRecordingAllAsync();
+            //
+            // **見るのは「今回止めたレコーダー」だけ。** 全件を走査してはいけない ──
+            // 録画していなかったレコーダーの LastStopOutcome / LastFilename は
+            // **前回の録画のもの**で（リセットは次の録画開始のときだけ）、
+            // 前回失敗したレコーダーが1本あるだけで、今回正常に録れた分まで
+            // 失敗として返してしまう（詳細は StopRecordingAllAsync の注記）。
+            var stopped = await controller.StopRecordingAllAsync();
 
             // 末尾の改行は、ランチャー側が Console.Out.Write（WriteLine ではない）で出力するためここで付ける
             string files = string.Join(
-                Environment.NewLine, controller.Recorders.Select(r => $"{r.Name}\t{r.LastFilename}")) + Environment.NewLine;
+                Environment.NewLine, stopped.Select(r => $"{r.Name}\t{r.LastFilename}")) + Environment.NewLine;
 
             // **1本でも使えなければ失敗として返す。** -all の成否は「全部ちゃんと録れたか」で、
             // 1本が壊れていても 0 を返すと、バッチはそれを検出する手段を持たない。
             // どのレコーダーがどう壊れたかは標準エラーへ名前つきで、**全件**出す
             // （最初の1件で止めると、残りが壊れているかどうか分からない）。
-            var failed = controller.Recorders
+            var failed = stopped
                 .Select(r => (Recorder: r, Failure: StopFailure(r.LastStopOutcome, r.Name)))
                 .Where(x => x.Failure is not null)
                 .ToList();
