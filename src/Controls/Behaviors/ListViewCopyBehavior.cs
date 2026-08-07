@@ -42,6 +42,41 @@ namespace ProcessRecorderApp.Behaviors
             set => SetValue(IsActiveProperty, value);
         }
 
+        /// <summary>
+        /// <c>AddHandler</c> / <c>RemoveHandler</c> に渡すデリゲート。
+        /// <b>同じインスタンスを使い回すために保持する。</b>
+        ///
+        /// <para>
+        /// 呼び出しのたびに <c>new PointerEventHandler(...)</c> すると、
+        /// マネージド上は等値（デリゲートの <c>==</c> は (ターゲット, メソッド) の値比較）でも
+        /// <b>CsWinRT の CCW は managed オブジェクト単位に作られる</b>ため、
+        /// ネイティブへ渡るインターフェイスポインタが別物になる
+        /// ── <c>RemoveHandler</c> が一致を取れず、<b>例外も出ないまま解除に失敗しうる</b>。
+        /// 同ファイルの <see cref="_copyAccelerator"/> が既にフィールドで持っているのと同じ扱いに揃える。
+        /// </para>
+        /// <para>
+        /// <b>現状これは予防であって、不具合の修正ではない。</b> 実測（Log 画面を含む
+        /// 全セクションを切り替える L3 の経路に計測を挿して確認）では、
+        /// <c>Initialize()</c> は<b>1回だけ</b>呼ばれ <c>Uninitialize()</c> は<b>一度も呼ばれない</b>
+        /// ── パネル切替は Visibility で行うので Loaded/Unloaded が循環せず、
+        /// <c>RemoveHandler</c> にそもそも到達しない。<b>したがってテストでは守れない</b>
+        /// （観測できる差が無い）。ページの寿命や再アタッチの形を変えるときは、
+        /// ここが効き始めることを思い出すこと。
+        /// </para>
+        /// </summary>
+        private readonly PointerEventHandler _onPointerPressed;
+        private readonly PointerEventHandler _onPointerMoved;
+        private readonly PointerEventHandler _onPointerReleased;
+
+        public ListViewCopyBehavior()
+        {
+            // フィールド初期化子ではインスタンスメソッドのメソッドグループを書けない（this が要る）ため、
+            // コンストラクターで1回だけ作る。
+            _onPointerPressed = AssociatedObject_PointerPressed;
+            _onPointerMoved = AssociatedObject_PointerMoved;
+            _onPointerReleased = AssociatedObject_PointerReleased;
+        }
+
         protected override bool Initialize()
         {
             var result = base.Initialize();
@@ -62,12 +97,10 @@ namespace ProcessRecorderApp.Behaviors
                 SetupContextMenu();
 
                 // ⭕ マウスドラッグ選択用のイベント購読
-                AssociatedObject.AddHandler(UIElement.PointerPressedEvent,
-                              new PointerEventHandler(AssociatedObject_PointerPressed), handledEventsToo: true);
-                AssociatedObject.AddHandler(UIElement.PointerMovedEvent,
-                    new PointerEventHandler(AssociatedObject_PointerMoved), handledEventsToo: true);
-                AssociatedObject.AddHandler(UIElement.PointerReleasedEvent,
-                    new PointerEventHandler(AssociatedObject_PointerReleased), handledEventsToo: true);
+                // デリゲートはフィールドのものを渡す（解除で同じインスタンスが要る。理由はそちらの注記）
+                AssociatedObject.AddHandler(UIElement.PointerPressedEvent, _onPointerPressed, handledEventsToo: true);
+                AssociatedObject.AddHandler(UIElement.PointerMovedEvent, _onPointerMoved, handledEventsToo: true);
+                AssociatedObject.AddHandler(UIElement.PointerReleasedEvent, _onPointerReleased, handledEventsToo: true);
             }
 
             return result;
@@ -86,9 +119,9 @@ namespace ProcessRecorderApp.Behaviors
                     AssociatedObject.KeyboardAccelerators.Remove(_copyAccelerator);
                     _copyAccelerator = null;
                 }
-                AssociatedObject.RemoveHandler(UIElement.PointerPressedEvent, new PointerEventHandler(AssociatedObject_PointerPressed));
-                AssociatedObject.RemoveHandler(UIElement.PointerMovedEvent, new PointerEventHandler(AssociatedObject_PointerMoved));
-                AssociatedObject.RemoveHandler(UIElement.PointerReleasedEvent, new PointerEventHandler(AssociatedObject_PointerReleased));
+                AssociatedObject.RemoveHandler(UIElement.PointerPressedEvent, _onPointerPressed);
+                AssociatedObject.RemoveHandler(UIElement.PointerMovedEvent, _onPointerMoved);
+                AssociatedObject.RemoveHandler(UIElement.PointerReleasedEvent, _onPointerReleased);
                 AssociatedObject.ContextFlyout = null;
             }
 

@@ -16,8 +16,21 @@ public partial class TemplateVariablesViewModel : ObservableObject, IDisposable
 {
     private readonly DispatcherQueue _dispatcherQueue;
 
-    /// <summary>自VMからの辞書書き込み中は true（変更イベントによる再構築を抑止する）</summary>
-    private bool _isApplying;
+    /// <summary>
+    /// 自VMからの辞書書き込み中は true（変更イベントによる再構築を抑止する）。
+    ///
+    /// <para>
+    /// <b>スレッドごとに持つ。</b> <c>TemplateVariablesChanged</c> は UI スレッドから
+    /// 飛ぶとは限らない ── UIA トリガの発火は<b>監視ワーカースレッド</b>から
+    /// <c>SetTemplateVariable</c> を呼ぶ（<c>UiaTriggerService.OnTriggerFired</c>）。
+    /// ただのフィールドにすると、UI スレッドがセル編集中（<see cref="RunApplying"/> の中）に
+    /// 届いた他スレッド発の変更が「自分の書き込み」と誤認されて捨てられ、
+    /// <b>Variables 画面が実体とずれたまま残る</b>。
+    /// スレッド単位なら「抑止するのは自分が今書いている経路だけ」になる。
+    /// </para>
+    /// </summary>
+    [ThreadStatic]
+    private static bool _isApplying;
 
     public ObservableCollection<TemplateVariableViewModel> Items { get; } = [];
 
@@ -72,6 +85,8 @@ public partial class TemplateVariablesViewModel : ObservableObject, IDisposable
     /// <summary>辞書への書き込みを、変更イベントによる再構築を抑止した状態で実行する</summary>
     internal void RunApplying(Action action)
     {
+        // 入れ子で呼ばれても外側の抑止を壊さないよう、直前の値へ戻す
+        bool previous = _isApplying;
         _isApplying = true;
         try
         {
@@ -79,7 +94,7 @@ public partial class TemplateVariablesViewModel : ObservableObject, IDisposable
         }
         finally
         {
-            _isApplying = false;
+            _isApplying = previous;
         }
     }
 

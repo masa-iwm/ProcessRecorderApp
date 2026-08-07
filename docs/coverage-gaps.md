@@ -65,6 +65,12 @@ E2E ハーネスは `SettingsFile.DefaultEncoder = "x264enc"` を固定してお
 
 `Add` と `Remove` は `RecorderManagementTests` が実際に通すが、`Reset` 分岐は `Recorders.Clear()` を呼ぶ経路が製品に無く、`TryBuildMenu` は構築済みなら早期 return するため、**どちらも到達経路が存在しない**。`AppSettings.Reload()`（呼び出し元が無いまま `AppSettingsReloadTests` がソース照合で守っている）と同じ扱いで、将来 `Clear()` が生えたときの受け皿として残す（Reset 時点でコレクションが空になりうるため、解除対象を取り違えないための影リストごと）。**到達経路を探すのに時間を使わないこと。**
 
+### ListViewCopyBehavior のポインタ購読の解除
+
+`Uninitialize()` の `RemoveHandler` 3 本。**到達経路が存在しない。** 計測を挿して L3 の全セクション切替（Preview / Log / Variables / Settings）を通した実測では、`Initialize()` は **1 回だけ**（`OnAttached` の中から、`IsLoaded=false` のまま）呼ばれ、**`Uninitialize()` は一度も呼ばれない** ── パネル切替は Visibility で行うので Loaded/Unloaded が循環せず、ページ破棄はプロセス終了と同時だからである。したがって解除が効いているかどうかは外から観測できない。
+
+`AddHandler` / `RemoveHandler` に渡すデリゲートを**フィールドで使い回す**のはこのためで、予防である ── その場で `new` すると、マネージド上は等値でも CsWinRT の CCW が別インスタンスになり、`RemoveHandler` が例外も出さずに解除に失敗しうる。**テストが担保していると数えないこと。** ページの寿命や再アタッチの形（Frame のナビゲーション、パネル切替を Visibility から Loaded/Unloaded へ変更）を導入するときは、ここが効き始める。
+
 ### ナビ項目の購読解除
 
 `Recorders_CollectionChanged` の Remove で解除対象を取り違える退行。`MainPage_Unloaded` の解除漏れとまったく同じ理由で観測できない ── 削除されたレコーダーを後から改名する経路が無いため、解除漏れの結果が外に出ない。注入を実施して未検出であることを確認済み。防御として残すが、テストが担保していると数えないこと。

@@ -94,16 +94,26 @@ public sealed partial class RecordingCleanupScheduler : IDisposable
     public void Dispose()
     {
         _cts.Cancel();
+
+        bool drained = false;
         try
         {
             // 待つのは「掃除の途中でプロセスが消える」のを避けるため。
             // 触っているのはファイルシステムだけなので、待てなくても壊れるものは無い。
-            _loop?.Wait(TimeSpan.FromSeconds(5));
+            drained = _loop is null || _loop.Wait(TimeSpan.FromSeconds(5));
         }
         catch (AggregateException)
         {
             // Task.Delay のキャンセルは通常ここへ来ない（RunAsync が飲んでいる）。
+            drained = true;
         }
-        _cts.Dispose();
+
+        // **待ち切れなかったら破棄しない。** 周回はまだ生きており、次に
+        // Task.Delay(interval, token) を呼ぶ ── 破棄済みの CancellationTokenSource の
+        // トークンで登録すると ObjectDisposedException になり、RunAsync の
+        // catch (OperationCanceledException) では拾えないので未観測タスク例外になる
+        // （Sweep が 5 秒を超えたときにだけ踏む）。プロセス終了で回収されるので漏らしてよい。
+        if (drained)
+            _cts.Dispose();
     }
 }

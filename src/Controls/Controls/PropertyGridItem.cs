@@ -349,10 +349,21 @@ public sealed partial class PropertyGridItem : INotifyPropertyChanged
         _enterEcho = _value;
     }
 
-    /// <summary>EditKind が Bool のときに CheckBox.IsChecked から利用する。</summary>
+    /// <summary>
+    /// EditKind が Bool のときに CheckBox.IsChecked から利用する。
+    ///
+    /// <para>
+    /// <b>読めない値は false へ倒す（投げない）。</b> プロパティの getter が例外を投げると
+    /// <see cref="PropertyGridView.BuildItems"/> は表示値に <c>&lt;error: …&gt;</c> を入れる一方で、
+    /// 編集の種類は型どおり <see cref="PropertyEditKind.Bool"/> のままになる。
+    /// <c>bool.Parse</c> だと<b>項目を作った時点でバインドが例外になり、
+    /// その1行だけでなくグリッドごと出せなくなる</b> ── 画面が出ないより、
+    /// 1行が false と出る方がましである（実際の文字列は <see cref="Value"/> に残る）。
+    /// </para>
+    /// </summary>
     public bool BoolValue
     {
-        get => bool.Parse(Value);
+        get => bool.TryParse(Value, out bool parsed) && parsed;
         set => Value = value.ToString();
     }
 

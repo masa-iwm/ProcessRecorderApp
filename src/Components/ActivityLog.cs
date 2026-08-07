@@ -114,15 +114,32 @@ public static class ActivityLog
         }
     }
 
-    /// <summary>閾値を超える場合に <see cref="RotatedFileName"/> へ退避する。世代は1つだけ。</summary>
+    /// <summary>
+    /// 閾値を超える場合に <see cref="RotatedFileName"/> へ退避する。世代は1つだけ。
+    ///
+    /// <para>
+    /// <b>失敗しても呼び出し側へ投げない。</b> 投げると <see cref="Write"/> の catch が
+    /// その行を捨てるが、ファイルは閾値を超えたままなので<b>次の行も、その次の行も
+    /// 同じところで落ちる</b> ── 1回の失敗（誰かが <c>activity.log.1</c> を開いている等）で
+    /// <b>ログが恒久的に止まる</b>。ローテーションだけ諦めて追記は続ける方が、
+    /// 「いつ録れて、いつ失敗したかが残る」というこのクラスの目的に合う。
+    /// 肥大化は次の書き込みで再試行される。
+    /// </para>
+    /// </summary>
     private static void RotateIfNeeded(string path, int incomingBytes)
     {
-        var info = new FileInfo(path);
-        if (!info.Exists || info.Length + incomingBytes <= RotationThresholdBytes)
-            return;
+        try
+        {
+            var info = new FileInfo(path);
+            if (!info.Exists || info.Length + incomingBytes <= RotationThresholdBytes)
+                return;
 
-        string rotated = Path.Combine(Path.GetDirectoryName(path) ?? ".", RotatedFileName);
-        File.Delete(rotated);   // 存在しなくても例外にならない
-        File.Move(path, rotated);
+            string rotated = Path.Combine(Path.GetDirectoryName(path) ?? ".", RotatedFileName);
+            File.Delete(rotated);   // 存在しなくても例外にならない
+            File.Move(path, rotated);
+        }
+        catch
+        {
+        }
     }
 }
