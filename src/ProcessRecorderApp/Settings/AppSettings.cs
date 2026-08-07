@@ -44,7 +44,21 @@ public partial class AppSettings : JsonSettingsBase<AppSettings>
         }).AppSettings;
 
     private static readonly Lazy<AppSettings> _default = new(
-        () => LoadOrCreate(FilePath, SettingsTypeInfo, () => new()));
+        () => LoadOrCreate(FilePath, SettingsTypeInfo, () => new(), ReportLoadFailure));
+
+    /// <summary>
+    /// settings.json を読めなかったことを <c>activity.log</c> に残す。
+    ///
+    /// <para>
+    /// <b>これが無いと、利用者の設定（レコーダー定義・トリガ定義・永続化した変数・保存先）が
+    /// 丸ごと既定値へ戻ったことがどこにも残らない。</b>
+    /// 記録を <c>JsonSettingsBase</c> 側に置かないのは、あちらが <c>Components</c> にあり
+    /// L1 から直接呼ばれるため ── そこで書くと、テストを回しただけで実ユーザーの
+    /// activity.log が汚れる（<c>RecordingCleanup</c> と同じ判断）。
+    /// </para>
+    /// </summary>
+    private static void ReportLoadFailure(string detail)
+        => Components.ActivityLog.Error("settings.load", detail + "; falling back to the defaults");
 
     public static AppSettings Default => _default.Value;
 
@@ -578,7 +592,7 @@ public partial class AppSettings : JsonSettingsBase<AppSettings>
     /// </summary>
     public void Reload()
     {
-        AppSettings loaded = LoadOrCreate(FilePath, SettingsTypeInfo, () => new());
+        AppSettings loaded = LoadOrCreate(FilePath, SettingsTypeInfo, () => new(), ReportLoadFailure);
         IsFirstRun = loaded.IsFirstRun;
 
         WindowWidth = loaded.WindowWidth;

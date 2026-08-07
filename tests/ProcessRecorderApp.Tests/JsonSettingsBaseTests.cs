@@ -15,6 +15,10 @@ namespace ProcessRecorderApp.Tests;
 ///   - ファイルが無い／壊れている場合は既定値へフォールバックし、例外を出さない
 ///   - 未知のプロパティは <c>[JsonExtensionData]</c> に保持され、保存し直しても消えない
 ///     （設定ファイルのダウングレード耐性。DataVersion 運用の前提）
+///   - <b>既定値へ倒れたことは必ず呼び出し側へ報告される</b>（黙って設定を捨てない）。
+///     中身が壊れていたファイルは退避し、読めなかっただけのファイルは退避しない
+///   - <b>保存は一時ファイル経由で原子的に差し替える</b> ── このアプリはデバウンス保存中に
+///     強制終了されうるので、直接書くと切れた JSON が残って設定が丸ごと消える
 /// </summary>
 public class JsonSettingsBaseTests : IDisposable
 {
@@ -95,6 +99,97 @@ public class JsonSettingsBaseTests : IDisposable
 
         Assert.Equal("default", loaded.Text);
         Assert.True(loaded.OnLoadedWasCalled);
+    }
+
+    /// <summary>
+    /// <b>読めなかったファイルは上書きされる前に退避される。</b>
+    ///
+    /// <para>
+    /// 既定値へ倒れた直後は、次の <c>Save</c> がその場に新しい既定値を書く。
+    /// 退避しないと、利用者が手で復旧する材料（元の JSON）も同時に消える
+    /// ── 壊れ方が「レコーダー定義もトリガ定義も丸ごと消えた」なので、
+    /// <b>捨ててよいファイルではない</b>。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void Load_CorruptedJson_QuarantinesTheFileInsteadOfLeavingItToBeOverwritten()
+    {
+        Directory.CreateDirectory(_dir);
+        const string original = """{ "Number": 7, "Text": "not closed""";
+        File.WriteAllText(FilePath, original);
+
+        var failures = new List<string>();
+        var loaded = SampleSettings.Load(FilePath, failures.Add);
+
+        Assert.Equal("default", loaded.Text);
+        Assert.NotEmpty(failures);
+
+        string quarantined = FilePath + JsonSettingsBase<SampleSettings>.UnreadableFileSuffix;
+        Assert.True(File.Exists(quarantined), $"退避されていない: {quarantined}");
+        Assert.Equal(original, File.ReadAllText(quarantined));
+        Assert.False(File.Exists(FilePath), "壊れたファイルが元の場所に残っている");
+    }
+
+    /// <summary>
+    /// <b>読み込み自体の失敗（ロック・権限）では退避しない。</b>
+    /// 中身は正しいかもしれないので、退けると<b>正しいファイルを失わせる</b>。
+    /// </summary>
+    [Fact]
+    public void Load_UnreadableFile_IsReportedButNotQuarantined()
+    {
+        Directory.CreateDirectory(_dir);
+        File.WriteAllText(FilePath, """{ "Number": 7 }""");
+
+        var failures = new List<string>();
+        SampleSettings loaded;
+        // 排他で開いたまま読ませる（File.ReadAllText が IOException になる）。
+        using (File.Open(FilePath, FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            loaded = SampleSettings.Load(FilePath, failures.Add);
+        }
+
+        Assert.Equal(1, loaded.Number); // 既定値へ倒れている
+        Assert.NotEmpty(failures);
+        Assert.False(
+            File.Exists(FilePath + JsonSettingsBase<SampleSettings>.UnreadableFileSuffix),
+            "読めなかっただけのファイルを退避してはいけない");
+        Assert.True(File.Exists(FilePath), "元のファイルが消えている");
+    }
+
+    /// <summary>
+    /// <b>保存は一時ファイル経由で、書き終えたら残さない。</b>
+    /// 残っていると、次回の起動でどちらが正本か分からなくなる。
+    /// </summary>
+    [Fact]
+    public void Save_GoesThroughATemporaryFileAndLeavesNoneBehind()
+    {
+        var settings = SampleSettings.CreateDefault();
+        settings.Number = 3;
+        settings.Save(FilePath, SampleSettingsJsonContext.Default.SampleSettings);
+
+        Assert.True(File.Exists(FilePath));
+        Assert.False(
+            File.Exists(FilePath + JsonSettingsBase<SampleSettings>.TemporaryFileSuffix),
+            "一時ファイルが残っている");
+        Assert.Equal(3, SampleSettings.Load(FilePath).Number);
+    }
+
+    /// <summary>
+    /// <b>書きかけの一時ファイルが取り残されていても、本体は前回の内容のまま読める。</b>
+    /// これが「原子的に差し替える」ことの外から見える効果そのもの
+    /// ── 直接書いていた頃は、この状況で本体が切れた JSON になっていた。
+    /// </summary>
+    [Fact]
+    public void Load_IgnoresALeftOverTemporaryFile()
+    {
+        var settings = SampleSettings.CreateDefault();
+        settings.Number = 9;
+        settings.Save(FilePath, SampleSettingsJsonContext.Default.SampleSettings);
+
+        // 保存の途中でプロセスが消えた状態を模す（一時ファイルだけが壊れて残る）。
+        File.WriteAllText(FilePath + JsonSettingsBase<SampleSettings>.TemporaryFileSuffix, "{ broken");
+
+        Assert.Equal(9, SampleSettings.Load(FilePath).Number);
     }
 
     [Fact]
@@ -201,8 +296,8 @@ public partial class SampleSettings : JsonSettingsBase<SampleSettings>
 
     public static SampleSettings CreateDefault() => new();
 
-    public static SampleSettings Load(string filePath)
-        => LoadOrCreate(filePath, SampleSettingsJsonContext.Default.SampleSettings, () => new());
+    public static SampleSettings Load(string filePath, Action<string>? onLoadFailure = null)
+        => LoadOrCreate(filePath, SampleSettingsJsonContext.Default.SampleSettings, () => new(), onLoadFailure);
 }
 
 [JsonSerializable(typeof(SampleSettings))]
