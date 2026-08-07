@@ -80,15 +80,21 @@ public sealed partial class PropertyGridView : UserControl
     /// <para>
     /// ホスト側の設定順に依存させないため、<b>コントロール側で作り直す</b>ことにした。
     /// </para>
+    /// <para>
+    /// <b>同じ値かどうかで早期 return してはいけない。</b> ホストは
+    /// 「選択肢の中身が変わったので作り直したい」ときに<b>同じメソッドグループを代入し直す</b>
+    /// （選択肢はレコーダー名やトリガ定義を項目の生成時に焼き込むため、
+    /// 作り直さないと編集前の内容が残る）。C# のデリゲートの <c>==</c> は
+    /// (ターゲット, メソッド) の<b>値比較</b>なので、同一インスタンスの同じメソッドを
+    /// 代入し直すと必ず等しくなり、<b>2 回目以降の代入がすべて無視される</b>。
+    /// <b>代入は常に作り直す</b>という契約にしてある。
+    /// </para>
     /// </remarks>
     public Func<string, string, IPropertyAccess?, IReadOnlyList<PropertyGridChoice>>? ChoiceProvider
     {
         get => _choiceProvider;
         set
         {
-            if (_choiceProvider == value)
-                return;
-
             _choiceProvider = value;
             if (SelectedObject is { } source)
                 RebuildGroups(source);
@@ -132,7 +138,25 @@ public sealed partial class PropertyGridView : UserControl
         _weakListener?.Detach();
         _weakListener = null;
 
-        // Collection 項目の CollectionChanged / 要素 INPC の購読も連鎖的に解除する。
+        DetachCollectionItems();
+    }
+
+    /// <summary>
+    /// 組み立て済みの Collection 項目の購読（コレクションの <c>CollectionChanged</c> と
+    /// 各要素の <c>INotifyPropertyChanged</c>）を解除する。
+    ///
+    /// <para>
+    /// <b><see cref="RebuildGroups"/> は必ずこれを通ってから項目を作り直すこと。</b>
+    /// 外すと旧項目が長寿命のコレクションに購読を残したまま生き続ける ──
+    /// 参照の鎖が「設定オブジェクトの要素 → <c>PropertyChanged</c> →
+    /// <see cref="PropertyGridCollectionElement"/> → <c>_onExpanded</c> →
+    /// <see cref="PropertyGridItem"/>」となるため、
+    /// <c>WeakCollectionChangedListener</c> の「ターゲットが GC 済みなら自分で解除する」も
+    /// <b>永久に発動しない</b>。
+    /// </para>
+    /// </summary>
+    private void DetachCollectionItems()
+    {
         foreach (PropertyGridItem item in _collectionItems)
         {
             item.DetachCollection();
@@ -227,6 +251,11 @@ public sealed partial class PropertyGridView : UserControl
     [WinRT.DynamicWindowsRuntimeCast(typeof(CollectionViewSource))]
     private void RebuildGroups(IPropertyAccess? source)
     {
+        // 作り直す前に、前回組み立てた Collection 項目の購読を必ず落とす。
+        // AttachSource は DetachSource 経由で既に落としているが、ChoiceProvider の
+        // 代入から来る経路にはそれが無い（詳細は DetachCollectionItems の注記）。
+        DetachCollectionItems();
+
         List<PropertyGridItem> items = [.. BuildItems(source, ChoiceProvider)];
 
         _itemsByPropertyName = items
