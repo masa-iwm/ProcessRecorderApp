@@ -177,6 +177,38 @@ jobs:
           --filter "FullyQualifiedName~SmokeTests|FullyQualifiedName~RuntimeResolutionTests"
           --logger "trx;LogFileName=release-smoke.trx"
 
+      # **`--filter` は1件も選ばなくても `dotnet test` は成功で終わる。**
+      # 上のステップは docs/coverage-gaps.md のとおり「同梱物に対して流れる唯一のテスト」なので、
+      # クラスを改名・移動した拍子に何も走らなくなると、**緑のまま無検証の zip を配る**ことになる。
+      #
+      # 件数の下限ではなく **流れるべきクラスが実際に結果に出ていること** を見る
+      # ── 上の「Verify the bundled output」と同じ判断で、下限は「減った」を捕まえられない。
+      # ここに並ぶ 3 クラスは、上のフィルタが選ぶ集合そのものである
+      # （`~SmokeTests` は `GuiSmokeTests` にも一致する）。フィルタを変えるときは一緒に直すこと。
+      - name: Verify the smoke test actually selected its tests
+        run: |
+          $dir = 'tests/ProcessRecorderApp.E2E/TestResults'
+          if (-not (Test-Path $dir)) { throw "test results not found: $dir" }
+          $trx = Get-ChildItem -Path $dir -Filter 'release-smoke.trx' -Recurse | Select-Object -First 1
+          if (-not $trx) { throw 'release-smoke.trx not found; the smoke test did not run' }
+
+          [xml]$doc = Get-Content -LiteralPath $trx.FullName -Raw -Encoding UTF8
+          $names = @($doc.TestRun.Results.UnitTestResult | ForEach-Object { $_.testName })
+          if ($names.Count -eq 0) { throw 'the smoke test selected 0 tests (the filter matched nothing)' }
+
+          # testName は完全修飾名（理論値つきの場合は括弧が付く）。クラス名はその1つ手前のセグメント。
+          $classes = @($names |
+            ForEach-Object { ($_ -split '\(')[0] } |
+            ForEach-Object { $parts = $_ -split '\.'; if ($parts.Count -ge 2) { $parts[$parts.Count - 2] } }) |
+            Sort-Object -Unique
+          Write-Host "ran $($names.Count) tests in [$($classes -join ', ')]"
+
+          $expected = @('SmokeTests', 'GuiSmokeTests', 'RuntimeResolutionTests')
+          $missing = @($expected | Where-Object { $classes -notcontains $_ })
+          if ($missing.Count) {
+            throw "the smoke filter selected nothing from: $($missing -join ', ') (renamed or moved?)"
+          }
+
       - name: Package (with GStreamer)
         run: |
           $dir = 'src/ProcessRecorderApp/bin/Release/win-x64/publish/bundled'
