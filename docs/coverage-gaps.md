@@ -79,6 +79,21 @@ E2E ハーネスは `SettingsFile.DefaultEncoder = "x264enc"` を固定してお
 
 `src/Directory.Build.props` の `<DefaultLanguage>en-US</DefaultLanguage>` / `<NeutralLanguage>en-US</NeutralLanguage>`。**どちらを外しても実行時の挙動は変わらない**（2 件とも注入して未検出）。ただし 2 行の性質は非対称で、`DefaultLanguage` は WinUI/MSIX ツーリングが既に en-US を既定値として与えているため明示は既定の再掲（発行物は不変）、`NeutralLanguage` は未設定（空）だったため明示は実際の追加（アセンブリに `NeutralResourcesLanguageAttribute` のメタデータが増える）── 実効値は `dotnet msbuild -getProperty:` で確認でき、どちらかを消してよいか判断するときはこの区別が唯一の材料になる。書いてあるのは「暗黙の既定に依存しない」という宣言であって、退行検出器があるからではない ── **ツーリングの既定が変わったときは静かに壊れる。** 消さないこと。
 
+### プレビューの実行時障害の観測（`preview.error`）
+
+`Previewer.DrainBusErrors` はバスの Error を汲んで `preview.error` を残すが、**この経路を
+自動で踏ませる手段が無い**（D3D デバイスロスト等を設定だけで起こせない。`NativeSwapChainPanel`
+の `SetSwapChain` 失敗も同様）。プレビューは WARP でも成立してしまうため、E2E で観測できるのは
+`PreviewPlaceholderTests` の「プレビューが無くても録画は続く」までである。ここを触ったら、
+記録が消えていないかをソースで確認すること（無記録に戻すと「プレビューだけ黙って固まる」に戻る）。
+
+### コンソール出力を Mutex の外へ出したこと
+
+`SingleInstanceManager.Run` は結果の書き出しを `launcherMutex` の解放後に行う（conhost の
+QuickEdit 選択中など、コンソール書き込みが無期限にブロックしうるため）。**この順序を戻す退行は
+検出できない** ── 出力内容も終了コードも変わらず、変わるのは「他の CLI が待たされるかどうか」
+だけで、それを踏ませるには人がコンソールで選択状態を作る必要がある。順序を変えないこと。
+
 ### UIA トリガの実発火経路（手動確認のみ）
 
 「別アプリの UI が実際に変化 → `TriggerFired` → 変数反映・録画開始/停止」という end-to-end は、相手アプリと UIA イベントのタイミングに依存するため、このリポジトリの E2E では流していない。実 UIA での監視・発火そのものは UiaTrigger リポジトリ側の実 UIA テスト（RealUia.Tests）が担保しており、アプリ側で守るべき「発火 1 回を変数とアクションへ写す規則」は L1（`TriggerFiringRulesTests` / `TriggerAssignmentReconcilerTests`）が守る。**守られていないのはその間の配線**（`UiaTriggerService` の購読・TryEnqueue・Can* ガード・`MainPage` のエディタ起動）と、**`UiaTriggerService` だけが持つ状態**（世代 `_monitorEpoch` による退役モニタの発火の排除、`_autoStarted` の追跡と自動停止）── これらは WinUI アプリのプロジェクトにあるため L1 から参照できない。

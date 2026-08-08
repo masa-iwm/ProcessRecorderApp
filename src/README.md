@@ -309,7 +309,7 @@ GOP は固定値とし、想定される最低フレームレート（15fps）�
 |---|---|---|
 | `OutputDirectory` | 空欄 | 録画の保存先。空欄なら実行ファイルのあるディレクトリ。相対パスもそこからの相対。Settings 画面では「…」でフォルダー選択ダイアログが開く（後述） |
 | `RecordingRetentionDays` | `0` | この日数を過ぎた mp4 を自動削除する。**0 なら削除しない** |
-| `RecordingCleanupIntervalHours` | `6` | 自動削除の間隔（時間）。1 未満は 1 として扱う |
+| `RecordingCleanupIntervalHours` | `6` | 自動削除の間隔（時間）。1 未満は 1、**1000 を超える値は 1000** として扱う（`Task.Delay` の上限 ≒ 1,193 時間より手前で頭打ちにする。超えると周回が例外死して保持期限が無音で効かなくなる） |
 
 削除は `Components.RecordingCleanup.Sweep`（サブフォルダーも再帰的に探す。判定は更新時刻。
 **リパースポイント［ジャンクション・シンボリックリンク］には降りない** ── リンク先は
@@ -520,14 +520,15 @@ exe 実行（Program.Main）
   ├─ 既に常駐ワーカーが起動中？
   │     Yes → ⓪ そのワーカーが**リダイレクトを受け取れる状態になるまで待つ**
   │              （Names.WorkerAcceptingEvent。理由は下記「受理可能になるまで待つ」）
-  │           → 引数をRedirectActivationAndGetExitCodeで転送 → Mutex解放 → ランチャー終了
+  │           → 引数をRedirectActivationAndGetResultで転送 → 結果を受信
+  │           → Mutex解放 → **結果をコンソールへ書く** → ランチャー終了
   │     No  → ① 一旦キー登録を解除（UnregisterKey）
   │           ② 自分自身のexeを "--__resident-worker" 付きで別プロセス起動（UseShellExecute=true）
   │           ③ 常駐ワーカーが送る名前付きイベント(Names.WorkerReadyEvent)のSetを待機
   │           ④ Main()が受け取った引数配列(rawArgs)が空でなければ、
-  │              常駐ワーカーへ引数をRedirectActivationAndGetExitCodeで転送
+  │              常駐ワーカーへ引数をRedirectActivationAndGetResultで転送
   │              （空の場合は「単なるアプリ起動」とみなし転送しない）
-  │           ⑤ Mutex解放 → ランチャー終了（常駐ワーカーは終了しない）
+  │           ⑤ Mutex解放 → **結果をコンソールへ書く** → ランチャー終了（常駐ワーカーは終了しない）
 ```
 
 常駐ワーカー側（`--__resident-worker` 付きで起動されたプロセス）の順序は次のとおり。
@@ -557,6 +558,10 @@ StartResidentWorker():
   必要なら起動する」という一連の処理（`Run` の本体）全体を排他制御する。これにより、
   複数のランチャープロセスが同時に起動されても、この重要区間に同時に入れるのは常に
   1プロセスだけであることが保証される。
+  **コンソールへの書き出しはこの区間の外**（解放後）で行う ── conhost の QuickEdit 選択中や
+  読み手の止まったパイプでは書き込みが無期限にブロックしうるので、含めると
+  その間の CLI が全部 10 分待たされて終了コード `6` になる。代償として、
+  同時に走る 2 本の CLI の出力は交錯しうる（機械可読な出力を読むバッチは 1 本ずつ実行する）。
 - **名前付き `EventWaitHandle`**（`Names.WorkerReadyEvent(keyPrefix)`・自動リセット）:
   **コールドスタートしたランチャー**が「自分が起こしたワーカーが立ち上がった」ことを検知する。
   常駐ワーカーは `SingleInstanceManager` コンストラクターで `Activated` の購読を済ませた
@@ -620,10 +625,10 @@ StartResidentWorker():
 | `5` | 常駐ワーカーが終了処理に入っていて、コマンドは**一度も実行されなかった**（`2` と違い成否は不明ではない ── **安全に再試行できる**） | `SingleInstanceManager.ExitCode_WorkerShuttingDown` |
 | `6` | 先行するランチャーが排他制御を握ったまま返らず、10 分待っても順番が回ってこなかった。コマンドは**一度も実行されていない**。**正常な待ち行列でここへ来ることは無い**ので、出たら調査対象 | `SingleInstanceManager.ExitCode_LauncherBusy` |
 | `10`以上 | 常駐ワーカー内でのコマンド処理が失敗（既定値は`10`。コマンドごとに任意の値を指定可能） | `CommandOutcome.DefaultFailureExitCode` |
-| `11` | `--get` / `--persist` / `--no-persist` で指定したキーがテンプレート変数に未定義 | `ActivationCommands.ExitCode_VariableNotDefined` |
+| `11` | `--get` / `--persist` / `--no-persist` で指定したキーがテンプレート変数に未定義。**コマンド本体が既に失敗している場合はそちらの終了コードを優先し**、未定義キーの指摘は標準エラーにのみ出る（より重い失敗をタイプミスで隠さないため） | `ActivationCommands.ExitCode_VariableNotDefined` |
 | `12` | 録画コマンド実行時、常駐ワーカー起動直後でまだ ViewModel が準備できていない（8秒待っても未生成） | `ActivationCommands.ExitCode_RecorderNotAvailable` |
 | `13` | 指定したインデックス／名前に一致するレコーダーが存在しない | `ActivationCommands.ExitCode_RecorderNotFound` |
-| `14` | 現在の状態では録画を開始／終了できない（`CanStart/StopRecording` が false） | `ActivationCommands.ExitCode_RecordingNotExecutable` |
+| `14` | 現在の状態では録画を開始／終了できない（`CanStart/StopRecording` が false）。`start-recording-all` は**1 台も開始できなかった場合**（開始可能なレコーダーが無い／全台が開始で失敗した）もこれを返す ── 単体の `start-recording` が同じ失敗で非 0 を返すのに `-all` だけ 0 になるのを避けるため | `ActivationCommands.ExitCode_RecordingNotExecutable` |
 | `15` | `status` で、初期化されていない／直近の障害が残っているレコーダーが1つ以上あった | `ActivationCommands.ExitCode_RecorderUnhealthy` |
 | `16` | `stop-recording` / `stop-recording-all` で、排出は綺麗に終わったが**MP4 に1フレームも入っていなかった**（`-all` は**今回停止した分**のうち1本でも該当すれば返す。録画していなかったレコーダーの前回の結果は見ない）。**捨ててよい**。切り分けは `activity.log` の `recording.stop empty`（`samplesSeen` / `samplesPushed` / `srcState`） | `ActivationCommands.ExitCode_RecordingProducedNothing` |
 | `17` | `stop-recording` / `stop-recording-all` で、**排出（ファイルの確定）が完了しなかった** ── 打ち切り・バスのエラー（ディスク満杯・書込権限）・排出中の例外。**捨てる前に救済を検討できる**（`mdat` にデータはあるが `moov` が未確定）。`activity.log` の `recording.stop timeout` / `recording.stop error` | `ActivationCommands.ExitCode_RecordingNotFinalized` |
@@ -660,13 +665,16 @@ StartResidentWorker():
 - **名前付き `EventWaitHandle`**（`Names.CommandResultReadyEvent`）: 常駐ワーカーが
   コマンド処理を完了した合図。常駐ワーカー側（`SingleInstanceManager.HandleActivation` →
   `ReportCommandResult` → `CommandResultChannel.Publish`）が処理完了後にSetし、
-  ランチャー側（`RedirectActivationAndGetExitCode` → `TryWaitForResult`）が待つ。
+  ランチャー側（`RedirectActivationAndGetResult` → `TryWaitForResult`）が待つ。
 - **名前付き `MemoryMappedFile`**（`Names.CommandResultMap`）: 相関ID・終了コード・
   コンソール出力文字列を受け渡すための共有メモリ。レイアウトは
   `[requestId:Guid][resultId:Guid][終了コード:int][標準出力バイト長:int][標準エラー出力バイト長:int][標準出力 UTF-8][標準エラー出力 UTF-8]`
   （容量は `CommandResultChannel.Capacity`。出力に使えるのは合計 64KB）。
   ランチャーが結果を読み取り、終了コードを自身の終了コードに反映し、
   出力文字列を呼び出し元コンソールの標準出力／標準エラー出力へ出力する。
+  **合計 64KB を超えた出力は無言で切り詰められる**（標準出力を優先するため、
+  標準エラーが丸ごと落ちることもある。終了コードは変わらない）── `--get` 全件や
+  `status` の出力をバッチで機械的に消費する場合は、この上限を前提にすること。
 
 ランチャーは常駐ワーカーへリダイレクトする**前**にこれらのオブジェクトを作成するため、
 常駐ワーカー側は常に既存のものを開くだけでよく、作成順序の競合は起きない。
@@ -827,7 +835,7 @@ CommandOutcome { ShowWindow, ToastTitle, ToastMessage, ConsoleOutput, ConsoleErr
 | （未知のサブコマンド・引数のパースエラー） | ✕ | ランチャーがエラー表示して終了コード`4`で終了。常駐ワーカーへはリダイレクトされない |
 | `ping` | ✕ | `activity.log` に記録するだけ（「通知しない引数」の例） |
 | `activate` | ○ | ウィンドウを表示するだけ |
-| `start-recording-all` / `stop-recording-all` | ✕ | 全レコーダーの録画開始／終了。stdout に `名前\tファイル名` の一覧（`stop-recording-all` が出すのは**今回停止した分だけ**。録画していなかったレコーダーの `LastFilename` は前回の録画を指すため） |
+| `start-recording-all` / `stop-recording-all` | ✕ | 全レコーダーの録画開始／終了。stdout に `名前\tファイル名` の一覧（**どちらも出すのは今回開始／停止した分だけ**。対象外のレコーダーの `LastFilename` は前回の録画を指すため。開始／停止できなかったレコーダーは名前つきで標準エラーへ出る） |
 | `start-recording <target>` / `stop-recording <target>` | ✕ | 個別レコーダーの録画開始／終了。`target` は数値ならインデックス(0始)、それ以外は名前 |
 | `status` | ✕ | レコーダーごとの状態を1行ずつ出力。不健全なものがあれば終了コード `15`（後述） |
 | `--set Key=Value`（`Recursive`、繰返可） | — | `EventRecorder.TemplateVariables` へ設定（他コマンドと併用可）。**セッション限り** |
@@ -1168,7 +1176,8 @@ UMD なのでバンドラーは要らず、グローバル名は `Terminal` / `F
 `PostWebMessageAsString` はプロセスを跨ぐマーシャルで、`term.write()` は JS 側の内部キューに積む。
 どちらも投げっぱなしにすると洪水でキューが片側だけ伸びる。そこで
 **33ms 周期で 1 通ずつ送り、`term.write` のコールバックが返す ack を待ってから次を送る**。
-ack が 2 秒来なければ 1 通落ちたものとして進め、3 回続いたらリスト表示へ落ちる。
+ack が 5 秒来なければ 1 通落ちたものとして進め、3 回続いたらリスト表示へ落ちる
+（`LogTerminalView.AckTimeoutMilliseconds` / `MaxConsecutiveAckTimeouts`）。
 
 カーソルは**絶対位置**（追記した総文字数・総行数）なので、ack を待つあいだにバッファが
 溢れても特別扱いが要らない ── 次の `Read` が破棄行数を返し、印が正しく入る。
@@ -1310,7 +1319,7 @@ GPU テクスチャになるため**アクセシブルテキストが 1 つも�
 | `recording.stop timeout` / `recording.stop error` | ERROR | 同上 | 排出が上限内に終わらなかった／排出中にエラーが出た場合の詳細 |
 | `recording.stop empty` | ERROR | 同上 | 1フレームも mux されず MP4 にメディアデータが無い（`samplesSeen` / `samplesPushed` / `srcState` で原因を切り分ける。終了コード 16 の根拠） |
 | `recording.stop slow` | WARN | `EventRecorder.Close` の待ち | 進行中の排出が上限＋余裕の中で終わらず、src パイプラインを破棄せずに手放した |
-| `recorder.leak` | WARN | `EventRecorder.Close` | 排出中の src パイプラインを安全に破棄できず、解放を諦めた（クラッシュ回避のための意図的なリーク） |
+| `recorder.leak` | WARN | `EventRecorder.Close` | ネイティブを安全に破棄できず、解放を諦めた（クラッシュ回避のための意図的なリーク）。原因は 2 つ ── **排出中の src パイプライン**（`abandonedStop`）と、**上限内に降りなかった pull スレッド**（この場合は sink 側も破棄しない。`SetState(Null)` だけは必ず実行する） |
 | `recording.aborted` | ERROR | `EventRecorder.HandleBusMessage` | 録画中に src 側バスがエラーを報告したため録画を中止した |
 | `recorder.error` | ERROR | `EventRecorder.HandleBusMessage` | **両方のバス**の `Error`（バス名・要素名・メッセージ・debug 情報） |
 | `recorder.warning` | WARN | 同上 | 両方のバスの `Warning`。連続する同一内容は畳んで `repeated=N` を添える |
@@ -1320,6 +1329,8 @@ GPU テクスチャになるため**アクセシブルテキストが 1 つも�
 | `log.file error` | ERROR | `Program.Main`（`ApplyLogFile`） | `DebugLogFile` を開けなかった（切断されたドライブ・権限など）。保存は諦めて捕捉は継続する ── 投げると未処理例外ハンドラの購読前なので、不正なパス1つで常駐ワーカーが起動できなくなる |
 | `gst.debug` | INFO | `DebugLogEx.TrySetThreshold` | `GstDebug` の変更を実行中に適用した（`threshold='...'`）。適用先は GStreamer の内部状態だけで画面にもファイルにも痕跡が残らないので、ここが唯一の観測点になる |
 | `gst.dot` | INFO / ERROR | `MainPageViewModel.SaveDebugGraphs` ／ `Controller.WriteDebugGraphs` | Log 画面の「グラフを保存」の結果（`dir='...' files=N`）／個々のパイプラインの書き出し失敗 |
+| `preview.error` | ERROR | `Previewer.DrainBusErrors`／`NativeSwapChainPanel.SetPanelSwapChain` | プレビューパイプラインの実行時障害（D3D デバイスロスト等。1 パイプラインにつき 1 行）と、スワップチェーンのパネルへのバインド失敗。録画は止めない方針のため復帰は試みない ── ここが「プレビューだけ黙って固まった／黒いまま」の唯一の観測点になる |
+| `variables.duplicate-key` | WARN | `TemplateVariableViewModel.OnKeyChanged` | Variables 画面で既存の行と重複するキーを入力したため、元のキーへ差し戻した（重複を許すと既存の値を空文字で潰し、片方の削除で実体まで消える） |
 | `settings.load` | ERROR | `AppSettings.ReportLoadFailure` | settings.json を読めず既定値へ倒れた（読めなかったファイルは `.bad` へ退避） |
 | `settings.save` | ERROR | `AppSettings.ReportSaveFailure` | settings.json を書けなかった（ディスク満杯・一時ロック・権限）。書けなかった変更は次の保存契機で改めて書かれる |
 | `cli` | INFO | `ActivationCommands.Parse` | コマンドラインと終了コード。**例外で抜けた場合も必ず出る**（そのときの終了コードは 99） |

@@ -35,7 +35,8 @@
 
 .OUTPUTS
     A markdown report at <WorkDir>\gpu-encoder-report.md and the same summary on stdout.
-    Exit code 0 if every case behaved as expected, 1 otherwise.
+    Exit code 0 only if every case actually ran AND behaved as expected; 1 otherwise
+    (a skipped case verified nothing, so it counts as inconclusive, not as success).
 #>
 [CmdletBinding()]
 param(
@@ -56,8 +57,21 @@ function Restore-CallerPath {
     if ($null -ne $script:CallerPath) { $env:PATH = $script:CallerPath }
 }
 
-# `break` rethrows, so this only adds the restore; it does not swallow the failure.
-trap { Restore-CallerPath; break }
+# `break` rethrows, so this only adds the cleanup; it does not swallow the failure.
+# Also stop this run's workers: an abnormal exit would otherwise leave a resident
+# worker running against the (now abandoned) temp profile until the machine reboots.
+# Stop-AllWorkers is defined further down, so guard for traps that fire before that.
+trap {
+    # Restore the PATH FIRST: a failure inside this trap propagates outwards without
+    # re-entering it, so anything after the failing statement would be skipped -- and the
+    # PATH restore is the one guarantee this trap has always owned.
+    Restore-CallerPath
+    # Also stop this run's workers: an abnormal exit would otherwise leave a resident
+    # worker running against the (now abandoned) temp profile until the machine reboots.
+    # Guard on $WorkDir too -- the helper reads it, and a trap can fire before setup.
+    if ($WorkDir -and (Test-Path function:Stop-AllWorkers)) { Stop-AllWorkers }
+    break
+}
 
 # ---------------------------------------------------------------- setup
 
@@ -614,6 +628,38 @@ function Invoke-Case {
         Start-Sleep -Seconds 3
         $ping = Invoke-Cli 'ping'
     }
+    # A slow machine can still be building the registry after the second attempt. Give it one
+    # long wait before giving up -- a SKIPPED case verifies nothing, so it is worth the minute.
+    if ($ping.ExitCode -ne 0) {
+        Write-Host "   (still not up; waiting 30s for the plugin registry, then retrying once more)"
+        Start-Sleep -Seconds 30
+        $ping = Invoke-Cli 'ping'
+    }
+
+    # If the worker never answered, the case never ran: report it as a harness/startup
+    # failure, NOT as a product FAILED. A FAILED row in the report reads as "this encoder
+    # is broken on this machine" (a false red is worse than a real one -- it leaves a
+    # wrong record about the product), while the real story here is that the app did not
+    # start at all (ping stderr has the launcher's reason).
+    if ($ping.ExitCode -ne 0) {
+        return [pscustomobject]@{
+            Case           = $Case.Name
+            Note           = $Case.Note
+            StartExit      = $null
+            StopExit       = $null
+            Selected       = $null
+            FailedAttempts = $null
+            Mp4Bytes       = 0
+            DurationSec    = $null
+            ValidMp4       = $false
+            Ok             = $false
+            Skipped        = "worker did not start (ping exit $($ping.ExitCode))"
+            Shortfall      = $null
+            StartStdErr    = $ping.StdErr
+            LogLines       = ''
+            Diagnostics    = $null
+        }
+    }
 
     # Let the ring buffer fill before recording, so the produced file also demonstrates
     # the pre-buffer (BufferDuration=2000).
@@ -666,6 +712,7 @@ function Invoke-Case {
         DurationSec    = if ($probe) { $probe.DurationSec } else { $null }
         ValidMp4       = if ($probe) { $probe.HasFtyp -and $probe.HasMoov -and $probe.HasMdat -and $probe.HasAvc1 } else { $false }
         Ok             = $ok
+        Skipped        = $null
         Shortfall      = $shortfall
         StartStdErr    = $start.StdErr
         LogLines       = ($logLines -join "`n")
@@ -679,7 +726,7 @@ foreach ($case in $cases) {
 
     Write-Host ("   exit start/stop = {0}/{1}   selected = {2}   duration = {3}s   -> {4}" -f `
         $r.StartExit, $r.StopExit, $r.Selected, $(if ($null -ne $r.DurationSec) { $r.DurationSec } else { 'n/a' }),
-        $(if ($r.Ok) { 'OK' } else { 'FAILED' }))
+        $(if ($r.Ok) { 'OK' } elseif ($r.Skipped) { "SKIPPED ($($r.Skipped))" } else { 'FAILED' }))
     if ($r.Shortfall) { Write-Host "   NOTE: $($r.Shortfall) -- check the encoder's GOP length vs BufferDuration" -ForegroundColor Yellow }
     if (-not $r.Ok -and $r.StartStdErr) { Write-Host "   stderr: $($r.StartStdErr)" }
 
@@ -687,7 +734,8 @@ foreach ($case in $cases) {
     # MP4 has failed ASYNCHRONOUSLY -- a class of failure ParseLaunch and SetState(Playing)
     # structurally cannot catch. Re-run it once with GStreamer diagnostics so the cause is
     # in the report and no second trip to this machine is needed.
-    if (-not $r.Ok) {
+    # (A SKIPPED case never ran, so there is nothing to diagnose with GST_DEBUG.)
+    if (-not $r.Ok -and -not $r.Skipped) {
         Write-Host "   re-running this case with GST_DEBUG to capture the cause..." -ForegroundColor Yellow
         $d = Invoke-Case -Case $case -GstDebug '4'
         $log = Join-Path $WorkDir 'debug.log'
@@ -744,10 +792,29 @@ $null = $sb.AppendLine()
 $null = $sb.AppendLine('| Case | start/stop | selected encoder | retries | MP4 | duration | result |')
 $null = $sb.AppendLine('|---|---|---|---|---|---|---|')
 foreach ($r in $results) {
+    # SKIPPED is deliberately distinct from FAILED: the case never ran (the worker did not
+    # start), so a FAILED row would leave a wrong record about the product. Its MP4/duration
+    # cells say n/a for the same reason -- nothing was produced to judge.
     $null = $sb.AppendLine(('| {0} | {1}/{2} | `{3}` | {4} | {5} | {6}s | {7} |' -f `
         $r.Case, $r.StartExit, $r.StopExit, $r.Selected, $r.FailedAttempts,
-        $(if ($r.ValidMp4) { 'valid' } else { 'INVALID' }), $r.DurationSec,
-        $(if ($r.Ok) { 'OK' } else { '**FAILED**' })))
+        $(if ($r.Skipped) { 'n/a' } elseif ($r.ValidMp4) { 'valid' } else { 'INVALID' }), $r.DurationSec,
+        $(if ($r.Ok) { 'OK' } elseif ($r.Skipped) { "SKIPPED ($($r.Skipped))" } else { '**FAILED**' })))
+}
+
+$skippedCases = @($results | Where-Object { $_.Skipped })
+if ($skippedCases.Count -gt 0) {
+    $null = $sb.AppendLine()
+    $null = $sb.AppendLine('## Skipped cases (the app never started -- nothing was verified)')
+    $null = $sb.AppendLine()
+    $null = $sb.AppendLine('These rows say nothing about the product. The launcher''s own stderr is below;')
+    $null = $sb.AppendLine('the work dir is kept so activity.log can be inspected.')
+    foreach ($r in $skippedCases) {
+        $null = $sb.AppendLine()
+        $null = $sb.AppendLine("### $($r.Case)")
+        $null = $sb.AppendLine('```')
+        $null = $sb.AppendLine($(if ($r.StartStdErr) { $r.StartStdErr } else { '(the launcher printed nothing)' }))
+        $null = $sb.AppendLine('```')
+    }
 }
 
 $short = @($results | Where-Object { $_.Shortfall })
@@ -796,7 +863,12 @@ foreach ($r in $results) {
 Set-Content -Path $reportPath -Value $sb.ToString() -Encoding utf8
 
 Write-Host '---------------------------------------------------------------'
-$results | Format-Table Case, StartExit, StopExit, Selected, DurationSec, Ok -AutoSize
+# Result column instead of Ok: a SKIPPED case has Ok=False but is NOT a product failure,
+# and this table is the last thing a human reads.
+$results |
+    Select-Object Case, StartExit, StopExit, Selected, DurationSec,
+        @{ Name = 'Result'; Expression = { if ($_.Ok) { 'OK' } elseif ($_.Skipped) { 'SKIPPED' } else { 'FAILED' } } } |
+    Format-Table -AutoSize
 
 # Read back what the app actually loaded. Do this AFTER the cases have run (activity.log only
 # has gst.runtime once the app has started at least once), and print it next to the table so a
@@ -806,12 +878,21 @@ $null = Test-BundledRuntimeWasExercised -PublishDirectory $PublishDir
 
 Write-Host "Report written to: $reportPath"
 
-$failed = @($results | Where-Object { -not $_.Ok })
+$skipped = @($results | Where-Object { $_.Skipped })
+if ($skipped.Count -gt 0) {
+    Write-Host ("SKIPPED cases (the worker did not start; nothing was verified): {0}" -f $skipped.Count) -ForegroundColor Yellow
+}
+$failed = @($results | Where-Object { -not $_.Ok -and -not $_.Skipped })
 if ($failed.Count -gt 0) {
     Write-Host ("FAILED cases: {0}" -f $failed.Count) -ForegroundColor Red
 }
 
-if (-not $KeepWorkDir -and $failed.Count -eq 0) {
+# A skipped case verified NOTHING, so the run is not green either -- exiting 0 here would be
+# the same class of false green as a filter that selects no tests. Keep the work dir too:
+# the reason (activity.log, the launcher's stderr) only exists there.
+$inconclusive = $failed.Count + $skipped.Count
+
+if (-not $KeepWorkDir -and $inconclusive -eq 0) {
     Copy-Item $reportPath (Join-Path ([System.IO.Path]::GetTempPath()) 'gpu-encoder-report.md') -Force
     Remove-Item -Recurse -Force $WorkDir
     Write-Host "Work dir removed (report copied to %TEMP%\gpu-encoder-report.md). Use -KeepWorkDir to retain artefacts."
@@ -821,4 +902,4 @@ if (-not $KeepWorkDir -and $failed.Count -eq 0) {
 # twice in one console must not leave the first run's GStreamer ahead of the second's.
 Restore-CallerPath
 
-exit $(if ($failed.Count -gt 0) { 1 } else { 0 })
+exit $(if ($inconclusive -gt 0) { 1 } else { 0 })

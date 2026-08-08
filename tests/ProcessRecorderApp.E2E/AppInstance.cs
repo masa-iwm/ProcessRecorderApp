@@ -88,6 +88,9 @@ public sealed class AppInstance : IDisposable
     private readonly StringBuilder _workerOutput = new();
     private readonly object _outputGate = new();
 
+    /// <summary>上限超過で先頭を捨てたか（番兵行を 1 回だけ入れるため）。</summary>
+    private bool _truncated;
+
     public string DataDir { get; }
     public string KeyPrefix { get; }
     public string RecordingsDir { get; }
@@ -239,9 +242,23 @@ public sealed class AppInstance : IDisposable
             return;
         lock (_outputGate)
         {
+            _workerOutput.AppendLine(line);
+
             // 障害注入のケースでは数千行出ることがあるので上限を設ける。
-            if (_workerOutput.Length < 512 * 1024)
-                _workerOutput.AppendLine(line);
+            // **捨てるのは先頭（古い方）。** 末尾を捨てると、DiagnosticDump が出す
+            // 「末尾 20 行」が実は打ち切り時点のストリームの中間で、実行末尾の本当の最後
+            // （欲しいのはたいてい障害直前の数行）が失われる ── 診断は「読めた」で完成する。
+            // **切り捨てたことも残す** ── 残さないと、読み手には「これが全部」と読める。
+            const int Cap = 512 * 1024;
+            if (_workerOutput.Length > Cap)
+            {
+                _workerOutput.Remove(0, _workerOutput.Length - Cap);
+                if (!_truncated)
+                {
+                    _truncated = true;
+                    _workerOutput.Insert(0, "--- (上限 512KB を超えたため、これより前の出力は捨てました) ---" + Environment.NewLine);
+                }
+            }
         }
     }
 

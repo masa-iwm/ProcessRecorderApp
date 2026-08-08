@@ -63,17 +63,35 @@ public static partial class GstIntrospect
                 var list = provider.GetDevices();
                 if (list is not null)
                 {
-                    uint n = GLib.List.Length(list);
-                    for (uint i = 0; i < n; i++)
+                    try
                     {
-                        IntPtr ptr = GLib.List.NthData(list, i);
-                        if (ptr == IntPtr.Zero)
-                            continue;
+                        uint n = GLib.List.Length(list);
+                        for (uint i = 0; i < n; i++)
+                        {
+                            IntPtr ptr = GLib.List.NthData(list, i);
+                            if (ptr == IntPtr.Zero)
+                                continue;
 
-                        using var device = Device.NewFromPointer(ptr, true);
-                        result.Add(ReadDevice(device));
+                            // 1台の異常（表示名・caps のマーシャリング失敗）で列挙全体を
+                            // 空にしない ── その1台だけ飛ばして続行する。
+                            // owned: true の参照は using が解放する。
+                            try
+                            {
+                                using var device = Device.NewFromPointer(ptr, true);
+                                result.Add(ReadDevice(device));
+                            }
+                            catch (Exception ex)
+                            {
+                                DebugLogEx.Log(DebugLevel.Warning,
+                                    $"introspection failed for one device; skipped\n{ex}");
+                            }
+                        }
                     }
-                    GLib.List.Free(list);
+                    finally
+                    {
+                        // 例外で抜けてもリストノードは解放する（消費済みの要素は using が解放済み）。
+                        GLib.List.Free(list);
+                    }
                 }
             }
             finally

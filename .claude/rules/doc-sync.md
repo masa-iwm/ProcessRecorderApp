@@ -6,6 +6,10 @@
 |---|---|
 | `DocumentationDriftTests` | `src/README.md`「### 終了コードの一覧」⇔ `ExitCode_*` 定数（**双方向**: 行を消しても定数を消しても落ちる）／ルート README 言語対のコマンド表 ⇔ コマンド登録（双方向）／`README.md` と `README.ja.md` の見出しの深さの並び（SequenceEqual）／相互リンク `(README.ja.md)` / `(README.md)` の存在 |
 | `StopFinalizeBudgetTests` | 停止の排出待ちの案内（resw の `PropDesc_StopFinalizeTimeout` en/ja と `src/README.md`）⇔ `MaxAdvisedStopFinalizeTimeoutMs` |
+| `LauncherBudgetTests` | `LauncherMutexTimeoutMs` ⇔ その根拠の算術（受理 `WorkerAcceptTimeoutMs` ＋ コールドスタート `ColdStartRegistrationTimeoutMs` ＋ 転送 `RedirectTimeoutMs` ＋ 結果待ち）。上限が最悪保持の**2 本分は吸収し 3 本分は吸収しない**ことを両側から縛る（構成要素も上限も、どちらへ動かしても落ちる）。**文書の数値そのものは縛っていない** ── doc コメントのリテラルは対で直すこと |
+| `CleanupIntervalBudgetTests` | `RecordingCleanupScheduler.MaximumIntervalHours` ⇔ resw の `PropDesc_RecordingCleanupIntervalHours`（en/ja）と `src/README.md` の設定表／`Task.Delay` の上限（約 1,193 時間）を超えないこと |
+| `RecorderSettingsMirrorTests` | `EventRecorderSettings` の各プロパティ ⇔ 4 箇所の手書きミラー（`EventRecorder` の switch と ctor、`GstEventRecorderViewModel` の switch と ctor）／`AppSettings` のコレクション差し替え時の要素購読 |
+| `CampbellPaletteTests` | `CampbellPalette` の選択色（XAML 形式 ⇔ CSS 形式）／`terminal.js` に色のリテラルを持たせない |
 | `EncoderCatalogScriptSyncTests` | `EncoderCatalog` ⇔ `tools/Verify-GpuEncoders.ps1` のエンコーダー行 |
 | `RuntimeClosureSeedSyncTests` | 閉包の種リスト ⇔ `tools/Get-GStreamerImportClosure.ps1` |
 | `GpuVerifyScriptParsingTests` | `tools/Verify-GpuEncoders.ps1` 内の正規表現（スクリプトから取り出して .NET で実行するので、規則が2か所に書かれない） |

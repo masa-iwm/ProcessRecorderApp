@@ -157,6 +157,25 @@ public class JsonSettingsBaseTests : IDisposable
     }
 
     [Fact]
+    public void Load_JsonNullLiteral_IsReportedAndQuarantined()
+    {
+        // 中身が JSON リテラルの null は正当な JSON なので JsonException にならないが、
+        // 「読める設定が入っていない」点では切り詰められた空ファイルと同じ。
+        // この形だけ無記録で既定値へ倒れると、次の Save が証拠ごと上書きする。
+        Directory.CreateDirectory(_dir);
+        File.WriteAllText(FilePath, "null");
+
+        var failures = new List<string>();
+        var loaded = SampleSettings.Load(FilePath, failures.Add);
+
+        Assert.Equal(1, loaded.Number);   // 既定値へ倒れている
+        Assert.NotEmpty(failures);
+        Assert.True(
+            File.Exists(FilePath + JsonSettingsBase<SampleSettings>.UnreadableFileSuffix),
+            "壊れたファイルが退避されていない");
+    }
+
+    [Fact]
     public void Save_ReportsAFailureInsteadOfThrowing()
     {
         // 一時ファイルの位置を同名のディレクトリで塞いで、書き込みを確実に失敗させる。

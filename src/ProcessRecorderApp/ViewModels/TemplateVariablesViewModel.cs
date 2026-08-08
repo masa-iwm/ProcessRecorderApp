@@ -82,6 +82,16 @@ public partial class TemplateVariablesViewModel : ObservableObject, IDisposable
         item.RemoveFromDictionary();
     }
 
+    /// <summary>
+    /// 指定した行以外に、同じキーを持つ（または適用済みの）行があるか。
+    /// キーの重複を許すと、(1) 新しい行への既存キー入力がその変数を空文字で潰す、
+    /// (2) 同じキーを共有した行の片方を削除すると、残った行が表示している変数まで
+    /// 実体と settings.json の両方から消える ── レコーダー名を
+    /// <c>RecorderNaming.MakeUnique</c> で一意化しているのと同じ理由で、キーも一意に保つ。
+    /// </summary>
+    internal bool HasAnotherRowWithKey(TemplateVariableViewModel self, string key)
+        => Items.Any(item => !ReferenceEquals(item, self) && item.Key == key);
+
     /// <summary>辞書への書き込みを、変更イベントによる再構築を抑止した状態で実行する</summary>
     internal void RunApplying(Action action)
     {
@@ -163,6 +173,20 @@ public partial class TemplateVariableViewModel : ObservableObject
     {
         if (_initializing)
             return;
+
+        // 既存の行と重複するキーは受け付けず、元のキーへ差し戻す。
+        // 受け付けると、この行の（多くは空の）Value が既存変数を黙って上書きし、
+        // さらに削除時に共有キーの実体まで巻き添えで消える（HasAnotherRowWithKey の doc 参照）。
+        if (value.Length > 0 && _owner.HasAnotherRowWithKey(this, value))
+        {
+            // 黙って戻さない ── 画面上は「入力が消えた」ようにしか見えないので、
+            // 理由が残らないと利用者にも開発者にも説明できない。
+            Components.ActivityLog.Warn("variables.duplicate-key",
+                $"key='{value}' another row already uses this key; the edit was reverted");
+            Key = _appliedKey ?? string.Empty;
+            return;
+        }
+
         string? previousKey = _appliedKey;
         // リネーム＝旧キー削除+新キー設定。キーが空になった場合は辞書から外すのみ
         _owner.RunApplying(() =>

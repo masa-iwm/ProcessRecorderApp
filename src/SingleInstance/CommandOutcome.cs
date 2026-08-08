@@ -28,10 +28,17 @@ public readonly record struct CommandOutcome
     /// コマンド処理の終了コード。0は成功を表す。
     /// この値は常駐ワーカーから処理を委譲したランチャープロセスへそのまま通知され、
     /// ランチャー自身のプロセス終了コードとして返される（<see cref="SingleInstanceManager"/> 参照）。
-    /// 0以外を指定する場合は、ランチャー側が予約している終了コード
-    /// （<see cref="SingleInstanceManager.ExitCode_WorkerStartFailed"/> = 1、
-    /// <see cref="SingleInstanceManager.ExitCode_WorkerResultTimeout"/> = 2）と衝突しないよう、
-    /// <see cref="DefaultFailureExitCode"/>（10）以上の値を使うこと。
+    ///
+    /// <para>
+    /// <b>予約値の正本は <c>src/README.md</c>「終了コードの一覧」。</b> 単一インスタンス層は
+    /// 1（<see cref="SingleInstanceManager.ExitCode_WorkerStartFailed"/>）・
+    /// 2（<see cref="SingleInstanceManager.ExitCode_WorkerResultTimeout"/>）・
+    /// 3・5（<see cref="SingleInstanceManager.ExitCode_WorkerShuttingDown"/>）・6 に加えて
+    /// <b>99（<see cref="SingleInstanceManager.UnexpectedErrorExitCode"/>）も予約している</b>
+    /// ── 「<see cref="DefaultFailureExitCode"/>（10）以上」に従っても 99 は使えない
+    /// （衝突すると、呼び出し側がワーカー内の予期しない例外とコマンド固有の失敗を
+    /// 区別できなくなる）。独自の失敗コードは 10 以上かつ一覧の予約値以外を使うこと。
+    /// </para>
     /// </summary>
     public int ExitCode { get; init; }
 

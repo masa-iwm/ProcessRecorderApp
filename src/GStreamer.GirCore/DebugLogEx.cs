@@ -26,6 +26,12 @@ public static partial class DebugLogEx
         [CallerLineNumber] int line = 0,
         [CallerMemberName] string function = "")
     {
+        // 自クラスの不変条件（IsGstInitialized を見ずにネイティブへ触らない）をここでも守る。
+        // catch 節から呼ばれやすい API なので、初期化前の呼び出しで診断のためのログが
+        // DllNotFoundException となって起動ごと落とす形にしない（TrySetThreshold と同じ扱い）。
+        if (!IsGstInitialized)
+            return;
+
         _debugCategory ??= DebugCategoryNew("myapp", 0, "My application");
         Functions.DebugLogLiteral(_debugCategory!, level, file, function, line, @object, message ?? "");
     }

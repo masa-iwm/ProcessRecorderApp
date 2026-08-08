@@ -347,7 +347,7 @@ public sealed partial class SingleInstanceManager
 
     /// <summary>
     /// コマンド処理の結果（終了コード・コンソール出力文字列）を、リダイレクト元のランチャープロセスへ通知する。
-    /// ランチャー側は <see cref="RedirectActivationAndGetExitCode"/> でこれを受け取り、
+    /// ランチャー側は <see cref="RedirectActivationAndGetResult"/> でこれを受け取り、
     /// 終了コードを自身のプロセス終了コードにそのまま反映し、出力文字列を呼び出し元コンソールへ出力する。
     ///
     /// <para>

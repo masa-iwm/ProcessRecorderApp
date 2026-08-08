@@ -34,7 +34,9 @@ public readonly record struct AnsiSegment(string Text, int ForegroundIndex, int 
 /// 対応 SGR: 0(リセット) / 1,2,22(太字・淡色) / 3,23(斜体) / 4,24(下線) /
 /// 7,27(反転) / 9,29(取り消し線) / 30-37,90-97,39(前景色) / 40-47,100-107,49(背景色) /
 /// 38;5;n・48;5;n は n が 0-15 の場合のみ色として解釈。
-/// 上記以外の SGR コードと SGR 以外の CSI シーケンスは無視して除去する
+/// 上記以外の SGR コードと SGR 以外の CSI シーケンスは無視して除去する。
+/// OSC（ESC ]）と DCS（ESC P）はペイロードごと終端（BEL / ST）まで除去する
+/// ── ウィンドウタイトル設定等の中身を平文としてログへ漏らさないため
 /// </summary>
 public static class AnsiEscape
 {
@@ -126,8 +128,33 @@ public static class AnsiEscape
     /// </summary>
     private static int ConsumeEscape(string text, int index, List<int>? codes)
     {
-        // index は ESC を指している。CSI（ESC '['）以外は ESC ごと1文字読み飛ばす
-        if (index + 1 >= text.Length || text[index + 1] != '[')
+        // index は ESC を指している。
+        char kind = index + 1 < text.Length ? text[index + 1] : '\0';
+
+        // OSC（ESC ] ... BEL/ST）と DCS（ESC P ... ST）はペイロードごと読み飛ばす。
+        // ESC+1 文字だけ消すと "0;ウィンドウタイトル" 等のペイロードが平文として
+        // デバッグログ・コピー・リスト表示へ漏れる。終端（BEL または ST=ESC '\'）が
+        // 見つからない場合は行の残りを捨てる（この API は行単位で使われる）。
+        if (kind is ']' or 'P')
+        {
+            for (var j = index + 2; j < text.Length; j++)
+            {
+                if (text[j] == '\a')
+                    return j + 1;
+                if (text[j] == Escape && j + 1 < text.Length && text[j + 1] == '\\')
+                    return j + 2;
+                // **改行を跨いで捨てない。** この API はログ全体（複数行の1文字列）にも
+                // 掛かる（「すべてコピー」は LogBuffer.Snapshot() を通す）。終端の無い
+                // シーケンスが1つあるだけで以降の全行が黙って消えるのは、
+                // 漏れを塞ぐために作った副作用としては重すぎる。
+                if (text[j] == '\n')
+                    return j;
+            }
+            return text.Length;
+        }
+
+        // CSI（ESC '['）以外は ESC ごと1文字読み飛ばす
+        if (kind != '[')
         {
             return index + 2 <= text.Length ? index + 2 : text.Length;
         }

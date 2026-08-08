@@ -73,4 +73,38 @@ public class RecordingStopRulesTests
         Assert.Equal(RecordingStopOutcome.Ok,
             Array.Empty<RecordingStopOutcome>().Aggregate(RecordingStopOutcome.Ok, RecordingStopRules.Stronger));
     }
+
+    // ---- 排出結果の分類（StopDrainRules）----
+
+    /// <summary>
+    /// 排出待ちの結末と押し込み数から <c>result=</c> と結果を決める規則。
+    /// この分類が終了コード 16/17 の分岐の中核で、L1 に居る理由は上と同じ
+    /// （タイムアウト・エラー・「空かつ未確定」を E2E で決定論的に踏めない）。
+    /// </summary>
+    [Theory]
+    [InlineData(StopDrainSignal.Eos, 10, "ok", RecordingStopOutcome.Ok)]
+    [InlineData(StopDrainSignal.Eos, 0, "empty", RecordingStopOutcome.Empty)]
+    [InlineData(StopDrainSignal.Timeout, 10, "timeout", RecordingStopOutcome.NotFinalized)]
+    [InlineData(StopDrainSignal.Error, 10, "error", RecordingStopOutcome.NotFinalized)]
+    public void Classify_MapsTheDrainSignalToResultAndOutcome(
+        StopDrainSignal signal, int pushed, string expectedResult, RecordingStopOutcome expectedOutcome)
+    {
+        Assert.Equal((expectedResult, expectedOutcome), StopDrainRules.Classify(signal, pushed));
+    }
+
+    /// <summary>
+    /// <b>「空」で「未確定」を潰さない。</b> 排出が完了していないなら、押し込みが 0 でも
+    /// 「未確定なので触るな」が正しい答え ── 中身が無いと断定できるのは排出が
+    /// 綺麗に終わった場合だけである（終了コード表の「両方に該当する場合は 17」）。
+    /// </summary>
+    [Theory]
+    [InlineData(StopDrainSignal.Timeout)]
+    [InlineData(StopDrainSignal.Error)]
+    public void Classify_NeverDowngradesAnUnfinalizedDrainToEmpty(StopDrainSignal signal)
+    {
+        var (result, outcome) = StopDrainRules.Classify(signal, samplesPushed: 0);
+
+        Assert.NotEqual("empty", result);
+        Assert.Equal(RecordingStopOutcome.NotFinalized, outcome);
+    }
 }

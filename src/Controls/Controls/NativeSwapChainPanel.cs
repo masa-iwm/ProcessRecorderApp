@@ -80,7 +80,10 @@ public sealed partial class NativeSwapChainPanel : SwapChainPanel
 
     // ---- ISwapChainPanelNative::SetSwapChain ----
 
-    // ISwapChainPanelNative のIID（windows.ui.xaml.media.dxinterop.h）
+    // ISwapChainPanelNative のIID（microsoft.ui.xaml.media.dxinterop.h ── WinUI 3 用）。
+    // UWP 用ヘッダー windows.ui.xaml.media.dxinterop.h の同名インターフェイスは
+    // **別の IID**（f92f19d2-3ade-45a6-a20c-f6f1ea90554b）で、そちらへ「直す」と
+    // QueryInterface が必ず失敗する。
     private static readonly Guid IID_ISwapChainPanelNative = new("63aad0b8-7c24-40ff-85a8-640d944cc325");
 
     /// <summary>
@@ -95,14 +98,26 @@ public sealed partial class NativeSwapChainPanel : SwapChainPanel
             return;
         try
         {
-            if (Marshal.QueryInterface(unknown, in IID_ISwapChainPanelNative, out nint native) < 0 || native == 0)
+            int qi = Marshal.QueryInterface(unknown, in IID_ISwapChainPanelNative, out nint native);
+            if (qi < 0 || native == 0)
+            {
+                // 失敗を無記録にしない ── 症状は「プレビューが黒いまま」だけで、
+                // ここが唯一の観測点になる（ハンドル生成の打ち切りはホスト側が記録する）。
+                Components.ActivityLog.Error("preview.error",
+                    $"ISwapChainPanelNative QueryInterface failed (hr=0x{qi:X8})");
                 return;
+            }
             try
             {
                 // vtable: 0=QueryInterface, 1=AddRef, 2=Release, 3=SetSwapChain
                 nint vtbl = Marshal.ReadIntPtr(native);
                 var setSwapChain = (delegate* unmanaged[Stdcall]<nint, nint, int>)Marshal.ReadIntPtr(vtbl, 3 * nint.Size);
-                setSwapChain(native, swapChain);
+                int hr = setSwapChain(native, swapChain);
+                if (hr < 0)
+                {
+                    Components.ActivityLog.Error("preview.error",
+                        $"ISwapChainPanelNative::SetSwapChain failed (hr=0x{hr:X8})");
+                }
             }
             finally
             {

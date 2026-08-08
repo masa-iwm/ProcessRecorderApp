@@ -294,7 +294,7 @@
     <value>Delete .mp4 files under the output folder once they are older than this many days. 0 deletes nothing. Sub-folders are searched too, and a sub-folder is removed when deleting left it empty. Point the output folder at a directory used only for recordings before turning this on — left empty it covers everything under the folder the executable is in.</value>
   </data>
   <data name="PropDesc_RecordingCleanupIntervalHours" xml:space="preserve">
-    <value>How often the deletion runs, in hours. It also runs once right after startup, so a long interval still gets a sweep every time the app starts. Values below 1 are treated as 1.</value>
+    <value>How often the deletion runs, in hours. It also runs once right after startup, so a long interval still gets a sweep every time the app starts. Values below 1 are treated as 1, and values above 1000 as 1000.</value>
   </data>
   <data name="PropDesc_PreferredEncoder" xml:space="preserve">
     <value>Element factory name of the preferred H.264 encoder (for example x264enc or qsvh264enc). Leave empty to pick automatically from the encoders available on this machine. If the specified element is not available, the automatic order is used instead. The encoder actually used is shown in each recorder's Actual Encoding Properties.</value>

@@ -1,145 +1,53 @@
-﻿using CommunityToolkit.WinUI;
 using Microsoft.UI.Dispatching;
 using System;
-using System.Collections;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 using System.ComponentModel;
-using System.Linq;
-using System.Text;
-using System.Threading;
 
 namespace ProcessRecorderApp.Components;
 
-public partial class DispatcherCollection<T> : ObservableCollection<T>, IDisposable
+/// <summary>
+/// <see cref="DispatcherQueue"/> を持ち運ぶ <see cref="ObservableCollection{T}"/>。
+///
+/// <para>
+/// <b>外部ソースをミラーする経路は持たない（削除済み）。</b> かつての実装は
+/// (1) 弱参照による自動解除がインスタンスメソッド購読では発動不能（source 側の
+/// デリゲートが this を強参照するため、回収済み判定の枝が到達不能のデッドコード）、
+/// (2) 複数要素イベントの先頭 1 件しか適用しない、(3) Remove/Replace の Dispose を
+/// 発火側スレッドで行うためキュー反映前の別要素を壊しうる、という欠陥を抱えたまま、
+/// 唯一の利用箇所が空の内部ソースで使っていて経路自体が休眠していた。
+/// ミラーが要る場合は <c>GstEventEventRecorderCollectionViewModel</c> の実装を参照して
+/// 目的に合わせて作ること（汎用の器としてここへ戻さない）。
+/// </para>
+/// </summary>
+public partial class DispatcherCollection<T> : ObservableCollection<T>
 {
     public DispatcherQueue DispatcherQueue { get; init; }
 
-    private readonly WeakReference<DispatcherCollection<T>> _weakThis;
-    private readonly INotifyCollectionChanged _notifier;
-    private bool disposedValue;
-
-    public DispatcherCollection(DispatcherQueue dispatcherQueue) : this(new ObservableCollection<T>(), dispatcherQueue) { }
-
-    public DispatcherCollection(IList<T> source, DispatcherQueue dispatcherQueue)
-        : base(source)
+    public DispatcherCollection(DispatcherQueue dispatcherQueue)
     {
-        ArgumentNullException.ThrowIfNull(source);
         ArgumentNullException.ThrowIfNull(dispatcherQueue);
-        if (source is not INotifyCollectionChanged notifier)
-            throw new ArgumentException($"{nameof(source)} must implement {nameof(INotifyCollectionChanged)}.", nameof(source));
-
         DispatcherQueue = dispatcherQueue;
-
-        _weakThis = new(this);
-        _notifier = notifier;
-        notifier.CollectionChanged += OnCollectionChanged;
-    }
-
-    private async void OnCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
-    {
-        if (!_weakThis.TryGetTarget(out var target))
-        {
-            if (sender is INotifyCollectionChanged collection)
-                collection.CollectionChanged -= OnCollectionChanged;
-            return;
-        }
-
-        ArgumentNullException.ThrowIfNull(e);
-        switch (e.Action)
-        {
-            case NotifyCollectionChangedAction.Add:
-                await DispatcherQueue.EnqueueAsync(() => Insert(e.NewStartingIndex, (T)e.NewItems?[0]!));
-                break;
-            case NotifyCollectionChangedAction.Move:
-                await DispatcherQueue.EnqueueAsync(() => Move(e.OldStartingIndex, e.NewStartingIndex));
-                break;
-            case NotifyCollectionChangedAction.Remove:
-                (Items[e.OldStartingIndex] as IDisposable)?.Dispose();
-                await DispatcherQueue.EnqueueAsync(() => RemoveAt(e.OldStartingIndex));
-                break;
-            case NotifyCollectionChangedAction.Replace:
-                (Items[e.NewStartingIndex] as IDisposable)?.Dispose();
-                await DispatcherQueue.EnqueueAsync(() => SetItem(e.NewStartingIndex, (T)e.NewItems?[0]!));
-                break;
-            case NotifyCollectionChangedAction.Reset:
-                foreach (var item in Items)
-                    (item as IDisposable)?.Dispose();
-
-                await DispatcherQueue.EnqueueAsync(ClearItems);
-                break;
-            default:
-                throw new ArgumentException("Unknown NotifyCollectionChangedAction", nameof(e));
-        }
-    }
-
-    protected virtual void Dispose(bool disposing)
-    {
-        if (!disposedValue)
-        {
-            if (disposing)
-            {
-                _notifier.CollectionChanged -= OnCollectionChanged;
-            }
-
-            disposedValue = true;
-        }
-    }
-
-    // アンマネージドリソースを持たないためファイナライザは定義しない。
-    public void Dispose()
-    {
-        Dispose(disposing: true);
-        GC.SuppressFinalize(this);
     }
 }
 
+/// <summary>
+/// <see cref="DispatcherCollection{T}"/> の読み取り専用ビュー。
+/// 内側のコレクションの変更通知をそのまま外へ転送する（内外は同一寿命なので
+/// 購読の解除機構は持たない）。
+/// </summary>
 public class ReadOnlyDispatcherCollection<T> : ReadOnlyCollection<T>, INotifyCollectionChanged, INotifyPropertyChanged
 {
-    private readonly WeakReference<ReadOnlyDispatcherCollection<T>> _weakThis;
-
     public ReadOnlyDispatcherCollection(DispatcherCollection<T> collection) : base(collection)
     {
         ArgumentNullException.ThrowIfNull(collection);
-        _weakThis = new(this);
-        ((INotifyPropertyChanged)collection).PropertyChanged += OnPropertyChanged;
-        collection.CollectionChanged += OnCollectionChanged;
+        ((INotifyPropertyChanged)collection).PropertyChanged += (_, args) => PropertyChanged?.Invoke(this, args);
+        collection.CollectionChanged += (_, args) => CollectionChanged?.Invoke(this, args);
     }
 
     public DispatcherQueue DispatcherQueue => ((DispatcherCollection<T>)Items).DispatcherQueue;
 
     public event NotifyCollectionChangedEventHandler? CollectionChanged;
     public event PropertyChangedEventHandler? PropertyChanged;
-
-    private void OnCollectionChanged(object? sender, NotifyCollectionChangedEventArgs args)
-    {
-        ArgumentNullException.ThrowIfNull(args);
-
-        if (!_weakThis.TryGetTarget(out var target))
-        {
-            if (sender is INotifyCollectionChanged collection)
-                collection.CollectionChanged -= OnCollectionChanged;
-            return;
-        }
-
-        var threadSafeHandler = Interlocked.CompareExchange(ref CollectionChanged, null, null);
-
-        threadSafeHandler?.Invoke(this, args);
-    }
-
-    private void OnPropertyChanged(object? sender, PropertyChangedEventArgs args)
-    {
-        ArgumentNullException.ThrowIfNull(args);
-
-        if (!_weakThis.TryGetTarget(out var target))
-        {
-            if (sender is INotifyPropertyChanged collection)
-                collection.PropertyChanged -= OnPropertyChanged;
-            return;
-        }
-        var threadSafeHandler = Interlocked.CompareExchange(ref PropertyChanged, null, null);
-
-        threadSafeHandler?.Invoke(this, args);
-    }
 }

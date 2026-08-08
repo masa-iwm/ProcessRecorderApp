@@ -333,7 +333,12 @@ public static partial class SrcPipelineBuilder
                     }
                     else
                     {
-                        sb.Append(", ").Append(field.Name).Append('=').Append(value);
+                        // caps 値も要素プロパティと同じ規則で引用する。無引用のまま
+                        // 区切り文字（空白・カンマ・'!'）を含む値を連結すると、以降の
+                        // トークンの意味が変わってパイプラインの構造そのものが壊れる。
+                        // 数値・分数（15/1）・列挙は引用対象にならないので、
+                        // 通常の出力は従来と1バイトも変わらない。
+                        sb.Append(", ").Append(field.Name).Append('=').Append(QuoteIfNeeded(value));
                     }
                 }
             }
@@ -408,6 +413,10 @@ public static partial class SrcPipelineBuilder
         if (string.IsNullOrEmpty(value))
             return string.Empty;
         if (value.IndexOfAny(QuoteTriggerChars) < 0)
+            return value;
+        // GStreamer の caps のリスト `{ NV12, I420 }` とレンジ `[ 1, 30 ]` は引用しない
+        // ── 引用すると列挙ではなく1個の文字列値になり、ネゴシエーションが落ちる。
+        if ((value[0] == '{' && value[^1] == '}') || (value[0] == '[' && value[^1] == ']'))
             return value;
 
         var sb = new StringBuilder(value.Length + 2);

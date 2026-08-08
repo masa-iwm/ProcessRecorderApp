@@ -32,6 +32,12 @@ public sealed class IncrementalLineSplitter
     /// <summary>チャンクを流し込み、確定した行ごとに <paramref name="emit"/> を呼ぶ</summary>
     public void Push(ReadOnlySpan<char> chunk, LogChunkHandler emit)
     {
+        // 空チャンクでは何もしない ── ここで _sawCarriageReturn を消費すると、
+        // チャンク列が「…\r」「(空)」「\n…」と割れたときに \n が独立した行終端として
+        // 扱われ、ReadLine 等価という契約に無い空行が混入する。
+        if (chunk.IsEmpty)
+            return;
+
         if (_sawCarriageReturn)
         {
             _sawCarriageReturn = false;

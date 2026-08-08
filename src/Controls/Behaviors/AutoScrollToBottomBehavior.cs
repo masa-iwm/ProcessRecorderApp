@@ -159,8 +159,8 @@ namespace ProcessRecorderApp.Behaviors
                     AssociatedObject.UnregisterPropertyChangedCallback(IsAutoScrollEnabledProperty, _autoScrollCallbackToken);
                     _autoScrollCallbackToken = -1;
                 }
-                UnsubscribeCollectionChanged(AssociatedObject.ItemsSource);
             }
+            UnsubscribeCollectionChanged();
 
             if (_scrollViewer != null)
             {
@@ -254,9 +254,18 @@ namespace ProcessRecorderApp.Behaviors
             }
         }
 
+        /// <summary>
+        /// 実際に購読中のコレクション。<b>「現在の ItemsSource」から解除してはいけない</b> ──
+        /// <c>RegisterPropertyChangedCallback</c> のコールバックは値が差し替わった<b>後</b>に
+        /// 呼ばれるため、現在値に対する解除は未購読の新コレクションへの no-op で、
+        /// 旧コレクションの購読が残る（旧側の Add で無関係なスクロールが走り、
+        /// 旧コレクションが生きている限り behavior と ListView が回収されない）。
+        /// </summary>
+        private INotifyCollectionChanged? _subscribedCollection;
+
         private void OnItemsSourceChanged(Microsoft.UI.Xaml.DependencyObject sender, Microsoft.UI.Xaml.DependencyProperty dp)
         {
-            UnsubscribeCollectionChanged(AssociatedObject?.ItemsSource);
+            UnsubscribeCollectionChanged();
             SubscribeCollectionChanged(AssociatedObject?.ItemsSource);
         }
 
@@ -265,13 +274,17 @@ namespace ProcessRecorderApp.Behaviors
             if (itemsSource is INotifyCollectionChanged collection)
             {
                 collection.CollectionChanged += Collection_CollectionChanged;
+                _subscribedCollection = collection;
             }
         }
 
-        private void UnsubscribeCollectionChanged(object? itemsSource)
+        private void UnsubscribeCollectionChanged()
         {
-            if (itemsSource is INotifyCollectionChanged collection)
+            if (_subscribedCollection is { } collection)
+            {
                 collection.CollectionChanged -= Collection_CollectionChanged;
+                _subscribedCollection = null;
+            }
         }
 
         private void Collection_CollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)

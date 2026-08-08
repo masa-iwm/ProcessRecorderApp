@@ -390,7 +390,9 @@ public sealed partial class PropertyGridItem : INotifyPropertyChanged
         string newValue;
         try
         {
-            newValue = _property.GetValue(_target)?.ToString() ?? "null";
+            // null の表示は空文字に統一する（コミット後の読み直しと同じ）。"null" という
+            // 偽の値文字列を見せると、実値 null と文字どおりの "null" が画面で区別できない。
+            newValue = _property.GetValue(_target)?.ToString() ?? "";
         }
         catch (Exception ex)
         {
@@ -511,6 +513,25 @@ public sealed partial class PropertyGridItem : INotifyPropertyChanged
     }
 
     /// <summary>Elements を現在のコレクション内容から作り直す。</summary>
+    /// <summary>差分適用（<see cref="OnSourceCollectionChanged"/>）のインデックスが現在の <see cref="Elements"/> に適用可能か。</summary>
+    private bool IndicesAreApplicable(NotifyCollectionChangedEventArgs e) => e.Action switch
+    {
+        NotifyCollectionChangedAction.Add =>
+            0 <= e.NewStartingIndex && e.NewStartingIndex <= Elements!.Count,
+        NotifyCollectionChangedAction.Remove =>
+            0 <= e.OldStartingIndex && e.OldStartingIndex + (e.OldItems?.Count ?? 0) <= Elements!.Count,
+        NotifyCollectionChangedAction.Move =>
+            0 <= e.OldStartingIndex && e.OldStartingIndex < Elements!.Count
+            && 0 <= e.NewStartingIndex && e.NewStartingIndex < Elements.Count,
+        // 適用側は OldItems.Count 回ループするので、多い方の件数で数える
+        // （ObservableCollection は 1:1 の Replace しか出さないが、この検査の存在意義は
+        //  任意の INotifyCollectionChanged を安全に受けることにある）
+        NotifyCollectionChangedAction.Replace =>
+            0 <= e.NewStartingIndex
+            && e.NewStartingIndex + Math.Max(e.OldItems?.Count ?? 0, e.NewItems?.Count ?? 0) <= Elements!.Count,
+        _ => true,
+    };
+
     private void RebuildElements()
     {
         if (_collection is null || Elements is null || _dispatcherQueue is null)
@@ -578,7 +599,29 @@ public sealed partial class PropertyGridItem : INotifyPropertyChanged
 
         if (!_dispatcherQueue.HasThreadAccess)
         {
-            _dispatcherQueue.TryEnqueue(() => OnSourceCollectionChanged(sender, e));
+            // 発火時点のリスナーを閉じ込め、キューから出た時点で「まだ同じ購読か」を確かめる。
+            // Detach / 再構築（ChoiceProvider の再代入・SelectedObject の切替）の後に走る
+            // 古いコールバックを素通しすると、空にした Elements へ古いインデックスで
+            // Insert / 参照して UI スレッドの未処理例外（＝アプリのクラッシュ）になる。
+            var listenerAtEnqueue = _collectionListener;
+            _dispatcherQueue.TryEnqueue(() =>
+            {
+                // null 同士の一致で素通りさせない ── Detach 済み（_collectionListener が null）の
+                // 項目に対して発火した分は、デキュー時も null なので ReferenceEquals が真になり、
+                // 空にした Elements へ要素を復活させてしまう。
+                if (listenerAtEnqueue is null || !ReferenceEquals(listenerAtEnqueue, _collectionListener))
+                    return;
+                OnSourceCollectionChanged(sender, e);
+            });
+            return;
+        }
+
+        // 差分適用の前提（インデックス整合）が崩れていたら、差分を諦めて作り直す ──
+        // UI スレッドからの同期変更とキュー経由の変更が混在すると適用順が入れ替わりうる。
+        // 表示は RebuildElements で自己修復する（展開状態は失われるが、例外よりよい）。
+        if (!IndicesAreApplicable(e))
+        {
+            RebuildElements();
             return;
         }
 

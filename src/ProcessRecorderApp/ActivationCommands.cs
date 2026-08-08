@@ -228,7 +228,12 @@ internal static class ActivationCommands
             outcome = outcome with
             {
                 ConsoleError = (outcome.ConsoleError ?? "") + persistError.ToString(),
-                ExitCode = ExitCode_VariableNotDefined,
+                // コマンド本体が既に失敗しているなら、その終了コードを優先する。
+                // 上書きすると、17（未確定・救済の余地あり）のような「呼び出し側の後始末が
+                // 変わる」失敗が、--persist のタイプミス1つで 11 に化けて隠れる
+                // （強い方を返す規則は RecordingStopRules.Stronger と同じ発想）。
+                // 未定義キーの指摘そのものは標準エラーに残る。
+                ExitCode = outcome.ExitCode != 0 ? outcome.ExitCode : ExitCode_VariableNotDefined,
             };
         }
 
@@ -304,7 +309,8 @@ internal static class ActivationCommands
         {
             ConsoleOutput = AppendConsoleText(outcome.ConsoleOutput, output),
             ConsoleError = AppendConsoleText(outcome.ConsoleError, error),
-            ExitCode = hasUndefinedKey ? ExitCode_VariableNotDefined : outcome.ExitCode,
+            // コマンド本体の失敗コードは上書きしない（--persist と同じ規則。理由はそちらのコメント参照）
+            ExitCode = hasUndefinedKey && outcome.ExitCode == 0 ? ExitCode_VariableNotDefined : outcome.ExitCode,
         };
     }
 
@@ -685,13 +691,38 @@ internal static class ActivationCommands
                 });
                 return;
             }
-            controller.StartRecordingAll();
+            // **出すのは「今回開始した分」だけ**（stop-recording-all と同じ規則）。
+            // 全件を出すと、開始しなかったレコーダーの行が前回録画の LastFilename を
+            // 載せて出て、バッチがそれを今回の成果物として運んでしまう。
+            //
+            // 標準エラーへ出すのは**開始できるはずだったのに落ちた分**だけ
+            // （既に録画中のレコーダーはトリガ運用では日常で、失敗ではない）。
+            var startedRecorders = controller.StartRecordingAllAndReport(out var failedRecorders);
+            string? startErrors = failedRecorders.Count == 0
+                ? null
+                : string.Concat(failedRecorders.Select(r =>
+                    Localization.GetString("Resources/Cli_CannotStartInState", r.Name) + Environment.NewLine));
+
+            if (startedRecorders.Count == 0)
+            {
+                // 1 台も開始できなかった。**終了コード 0 で返さない** ── 単体の
+                // start-recording が同じ失敗で非 0 を返すのに -all だけ 0 を返すと、
+                // バッチは「全部落ちた」を成功として通す。
+                setOutcome(CommandOutcome.Failure(exitCode: ExitCode_RecordingNotExecutable) with
+                {
+                    ConsoleError = (startErrors ?? "")
+                        + Localization.GetString("Resources/Cli_NoRecorderCanStart") + Environment.NewLine,
+                });
+                return;
+            }
+
             setOutcome(CommandOutcome.Silent() with
             {
                 // 末尾の改行は、ランチャー側が Console.Out.Write（WriteLine ではない）で出力するためここで付ける
                 ConsoleOutput = string.Join(Environment.NewLine,
-                    controller.Recorders.Select(r => RecorderCliRules.FormatRecorderLine(r.Name, r.LastFilename)))
-                    + Environment.NewLine
+                    startedRecorders.Select(r => RecorderCliRules.FormatRecorderLine(r.Name, r.LastFilename)))
+                    + Environment.NewLine,
+                ConsoleError = startErrors,
             });
         });
         rootCommand.Subcommands.Add(startRecordingAllCommand);

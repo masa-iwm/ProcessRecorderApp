@@ -60,6 +60,13 @@ public static class ActivityLogFile
         // settings.json を読めず既定値へ倒れた／書けなかった。
         "settings.load",
         "settings.save",
+        // プレビューパイプラインの実行時障害（録画は止めない。1パイプラインにつき1行）。
+        "preview.error",
+        // 古い mp4 の自動削除（何もしなかった周回は出さない）。
+        "cleanup.run",
+        "cleanup.error",
+        // Variables 画面で既存のキーと重複する入力を差し戻した。
+        "variables.duplicate-key",
         // GST_DEBUG のしきい値を実行中に適用した。適用は GStreamer の内部状態を変えるだけで
         // 画面にもファイルにも痕跡が残らないので、ここが唯一の観測点になる。
         "gst.debug",

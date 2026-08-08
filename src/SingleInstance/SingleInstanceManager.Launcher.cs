@@ -186,15 +186,15 @@ public sealed partial class SingleInstanceManager
         // 仕様に明記が無く、**他人のキーを解除しうる**（＝無関係なワーカーを
         // 単一インスタンス制御から締め出す）。**そこへ賭けない設計にしてある** ──
         // 呼び出し側は必ず `IsCurrent` を確かめた直後のハンドルを渡すこと。
-        int ColdStart(AppInstance owned)
+        LauncherResult ColdStart(AppInstance owned)
         {
             owned.UnregisterKey();
 
             var workerInstance = StartResidentWorkerAndWaitForRegistration(keyPrefix);
             if (workerInstance is null)
             {
-                Console.Error.WriteLine(Localization.GetString("Resources/Cli_WorkerStartTimeout"));
-                return ExitCode_WorkerStartFailed;
+                return new(ExitCode_WorkerStartFailed, null,
+                    Localization.GetString("Resources/Cli_WorkerStartTimeout") + Environment.NewLine);
             }
 
             // 常駐ワーカーが存在しなかった＝これは単なる「アプリの起動」であり、
@@ -202,13 +202,13 @@ public sealed partial class SingleInstanceManager
             // ウィンドウを表示させず、常駐ワーカーをタスクトレイに常駐させたまま待機させる。
             if (rawArgs.Length > 0)
             {
-                return RedirectActivationAndGetExitCode(keyPrefix, activationArgs, workerInstance);
+                return RedirectActivationAndGetResult(keyPrefix, activationArgs, workerInstance);
             }
 
-            return 0;
+            return new(0, null, null);
         }
 
-        try
+        LauncherResult Execute()
         {
             var keyInstance = AppInstance.FindOrRegisterForKey(Names.InstanceKey(keyPrefix));
 
@@ -277,18 +277,48 @@ public sealed partial class SingleInstanceManager
 
                 int resultBudgetMs = Math.Max(
                     MinimumResultTimeoutMs, WorkerAcceptTimeoutMs - (int)accepting.ElapsedMilliseconds);
-                return RedirectActivationAndGetExitCode(keyPrefix, activationArgs, target, resultBudgetMs);
+                return RedirectActivationAndGetResult(keyPrefix, activationArgs, target, resultBudgetMs);
             }
 
             // 常駐ワーカーがまだ存在しない。このランチャープロセス自身は常駐インスタンスには
             // ならないため、一旦キーの登録を解除し、別プロセスとして常駐ワーカーを起動する。
             return ColdStart(keyInstance);
         }
+
+        LauncherResult result;
+        try
+        {
+            result = Execute();
+        }
         finally
         {
-            launcherMutex.ReleaseMutex();
+            // 解放の失敗で、確定済みの結果（終了コードと出力）を食わない ──
+            // 旧実装は出力を排他区間の中で書いていたので、ここで投げても出力は既に届いていた。
+            try { launcherMutex.ReleaseMutex(); }
+            catch (Exception) { /* 所有権の異常。結果は下で必ず返す */ }
         }
+
+        // **コンソールへの書き出しは Mutex を放してから行う。** conhost の QuickEdit 選択中や
+        // 読み手の止まったパイプでは Console への書き込みが外部要因で無期限にブロックしうる。
+        // 排他区間に含めると、その間に来た同一セッションの CLI が全部
+        // LauncherMutexTimeoutMs まで待たされた末に exit 6 になる
+        // ── Mutex が要るのは結果の受信と終了コードの確定までで、出力には要らない。
+        //
+        // **代償**: 同じコンソールへ同時に書く 2 本の CLI の出力が交錯しうる（旧実装では
+        // Mutex が出力まで直列化していた）。直列化のために別の Mutex を足すのは、
+        // ブロックしうるものを排他区間へ戻すのと同じなので**採らない** ── 機械可読な出力を
+        // 読むバッチは 1 本ずつ実行すること。
+        if (result.Output is { Length: > 0 })
+            Console.Out.Write(result.Output);
+        if (result.Error is { Length: > 0 })
+            Console.Error.Write(result.Error);
+        return result.ExitCode;
     }
+
+    /// <summary>
+    /// ランチャーの結末（終了コードと、Mutex 解放後に書き出すコンソール出力）。
+    /// </summary>
+    private readonly record struct LauncherResult(int ExitCode, string? Output, string? Error);
 
     /// <summary>
     /// AppInstance.RedirectActivationToAsync を同期的に待ち合わせる。
@@ -344,15 +374,17 @@ public sealed partial class SingleInstanceManager
 
     /// <summary>
     /// 常駐ワーカーへ起動引数をリダイレクトし、常駐ワーカー側でのコマンド処理が完了して
-    /// 結果が通知されるまで待機する。通知されたコンソール出力文字列を呼び出し元の
-    /// 標準出力／標準エラー出力へ出力したうえで、終了コードを返す。
+    /// 結果が通知されるまで待機する。終了コードとコンソール出力を <see cref="LauncherResult"/> で返す
+    /// ── <b>Console への書き出しはここでは行わない</b>。呼び出し元（<see cref="Run"/>）が
+    /// <c>launcherMutex</c> を放した後に書く（コンソール書き込みは外部要因で無期限に
+    /// ブロックしうるため、排他区間に含めない）。
     /// </summary>
     /// <param name="resultTimeoutMsOverride">
     /// 結果通知を待つ上限（ミリ秒）。null なら <see cref="WorkerAcceptTimeoutMs"/>。
     /// <b>リダイレクト経路は受理待ちに使った分を差し引いて渡す</b> ── CLI 1回あたりの
     /// <c>launcherMutex</c> 占有を 60 秒に固定するため（呼び出し側のコメントを参照）。
     /// </param>
-    private static int RedirectActivationAndGetExitCode(
+    private static LauncherResult RedirectActivationAndGetResult(
         string keyPrefix, AppActivationArguments args, AppInstance target, int? resultTimeoutMsOverride = null)
     {
         // **チャネルはリダイレクトより前に張る。** 相関 ID もここで確定し、
@@ -382,16 +414,13 @@ public sealed partial class SingleInstanceManager
             // 配らないので、取り残された古いコマンドが遅れて答えても
             // **このコマンドの答えにはならない**（相関 ID を照合しないと、
             // それを自分の結果として読んでしまう）。
-            return ExitCode_WorkerResultTimeout;
+            return new(ExitCode_WorkerResultTimeout, null, null);
         }
 
-        if (result.ConsoleOutput.Length > 0)
-            Console.Out.Write(result.ConsoleOutput);
-
-        if (result.ConsoleError.Length > 0)
-            Console.Error.Write(result.ConsoleError);
-
-        return result.ExitCode;
+        // Console への書き出しは呼び出し元（Run）が launcherMutex を放した後に行う。
+        return new(result.ExitCode,
+            result.ConsoleOutput.Length > 0 ? result.ConsoleOutput : null,
+            result.ConsoleError.Length > 0 ? result.ConsoleError : null);
     }
 
     /// <summary>
@@ -434,14 +463,7 @@ public sealed partial class SingleInstanceManager
             return null;
         }
 
-        // 常駐ワーカーが「インスタンスキーの登録を終えた」ことを待つ上限。
-        //
-        // 常駐ワーカーの**初回**起動は GStreamer のプラグインレジストリ構築で
-        // 10〜30 秒かかるため 120 秒にしてある。10 秒程度に縮めると
-        // **利用者が最初に叩いたコマンドが失敗する**
-        // （E2E は `PublishedApp` が1回ウォームアップして回避しているが、
-        //   実利用者にはそんな回避策は無い）。
-        const int timeoutMs = 120_000;
+        const int timeoutMs = ColdStartRegistrationTimeoutMs;
         if (!workerReadyEvent.WaitOne(timeoutMs))
         {
             // タイムアウト：常駐ワーカーが起動に失敗した、またはハングしている可能性がある。
@@ -523,6 +545,24 @@ public sealed partial class SingleInstanceManager
     private const int MinimumResultTimeoutMs = 5_000;
 
     /// <summary>
+    /// 常駐ワーカーが「インスタンスキーの登録を終えた」ことを待つ上限。
+    ///
+    /// <para>
+    /// 常駐ワーカーの**初回**起動は GStreamer のプラグインレジストリ構築で
+    /// 10〜30 秒かかるため 120 秒にしてある。10 秒程度に縮めると
+    /// **利用者が最初に叩いたコマンドが失敗する**
+    /// （E2E は <c>PublishedApp</c> が1回ウォームアップして回避しているが、
+    ///   実利用者にはそんな回避策は無い）。
+    /// </para>
+    /// <para>
+    /// <see cref="LauncherMutexTimeoutMs"/> の根拠（最悪保持時間の算術）の一項なので、
+    /// 単独では動かさない ── 関係は <c>LauncherBudgetTests</c>（L1）が機械的に守っている
+    /// （<c>StopFinalizeBudgetTests</c> と同じ方式）。
+    /// </para>
+    /// </summary>
+    internal const int ColdStartRegistrationTimeoutMs = 120_000;
+
+    /// <summary>
     /// リダイレクトの<b>転送そのもの</b>を待つ上限。
     ///
     /// <para>
@@ -539,7 +579,7 @@ public sealed partial class SingleInstanceManager
     /// <b>同じパスで一緒に決めること</b> ── 片方だけ縮めても意味が無い。
     /// </para>
     /// </summary>
-    private const int RedirectTimeoutMs = 30_000;
+    internal const int RedirectTimeoutMs = 30_000;
 
     /// <summary>
     /// <c>launcherMutex</c> の順番待ちの上限。**デッドロック破りであって UX の調整値ではない。**
@@ -548,21 +588,23 @@ public sealed partial class SingleInstanceManager
     /// <b>この値は「正当な保持時間の最悪値」より十分大きくなければならない。</b>
     /// 低く見積もると、<b>正当に待っている CLI が失敗する</b>という退行になる
     /// ── しかも待ち行列は<b>加算的</b>で、N 本並べば N 倍待つ。
-    /// 現在の正当な最悪値は<b>コールドスタート経路の約 210 秒</b>
-    /// （<see cref="StartResidentWorkerAndWaitForRegistration"/> の 120 秒
-    /// ＋ 転送 30 秒 ＋ 結果待ち 60 秒）。
-    /// リダイレクト経路は最悪 約 95 秒（受理+結果で ≤65 ＋ 転送 30）。
-    /// <b>通常の保持は数秒</b>で、210 秒は「起動に失敗しつつ上限まで粘った」病的な場合。
+    /// 現在の正当な最悪値は<b>約 270 秒</b> ── 受理待ちを使い切ってから
+    /// コールドスタートへ倒れる経路で、受理
+    /// <see cref="WorkerAcceptTimeoutMs"/>（60 秒）＋ 起動完了待ち
+    /// <see cref="ColdStartRegistrationTimeoutMs"/>（120 秒）＋ 転送
+    /// <see cref="RedirectTimeoutMs"/>（30 秒）＋ 結果待ち 60 秒。
+    /// <b>通常の保持は数秒</b>で、270 秒は「起動に失敗しつつ全上限まで粘った」病的な場合。
     /// </para>
     /// <para>
-    /// 10 分にしてあるのは、病的な保持が<b>3本積んでも</b>まだ届かない値だから。
-    /// ここへ到達するのは事実上「本当に楔が刺さっている」ときだけで、
+    /// 10 分にしてあるのは、この病的な保持が<b>2本積んでも</b>（540 秒）まだ届かない値だから
+    /// （3 本目は届かない ── そこまで積み上がっているなら「本当に楔が刺さっている」）。
     /// そのとき返るのは <see cref="ExitCode_LauncherBusy"/>。
     /// <b>短くしたくなったら、先にコールドスタートの 120 秒と結果待ちの 60 秒を
     /// 見直すこと</b> ── この値だけ縮めても、縮むのは「正当に待てる時間」の方である。
+    /// この算術は <c>LauncherBudgetTests</c>（L1）が機械的に守っている。
     /// </para>
     /// </summary>
-    private const int LauncherMutexTimeoutMs = 600_000;
+    internal const int LauncherMutexTimeoutMs = 600_000;
 
     /// <summary>
     /// 常駐ワーカーが <c>Activated</c> の購読を終える（＝リダイレクトを実際に受け取れる）

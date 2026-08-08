@@ -499,9 +499,13 @@ public partial class EventRecorder : ObservableObject, IDisposable
         if (candidates.Count == 0)
         {
             Close();
-            throw new InvalidOperationException(
-                $"No usable H.264 encoder was found for Type={Type}. "
-                + $"Probed: {EncoderCatalog.LastProbe?.ToLogLine() ?? "(not probed)"}");
+            string noEncoder = $"No usable H.264 encoder was found for Type={Type}. "
+                + $"Probed: {EncoderCatalog.LastProbe?.ToLogLine() ?? "(not probed)"}";
+            // **初期化の失敗も LastError に残す。** 呼び出し側（AddRecorderFor）は
+            // activity.log へ書くだけなので、ここで入れないと「録画できない」ことが
+            // 画面（PropertyGrid の LastError 行）にも status にも出ない。
+            LastError = noEncoder;
+            throw new InvalidOperationException(noEncoder);
         }
 
         List<string> failures = [];
@@ -511,6 +515,11 @@ public partial class EventRecorder : ObservableObject, IDisposable
             try
             {
                 InitializeWith(candidate);
+
+                // 初期化できた＝「今の状態」は正常。前回の障害表示を消す
+                // （StartCore が録画開始時に消すのと同じ規約。消さないと、パイプラインを
+                //  直して復帰させても status が終了コード 15 を返し続ける）。
+                LastError = null;
 
                 // 採用結果は activity.log へ出す。DebugLogEx.Log（gst_debug_log 経由）は
                 // GST_DEBUG が未設定だと何も出力しないため、既定の起動では「どのエンコーダーが
@@ -533,9 +542,13 @@ public partial class EventRecorder : ObservableObject, IDisposable
 
                 if (i == candidates.Count - 1)
                 {
-                    throw new InvalidOperationException(
-                        $"All {candidates.Count} H.264 encoder candidate(s) failed for Type={Type}: "
-                        + string.Join(" | ", failures), ex);
+                    string allFailed = $"All {candidates.Count} H.264 encoder candidate(s) failed for Type={Type}: "
+                        + string.Join(" | ", failures);
+                    // 全候補が落ちた＝このレコーダーでは録画できない。呼び出し側は
+                    // activity.log へ書くだけなので、画面と status へ届けるには
+                    // ここで LastError に入れる必要がある。
+                    LastError = allFailed;
+                    throw new InvalidOperationException(allFailed, ex);
                 }
             }
         }
@@ -761,8 +774,8 @@ public partial class EventRecorder : ObservableObject, IDisposable
             CancelPendingRestart();
 
             _isAlive = false;
-            _pullPreviewThread?.Join(5000);
-            _pullSampleThread?.Join(5000);
+            bool pullStopped = _pullPreviewThread?.Join(5000) ?? true;
+            pullStopped &= _pullSampleThread?.Join(5000) ?? true;
             _pullPreviewThread = null;
             _pullSampleThread = null;
 
@@ -773,17 +786,30 @@ public partial class EventRecorder : ObservableObject, IDisposable
             // _isAlive が立ち直った後に、旧セッション由来の復帰が走り出す。
             CancelPendingRestart();
 
+            // リングバッファは**必ず空にする**（このインスタンスは次のセッションへ引き継がれる）。
+            // 残すと前セッションの映像が次の事前バッファの先頭に混ざり、保持バイト数も
+            // 持ち越されてサイズ基準の退避予算が狂う。
+            // 解放するかどうかだけが pull の停止しだい ── 降りていないスレッドが
+            // まだ要素を触っている可能性があるので、その場合は参照を落とすに留める
+            // （パイプラインと同じ「リークするが落ちはしない」規律）。
             foreach (var b in _ringBuffer.DrainAll())
-                b.Dispose();
+            {
+                if (pullStopped)
+                    b.Dispose();
+            }
 
             // src パイプライン側
-            if (abandonedStop)
+            if (abandonedStop || !pullStopped)
             {
-                // 排出タスクがまだ _srcPipeline / _appSrc / _srcBus を触っている可能性がある。
+                // 排出タスク（abandonedStop）または pull スレッドがまだ
+                // _srcPipeline / _appSrc / _srcBus を触っている可能性がある。
                 // ここで Dispose すると使用中のネイティブオブジェクトを壊す（＝クラッシュ）。
-                // 参照だけ落として解放は諦める ── リークするが落ちはしない。
+                // 参照だけ落として解放は諦める ── リークするが落ちはしない
+                // （排出の abandonedStop と同じ規律を pull スレッド側にも適用する）。
                 Components.ActivityLog.Warn("recorder.leak",
-                    $"recorder='{Name}' the src pipeline was still draining; leaked instead of disposed");
+                    $"recorder='{Name}' " + (abandonedStop
+                        ? "the src pipeline was still draining; leaked instead of disposed"
+                        : "the pull threads did not stop in time; leaked the pipelines instead of disposing them"));
                 _file = null;
                 _mux = null;
                 _appSrc = null;
@@ -808,15 +834,32 @@ public partial class EventRecorder : ObservableObject, IDisposable
             }
 
             // sink パイプライン側（_previewSink は sink 側の要素なのでこちらで解放する）
+            //
+            // **SetState(Null) は pull が降りていなくても必ず実行する。** これは appsink を
+            // フラッシュして、孤児スレッドがブロックしている TryPullSample を返させる
+            // 唯一の信号であり、止めなければキャプチャとエンコードが誰にも管理されないまま
+            // 走り続ける。状態遷移はスレッドセーフで、Dispose とは別物。
             _sinkPipeline?.SetState(State.Null);
-            _previewSink?.Dispose();
-            _previewSink = null;
-            _appSink?.Dispose();
-            _appSink = null;
-            _sinkBus?.Dispose();
-            _sinkBus = null;
-            _sinkPipeline?.Dispose();
-            _sinkPipeline = null;
+            if (!pullStopped)
+            {
+                // TryPullSample / DrainBus が sink 側ネイティブをまだ触っている可能性がある
+                // ので、Dispose はせず参照だけ落とす（recorder.leak は上で記録済み）。
+                _previewSink = null;
+                _appSink = null;
+                _sinkBus = null;
+                _sinkPipeline = null;
+            }
+            else
+            {
+                _previewSink?.Dispose();
+                _previewSink = null;
+                _appSink?.Dispose();
+                _appSink = null;
+                _sinkBus?.Dispose();
+                _sinkBus = null;
+                _sinkPipeline?.Dispose();
+                _sinkPipeline = null;
+            }
         }
         finally
         {
@@ -875,6 +918,24 @@ public partial class EventRecorder : ObservableObject, IDisposable
                     startPts = bufferPts;
                     isIframeFound = true;
                 }
+            }
+            // PTS の巻き戻り（ソースの再起動）。符号なし減算のまま押し込むと約 2^64 ns 級の
+            // PTS が mux へ渡り、当該録画のタイムスタンプが壊れる ── 退避側
+            // （RecordingRingBuffer）と同じ「巻き戻りは起こる」前提を押し込み側にも適用し、
+            // 次の I フレームから始点を取り直す。
+            if (bufferPts < startPts)
+            {
+                // 黙って捨てない（押し込みの拒否と同じ扱い）。同一内容が続くので畳む。
+                var (emitRewind, rewindRepeated) = _srcThrottles.Warning.Observe("pts-rewind");
+                if (emitRewind)
+                {
+                    string repeated = 0 < rewindRepeated ? $" repeated={rewindRepeated}" : "";
+                    Components.ActivityLog.Warn("recorder.warning",
+                        $"recorder='{Name}' bus=src element='(pts)' the source timestamp went backwards; "
+                        + $"waiting for the next I-frame{repeated}");
+                }
+                isIframeFound = false;
+                return;
             }
             using MiniObject miniObject = new(Gst.Internal.MiniObjectOwnedHandle.FromUnowned(((GLib.BoxedRecord)buffer).GetHandle()));
             using MiniObject writableMiniObject = miniObject.MakeWritable()!;
@@ -1043,7 +1104,10 @@ public partial class EventRecorder : ObservableObject, IDisposable
         if (bus is null)
             return;
 
-        while (true)
+        // _isAlive も脱出条件に含める ── 「空になるまで汲む」は洪水対策として必須だが、
+        // GstBus のキューは無制限なので、洪水の最中に Close が来た場合はここが有界でないと
+        // Join(5000) に間に合わず、破棄が「リークして手放す」側へ倒れる。
+        while (_isAlive)
         {
             var msg = bus.PopFiltered(filter);
             if (msg is null)
@@ -1799,23 +1863,23 @@ public partial class EventRecorder : ObservableObject, IDisposable
             ulong timeoutNs = (ulong)Math.Max(0, StopFinalizeTimeoutMs) * 1_000_000UL;
             using var msg = _srcBus?.TimedPopFiltered(timeoutNs, MessageType.Eos | MessageType.Error);
 
-            if (msg is null)
+            StopDrainSignal signal = msg is null ? StopDrainSignal.Timeout
+                : msg.Type == MessageType.Error ? StopDrainSignal.Error
+                : StopDrainSignal.Eos;
+
+            if (signal == StopDrainSignal.Timeout)
             {
                 // mux が詰まった／EOS が返らない。ファイルは未確定（moov が書かれていない）
                 // 可能性が高いので、その事実を残す。
-                result = "timeout";
-                LastStopOutcome = RecordingStopOutcome.NotFinalized;
                 string detail = $"recorder='{Name}' file='{LastFilename}' "
                     + $"the source pipeline did not drain within {StopFinalizeTimeoutMs}ms; the file may be incomplete";
                 Components.ActivityLog.Error("recording.stop timeout", detail);
                 LastError = detail;
                 try { ErrorOccurred?.Invoke(this, detail); } catch { }
             }
-            else if (msg.Type == MessageType.Error)
+            else if (signal == StopDrainSignal.Error)
             {
-                result = "error";
-                LastStopOutcome = RecordingStopOutcome.NotFinalized;
-                msg.ParseError(out var gerror, out var debug);
+                msg!.ParseError(out var gerror, out var debug);
                 using (gerror)
                 {
                     string detail = $"recorder='{Name}' file='{LastFilename}' {gerror.Message} debug={debug}";
@@ -1841,21 +1905,12 @@ public partial class EventRecorder : ObservableObject, IDisposable
                 Components.ActivityLog.Error("recording.stop empty", detail);
                 LastError = detail;
                 try { ErrorOccurred?.Invoke(this, detail); } catch { }
-
-                // **result と Outcome は「ok だったものだけ」上書きする。**
-                // timeout / error はより具体的な失敗（排出そのものが壊れた）なので潰さない
-                // ── 上の Error 行は独立に出しているので、事実はどちらの場合も残る。
-                //
-                // **優先順位は呼び出し側の扱いで決めている。** 排出が完了していない
-                // （NotFinalized）なら、たとえ押し込みが 0 でも「未確定なので触るな」が
-                // 正しい答えで、「空だから捨てろ」ではない ── 中身が無いと断定できるのは
-                // 排出が綺麗に終わった場合だけである。
-                if (result == "ok")
-                {
-                    result = "empty";
-                    LastStopOutcome = RecordingStopOutcome.Empty;
-                }
             }
+
+            // result= と呼び出し側へ返す結果の決定は StopDrainRules（純粋関数。L1 が守る）。
+            // 「空」で「未確定」を潰さない優先順位もそちらにある。
+            (result, var outcome) = StopDrainRules.Classify(signal, pushed);
+            LastStopOutcome = outcome;
         }
         catch
         {

@@ -29,7 +29,9 @@
   let ready = false;
 
   function parseInit(message) {
-    // i US scrollback US follow US fg US bg US c0 .. c15
+    // i US scrollback US follow US fg US bg US c0 .. c15 US selection US selectionInactive
+    // 色はすべて C# 側（CampbellPalette が正本）から受け取る。ここにリテラルで持つと
+    // 片方だけ直して食い違う。選択色は CSS の #RRGGBBAA 形式で届く。
     const f = message.split(US);
     const colors = f.slice(5, 21);
     return {
@@ -44,10 +46,10 @@
         brightBlack: colors[8], brightRed: colors[9], brightGreen: colors[10],
         brightYellow: colors[11], brightBlue: colors[12], brightMagenta: colors[13],
         brightCyan: colors[14], brightWhite: colors[15],
-        selectionBackground: '#4DFFFFFF',
+        selectionBackground: f[21],
         // フォーカスが外れているとき（右クリックメニューを出したとき等）の選択色。
         // 指定しないと xterm 既定の水色になり、Campbell の見た目から浮く
-        selectionInactiveBackground: '#33FFFFFF',
+        selectionInactiveBackground: f[22],
       },
     };
   }

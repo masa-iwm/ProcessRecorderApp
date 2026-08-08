@@ -13,6 +13,10 @@ namespace ProcessRecorderApp.GStreamer
         private Pipeline? _pipeline;
         private GstApp.AppSrc? _appSrc;
         private Element? _sink;
+        private Bus? _bus;
+
+        /// <summary>実行時障害を記録済みか（1パイプラインにつき1行に抑える）。</summary>
+        private bool _busErrorLogged;
 
         public Previewer()
         {
@@ -39,10 +43,10 @@ namespace ProcessRecorderApp.GStreamer
                 _appSrc = (GstApp.AppSrc)_pipeline.GetByName("src")!;
                 _sink = _pipeline.GetByName("sink")!;
 
-#if false
+                // bus watch（OnMessage）は使えない ── GMainLoop が無いので発火しない
+                // （EventRecorder と同じ理由）。PushSample の周期でポーリングして汲む。
                 _bus = _pipeline.GetBus();
-                _bus.OnMessage += OnBusMessage;
-#endif
+                _busErrorLogged = false;
 
                 if (_pipeline.SetState(State.Playing) == StateChangeReturn.Failure)
                     throw new InvalidOperationException("ERROR: pipeline doesn't want to play.");
@@ -85,55 +89,51 @@ namespace ProcessRecorderApp.GStreamer
             if (!_isInitialized || _appSrc is null)
                 return;
 
+            DrainBusErrors();
+
             // appsrc に溜め込みすぎない（表示は最新フレームだけあればよい）
             if (_appSrc.CurrentLevelBuffers < 10)
                 _appSrc.PushSample(sample);
         }
 
-
-#if false
-        private void OnBusMessage(Bus sender, Bus.MessageSignalArgs e)
+        /// <summary>
+        /// バスの Error を汲んで記録する。プレビューの失敗は録画を止めない方針のため
+        /// 復帰は試みないが、無記録だと「プレビューだけ黙って固まり、activity.log に
+        /// 何も残らない」── レコーダー側が DrainBuses で塞いでいる「静かに壊れる」
+        /// クラスの穴がこちらにだけ残る。記録は 1 パイプラインにつき 1 行
+        /// （エラー後のパイプラインは死んでおり、以後のメッセージに追加情報は無い。
+        /// GstBus のキューは無制限なので、汲むこと自体は続ける）。
+        /// </summary>
+        private void DrainBusErrors()
         {
-            var message = e.Message;
-            switch (message.Type)
+            // ローカルへ 1 回読む（Close は UI スレッドから走り、ここはプレビュースレッド）。
+            var bus = _bus;
+            if (bus is null)
+                return;
+
+            // 1 周あたりの取り出しは有界にする ── 洪水の最中に無界だと、Close の
+            // Join(5000) に間に合わない（EventRecorder.DrainBus と同じ理由）。
+            for (int i = 0; i < 32 && bus.TimedPopFiltered(0, MessageType.Error) is { } msg; i++)
             {
-                case MessageType.Info:
-                    {
-                        using var src = message.Handle.GetSrc() == 0 ? null : Gst.Object.NewFromPointer(message.Handle.GetSrc(), false);
-                        var name = src?.GetPathString();
+                using (msg)
+                {
+                    if (_busErrorLogged)
+                        continue;
 
-                        message.ParseInfo(out var gerror, out var debug);
-                        using (gerror)
-                        {
-                            if (debug is not null)
-                                Console.Error.WriteLine($"INFO:\n{debug}");
-                        }
-                    }
-                    break;
-                case MessageType.Warning:
-                    {
-                        using var src = message.Handle.GetSrc() == 0 ? null : Gst.Object.NewFromPointer(message.Handle.GetSrc(), false);
-                        var name = src?.GetPathString();
-
-                        /* dump graph on warning */
-                        var pipeline = sender.Parent as Bin;
-                        if (pipeline is not null)
-                            Functions.DebugBinToDotFileWithTs(pipeline, DebugGraphDetails.All, $"{nameof(GstPreviewer)}.{pipeline.Name ?? "unknown"}.warning");
-
-                        message.ParseWarning(out var gerror, out var debug);
-                        using (gerror)
-                        {
-                            Console.Error.WriteLine($"WARNING: from element {name}: {gerror.Message}");
-                            if (debug is not null)
-                                Console.Error.WriteLine($"Additional debug info:\n{debug}");
-                        }
-                    }
-                    break;
-                default:
-                    break;
+                    msg.ParseError(out var gerror, out var debug);
+                    string? message;
+                    using (gerror)
+                        message = gerror.Message;
+                    Components.ActivityLog.Error("preview.error", $"{message} debug={debug}");
+                    _busErrorLogged = true;
+                }
             }
         }
-#endif
+
+
+// bus watch（Bus.OnMessage）で書いてはいけない ── 実行中の GMainLoop に紐づく
+        // bus watch からしか発火しない（EventRecorder の DrainBuses と同じ理由）。
+        // 実行時障害の観測は DrainBusErrors のポーリングで行う。
 
 
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
@@ -188,6 +188,8 @@ namespace ProcessRecorderApp.GStreamer
             _appSrc = null;
             _sink?.Dispose();
             _sink = null;
+            _bus?.Dispose();
+            _bus = null;
             _pipeline?.Dispose();
             _pipeline = null;
         }

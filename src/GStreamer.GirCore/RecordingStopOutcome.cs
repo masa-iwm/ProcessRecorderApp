@@ -82,3 +82,45 @@ public static class RecordingStopRules
         return RecordingStopOutcome.Ok;
     }
 }
+
+/// <summary>排出待ち（EOS 送出後のバス待ち）が何で終わったか。</summary>
+public enum StopDrainSignal
+{
+    /// <summary>EOS が返った（排出は綺麗に終わった）。</summary>
+    Eos,
+    /// <summary>バスがエラーを報告した（ディスク満杯・書込権限など）。</summary>
+    Error,
+    /// <summary>上限（<c>StopFinalizeTimeoutMs</c>）内に何も返らなかった。</summary>
+    Timeout,
+}
+
+/// <summary>
+/// 排出結果の分類（純粋関数）。<c>EventRecorder.StopDrainAndFinalize</c> が使う。
+///
+/// <para>
+/// これが終了コード 16/17 の分岐の中核 ── <c>result=</c> は <c>recording.stop</c> の行に、
+/// <see cref="RecordingStopOutcome"/> は CLI の終了コードに写る。
+/// </para>
+/// </summary>
+public static class StopDrainRules
+{
+    /// <summary>
+    /// (activity.log の <c>result=</c> に出す1語, 呼び出し側へ返す結果) を決める。
+    ///
+    /// <para>
+    /// <b>「空」で「未確定」を潰さない。</b> 排出が完了していない
+    /// （<see cref="StopDrainSignal.Timeout"/> / <see cref="StopDrainSignal.Error"/>）なら、
+    /// たとえ押し込みが 0 でも「未確定なので触るな」（<see cref="RecordingStopOutcome.NotFinalized"/>）が
+    /// 正しい答えで、「空だから捨てろ」ではない ── 中身が無いと断定できるのは
+    /// 排出が綺麗に終わった場合だけである（終了コード表の「両方に該当する場合は 17」）。
+    /// </para>
+    /// </summary>
+    public static (string Result, RecordingStopOutcome Outcome) Classify(StopDrainSignal signal, int samplesPushed)
+        => signal switch
+        {
+            StopDrainSignal.Timeout => ("timeout", RecordingStopOutcome.NotFinalized),
+            StopDrainSignal.Error => ("error", RecordingStopOutcome.NotFinalized),
+            _ when samplesPushed == 0 => ("empty", RecordingStopOutcome.Empty),
+            _ => ("ok", RecordingStopOutcome.Ok),
+        };
+}

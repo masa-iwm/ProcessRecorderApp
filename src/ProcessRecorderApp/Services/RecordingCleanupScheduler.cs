@@ -33,6 +33,18 @@ public sealed partial class RecordingCleanupScheduler : IDisposable
     /// <summary>間隔の下限（時間）。0 や負の設定でビジーループにしないため。</summary>
     public const int MinimumIntervalHours = 1;
 
+    /// <summary>
+    /// 間隔の上限（時間 ＝ 約 41 日）。
+    /// <b><see cref="Task.Delay(TimeSpan, System.Threading.CancellationToken)"/> は
+    /// <c>Timer.MaxSupportedTimeout</c>（4,294,967,294ms ≒ 49.7 日 ≒ 1,193 時間）を超える値に
+    /// <see cref="ArgumentOutOfRangeException"/> を投げる</b>ので、それより手前で頭打ちにする
+    /// ── 設定は自由入力（int 時間）で、範囲外の値を入れるとこのループが例外死し、
+    /// 保持期限が恒久的・無音で効かなくなる。
+    /// この値は resw（<c>PropDesc_RecordingCleanupIntervalHours</c> en/ja）と
+    /// <c>src/README.md</c> にも書いてあり、<c>CleanupIntervalBudgetTests</c>（L1）が対を守る。
+    /// </summary>
+    public const int MaximumIntervalHours = 1000;
+
     private readonly Func<(string Directory, int RetentionDays, int IntervalHours)> _readSettings;
     private readonly CancellationTokenSource _cts = new();
     private Task? _loop;
@@ -57,7 +69,9 @@ public sealed partial class RecordingCleanupScheduler : IDisposable
             try
             {
                 var (directory, retentionDays, intervalHours) = _readSettings();
-                interval = TimeSpan.FromHours(Math.Max(MinimumIntervalHours, intervalHours));
+                // 上限もクランプする（理由は MaximumIntervalHours の doc）
+                interval = TimeSpan.FromHours(
+                    Math.Clamp(intervalHours, MinimumIntervalHours, MaximumIntervalHours));
 
                 var result = RecordingCleanup.Sweep(directory, retentionDays, DateTime.Now);
 

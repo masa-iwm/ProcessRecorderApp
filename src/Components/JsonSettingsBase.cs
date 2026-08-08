@@ -61,7 +61,15 @@ public abstract partial class JsonSettingsBase<
             if (File.Exists(filePath))
             {
                 string json = File.ReadAllText(filePath);
-                settings = JsonSerializer.Deserialize(json, jsonTypeInfo) ?? createDefault();
+                settings = JsonSerializer.Deserialize(json, jsonTypeInfo);
+                if (settings is null)
+                {
+                    // 中身が JSON リテラルの null（正当な JSON なので JsonException にならない）。
+                    // 切り詰められた空ファイル等と同じ「中身が壊れている」扱いで記録・退避する
+                    // ── この形だけ無記録で既定値へ倒すと、下の「黙って倒さない」が一貫しない。
+                    onLoadFailure?.Invoke($"file='{filePath}' the file contains JSON null");
+                    QuarantineUnreadableFile(filePath, onLoadFailure);
+                }
             }
         }
         catch (Exception ex)

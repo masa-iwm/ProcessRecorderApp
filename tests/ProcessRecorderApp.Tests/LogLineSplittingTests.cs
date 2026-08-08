@@ -75,6 +75,14 @@ public class LogLineSplittingTests
     }
 
     [Fact]
+    public void AnEmptyChunkBetweenCrAndLf_DoesNotAddAnEmptyLine()
+    {
+        // 空チャンクが \r の記憶（_sawCarriageReturn）を消費すると、続く \n が独立した
+        // 行終端として扱われ、ReadLine 等価という契約に無い空行が混入する
+        Assert.Equal(ReadLines("a\r\nb\n"), Split("a\r", "", "\nb\n"));
+    }
+
+    [Fact]
     public void ATrailingCarriageReturn_DoesNotWaitForTheNextChunk()
     {
         // ここだけ StreamReader と挙動が違う（意図的）。
@@ -119,6 +127,21 @@ public class LogLineSplittingTests
         var flattened = LogText.FlattenCarriageReturns(AnsiEscape.Strip(raw));
 
         Assert.Equal("XYcdef", flattened);
+    }
+
+    [Theory]
+    // OSC（ウィンドウタイトル設定）: BEL 終端 / ST（ESC \）終端
+    [InlineData("before]0;window title\abetween", "beforebetween")]
+    [InlineData("before]0;window title\\between", "beforebetween")]
+    // DCS: ST 終端
+    [InlineData("aPpayload\\b", "ab")]
+    // 終端が無い（行の途中で切れた）── ペイロードを平文として漏らさず、残りを捨てる
+    [InlineData("a]0;unterminated", "a")]
+    public void Strip_RemovesOscAndDcsPayloads(string raw, string expected)
+    {
+        // ESC+1 文字だけ消す実装だと "0;window title" 等のペイロードが
+        // デバッグログ・コピー・リスト表示へ平文として漏れる
+        Assert.Equal(expected, AnsiEscape.Strip(raw));
     }
 
     [Fact]

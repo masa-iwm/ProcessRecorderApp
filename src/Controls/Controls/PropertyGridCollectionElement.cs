@@ -98,7 +98,8 @@ public sealed partial class PropertyGridCollectionElement : INotifyPropertyChang
             {
                 Name = Localization.GetString("Controls/ControlsResources/PropGrid_ElementValueName"),
                 IsReadOnly = true,
-                Value = element.ToString() ?? "null"
+                // null の表示は空文字に統一する（PropertyGridItem の読み直しと同じ規約）
+                Value = element.ToString() ?? ""
             };
             Properties = (PropertyGridItem[])[fallback];
         }

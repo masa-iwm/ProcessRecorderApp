@@ -128,6 +128,36 @@ public class SrcPipelineBuilderTests
     }
 
     [Fact]
+    public void Assemble_DoesNotQuoteOrdinaryCapsValues()
+    {
+        // 数値・分数・列挙は引用対象にならない（従来の出力と1バイトも変わらないこと）
+        var def = SrcPipelineBuilder.FindSource("videotestsrc")!;
+
+        string result = SrcPipelineBuilder.Assemble(
+            def, capsEnabled: true, [],
+            new Dictionary<string, string> { ["format"] = "I420", ["framerate"] = "15/1" });
+
+        Assert.Equal("videotestsrc ! video/x-raw, format=I420, framerate=15/1", result);
+    }
+
+    [Fact]
+    public void RoundTrip_CapsValueContainingASeparator_IsPreserved()
+    {
+        // caps 値を無引用で連結すると、以降のトークンの意味が変わって
+        // パイプラインの構造そのものが壊れる（要素プロパティと同じ規則で引用する）
+        var def = SrcPipelineBuilder.FindSource("videotestsrc")!;
+
+        string assembled = SrcPipelineBuilder.Assemble(
+            def, capsEnabled: true, [],
+            new Dictionary<string, string> { ["format"] = "odd value" });
+        var parsed = SrcPipelineBuilder.Parse(assembled);
+
+        Assert.Equal("videotestsrc", parsed.SourceElement);
+        Assert.Empty(parsed.IntermediateElements);
+        Assert.Equal("odd value", parsed.CapsFields["format"]);
+    }
+
+    [Fact]
     public void RoundTrip_DeviceNameWithBangQuotesAndBackslash_IsPreserved()
     {
         var def = SrcPipelineBuilder.FindSource("mfvideosrc")!;

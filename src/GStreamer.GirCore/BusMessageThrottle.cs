@@ -34,8 +34,16 @@ internal sealed class BusMessageThrottle
     private string? _lastKey;
     private int _suppressed;
 
+    /// <summary>
+    /// 内部状態の直列化。<see cref="Observe"/> は pull スレッドから、<see cref="Flush"/> は
+    /// <c>StartCore</c>（UI/CLI スレッド・<c>_stateLock</c> 下）と停止タスク（プールスレッド）
+    /// からも呼ばれる ── 無同期だと <c>repeated=N</c> の件数が失われたり二重計上されたりして、
+    /// 洪水を畳んでも件数は失わないというこの仕組みの存在意義（診断の正確さ）を静かに損なう。
+    /// </summary>
+    private readonly object _gate = new();
+
     /// <summary>抑制中の件数（テスト・診断用）。</summary>
-    public int SuppressedCount => _suppressed;
+    public int SuppressedCount { get { lock (_gate) return _suppressed; } }
 
     /// <summary>
     /// メッセージを1件与え、実際に出力すべき行（の付加情報）を返す。
@@ -47,22 +55,25 @@ internal sealed class BusMessageThrottle
     /// </returns>
     public (bool Emit, int RepeatedBefore) Observe(string key)
     {
-        if (_lastKey == key)
+        lock (_gate)
         {
-            _suppressed++;
-            if (_suppressed < MaxSuppressedInARow)
-                return (false, 0);
+            if (_lastKey == key)
+            {
+                _suppressed++;
+                if (_suppressed < MaxSuppressedInARow)
+                    return (false, 0);
 
-            // 上限に達したので1行出して数え直す（沈黙し続けない）
-            int repeated = _suppressed;
+                // 上限に達したので1行出して数え直す（沈黙し続けない）
+                int repeated = _suppressed;
+                _suppressed = 0;
+                return (true, repeated);
+            }
+
+            int pending = _suppressed;
+            _lastKey = key;
             _suppressed = 0;
-            return (true, repeated);
+            return (true, pending);
         }
-
-        int pending = _suppressed;
-        _lastKey = key;
-        _suppressed = 0;
-        return (true, pending);
     }
 
     /// <summary>
@@ -71,9 +82,12 @@ internal sealed class BusMessageThrottle
     /// </summary>
     public int Flush()
     {
-        int pending = _suppressed;
-        _suppressed = 0;
-        _lastKey = null;
-        return pending;
+        lock (_gate)
+        {
+            int pending = _suppressed;
+            _suppressed = 0;
+            _lastKey = null;
+            return pending;
+        }
     }
 }

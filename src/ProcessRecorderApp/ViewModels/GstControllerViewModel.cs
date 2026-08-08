@@ -111,7 +111,11 @@ namespace ProcessRecorderApp.ViewModels
 
             // Recorders への挿入通知の後（TryEnqueue は投入順に実行される）に準備完了を立てる。
             // Current への登録は Start() が行う（真実の所在を1箇所にするため ctor では設定しない）。
-            _dispatcherQueue.TryEnqueue(() => IsReady = true);
+            // 戻り値は検査する（OnActivationRedirected と同じ規律）── 失敗すると IsReady が
+            // 永久に立たず、録画コマンドが 12 を返し続ける。
+            if (!_dispatcherQueue.TryEnqueue(() => IsReady = true))
+                Components.ActivityLog.Error("app.error",
+                    "source=GstControllerViewModel could not enqueue the IsReady flag (dispatcher unavailable)");
         }
 
         /// <summary>
@@ -209,7 +213,10 @@ namespace ProcessRecorderApp.ViewModels
             // RecordersChild_PropertyChanged の自己代入 Replace を誘発し、AppSettings.Recorders への
             // 再入 (CheckReentrancy) 例外となるため、イベントの外へ遅延して同期する。
             // TryEnqueue は投入順に実行されるため、イベント発生時点のインデックスのまま適用できる。
-            _dispatcherQueue.TryEnqueue(() =>
+            // 戻り値は検査する ── ミラーは「インデックスが常に一致する」前提なので、
+            // 1 回でも黙って落ちるとその前提が破れたことを誰も観測できない
+            // （失敗窓はディスパッチャ停止中＝終了時に限られるため、記録だけ残す）。
+            bool enqueued = _dispatcherQueue.TryEnqueue(() =>
             {
                 // AppSettings.Recorders と Model.Recorders はインデックスが常に一致する前提でミラーリングする
                 switch (e.Action)
@@ -250,6 +257,9 @@ namespace ProcessRecorderApp.ViewModels
                         }
                 }
             });
+            if (!enqueued)
+                Components.ActivityLog.Error("app.error",
+                    $"source=GstControllerViewModel could not mirror a settings change ({e.Action}); the index alignment premise may no longer hold");
         }
 
         private void Model_PropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
@@ -353,8 +363,29 @@ namespace ProcessRecorderApp.ViewModels
         }
 
         [RelayCommand(CanExecute = nameof(CanStartRecordingAll))]
-        public void StartRecordingAll()
+        public void StartRecordingAll() => _ = StartRecordingAllAndReport();
+
+        /// <summary>
+        /// 全レコーダの録画を開始し、<b>実際に開始できたもの</b>を返す。
+        /// CLI はこの戻り値で stdout を「今回開始した分」に限る ── 全件を出すと、
+        /// 開始しなかったレコーダーの行が<b>前回録画</b>の <c>LastFilename</c> を載せて出て、
+        /// バッチがそれを今回の成果物として運ぶ（stop 側が「今回停止した分だけ」に
+        /// 限っているのと同じ理由）。
+        /// </summary>
+        public IReadOnlyList<GstEventRecorderViewModel> StartRecordingAllAndReport()
+            => StartRecordingAllAndReport(out _);
+
+        /// <inheritdoc cref="StartRecordingAllAndReport()"/>
+        /// <param name="failed">
+        /// <b>開始できるはずだったのに例外で落ちたレコーダー</b>。
+        /// 「既に録画中」など元から対象外だったものは含まない ── それは失敗ではなく、
+        /// トリガ運用では日常であり、CLI の標準エラーへ出すと利用者が本物の失敗と区別できない。
+        /// </param>
+        public IReadOnlyList<GstEventRecorderViewModel> StartRecordingAllAndReport(
+            out IReadOnlyList<GstEventRecorderViewModel> failed)
         {
+            var started = new List<GstEventRecorderViewModel>();
+            var failures = new List<GstEventRecorderViewModel>();
             foreach (var r in Recorders)
             {
                 if (!r.CanStartRecording)
@@ -362,6 +393,7 @@ namespace ProcessRecorderApp.ViewModels
                 try
                 {
                     r.StartRecording();
+                    started.Add(r);
                 }
                 catch (Exception)
                 {
@@ -369,10 +401,11 @@ namespace ProcessRecorderApp.ViewModels
                     // 残りのレコーダーを道連れにしない ── イベント録画では「押したのに一部だけ
                     // 録れていない」がそのまま取り逃しになる。これらの失敗は EventRecorder 側が
                     // recording.start fail と LastError に残す（status が終了コード 15 で報告する）。
-                    // 例外: CanStartRecording 確認後のレースで "Already started" 等が出た場合は
-                    // 無記録だが、その場合レコーダーは既に意図した状態にある。
+                    failures.Add(r);
                 }
             }
+            failed = failures;
+            return started;
         }
         public bool CanStartRecordingAll => Recorders.Any(r => r.CanStartRecording);
 

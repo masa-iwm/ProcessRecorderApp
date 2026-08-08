@@ -63,6 +63,8 @@ public sealed partial class LogTerminalView : UserControl
         Starting,
         /// <summary>送信できる</summary>
         Idle,
+        /// <summary><see cref="Stop"/> 済みの終端。WebView2 は Close 済みで、この面では再開しない</summary>
+        Closed,
         /// <summary>直前の書き込みの ack 待ち</summary>
         AwaitingAck,
         /// <summary>端末を諦めた（終端状態）</summary>
@@ -169,6 +171,10 @@ public sealed partial class LogTerminalView : UserControl
 
     private async void ApplyActiveState(bool active)
     {
+        // Stop() 済みの面は再開しない（Closed は終端。理由は Stop() のコメント参照）
+        if (_state == State.Closed)
+            return;
+
         if (!active)
         {
             _timer.Stop();
@@ -190,13 +196,30 @@ public sealed partial class LogTerminalView : UserControl
             // 初期化は一度きり。失敗経路では WinUI 内部の生成中フラグが戻らず、
             // 2 回目の EnsureCoreWebView2Async が永久に返らない
             _initializeAttempted = true;
-            if (!await TryInitializeAsync())
-            {
-                FallBackToListView(_initializeFailure);
-                _timer.Start();
+            bool initialized = await TryInitializeAsync();
+
+            // **await の間に Stop() が走っていたら、そこで終わり。** 継続はガードを既に
+            // 通過した呼び出しの内側で再開するので、ここで読み直さないと Closed を
+            // 上書きしてしまい、死んだページのタイマーが恒久的に回り続ける
+            // （Log 画面を開いた直後にウィンドウを閉じると踏む）。
+            if (_state == State.Closed)
                 return;
-            }
-            _state = State.Starting;
+
+            if (!initialized)
+                FallBackToListView(_initializeFailure);
+            else
+                _state = State.Starting;
+
+            // **await の間に IsActive が false へ戻っていたら、タイマーは起動しない。**
+            // 起動すると、初期化中のタブ切替 1 回で「見ていない画面のためにマーシャルし続けない」
+            // という契約が破れ、非表示のまま 30Hz の tick が恒久的に回る
+            // （次に Log 画面を表示→非表示するまで自然回復しない）。
+            // 状態遷移は済ませてあるので、次の表示時は通常の再開経路を通る。
+            if (!IsActive)
+                return;
+
+            _timer.Start();
+            return;
         }
         else if (_state == State.Stopped)
         {
@@ -227,7 +250,10 @@ public sealed partial class LogTerminalView : UserControl
     public void Stop()
     {
         _timer.Stop();
-        _state = State.Stopped;
+        // Stopped（再開できる休止）ではなく終端へ遷移する。webView.Close() の後に
+        // IsActive が true へ戻ると、Stopped 経由では Close 済みの CoreWebView2 への
+        // 排出が再開してしまう ── 診断（log.terminal）も残らないまま画面が空のままになる。
+        _state = State.Closed;
         try { webView.Close(); } catch (Exception) { /* 既に閉じている */ }
     }
 
@@ -476,6 +502,10 @@ public sealed partial class LogTerminalView : UserControl
         {
             builder.Append(Separator).Append(color);
         }
+        // 選択色も正本（CampbellPalette）から渡す。JS 側にリテラルで持たせると、
+        // 片方だけ直して食い違う ── まさにこの palette クラスが防ぐと宣言している事故になる。
+        builder.Append(Separator).Append(CampbellPalette.SelectionBackgroundCss)
+               .Append(Separator).Append(CampbellPalette.SelectionInactiveBackgroundCss);
         Send(builder.ToString());
     }
 
@@ -519,7 +549,7 @@ public sealed partial class LogTerminalView : UserControl
 
     private void Send(string message)
     {
-        if (_state is State.Stopped or State.Fallback || webView.CoreWebView2 is not { } core)
+        if (_state is State.Stopped or State.Fallback or State.Closed || webView.CoreWebView2 is not { } core)
         {
             return;
         }
@@ -575,6 +605,9 @@ public sealed partial class LogTerminalView : UserControl
         if (e.ProcessFailedKind is CoreWebView2ProcessFailedKind.RenderProcessExited
             or CoreWebView2ProcessFailedKind.RenderProcessUnresponsive)
         {
+            // Stop 済みなら作り直さない（Closed は終端）
+            if (_state == State.Closed)
+                return;
             _state = State.Starting;
             try
             {
@@ -599,7 +632,9 @@ public sealed partial class LogTerminalView : UserControl
     /// </summary>
     private void FallBackToListView(string reason)
     {
-        if (_state == State.Fallback)
+        // Closed（Stop 済みの終端）からは落とし直さない ── ページはもう無く、
+        // ここから Fallback へ倒すとタイマーが起動できる状態へ戻ってしまう。
+        if (_state is State.Fallback or State.Closed)
         {
             return;
         }

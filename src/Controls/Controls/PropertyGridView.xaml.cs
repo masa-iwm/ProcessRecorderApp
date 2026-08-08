@@ -111,6 +111,17 @@ public sealed partial class PropertyGridView : UserControl
     {
         this.InitializeComponent();
         this.Unloaded += (_, _) => DetachSource();
+        // Unloaded で全購読を落とすので、再 Loaded では張り直す。
+        // **現在のこのアプリでは発火しない保険**（画面切替は Visibility で行うので
+        // Loaded/Unloaded は循環せず、ページ破棄はプロセス終了と同時）。
+        // TabView や Frame ナビゲーション配下へ置いた瞬間に効き始め、無いと
+        // 一度外れた画面が「SelectedObject の変更が反映されず、コレクション行が空のまま」
+        // という形で静かに死ぬ（AttachSource は先頭で DetachSource するので二重購読にはならない）。
+        this.Loaded += (_, _) =>
+        {
+            if (SelectedObject is { } source)
+                AttachSource(source);
+        };
     }
 
     private static void OnSelectedObjectChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
@@ -447,7 +458,8 @@ public sealed partial class PropertyGridView : UserControl
                 isReadOnly: isReadOnly,
                 editKind: editKind,
                 enumValues: enumValues,
-                initialValue: rawValue?.ToString() ?? "null",
+                // null の表示は空文字に統一する（PropertyGridItem の読み直しと同じ規約）
+                initialValue: rawValue?.ToString() ?? "",
                 command: command,
                 collection: collection,
                 collectionItemType: collectionItemTypeAttr?.ItemType,

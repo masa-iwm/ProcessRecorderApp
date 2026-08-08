@@ -38,6 +38,24 @@ public static class CampbellPalette
     /// <summary>既定の背景色（<see cref="Colors"/> の 0 番）</summary>
     public const string DefaultBackground = "#0C0C0C";
 
-    /// <summary>選択範囲の背景（半透明の白。背景が #0C0C0C 固定なのでシステム色では見えない）</summary>
+    /// <summary>
+    /// 選択範囲の背景（30% の白。背景が #0C0C0C 固定なのでシステム色では見えない）。
+    /// これは XAML の #AARRGGBB 形式で、リスト表示（MainPage.xaml が同じ値を
+    /// リテラルとして持つ ── XAML からこの const は参照できない）用。
+    /// </summary>
     public const string SelectionBackground = "#4DFFFFFF";
+
+    /// <summary>
+    /// <see cref="SelectionBackground"/> と同じ色の CSS（xterm.js の ITheme）形式。
+    /// CSS の 8 桁 hex は <c>#RRGGBBAA</c> で、XAML の <c>#AARRGGBB</c> とはアルファの
+    /// 位置が違う ── XAML 形式をそのまま渡すと「30% の白」ではなく不透明の明るいシアン
+    /// （R=4D, G=FF, B=FF）になる。両形式の一致は L1（<c>CampbellPaletteTests</c>）が守る。
+    /// </summary>
+    public const string SelectionBackgroundCss = "#FFFFFF4D";
+
+    /// <summary>
+    /// フォーカスが外れているとき（右クリックメニュー表示中など）の選択背景（CSS 形式・20% の白）。
+    /// 指定しないと xterm 既定の水色になり、Campbell の見た目から浮く。
+    /// </summary>
+    public const string SelectionInactiveBackgroundCss = "#FFFFFF33";
 }
