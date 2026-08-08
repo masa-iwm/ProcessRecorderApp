@@ -53,6 +53,12 @@ public sealed class GuiSmokeTests(PublishedApp app, ITestOutputHelper output)
     /// WebView2 の初期化が実際に成功したことの唯一の自動的な証拠である。
     /// アンパッケージ発行での WinRT アクティベーションが壊れると、ここが最初に落ちる。
     /// </para>
+    /// <para>
+    /// <b>表明の順序は入れ替えないこと。</b> <c>log.terminal</c> の到着を待ってから
+    /// 要素を探す ── 逆順にすると、要素待ちの既定予算（20 秒）が
+    /// WebView2 のコールドスタートに負けて<b>製品と無関係に赤くなる</b>
+    /// （実測。詳細は本文のコメント）。
+    /// </para>
     /// </summary>
     [Fact]
     public void TheLogScreen_ShowsTheTerminal_NotTheFallbackList()
@@ -66,15 +72,23 @@ public sealed class GuiSmokeTests(PublishedApp app, ITestOutputHelper output)
         ui.SwitchTo(UiSection.Log);
         output.WriteLine(ui.DescribeVisibleElements());
 
-        var terminal = ui.WaitForElement("logTerminalView");
-        Assert.True(terminal.Properties.IsEnabled.ValueOrDefault);
-        _ = ui.WaitForElement("CopyAllLogButton");
-
-        // **要素が出た時点ではまだ端末は動いていない。** 初回表示では WebView2 の
-        // コールドスタート（ユーザーデータフォルダーの作成とブラウザープロセスの起動）が
-        // 入るので、決着まで待つ。開発機の暖まった状態では 1 秒台だが、ランナーの
-        // 初回は数十秒かかりうる ── 短く見積もると「まだ出ていない」を
-        // 「起きなかった」と読み違える。
+        // **要素より先に `log.terminal` を待つ。順序が要点である。**
+        //
+        // `logTerminalView` は `LogTerminalView.xaml` の **WebView2** に付いた
+        // AutomationId で、その要素は `Visibility="Collapsed"` で始まり
+        // `EnsureCoreWebView2Async` が成功して初めて可視になる（`HardenAndNavigate`）
+        // ── つまり**端末の初期化が決着するまで UIA ツリーに現れない**。
+        // 先に要素を探すと `AppUi.DefaultTimeout`（20 秒）で諦めることになり、
+        // ランナーの初回（ユーザーデータフォルダーの作成とブラウザープロセスの起動で
+        // 数十秒かかりうる。しかも E2E はインスタンスごとに使い捨てのフォルダーを使うので
+        // **毎回コールドスタート**）を取りこぼす。
+        // **実測**: この取りこぼしで CI が赤くなった ── 変更の有無に関係なく、
+        // 8 ジョブ中 3 回、このテストだけが `AutomationId='logTerminalView' の要素が
+        // 見つかりませんでした` で落ちた。
+        //
+        // `log.terminal` は**成功時（`ready`）も諦めた時（`fallback=list`）も必ず出る**ので、
+        // これを先に待てば「まだ出ていない」と「起きなかった」を取り違えず、
+        // 落ちたときも理由（`fallback=list reason=…`）がそのまま読める。
         Assert.True(
             instance.WaitForActivityLogEvent("log.terminal", TimeSpan.FromSeconds(120)),
             "Log 画面を開いたのに log.terminal が 120 秒以内に出ませんでした。" +
@@ -86,6 +100,12 @@ public sealed class GuiSmokeTests(PublishedApp app, ITestOutputHelper output)
         output.WriteLine(string.Join(Environment.NewLine, terminalEvents));
         Assert.DoesNotContain(terminalEvents, e => e.Contains("fallback=list", StringComparison.Ordinal));
         Assert.Contains(terminalEvents, e => e.Contains("ready renderer=", StringComparison.Ordinal));
+
+        // 端末が起きたことが確定したので、その面が UIA からも見えているはず。
+        // ここまで来て見つからないなら、それは待ち不足ではなく本当の欠落である。
+        var terminal = ui.WaitForElement("logTerminalView");
+        Assert.True(terminal.Properties.IsEnabled.ValueOrDefault);
+        _ = ui.WaitForElement("CopyAllLogButton");
 
         // 注記が出ているなら WebView2 を諦めてリスト表示に落ちている
         Assert.Null(ui.TryFindElement("LogTerminalUnavailableText", TimeSpan.FromSeconds(2)));
