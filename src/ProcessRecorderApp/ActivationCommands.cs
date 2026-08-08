@@ -342,15 +342,16 @@ internal static class ActivationCommands
 
         foreach (var recorder in controller.Recorders)
         {
-            string lastError = FlattenToOneLine(recorder.LastError);
-            output.AppendLine(string.Join('\t',
+            // 列の並びと TAB/改行の潰しは RecorderCliRules（L1 が守っている）
+            string lastError = RecorderCliRules.FlattenToOneLine(recorder.LastError);
+            output.AppendLine(RecorderCliRules.FormatStatusLine(
                 recorder.Name,
-                recorder.IsInitialized.ToString(),
-                recorder.IsRecording.ToString(),
-                recorder.LastFilename ?? string.Empty,
-                lastError));
+                recorder.IsInitialized,
+                recorder.IsRecording,
+                recorder.LastFilename,
+                recorder.LastError));
 
-            if (recorder.IsInitialized && lastError.Length == 0)
+            if (RecorderCliRules.IsHealthy(recorder.IsInitialized, recorder.LastError))
                 continue;
 
             hasUnhealthy = true;
@@ -370,10 +371,6 @@ internal static class ActivationCommands
             ExitCode = hasUnhealthy ? ExitCode_RecorderUnhealthy : 0,
         };
     }
-
-    /// <summary>改行と TAB を空白へ潰し、1レコーダー＝1行・1列＝1値を崩さないようにする。</summary>
-    private static string FlattenToOneLine(string? text) =>
-        text is null ? string.Empty : text.ReplaceLineEndings(" ").Replace('\t', ' ').Trim();
 
     /// <summary>
     /// 録画エンジン（<see cref="GstControllerViewModel.Current"/>）がレコーダー一覧まで
@@ -466,11 +463,10 @@ internal static class ActivationCommands
             return RecorderNotAvailableFailure();
 
         // 数値ならインデックス、それ以外は名前で対象レコーダを解決する
-        GstEventRecorderViewModel? recorder;
-        if (int.TryParse(target, out int index))
-            recorder = 0 <= index && index < controller.Recorders.Count ? controller.Recorders[index] : null;
-        else
-            recorder = controller.Recorders.FirstOrDefault(r => r.Name == target);
+        // （規則は RecorderCliRules.ResolveTargetIndex。L1 が守っている）
+        int index = RecorderCliRules.ResolveTargetIndex(
+            controller.Recorders.Select(r => r.Name).ToArray(), target);
+        GstEventRecorderViewModel? recorder = 0 <= index ? controller.Recorders[index] : null;
 
         if (recorder is null)
         {
@@ -693,7 +689,9 @@ internal static class ActivationCommands
             setOutcome(CommandOutcome.Silent() with
             {
                 // 末尾の改行は、ランチャー側が Console.Out.Write（WriteLine ではない）で出力するためここで付ける
-                ConsoleOutput = string.Join(Environment.NewLine, controller.Recorders.Select(r => $"{r.Name}\t{r.LastFilename}")) + Environment.NewLine
+                ConsoleOutput = string.Join(Environment.NewLine,
+                    controller.Recorders.Select(r => RecorderCliRules.FormatRecorderLine(r.Name, r.LastFilename)))
+                    + Environment.NewLine
             });
         });
         rootCommand.Subcommands.Add(startRecordingAllCommand);
@@ -728,8 +726,9 @@ internal static class ActivationCommands
             var stopped = await controller.StopRecordingAllAsync();
 
             // 末尾の改行は、ランチャー側が Console.Out.Write（WriteLine ではない）で出力するためここで付ける
-            string files = string.Join(
-                Environment.NewLine, stopped.Select(r => $"{r.Name}\t{r.LastFilename}")) + Environment.NewLine;
+            string files = string.Join(Environment.NewLine,
+                stopped.Select(r => RecorderCliRules.FormatRecorderLine(r.Name, r.LastFilename)))
+                + Environment.NewLine;
 
             // **1本でも使えなければ失敗として返す。** -all の成否は「全部ちゃんと録れたか」で、
             // 1本が壊れていても 0 を返すと、バッチはそれを検出する手段を持たない。

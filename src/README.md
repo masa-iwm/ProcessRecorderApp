@@ -837,8 +837,9 @@ CommandOutcome { ShowWindow, ToastTitle, ToastMessage, ConsoleOutput, ConsoleErr
 
 #### レコーダー名による解決は「完全一致・先勝ち」
 
-`start-recording <target>` / `stop-recording <target>` の名前解決は
-`Recorders.FirstOrDefault(r => r.Name == target)`、つまり**序数での完全一致・先勝ち**。
+`start-recording <target>` / `stop-recording <target>` の名前解決は**序数での完全一致・先勝ち**
+（数値はインデックスとして解釈し、名前へはフォールバックしない。規則は
+`GStreamer.GirCore/RecorderCliRules.ResolveTargetIndex` にあり L1 が守る）。
 したがって**同名のレコーダーが2つあると、2つ目には CLI から永久に到達できない**
 （画面上は普通に2件並んで見えるため、「コマンドが効かない」ではなく
 「毎回1つ目が動く」という気付きにくい形で現れる）。
