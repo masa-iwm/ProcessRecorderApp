@@ -31,41 +31,90 @@ internal static class ActivationTokenizer
     }
 
     /// <summary>
-    /// コマンドライン文字列を空白区切りでトークン化し、
-    /// アプリ側のコマンドパーサーに渡せる配列にする。
-    /// 二重引用符で囲まれた区間はスペースを含めて1トークンとして扱う
-    /// （例: --process "C:\path with space\file.txt"）。
+    /// コマンドライン文字列を <c>CommandLineToArgvW</c> と同じ規則でトークン化する。
+    /// ランチャー側の検証（<c>TryHandleInLauncher</c>）は <c>Main(string[] args)</c>
+    /// （＝ OS の分解結果）に対して行われるため、ここが OS と違う規則だと
+    /// **検証を通った引数がワーカーでは別の引数列として実行される**形の乖離になる。
+    ///
+    /// <para>
+    /// 規則: 区切りは空白とタブのみ（全角スペース等では割らない）／二重引用符は区間のトグル／
+    /// 引用区間内の <c>""</c> はリテラルの <c>"</c>／連続する n 個の <c>\</c> の直後に
+    /// <c>"</c> が来る場合は n/2 個の <c>\</c>（n が奇数なら続けてリテラルの <c>"</c>）、
+    /// それ以外の <c>\</c> はそのまま。
+    /// </para>
+    /// <para>
+    /// <b>唯一の意図的な差:</b> 空のトークン（<c>""</c>）は捨てる ── コマンドパーサーへ渡す
+    /// 引数に空文字列の意味は無く、従来からの挙動として L1
+    /// （<c>Tokenize_EmptyQuotedSpan_ProducesNoToken</c>）が固定している。
+    /// </para>
     /// </summary>
     public static string[] Tokenize(string commandLine)
     {
         var tokens = new List<string>();
-        if (string.IsNullOrWhiteSpace(commandLine))
+        // IsNullOrWhiteSpace で早期 return しない ── OS が区切りにしない空白
+        // （全角スペース等）だけの入力を「空」と誤答してしまう。
+        if (string.IsNullOrEmpty(commandLine))
         {
             return [.. tokens];
         }
 
         var current = new StringBuilder();
         bool inQuotes = false;
+        int i = 0;
 
-        foreach (char c in commandLine)
+        while (i < commandLine.Length)
         {
-            if (c == '"')
+            char c = commandLine[i];
+
+            if (c == '\\')
             {
-                inQuotes = !inQuotes;
+                int start = i;
+                while (i < commandLine.Length && commandLine[i] == '\\')
+                    i++;
+                int backslashes = i - start;
+                if (i < commandLine.Length && commandLine[i] == '"')
+                {
+                    current.Append('\\', backslashes / 2);
+                    if ((backslashes & 1) != 0)
+                    {
+                        current.Append('"');
+                        i++;   // エスケープされた '"' を消費（引用のトグルにはしない）
+                    }
+                    // 偶数個なら '"' は次の周回で引用のトグルとして処理される
+                }
+                else
+                {
+                    current.Append('\\', backslashes);
+                }
                 continue;
             }
 
-            if (!inQuotes && char.IsWhiteSpace(c))
+            if (c == '"')
+            {
+                if (inQuotes && i + 1 < commandLine.Length && commandLine[i + 1] == '"')
+                {
+                    current.Append('"');   // 引用区間内の "" はリテラルの '"'
+                    i += 2;
+                    continue;
+                }
+                inQuotes = !inQuotes;
+                i++;
+                continue;
+            }
+
+            if (!inQuotes && c is ' ' or '\t')
             {
                 if (current.Length > 0)
                 {
                     tokens.Add(current.ToString());
                     current.Clear();
                 }
+                i++;
                 continue;
             }
 
             current.Append(c);
+            i++;
         }
 
         if (current.Length > 0)

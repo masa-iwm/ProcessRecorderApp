@@ -55,6 +55,43 @@ public sealed class ErrorReportingTests(PublishedApp app, ITestOutputHelper outp
     }
 
     /// <summary>
+    /// SetAction 内で録画開始が例外になったとき（テンプレートの書式誤り）、CLI が
+    /// **終了コード 0 の偽成功を返さない**こと。
+    ///
+    /// <para>
+    /// System.CommandLine の既定例外ハンドラが有効なままだと、SetAction 内の例外は
+    /// ライブラリに握られて setOutcome 未呼び出しの Silent（終了コード 0）が返る ──
+    /// <c>ActivationCommands.ParseCore</c> の <c>EnableDefaultExceptionHandler=false</c> の
+    /// 1 行が退行するとここが赤くなる。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void StartFailureInsideTheCommand_DoesNotReportSuccess()
+    {
+        var settings = new SettingsFile();
+        var recorder = settings.AddRecorder("R1");
+        // "L" は DateTime の書式指定子として不正で、展開（FormatFilename）が
+        // FormatException になる。設定だけで、コード変更なしに SetAction 内の例外を起こせる。
+        recorder.FilenameTemplate = "{Now:L}.mp4";
+
+        using var instance = AppInstance.Create(app, settings);
+
+        var start = instance.Run("start-recording", "R1");
+        output.WriteLine(start.ToString());
+
+        Assert.NotEqual(0, start.ExitCode);
+
+        var log = instance.ReadActivityLog();
+        output.WriteLine(string.Join(Environment.NewLine, log));
+
+        Assert.NotEmpty(ActivityLogFile.Events(log, "recording.start fail"));
+        // cli の行は例外で抜ける経路でも必ず出る（そのときの終了コードは非 0）。
+        Assert.Contains(ActivityLogFile.Events(log, "cli"),
+            l => l.Contains("start-recording", StringComparison.Ordinal)
+                 && !l.Contains("exitCode=0", StringComparison.Ordinal));
+    }
+
+    /// <summary>
     /// 録画元が途中で死んだとき（監視対象モニタのケーブルが抜けた等の模擬）、
     /// エラーが記録され、<b>復帰が多重化せずに</b>試行されること。
     /// </summary>

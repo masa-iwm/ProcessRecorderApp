@@ -110,6 +110,35 @@ jobs:
           --filter "FullyQualifiedName~LocalizationTests|FullyQualifiedName~DocumentationDriftTests"
           --logger "trx;LogFileName=l4.trx"
 
+      # **`--filter` は1件も選ばなくても `dotnet test` は成功で終わる。**
+      # クラスを改名した拍子に何も走らなくなると、このゲートは黙って no-op になる
+      # （release.yml の「Verify the smoke test actually selected its tests」と同じ判断。
+      #   同じテストは後段のフィルタ無し L1 でも流れるため検出自体は残るが、
+      #   「最速のゲート」という役割が無言で消えるのはここで捕まえる）。
+      - name: Verify the L4 gate actually selected its tests
+        run: |
+          $dir = 'tests/ProcessRecorderApp.Tests/TestResults'
+          if (-not (Test-Path $dir)) { throw "test results not found: $dir" }
+          $trx = Get-ChildItem -Path $dir -Filter 'l4.trx' -Recurse | Select-Object -First 1
+          if (-not $trx) { throw 'l4.trx not found; the L4 gate did not run' }
+
+          [xml]$doc = Get-Content -LiteralPath $trx.FullName -Raw -Encoding UTF8
+          $names = @($doc.TestRun.Results.UnitTestResult | ForEach-Object { $_.testName })
+          if ($names.Count -eq 0) { throw 'the L4 gate selected 0 tests (the filter matched nothing)' }
+
+          # testName は完全修飾名（理論値つきの場合は括弧が付く）。クラス名はその1つ手前のセグメント。
+          $classes = @($names |
+            ForEach-Object { ($_ -split '\(')[0] } |
+            ForEach-Object { $parts = $_ -split '\.'; if ($parts.Count -ge 2) { $parts[$parts.Count - 2] } }) |
+            Sort-Object -Unique
+          Write-Host "ran $($names.Count) tests in [$($classes -join ', ')]"
+
+          $expected = @('LocalizationTests', 'DocumentationDriftTests')
+          $missing = @($expected | Where-Object { $classes -notcontains $_ })
+          if ($missing.Count) {
+            throw "the L4 filter selected nothing from: $($missing -join ', ') (renamed or moved?)"
+          }
+
       # リポジトリの規約は「0 警告」。Release はトリミング解析が有効なので、
       # AOT 非互換の混入もここで落ちる。
       # 復元時の NuGet 監査警告（NU19xx）は restore 段で出るためここには影響しない。
@@ -252,7 +281,7 @@ jobs:
       # **L3（GUI・UIA）も同じプロジェクトに入っているのでここで一緒に走る。**
       # L3 はウィンドウを実際に開いて操作するため、対話セッションとデスクトップに依存する。
       # L2 だけを回したい場合は、UIA（AppUi/TrayUi）を使う全クラスを除外する:
-      #   --filter "FullyQualifiedName!~GuiSmokeTests&FullyQualifiedName!~PropertyEditingTests&FullyQualifiedName!~ShutdownTests&FullyQualifiedName!~RecorderManagementTests&FullyQualifiedName!~PipelineDialogTests&FullyQualifiedName!~LanguageMatrixTests&FullyQualifiedName!~TrayMenuTests&FullyQualifiedName!~EncoderChoiceUiTests&FullyQualifiedName!~PreviewPlaceholderTests&FullyQualifiedName!~TemplateVariablePersistenceUiTests"
+      #   --filter "FullyQualifiedName!~GuiSmokeTests&FullyQualifiedName!~PropertyEditingTests&FullyQualifiedName!~ShutdownTests&FullyQualifiedName!~RecorderManagementTests&FullyQualifiedName!~PipelineDialogTests&FullyQualifiedName!~LanguageMatrixTests&FullyQualifiedName!~TrayMenuTests&FullyQualifiedName!~EncoderChoiceUiTests&FullyQualifiedName!~PreviewPlaceholderTests&FullyQualifiedName!~TemplateVariablePersistenceUiTests&FullyQualifiedName!~PropertyGridErrorTests&FullyQualifiedName!~GstDebugLiveTests&FullyQualifiedName!~SettingsReloadTests"
       # この一覧は手書きで、クラス追加に機械的には追従しない ── 使う前に
       # `grep -l "AppUi\|TrayUi" tests/ProcessRecorderApp.E2E/*Tests.cs` で漏れを確認すること。
       #

@@ -69,6 +69,44 @@ public class ActivationTokenizerTests
             new[] { "ping" },
             ActivationTokenizer.Tokenize("ping \"\""));
 
+    // ---- CommandLineToArgvW との規則整合 ----
+    // ランチャー側の検証は Main(string[] args)（＝ OS の分解結果）に対して行われるため、
+    // ここが OS と違う規則だと「検証を通った引数がワーカーでは別物として実行される」。
+
+    [Fact]
+    public void Tokenize_EscapedQuoteInsideQuotes_IsALiteralQuote()
+        => Assert.Equal(
+            new[] { "--set", "Msg=say \"hi\"" },
+            ActivationTokenizer.Tokenize("--set \"Msg=say \\\"hi\\\"\""));
+
+    [Fact]
+    public void Tokenize_DoubledQuoteInsideQuotes_IsALiteralQuote()
+        => Assert.Equal(
+            new[] { "a\"b" },
+            ActivationTokenizer.Tokenize("\"a\"\"b\""));
+
+    [Fact]
+    public void Tokenize_FullWidthSpace_DoesNotSplit()
+    {
+        // OS の区切りは空白とタブだけ。全角スペース（U+3000）で割ると、ランチャーの
+        // 検証を通った日本語の値がワーカーでは余剰トークンになる。
+        Assert.Equal(
+            new[] { "--set", "Name=会議\u3000メモ" },
+            ActivationTokenizer.Tokenize("--set Name=会議\u3000メモ"));
+    }
+
+    [Fact]
+    public void Tokenize_BackslashesNotBeforeAQuote_AreLiteral()
+        => Assert.Equal(
+            new[] { @"C:\a\\b" },
+            ActivationTokenizer.Tokenize(@"C:\a\\b"));
+
+    [Fact]
+    public void Tokenize_EvenBackslashesBeforeAQuote_AreHalvedAndTheQuoteToggles()
+        => Assert.Equal(
+            new[] { "--set", @"Dir=C:\out" + "\\", "next" },
+            ActivationTokenizer.Tokenize(@"--set ""Dir=C:\out\\"" next"));
+
     // ---- argv[0] の除去 ----
 
     [Fact]

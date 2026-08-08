@@ -124,8 +124,25 @@ $null = New-Item -ItemType Directory -Force $dotDir
 
 # ---------------------------------------------------------------- helpers
 
+# Kill only the workers that belong to THIS run, identified by the pid each worker wrote
+# to the isolated activity.log under $WorkDir. Matching by process name would also kill a
+# real resident instance the user keeps running (same rationale as Verify-GpuEncoders.ps1).
 function Stop-AllWorkers {
-    Get-Process ProcessRecorderApp -ErrorAction SilentlyContinue | Stop-Process -Force
+    $workerIds = @()
+    foreach ($log in @((Join-Path $WorkDir 'activity.log'), (Join-Path $WorkDir 'activity.log.1'))) {
+        if (Test-Path $log) {
+            $found = Select-String -Path $log -Pattern 'app\.start pid=(\d+)' -AllMatches -ErrorAction SilentlyContinue
+            foreach ($m in @($found | ForEach-Object { $_.Matches })) {
+                $workerIds += [int]$m.Groups[1].Value
+            }
+        }
+    }
+    foreach ($workerId in @($workerIds | Sort-Object -Unique)) {
+        $p = Get-Process -Id $workerId -ErrorAction SilentlyContinue
+        if ($null -ne $p -and $p.ProcessName -eq 'ProcessRecorderApp') {
+            try { Stop-Process -Id $workerId -Force -ErrorAction Stop } catch { }
+        }
+    }
     Start-Sleep -Milliseconds 600
 }
 
@@ -141,13 +158,29 @@ function Invoke-Cli {
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError  = $true
 
-    $p   = [System.Diagnostics.Process]::Start($psi)
-    $out = $p.StandardOutput.ReadToEnd()
-    $err = $p.StandardError.ReadToEnd()
-    if (-not $p.WaitForExit($TimeoutMs)) { try { $p.Kill() } catch { } }
+    $p = [System.Diagnostics.Process]::Start($psi)
+
+    # Async reads before waiting: a synchronous ReadToEnd never returns while a hung CLI
+    # keeps stdout open (so the timeout would never fire), and deadlocks once the other
+    # pipe's buffer fills (same rationale as Verify-GpuEncoders.ps1's Invoke-Cli).
+    $outTask = $p.StandardOutput.ReadToEndAsync()
+    $errTask = $p.StandardError.ReadToEndAsync()
+
+    $timedOut = -not $p.WaitForExit($TimeoutMs)
+    if ($timedOut) {
+        try { $p.Kill() } catch { }
+        $null = $p.WaitForExit(5000)
+    }
+
+    $out = ''
+    $err = ''
+    try { if ($outTask.Wait(2000)) { $out = $outTask.Result } } catch { }
+    try { if ($errTask.Wait(2000)) { $err = $errTask.Result } } catch { }
+
+    $exit = if ($timedOut) { -1 } else { $p.ExitCode }
 
     return [pscustomobject]@{
-        ExitCode = $p.ExitCode
+        ExitCode = $exit
         StdOut   = $out.Trim()
         StdErr   = $err.Trim()
     }

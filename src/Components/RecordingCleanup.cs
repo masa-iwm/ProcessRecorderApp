@@ -91,12 +91,12 @@ public static class RecordingCleanup
         ref int deleted, ref long freed, List<string> failures, HashSet<string> touchedDirectories)
     {
         FileInfo[] files;
-        string[] subdirectories;
+        DirectoryInfo[] subdirectories;
         try
         {
             var info = new DirectoryInfo(directory);
             files = info.GetFiles();
-            subdirectories = Directory.GetDirectories(directory);
+            subdirectories = info.GetDirectories();
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
@@ -128,7 +128,19 @@ public static class RecordingCleanup
         }
 
         foreach (var subdirectory in subdirectories)
-            DeleteExpiredFiles(subdirectory, threshold, ref deleted, ref freed, failures, touchedDirectories);
+        {
+            // リパースポイント（ジャンクション・ディレクトリシンボリックリンク）には降りない ──
+            // リンク先は root の外の実体でありうるので、辿ると「root の外には手を出さない」が
+            // 破れて他所のファイルを消す。祖先を指す循環リンクによる際限のない再帰も同時に防ぐ。
+            // スキップは記録する ── クラウド同期のプレースホルダーフォルダーも
+            // リパースポイントであり、無記録だと「その下だけ掃除されない」が説明不能になる。
+            if ((subdirectory.Attributes & FileAttributes.ReparsePoint) != 0)
+            {
+                AddFailure(failures, $"{subdirectory.FullName}: skipped (reparse point)");
+                continue;
+            }
+            DeleteExpiredFiles(subdirectory.FullName, threshold, ref deleted, ref freed, failures, touchedDirectories);
+        }
     }
 
     /// <summary>

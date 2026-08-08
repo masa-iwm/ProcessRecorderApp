@@ -76,6 +76,10 @@ public sealed class StopSynchronicityTests(PublishedApp app, ITestOutputHelper o
 
         var log = instance.ReadActivityLog();
         var stops = ActivityLogFile.Events(log, "recording.stop");
+        // Assert.All は空集合で緑になる ── 停止の記録が別イベント名（recording.stop slow /
+        // recording.stop empty）へ移る退行では stops が 0 件になり、ok の表明ごと素通りする。
+        // 「停止の記録が 1 件はあること」を先に固定する。
+        Assert.NotEmpty(stops);
         Assert.All(stops, l => Assert.Contains("result=ok", l));
         Assert.Empty(ActivityLogFile.Events(log, "recording.stop timeout"));
         Assert.Empty(ActivityLogFile.Events(log, "recording.stop error"));

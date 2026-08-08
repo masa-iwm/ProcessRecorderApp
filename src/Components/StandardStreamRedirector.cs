@@ -200,19 +200,41 @@ public sealed partial class StandardStreamRedirector : IDisposable
     /// <b>1行ごとにファイルへ Flush する</b>（<see cref="WriteToLogFile"/> の注記を参照）。
     /// <paramref name="logFilePath"/> に null または空文字を渡すと出力を停止する
     /// </summary>
-    public void SetLogFile(string? logFilePath)
+    /// <returns>
+    /// ログファイルを開けなかった場合はその例外（ログ出力は停止したまま、捕捉は継続する）。
+    /// 投げないのはこのクラスの他の失敗（パイプのフォールバック・書き込み失敗）と同じ方針 ──
+    /// 初回の呼び出しは未処理例外ハンドラの購読より前に走るため、投げると保存済みの
+    /// 不正なパス1つで常駐ワーカーが起動できなくなる。記録は呼び出し側の責務。
+    /// </returns>
+    public Exception? SetLogFile(string? logFilePath)
     {
         lock (_logFileLock)
         {
-            _logWriter?.Dispose(); // Dispose 内で Flush される
+            try
+            {
+                _logWriter?.Dispose(); // Dispose 内で Flush される
+            }
+            catch (Exception)
+            {
+                // Flush の失敗（ディスク満杯・ドライブ切断）。このライターは以後使わないので
+                // 棄てるだけでよい ── ここで投げると「開けない」と同じ起動不能経路になる。
+            }
             _logWriter = null;
 
             if (string.IsNullOrEmpty(logFilePath))
             {
-                return;
+                return null;
             }
 
-            _logWriter = new StreamWriter(logFilePath, append: true);
+            try
+            {
+                _logWriter = new StreamWriter(logFilePath, append: true);
+                return null;
+            }
+            catch (Exception ex)
+            {
+                return ex;
+            }
         }
     }
 

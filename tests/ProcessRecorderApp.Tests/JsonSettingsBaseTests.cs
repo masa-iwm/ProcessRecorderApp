@@ -156,6 +156,24 @@ public class JsonSettingsBaseTests : IDisposable
         Assert.True(File.Exists(FilePath), "元のファイルが消えている");
     }
 
+    [Fact]
+    public void Save_ReportsAFailureInsteadOfThrowing()
+    {
+        // 一時ファイルの位置を同名のディレクトリで塞いで、書き込みを確実に失敗させる。
+        // 投げてしまうと、無防備な呼び出し経路（終了時の AppWindow.Destroying・
+        // デバウンス保存の DispatcherQueue コールバック）で後続の処理を道連れにする
+        // ── 特に終了経路では録画エンジンの破棄（moov の確定）が飛ぶ。
+        Directory.CreateDirectory(FilePath + JsonSettingsBase<SampleSettings>.TemporaryFileSuffix);
+
+        string? reported = null;
+        SampleSettings.CreateDefault().Save(
+            FilePath, SampleSettingsJsonContext.Default.SampleSettings, detail => reported = detail);
+
+        Assert.NotNull(reported);
+        Assert.Contains(FilePath, reported);
+        Assert.False(File.Exists(FilePath));
+    }
+
     /// <summary>
     /// <b>保存は一時ファイル経由で、書き終えたら残さない。</b>
     /// 残っていると、次回の起動でどちらが正本か分からなくなる。

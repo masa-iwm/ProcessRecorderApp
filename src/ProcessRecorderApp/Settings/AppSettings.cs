@@ -60,6 +60,15 @@ public partial class AppSettings : JsonSettingsBase<AppSettings>
     private static void ReportLoadFailure(string detail)
         => Components.ActivityLog.Error("settings.load", detail + "; falling back to the defaults");
 
+    /// <summary>
+    /// settings.json を書けなかったことを <c>activity.log</c> に残す
+    /// （<see cref="ReportLoadFailure"/> と対称。記録を <c>JsonSettingsBase</c> 側に
+    /// 置かない理由もあちらと同じ）。書けなかった変更は次の保存契機
+    /// （デバウンス・トレイ格納・終了）で改めて書かれる。
+    /// </summary>
+    private static void ReportSaveFailure(string detail)
+        => Components.ActivityLog.Error("settings.save", detail);
+
     public static AppSettings Default => _default.Value;
 
     /// <summary>
@@ -412,6 +421,19 @@ public partial class AppSettings : JsonSettingsBase<AppSettings>
             return;
         oldValue?.CollectionChanged -= Recorders_CollectionChanged;
         newValue?.CollectionChanged += Recorders_CollectionChanged;
+
+        // **要素の購読もコレクションと一緒に張り替える。** 逆シリアライズは「要素を
+        // 詰め終えたコレクションを setter へ代入する」ため、既に入っている要素の
+        // Add イベントは来ない。ここで張り替えないと、settings.json から読み込んだ
+        // レコーダー（＝実運用の通常ケース）の子プロパティ編集が
+        // RecordersChild_PropertyChanged に届かず、デバウンス自動保存が保存契機に
+        // ならない（保存されるのは終了時とトレイ格納時だけに退化する）。
+        foreach (var s in _subscribedRecorders)
+            s.PropertyChanged -= RecordersChild_PropertyChanged;
+        _subscribedRecorders.Clear();
+        if (newValue is not null)
+            foreach (var s in newValue)
+                SubscribeRecorder(s);
     }
     [JsonConstructor]
     internal AppSettings()
@@ -508,6 +530,15 @@ public partial class AppSettings : JsonSettingsBase<AppSettings>
             return;
         oldValue?.CollectionChanged -= UiaTriggerAssignments_CollectionChanged;
         newValue?.CollectionChanged += UiaTriggerAssignments_CollectionChanged;
+
+        // 要素の購読もコレクションと一緒に張り替える（理由は OnRecordersChanging と同じ ──
+        // 逆シリアライズで代入されるコレクションの既存要素は Add イベントを発火しない）。
+        foreach (var a in _subscribedAssignments)
+            a.PropertyChanged -= AssignmentsChild_PropertyChanged;
+        _subscribedAssignments.Clear();
+        if (newValue is not null)
+            foreach (var a in newValue)
+                SubscribeAssignment(a);
     }
 
     /// <summary>購読済みの割り当て行（保持する理由は <see cref="_subscribedRecorders"/> と同じ）。</summary>
@@ -631,6 +662,13 @@ public partial class AppSettings : JsonSettingsBase<AppSettings>
         UiaTriggerAssignments.Clear();
         foreach (var a in loaded.UiaTriggerAssignments)
             UiaTriggerAssignments.Add(a);
+
+        // 一時インスタンス（loaded）側の要素購読を外す ── 逆シリアライズ時に
+        // OnXChanging が要素へ張った PropertyChanged が残ると、移し替えた要素が
+        // 用済みの loaded を生かし続け、要素の変更のたびに loaded 側のハンドラも走る。
+        // 空コレクションの代入で OnXChanging が旧要素を全解除する。
+        loaded.Recorders = [];
+        loaded.UiaTriggerAssignments = [];
     }
 
     protected override void OnLoaded()
@@ -747,7 +785,7 @@ public partial class AppSettings : JsonSettingsBase<AppSettings>
                 TemplateVariables.Remove(key);   // 変数そのものが消された
         }
 
-        Save(FilePath, SettingsTypeInfo);
+        Save(FilePath, SettingsTypeInfo, ReportSaveFailure);
     }
 
     private System.Threading.Timer? _saveDebounce;

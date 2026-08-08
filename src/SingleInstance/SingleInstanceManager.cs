@@ -295,14 +295,36 @@ public sealed partial class SingleInstanceManager
             consoleOutput = outcome.ConsoleOutput;
             consoleError = outcome.ConsoleError;
         }
-        catch
+        catch (Exception ex)
         {
             // 常駐ワーカーはここで例外を握りつぶし、プロセスを終了させない。
             // 呼び出し元のランチャーには専用の終了コードで異常を伝える。
+            // 内容は必ず残す ── 残さないと利用者・開発者ともに「99 が返った」以外の
+            // 手がかりが無く、診断のしようがない。
             exitCode = UnexpectedErrorExitCode;
+            consoleError = DescribeUnexpectedErrorOrNull(ex);
         }
 
         ReportCommandResult(requestId, exitCode, consoleOutput, consoleError);
+    }
+
+    /// <summary>
+    /// コマンド処理の予期しない例外を activity.log と標準エラー（ランチャー経由）へ残す。
+    /// この経路自体が投げると <see cref="ReportCommandResult"/> に到達せず、ランチャーが
+    /// 結果待ちを上限（最大60秒）まで待って成否不明の 2 を返すため、**絶対に投げない**
+    /// （<see cref="ShutdownMessageOrNull"/> と同じ規律）。
+    /// </summary>
+    private static string? DescribeUnexpectedErrorOrNull(Exception ex)
+    {
+        try
+        {
+            Components.ActivityLog.Error("app.error", $"source=SingleInstanceManager.HandleActivation {ex}");
+            return ex.ToString() + Environment.NewLine;
+        }
+        catch (Exception)
+        {
+            return null;
+        }
     }
 
     /// <summary>

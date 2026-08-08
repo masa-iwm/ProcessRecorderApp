@@ -199,8 +199,11 @@ public static partial class SrcPipelineBuilder
     public static SrcElementDef? FindSource(string? elementName)
         => elementName is null ? null : Sources.FirstOrDefault(s => s.ElementName == elementName);
 
-    // 要素/caps セグメント内の "key=value"(値は "..." で括られる場合あり)を切り出す
-    [GeneratedRegex("""(?<key>[\w.-]+)\s*=\s*(?<value>"[^"]*"|[^\s,]+)""")]
+    // 要素/caps セグメント内の "key=value"(値は "..." で括られる場合あり)を切り出す。
+    // 引用値の中は \" / \\ のエスケープを1単位として読む（Assemble の QuoteIfNeeded が
+    // 生成する形。エスケープを知らない "[^"]*" だと、値に '"' を含むラウンドトリップが
+    // 引用の途中で切れる）
+    [GeneratedRegex("""(?<key>[\w.-]+)\s*=\s*(?<value>"(?:\\.|[^"\\])*"|[^\s,]+)""")]
     private static partial Regex KeyValueRegex();
 
     // 先頭が "video/x-raw" のようなメディアタイプで始まるか(caps セグメントの判定)
@@ -216,11 +219,14 @@ public static partial class SrcPipelineBuilder
         if (string.IsNullOrWhiteSpace(pipeline))
             return new ParsedSrcPipeline();
 
-        // '!' は要素/caps の区切りとしてのみ現れる(メディアタイプ内は括弧のみ)ため単純分割で安全
-        var segments = pipeline.Split('!', StringSplitOptions.RemoveEmptyEntries)
-                               .Select(s => s.Trim())
-                               .Where(s => s.Length > 0)
-                               .ToList();
+        // '!' は要素/caps の区切りだが、**二重引用符の中には値として現れる** ──
+        // mfvideosrc の device-name には実在するデバイス表示名（例: "Live! Cam Sync HD"）が
+        // そのまま入る。gst_parse_launch は引用内の '!' を値の一部として扱うので、
+        // 単純 Split だと「録画は通るのにビルダーで開き直すと設定が壊れる」形になる。
+        var segments = SplitOutsideQuotes(pipeline)
+                       .Select(s => s.Trim())
+                       .Where(s => s.Length > 0)
+                       .ToList();
         if (segments.Count == 0)
             return new ParsedSrcPipeline();
 
@@ -349,15 +355,91 @@ public static partial class SrcPipelineBuilder
     public static string? JoinResolution(string? width, string? height)
         => string.IsNullOrEmpty(width) || string.IsNullOrEmpty(height) ? null : $"{width}x{height}";
 
-    // 値に空白やカンマを含む場合のみ二重引用符で括る
-    private static string QuoteIfNeeded(string? value)
-        => !string.IsNullOrEmpty(value) && (value.Contains(' ') || value.Contains(',')) && !value.StartsWith('"')
-            ? $"\"{value}\""
-            : value ?? string.Empty;
+    /// <summary>
+    /// '!' で要素/caps のセグメントに分割する。二重引用符の中の '!' は区切りにせず、
+    /// 引用内の <c>\"</c> / <c>\\</c> エスケープは1単位として読み飛ばす
+    /// （<see cref="QuoteIfNeeded"/> が生成する形と対）。
+    /// </summary>
+    private static List<string> SplitOutsideQuotes(string pipeline)
+    {
+        var segments = new List<string>();
+        var current = new StringBuilder();
+        bool inQuotes = false;
+        for (int i = 0; i < pipeline.Length; i++)
+        {
+            char c = pipeline[i];
+            if (inQuotes && c == '\\' && i + 1 < pipeline.Length)
+            {
+                current.Append(c).Append(pipeline[++i]);
+            }
+            else if (c == '"')
+            {
+                inQuotes = !inQuotes;
+                current.Append(c);
+            }
+            else if (c == '!' && !inQuotes)
+            {
+                segments.Add(current.ToString());
+                current.Clear();
+            }
+            else
+            {
+                current.Append(c);
+            }
+        }
+        segments.Add(current.ToString());
+        return segments;
+    }
 
-    // 先頭末尾の二重引用符を取り除く
+    /// <summary>
+    /// 引用が必要な文字（区切り・引用・エスケープ文字そのもの）。
+    /// タブ・改行も含める ── <see cref="KeyValueRegex"/> の無引用値は <c>\s</c> で
+    /// 終わるので、空白類のうち ' ' だけを引用対象にするとラウンドトリップが崩れる。
+    /// </summary>
+    private static readonly char[] QuoteTriggerChars = [' ', '\t', '\r', '\n', ',', '!', '"', '\\'];
+
+    // 値に区切りとして解釈されうる文字を含む場合は二重引用符で括り、内部の '"' と '\' は
+    // '\' でエスケープする（gst_parse_launch は引用内のエスケープを解釈する）。
+    // 「先頭が '"' なら引用済み」というヒューリスティックは持たない ── 打ちかけの引用や
+    // 値自体に '"' を含むケースで不平衡な引用を生成し、以降のトークンが引用へ吸い込まれて
+    // 値がパイプライン構造として解釈されてしまう。
+    private static string QuoteIfNeeded(string? value)
+    {
+        if (string.IsNullOrEmpty(value))
+            return string.Empty;
+        if (value.IndexOfAny(QuoteTriggerChars) < 0)
+            return value;
+
+        var sb = new StringBuilder(value.Length + 2);
+        sb.Append('"');
+        foreach (char c in value)
+        {
+            if (c is '"' or '\\')
+                sb.Append('\\');
+            sb.Append(c);
+        }
+        sb.Append('"');
+        return sb.ToString();
+    }
+
+    // 先頭末尾の二重引用符を外し、引用内の '\' エスケープを復元する
     private static string Unquote(string value)
-        => value.Length >= 2 && value[0] == '"' && value[^1] == '"' ? value[1..^1] : value;
+    {
+        if (value.Length < 2 || value[0] != '"' || value[^1] != '"')
+            return value;
+        string inner = value[1..^1];
+        if (!inner.Contains('\\'))
+            return inner;
+
+        var sb = new StringBuilder(inner.Length);
+        for (int i = 0; i < inner.Length; i++)
+        {
+            if (inner[i] == '\\' && i + 1 < inner.Length)
+                i++;
+            sb.Append(inner[i]);
+        }
+        return sb.ToString();
+    }
     [GeneratedRegex(@"\(([^)]*)\)")]
     private static partial Regex MemRegex();
     [GeneratedRegex(@"^(\d+)\s*[xX×]\s*(\d+)$")]

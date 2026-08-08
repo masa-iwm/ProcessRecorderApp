@@ -145,14 +145,24 @@ internal static class ActivationCommands
     /// </summary>
     public static async Task<CommandOutcome> Parse(string[] args)
     {
-        var outcome = await ParseCore(args);
-
-        // CLI の記録は「常駐ワーカー側で1回だけ」。activity.log の書き手をこのプロセスに限れば、
-        // 追記の排他（File.AppendAllText は FileShare.Read で開く）を気にしなくてよくなる。
-        // 代償として、ランチャーが自前で処理する --help / --version / パースエラーは記録されない。
-        ActivityLog.Info("cli",
-            $"args=[{string.Join(" ", args)}] exitCode={outcome.ExitCode}");
-        return outcome;
+        // 例外で抜ける経路でも cli の行は必ず残す（そのときの終了コードは 99）。
+        // finally にしないと、コマンド処理が投げたときに限って記録が消え、
+        // 利用者に見えるのが「終了コード 99」だけになる。
+        int exitCode = SingleInstanceManager.UnexpectedErrorExitCode;
+        try
+        {
+            var outcome = await ParseCore(args);
+            exitCode = outcome.ExitCode;
+            return outcome;
+        }
+        finally
+        {
+            // CLI の記録は「常駐ワーカー側で1回だけ」。activity.log の書き手をこのプロセスに限れば、
+            // 追記の排他（File.AppendAllText は FileShare.Read で開く）を気にしなくてよくなる。
+            // 代償として、ランチャーが自前で処理する --help / --version / パースエラーは記録されない。
+            ActivityLog.Info("cli",
+                $"args=[{string.Join(" ", args)}] exitCode={exitCode}");
+        }
     }
 
     /// <summary><see cref="Parse"/> の本体（結果の記録を挟むために分離してある）。</summary>
@@ -203,7 +213,15 @@ internal static class ActivationCommands
 
         // InvokeAsync() はマッチしたコマンドの SetAction を実行する。
         // 録画コマンドは準備完了待ちのため非同期アクションとして登録しており、await で完了を待つ。
-        await parseResult.InvokeAsync();
+        // **既定の例外ハンドラは無効にする** ── 有効のままだと SetAction 内の例外を
+        // System.CommandLine が握って戻り値 1 を返すだけになり、setOutcome が呼ばれないまま
+        // 既定値の outcome（Silent ＝ 終了コード 0）が返る。開始に失敗した start-recording が
+        // 「終了コード 0・空出力」で成功を装う形になるため、例外は呼び出し側
+        // （HandleActivation の終了コード 99 の経路）へ素通しする。
+        await parseResult.InvokeAsync(new InvocationConfiguration
+        {
+            EnableDefaultExceptionHandler = false,
+        });
 
         if (hasUndefinedPersistKey)
         {

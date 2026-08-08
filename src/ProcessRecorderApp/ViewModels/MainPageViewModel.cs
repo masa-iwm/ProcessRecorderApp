@@ -154,6 +154,13 @@ public partial class MainPageViewModel : ObservableObject, IDisposable
         if (ConfirmSettingsReloadAsync is not null && !await ConfirmSettingsReloadAsync())
             return;
 
+        // **await から戻ったら可否を確認し直す。** ダイアログ表示中もメッセージループは
+        // 回るので、UIA トリガや CLI がこの間に録画を始めていることがある。
+        // CanExecute はボタン押下時にしか効かず、ここで再確認しないと IsIdleAll ガードの
+        // 穴から Reload() が稼働中のエンジンをその場で破棄する。
+        if (!CanReloadSettings)
+            return;
+
         // **先に選択を外す。** Recorders の Reset では SelectedRecorder は null にならず、
         // 自動選択は「null のときだけ」動く（ctor の Recorders.PropertyChanged 参照）。
         // ここで外さないと、再読み込み後も破棄済みのレコーダー VM を指したままになる。

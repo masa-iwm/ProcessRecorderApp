@@ -169,12 +169,32 @@ namespace ProcessRecorderApp.ViewModels
         public partial bool IsRecording { get; set; }
         partial void OnIsRecordingChanged(bool value)
         {
-            if (Model.IsRecording != value)
+            if (Model.IsRecording == value)
+                return;
+
+            // PropertyGrid の直接編集はコマンドの CanExecute を通らないので、ここでも同じ
+            // 可否（CanStart/StopRecording）を検査する。素通しにすると、未初期化のレコーダーで
+            // Start() が投げて VM とモデルが食い違ったまま残り（生成 setter は OnChanged が
+            // 投げると PropertyChanged を発火しないため、以後の差分判定が全て偽になる）、
+            // 排出中は WaitForPendingStop が UI スレッドを最大 StopFinalizeTimeoutMs 塞ぐ。
+            if (value ? !CanStartRecording : !CanStopRecording)
+            {
+                IsRecording = Model.IsRecording;   // 差し戻し（画面の値とモデルは常に一致させる）
+                return;
+            }
+
+            try
             {
                 if (value)
                     Model.Start();
                 else
                     Model.Stop();
+            }
+            catch (Exception)
+            {
+                // 失敗の記録と LastError は EventRecorder 側が済ませている。
+                // ここでは表示をモデルへ差し戻すだけでよい。
+                IsRecording = Model.IsRecording;
             }
         }
 

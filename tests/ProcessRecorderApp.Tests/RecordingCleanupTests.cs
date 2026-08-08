@@ -168,6 +168,44 @@ public sealed class RecordingCleanupTests : IDisposable
     }
 
     [Fact]
+    public void AJunctionInsideTheRootIsNotFollowed()
+    {
+        // リンク先は root の外の実体でありうる ── 辿ると「root の外には手を出さない」が
+        // 破れて他所のファイルを消す。ジャンクション（mklink /J）は管理者権限なしで作れる。
+        string outside = Path.Combine(Path.GetTempPath(), "pra-cleanup-outside-" + Guid.NewGuid().ToString("N")[..8]);
+        Directory.CreateDirectory(outside);
+        string link = Path.Combine(_root, "link");
+        try
+        {
+            string victim = Path.Combine(outside, "victim.mp4");
+            File.WriteAllText(victim, "x");
+            File.SetLastWriteTime(victim, Now.AddDays(-400));
+
+            var mklink = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = "cmd.exe",
+                Arguments = $"/c mklink /J \"{link}\" \"{outside}\"",
+                CreateNoWindow = true,
+                UseShellExecute = false,
+            })!;
+            mklink.WaitForExit();
+            Assert.Equal(0, mklink.ExitCode);
+
+            var result = Sweep(1);
+
+            Assert.True(File.Exists(victim), "ジャンクションの先（root の外）のファイルが削除された");
+            Assert.Equal(0, result.DeletedFiles);
+            // スキップの事実は記録される（無記録だと「その下だけ掃除されない」が説明不能になる）
+            Assert.Contains(result.Failures, f => f.Contains("reparse point", StringComparison.Ordinal));
+        }
+        finally
+        {
+            try { Directory.Delete(link); } catch { /* 後始末の失敗でテストを赤にしない */ }
+            try { Directory.Delete(outside, recursive: true); } catch { /* 同上 */ }
+        }
+    }
+
+    [Fact]
     public void ALockedFileIsReportedButDoesNotStopTheSweep()
     {
         string locked = CreateFile(ageDays: 30, "locked.mp4");

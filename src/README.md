@@ -311,7 +311,9 @@ GOP は固定値とし、想定される最低フレームレート（15fps）�
 | `RecordingRetentionDays` | `0` | この日数を過ぎた mp4 を自動削除する。**0 なら削除しない** |
 | `RecordingCleanupIntervalHours` | `6` | 自動削除の間隔（時間）。1 未満は 1 として扱う |
 
-削除は `Components.RecordingCleanup.Sweep`（サブフォルダーも再帰的に探す。判定は更新時刻）。
+削除は `Components.RecordingCleanup.Sweep`（サブフォルダーも再帰的に探す。判定は更新時刻。
+**リパースポイント［ジャンクション・シンボリックリンク］には降りない** ── リンク先は
+保存先の外の実体でありうるため。スキップした事実は `cleanup.error` に 1 行残る）。
 **空フォルダーの削除は「実際にファイルを消したフォルダーとその祖先」に限る**
 ── 既定の保存先が実行ファイルのあるディレクトリなので、無条件に空フォルダーを掃除すると
 インストール先まで巻き込む。保存先そのものは決して消さない。
@@ -1293,7 +1295,7 @@ GPU テクスチャになるため**アクセシブルテキストが 1 つも�
 |---|---|---|---|
 | `app.start` | INFO | `Program.Main`（ワーカー分岐） | pid とデータディレクトリ |
 | `app.exit` | INFO | `Program.Main`（`StartResidentWorker` から復帰後） | pid と終了コード |
-| `app.error` | ERROR | `App.LogException`（未処理例外の3ハンドラ） | 発生源と例外の全文 |
+| `app.error` | ERROR | `App.LogException`（未処理例外の3ハンドラ）／`SingleInstanceManager.HandleActivation`（コマンド処理の予期しない例外。終了コード 99 と対で残る） | 発生源と例外の全文 |
 | `gst.runtime` | INFO / **ERROR** | `Controller.StaticInitialize` | 実際にロードされた `libgstreamer-1.0-0.dll` / `libglib-2.0-0.dll` のパス、採用した候補、混成の有無。1回のみ。初期化に失敗した場合は ERROR で、探した候補と例外の全文が付く |
 | `cleanup.run` | INFO | `RecordingCleanupScheduler` | 古い mp4 の自動削除の結果（保存先・削除数・解放バイト数・削除したフォルダー数・失敗数）。**何もしなかった周回は出さない** |
 | `cleanup.error` | WARN | 同上 | 削除できなかった理由（1件1行・上限あり）。ロック中のファイルなど |
@@ -1314,9 +1316,12 @@ GPU テクスチャになるため**アクセシブルテキストが 1 つも�
 | `recorder.eos` | INFO | 同上 | sink 側バスの `Eos` |
 | `recorder.restart` | INFO / WARN | 同上／`RestartSinkSrc` | 自動復帰の予約と、その結果（`ok` / `failed`） |
 | `log.terminal` | INFO / WARN | `LogTerminalView` | Log 画面のターミナルが起きた（`ready renderer=webgl｜dom`）／WebView2 を諦めてリスト表示に落ちた（`fallback=list`）。**どちらのレンダラーで描いているかは画面から見分けが付かない**ので、ここが唯一の観測点になる |
+| `log.file error` | ERROR | `Program.Main`（`ApplyLogFile`） | `DebugLogFile` を開けなかった（切断されたドライブ・権限など）。保存は諦めて捕捉は継続する ── 投げると未処理例外ハンドラの購読前なので、不正なパス1つで常駐ワーカーが起動できなくなる |
 | `gst.debug` | INFO | `DebugLogEx.TrySetThreshold` | `GstDebug` の変更を実行中に適用した（`threshold='...'`）。適用先は GStreamer の内部状態だけで画面にもファイルにも痕跡が残らないので、ここが唯一の観測点になる |
 | `gst.dot` | INFO / ERROR | `MainPageViewModel.SaveDebugGraphs` ／ `Controller.WriteDebugGraphs` | Log 画面の「グラフを保存」の結果（`dir='...' files=N`）／個々のパイプラインの書き出し失敗 |
-| `cli` | INFO | `ActivationCommands.Parse` | コマンドラインと終了コード |
+| `settings.load` | ERROR | `AppSettings.ReportLoadFailure` | settings.json を読めず既定値へ倒れた（読めなかったファイルは `.bad` へ退避） |
+| `settings.save` | ERROR | `AppSettings.ReportSaveFailure` | settings.json を書けなかった（ディスク満杯・一時ロック・権限）。書けなかった変更は次の保存契機で改めて書かれる |
+| `cli` | INFO | `ActivationCommands.Parse` | コマンドラインと終了コード。**例外で抜けた場合も必ず出る**（そのときの終了コードは 99） |
 | `ping` | INFO | `ping` コマンド | 生存確認 |
 
 **書き手は常駐ワーカープロセスだけ**。`File.AppendAllText` は `FileShare.Read` で開くため、
@@ -1418,9 +1423,13 @@ CLI 出力を汚染するため有効にしてはいけない。
   破棄済みのパイプラインへ `SetState` したり `Initialize()` を呼んだりする。
   復帰タスクは `Initialize()` の中で `_stateLock` を取るため、
   キャンセルせずに待つとデッドロックする（`CancelPendingRestart` のコメント参照）。
-  待ちは 2 秒で諦めるので、**ループ側は危険な操作の直前ごとに
-  `IsCancellationRequested` を確認する**。`_isAlive` では代用できない ──
-  通常の `Initialize()` 待ちでも false になるため。
+  待ちは 2 秒で諦める。ループ側の `IsCancellationRequested` 確認は `Delay` 中の
+  中断用で、**Dispose 済みレコーダーの蘇生はこれでは防げない**（確認とロック取得の
+  間に窓がある）── 蘇生は `InitializeCore` 先頭の Dispose 済み検査が拒否する。
+  `_isAlive` では代用できない ── 通常の `Initialize()` 待ちでも false になるため。
+  エスカレーションで `Initialize()` を呼ぶ直前には、ループが自分の連鎖の所有権を
+  畳む ── 畳まないと `Initialize()` 内の `CancelPendingRestart` が
+  **実行中の自分自身を 2 秒待つ**。
 
 ### 停止の非同期化
 
@@ -1451,9 +1460,11 @@ API は `StopAsync()`（完了を表す `Task` を返す）/ `Stop()`（fire-and
 >
 > 終了経路（`CloseCore`）の排出だけは**同期のまま**。この直後に `Dispose` するため。
 
-> **残っている穴**: `CanStartRecording` が守るのは**コマンド**（ボタン・CLI）だけ。
-> PropertyGrid の `IsRecording` 行は編集可能で、そのセッターは `Model.Start()` を直接呼ぶため、
-> 排出中にここから開始すると UI スレッドが排出の完了まで待たされる（既知の残存する穴）。
+> PropertyGrid の `IsRecording` 行（編集可能）も同じ可否を通る ── セッター
+> （`OnIsRecordingChanged`）が `CanStart/StopRecording` を検査し、不可なら値をモデルへ
+> 差し戻す。加えて `EventRecorder.Start` 自身も、排出待ちを待ち切れなかった場合は
+> 開始を拒否する（`recording.start fail`）── 排出中のパイプラインへの `SetState` を
+> タイムアウト境界で解禁しないため。
 
 ## テスト用の環境変数
 

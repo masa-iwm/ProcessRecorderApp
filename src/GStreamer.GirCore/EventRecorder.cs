@@ -483,6 +483,13 @@ public partial class EventRecorder : ObservableObject, IDisposable
 
     private void InitializeCore()
     {
+        // Dispose 済みなら作り直さない。復帰エスカレーションの Initialize() は
+        // IsCancellationRequested を確認してから _stateLock を待つため、確認と取得の間に
+        // Close/Dispose が完了していると、ここで破棄済みのレコーダーが蘇生してしまう
+        // （誰からも管理されないパイプラインがエンコーダーごと残る）。
+        // キャンセル確認だけでは塞げないので、ロック取得後のここで検査する。
+        ObjectDisposedException.ThrowIf(_disposedValue, this);
+
         Close();
 
         var candidates = BuildEncoderCandidates();
@@ -754,6 +761,13 @@ public partial class EventRecorder : ObservableObject, IDisposable
             _pullPreviewThread = null;
             _pullSampleThread = null;
 
+            // pull スレッドが止まるまでの間も DrainBuses はバスを汲んでいるので、
+            // teardown 中のエラーが ScheduleRestart で新しい復帰を積んでいることがある
+            // ── 上の CancelPendingRestart はそれを知らない。Join の後にもう一度畳む。
+            // 畳み残すと、直後の再初期化（Initialize は必ず Close を先に呼ぶ）で
+            // _isAlive が立ち直った後に、旧セッション由来の復帰が走り出す。
+            CancelPendingRestart();
+
             while (_ringBuffer.TryDequeue(out var b))
                 b.Buffer.Dispose();
             _ringBufferBytes = 0;
@@ -836,7 +850,7 @@ public partial class EventRecorder : ObservableObject, IDisposable
 
     private void PullSampleProc()
     {
-        bool prevIsRecording = false;
+        int lastSeenSession = _recordingSession;
         ulong startPts = 0;
         bool isIframeFound = false;
 
@@ -864,8 +878,15 @@ public partial class EventRecorder : ObservableObject, IDisposable
             Gst.Buffer buf = new(Gst.Internal.BufferOwnedHandle.FromUnowned(((GLib.BoxedRecord)writableMiniObject)!.GetHandle()));
             buf.Handle.SetPts(b.Pts - startPts);
             buf.Handle.SetDts(Constants.CLOCK_TIME_NONE);
-            _appSrc?.PushBuffer(buf);
-            System.Threading.Interlocked.Increment(ref _samplesPushed);
+            // **数えるのは appsrc が受理した押し込みだけ。** PushBuffer は EOS 後は Eos、
+            // 未始動なら Flushing を返してバッファを受け取らない。拒否も数えると
+            // 「pushed が 0 でないのに MP4 は空」が成立し、停止時の空検出
+            // （pushed==0 → result=empty → 終了コード 16）を素通りする。
+            var flow = _appSrc?.PushBuffer(buf);
+            if (flow == FlowReturn.Ok)
+                System.Threading.Interlocked.Increment(ref _samplesPushed);
+            else
+                Log(DebugLevel.Warning, $"appsrc rejected a buffer: {flow?.ToString() ?? "(no appsrc)"}");
         }
         while (_isAlive)
         {
@@ -944,8 +965,15 @@ public partial class EventRecorder : ObservableObject, IDisposable
                     // ── 押し込みが 0 のまま録画が「成功」する経路（「587 バイトの空 MP4」の症状）。
                     System.Threading.Interlocked.Increment(ref _samplesSeenWhileRecording);
 
-                    if (!prevIsRecording)
+                    int session = _recordingSession;
+                    if (session != lastSeenSession)
                     {
+                        // 新しい録画セッションの最初の周回。前セッションの I フレーム検出と
+                        // startPts を持ち越さず、リングバッファ全体（今 Enqueue した newBuf を
+                        // 含む）を押し込む。フラグの false→true 遷移ではなく世代で検出する
+                        // 理由は _recordingSession の doc を参照。
+                        lastSeenSession = session;
+                        isIframeFound = false;
                         foreach (var b in _ringBuffer)
                             PushRecordBuffer(b);
                     }
@@ -954,8 +982,6 @@ public partial class EventRecorder : ObservableObject, IDisposable
                 }
                 else
                     isIframeFound = false;
-
-                prevIsRecording = _IsRecording;
             }
             catch (Exception ex)
             {
@@ -1284,6 +1310,20 @@ public partial class EventRecorder : ObservableObject, IDisposable
                 Components.ActivityLog.Warn("recorder.restart",
                     $"recorder='{Name}' escalating to a full pipeline rebuild after {attempt} failed attempts");
                 _restartAttempt = 0;
+
+                // 再生成へ進む前に、連鎖の所有権を自分で畳む。Initialize() は Close() 経由で
+                // CancelPendingRestart を呼び、その時点の _restartTask は「実行中の自分自身」
+                // ── 畳まずに進むと pending?.Wait(2000) が自タスクの完了を待つ形になり、
+                // 原理的に完了しないまま毎回 2 秒、_stateLock を握ったまま止まる。
+                // （畳んだ後に来たエラーは新しい連鎖を積めるが、それは Initialize() 内の
+                //   Close が改めてキャンセルするので二重には走らない。）
+                lock (_restartLock)
+                {
+                    if (ReferenceEquals(_restartCts, cts))
+                        _restartCts = null;
+                    _restartTask = null;
+                }
+
                 try
                 {
                     Initialize();
@@ -1335,8 +1375,9 @@ public partial class EventRecorder : ObservableObject, IDisposable
         // Delay 待ちなら即座にキャンセルされる。エスカレーションの Initialize() が
         // 走っている最中なら、それは Close() を呼んだスレッドが持つ _stateLock を
         // 待つので、ここで待ち切ることはできない（2秒で諦める）。
-        // 諦めた場合でも、ループ側が **危険な操作の直前ごとに** IsCancellationRequested を
-        // 見ているので、破棄済みのパイプラインを作り直すことはない。
+        // 諦めた場合の「破棄済みレコーダーの作り直し」は IsCancellationRequested では
+        // 防げない（確認とロック取得の間に窓がある）── InitializeCore 先頭の
+        // Dispose 済み検査が防ぐ。
         try { pending?.Wait(2000); }
         catch (AggregateException) { /* キャンセル例外。正常系 */ }
     }
@@ -1456,7 +1497,17 @@ public partial class EventRecorder : ObservableObject, IDisposable
             // 直前の停止がまだ排出中なら待つ。待たずに開始すると、排出して Null へ
             // 落とす途中の _srcPipeline に対して SetState(Playing) を掛けることになり、
             // stop → start の即時連打で競合する。
-            WaitForPendingStop();
+            // **待ち切れなかったら開始しない** ── 排出タスクはまだ _srcPipeline を
+            // 触っている（mux 詰まり）。そのまま StartCore へ進むと、防いだはずの競合が
+            // タイムアウトを境に解禁される。開始できない事実を呼び出し側へ見せて拒否する
+            // （Close の abandonedStop と同じく「触らない」を選ぶ）。
+            if (!WaitForPendingStop())
+            {
+                LastError = "the previous stop is still draining";
+                Components.ActivityLog.Error("recording.start fail",
+                    $"recorder='{Name}' the previous stop is still draining; refused to start");
+                throw new InvalidOperationException("The previous stop is still draining.");
+            }
             StartCore();
         }
     }
@@ -1473,13 +1524,27 @@ public partial class EventRecorder : ObservableObject, IDisposable
         _srcThrottles.Error.Flush();
         _srcThrottles.Warning.Flush();
 
-        var filename = FormatFilename(FilenameTemplate);
-        if (!Path.IsPathRooted(filename))
-            filename = Path.Combine(OutputDirectory, filename);
-        LastFilename = filename;
-        var dirname = Path.GetDirectoryName(filename);
-        if (dirname is not null && !Directory.Exists(dirname))
-            Directory.CreateDirectory(dirname);
+        string filename;
+        try
+        {
+            filename = FormatFilename(FilenameTemplate);
+            if (!Path.IsPathRooted(filename))
+                filename = Path.Combine(OutputDirectory, filename);
+            LastFilename = filename;
+            var dirname = Path.GetDirectoryName(filename);
+            if (dirname is not null && !Directory.Exists(dirname))
+                Directory.CreateDirectory(dirname);
+        }
+        catch (Exception ex)
+        {
+            // テンプレートの書式誤り・保存先の作成失敗（外した USB ドライブ等）もここで記録する。
+            // 記録と LastError を呼び出し側任せにすると、握り方しだいで無記録の失敗になる
+            // （SetState の失敗と同じ扱いに揃える）。
+            LastError = ex.Message;
+            Components.ActivityLog.Error("recording.start fail",
+                $"recorder='{Name}' template='{FilenameTemplate}' {ex.Message}");
+            throw;
+        }
 
         using (GObject.Value location = new(filename))
             _file?.SetProperty("location", location);
@@ -1491,12 +1556,17 @@ public partial class EventRecorder : ObservableObject, IDisposable
         _samplesPushed = 0;
         LastStopOutcome = RecordingStopOutcome.Ok;
 
+        // 世代も _IsRecording より前に進める ── pull スレッドは _IsRecording（volatile）を
+        // 見てから世代を読むので、この順序なら「録画中なのに世代が古いまま」は観測されない。
+        _recordingSession++;
+
         IsRecording = _IsRecording = true;
         _recordingStartedAt = Environment.TickCount64;
         if (_srcPipeline!.SetState(State.Playing) == StateChangeReturn.Failure)
         {
             // 成功と失敗でイベント名を分ける（`recorder.init ok` / `recorder.init fail` と同じ規則）。
             // 同名にすると L2 が `recording.start` に掛ける正規表現が失敗行にも一致してしまう。
+            LastError = "src pipeline refused to play";
             Components.ActivityLog.Error("recording.start fail", $"recorder='{Name}' file='{filename}' src pipeline refused to play");
             throw new InvalidOperationException("ERROR: pipeline doesn't want to play.");
         }
@@ -1523,6 +1593,17 @@ public partial class EventRecorder : ObservableObject, IDisposable
     /// 両方 0 ならサンプルが来ていない、見えているのに 0 なら I フレーム待ちで止まっている。
     /// </summary>
     private int _samplesPushed;
+
+    /// <summary>
+    /// 録画セッションの世代。<see cref="StartCore"/>（<c>_stateLock</c> 下）だけが増やし、
+    /// pull スレッドは値の変化で「新しい録画が始まった」を検出して事前バッファを押し込む。
+    /// フラグ（<c>_IsRecording</c>）の false→true 遷移では代用できない ──
+    /// 停止（排出完了まで）→開始が pull 1 周回（サンプル 1 枚の間隔）以内に完了すると、
+    /// pull スレッドは false の周回を一度も観測しないまま次のサンプルで true を見るため
+    /// 遷移自体が消え、事前バッファの排出が走らず、前セッションの startPts を引き継いだ
+    /// PTS で押し込んでしまう。
+    /// </summary>
+    private volatile int _recordingSession;
 
     /// <summary>
     /// <b>直近の停止がファイルとして何を残したか。</b>
@@ -1940,13 +2021,17 @@ public partial class EventRecorder : ObservableObject, IDisposable
     {
         if (!_disposedValue)
         {
+            // フラグは Close() より**前**に立てる。後に立てると、Close() の完了から
+            // フラグが立つまでの間に _stateLock を取った復帰エスカレーションの
+            // Initialize() が InitializeCore の Dispose 済み検査を素通りし、
+            // 破棄済みのレコーダーを蘇生させる窓が残る。
+            _disposedValue = true;
+
             if (disposing)
             {
                 Close();
                 _currentSettings?.PropertyChanged -= Settings_PropertyChanged;
             }
-
-            _disposedValue = true;
         }
     }
 

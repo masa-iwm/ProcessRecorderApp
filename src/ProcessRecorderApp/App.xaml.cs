@@ -113,15 +113,22 @@ public partial class App : Application
         _mainWindow.AppWindow.Title = _mainWindow.Title;
         // トレイ格納は Closing をキャンセルするだけなので、Destroying は本当の終了時のみ発火する。
         // 設定を保存してから録画エンジンを破棄する（2つのハンドラの発火順に依存させない）。
+        // 各段は互いに独立なので、1段の失敗で残りを道連れにしない ── 特に engine.Dispose() は
+        // 録画の確定（moov の書き出し）を担うため、必ず到達させる。ここで例外を素通しにすると、
+        // ディスク満杯で Save() が投げた場合に、録画データが最も危険な状況でその確定処理が飛ぶ。
         _mainWindow.AppWindow.Destroying += (_, __) =>
         {
-            Settings.AppSettings.Default.Save();
+            try { Settings.AppSettings.Default.Save(); }
+            catch (Exception ex) { LogException("AppWindow.Destroying(Save)", ex); }
             // トリガ監視をエンジンより先に止める ── 以後レコーダーへ新しい開始/停止を積ませない。
-            triggers.Dispose();
+            try { triggers.Dispose(); }
+            catch (Exception ex) { LogException("AppWindow.Destroying(Triggers)", ex); }
             // 掃除タスクを先に止める。順序に意味は無い（互いに触るものが無い）が、
             // 「掃除の途中でプロセスが消える」のを避けるため終了経路で待つ。
-            cleanup.Dispose();
-            engine.Dispose();
+            try { cleanup.Dispose(); }
+            catch (Exception ex) { LogException("AppWindow.Destroying(Cleanup)", ex); }
+            try { engine.Dispose(); }
+            catch (Exception ex) { LogException("AppWindow.Destroying(Engine)", ex); }
         };
 
         _singleInstanceManager.AttachWindow(_mainWindow);

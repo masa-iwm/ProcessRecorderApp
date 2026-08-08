@@ -69,7 +69,8 @@ public sealed partial class UiaTriggerService : IDisposable
     private readonly HashSet<string> _warnedWhileTriggers = [];
 
     /// <summary>
-    /// モニタの世代。入れ替え・破棄のたびに <see cref="_gate"/> の中で増やす。
+    /// モニタの世代。<see cref="ReloadAsync"/> の冒頭と <see cref="Dispose"/>
+    /// （いずれも <see cref="_gate"/> の中）で増やす。
     ///
     /// <para>
     /// 発火の処理は <c>WaitForControllerAsync</c> を待つので、
@@ -77,10 +78,22 @@ public sealed partial class UiaTriggerService : IDisposable
     /// その後で開始が再開する」順序が成立しうる。そうなると<b>トリガを切ったのに録画が回り続け、
     /// しかも追跡もされていない</b>。世代が変わっていたら実行しないことで塞ぐ。
     /// </para>
+    /// <para>
+    /// <b>各モニタの世代は生成前に確定し、発火ハンドラへ固定で渡す</b>
+    /// （<see cref="ReloadAsync"/> がラムダに閉じ込める）。発火時に現在値を読むと、
+    /// 新モニタの初回発火（<c>StartAsync</c> 中〜直後に届く <c>FireOnInitialMatch</c>）が
+    /// 「後から進んだ世代」と食い違って捨てられる ── 条件が既に成立している状態で
+    /// トリガを追加すると録画が始まらない、という形で現れる。
+    /// 不変条件は<b>「現用モニタのハンドラは常に現行世代を持つ」</b>で、
+    /// <c>StartAsync</c> 失敗で旧モニタが続投する経路では張り替えて維持する。
+    /// </para>
     /// </summary>
     private int _monitorEpoch;
 
     private TriggerMonitor? _monitor;
+
+    /// <summary>現在の <see cref="_monitor"/> に張った発火ハンドラ（世代を閉じ込めたラムダ）。解除用。</summary>
+    private EventHandler<TriggerFiredEventArgs>? _monitorFired;
     private volatile bool _disposed;
 
     private UiaTriggerService(DispatcherQueue dispatcherQueue)
@@ -116,6 +129,13 @@ public sealed partial class UiaTriggerService : IDisposable
             if (_disposed)
                 return;
 
+            // **世代はここ（_gate の中・モニタ生成前）で確定する。** 旧モニタ由来の発火は
+            // 旧世代を握っているので以後すべて退役し、新モニタの初回発火
+            // （StartAsync 中〜直後に届く FireOnInitialMatch）は最初から新世代を持つ。
+            // 後段（EnqueueReconcile）で増やすと、新モニタの発火が旧世代を掴んだまま
+            // インクリメントに追い越され、正当な初回発火が世代検査で捨てられる。
+            int epoch = Interlocked.Increment(ref _monitorEpoch);
+
             bool enabled = Settings.AppSettings.Default.UiaTriggersEnabled;
             // UiaTriggers は差し替え運用（AppSettings 側のコメント参照）なので参照読みで安全。
             // null は手で編集された settings.json（"UiaTriggers": null）で起こりうる。
@@ -126,12 +146,13 @@ public sealed partial class UiaTriggerService : IDisposable
                 if (_monitor is { } old)
                 {
                     _monitor = null;
-                    Unsubscribe(old);
+                    Unsubscribe(old, _monitorFired);
+                    _monitorFired = null;
                     await old.DisposeAsync().ConfigureAwait(false);
                     ActivityLog.Info("trigger.monitor stop");
                 }
                 // 条件を追える定義が 1 つも無くなったので、自動開始した録画はすべて止める
-                EnqueueReconcile(new HashSet<string>(StringComparer.Ordinal));
+                EnqueueReconcile(new HashSet<string>(StringComparer.Ordinal), epoch);
                 return;
             }
 
@@ -142,7 +163,8 @@ public sealed partial class UiaTriggerService : IDisposable
             {
                 Session = new UiaTrigger.UiaSessionOptions { ThreadName = "UiaTriggerMonitor" },
             });
-            monitor.TriggerFired += OnTriggerFired;
+            EventHandler<TriggerFiredEventArgs> fired = (_, e) => OnTriggerFired(e, epoch);
+            monitor.TriggerFired += fired;
             monitor.ResolutionChanged += OnResolutionChanged;
             monitor.UnhandledException += OnMonitorException;
             try
@@ -153,17 +175,32 @@ public sealed partial class UiaTriggerService : IDisposable
             {
                 // 定義エラー（ArgumentException）を含め、新モニタを捨てて現状維持
                 // ── 旧モニタが動いていればそのまま続投する。
-                Unsubscribe(monitor);
+                Unsubscribe(monitor, fired);
                 await monitor.DisposeAsync().ConfigureAwait(false);
                 ActivityLog.Error("trigger.monitor fail", ex.Message);
+
+                // **続投する旧モニタへ現行世代を持たせ直す。** 冒頭で世代を進めているため、
+                // 張り替えないと旧モニタの発火（旧世代のラムダ）が以後すべて世代検査で捨てられ、
+                // 「trigger.fire は出るのに録画アクションだけ実行されない」状態が
+                // 次の成功リロードまで続く。
+                if (_monitor is { } surviving)
+                {
+                    if (_monitorFired is { } oldFired)
+                        surviving.TriggerFired -= oldFired;
+                    EventHandler<TriggerFiredEventArgs> refreshed = (_, e2) => OnTriggerFired(e2, epoch);
+                    surviving.TriggerFired += refreshed;
+                    _monitorFired = refreshed;
+                }
                 return;
             }
 
             var previous = _monitor;
+            var previousFired = _monitorFired;
             _monitor = monitor;
+            _monitorFired = fired;
             if (previous is not null)
             {
-                Unsubscribe(previous);
+                Unsubscribe(previous, previousFired);
                 await previous.DisposeAsync().ConfigureAwait(false);
             }
             ActivityLog.Info("trigger.monitor start", $"count={definitions.Count}");
@@ -179,7 +216,7 @@ public sealed partial class UiaTriggerService : IDisposable
             EnqueueReconcile(definitions
                 .Where(NotifiesOnStoppedMatching)
                 .Select(d => d.Id)
-                .ToHashSet(StringComparer.Ordinal));
+                .ToHashSet(StringComparer.Ordinal), epoch);
         }
         catch (Exception ex)
         {
@@ -191,8 +228,12 @@ public sealed partial class UiaTriggerService : IDisposable
         }
     }
 
-    /// <summary>発火（監視ワーカースレッド）。①変数を常に反映 → ②アクションを UI スレッドへ。</summary>
-    private void OnTriggerFired(object? sender, TriggerFiredEventArgs e)
+    /// <summary>
+    /// 発火（監視ワーカースレッド）。①変数を常に反映 → ②アクションを UI スレッドへ。
+    /// <paramref name="epoch"/> は発火元モニタの世代（購読時にラムダへ閉じ込めた固定値。
+    /// 現在値をここで読まない理由は <see cref="_monitorEpoch"/> の doc を参照）。
+    /// </summary>
+    private void OnTriggerFired(TriggerFiredEventArgs e, int epoch)
     {
         try
         {
@@ -216,7 +257,6 @@ public sealed partial class UiaTriggerService : IDisposable
             // エッジを出さないと、立ち下がりが届いているのかどうかをログから判定できない。
             ActivityLog.Info("trigger.fire", $"id='{e.TriggerId}' edge={edge} value='{e.NewValue.Value}'");
 
-            int epoch = Volatile.Read(ref _monitorEpoch);
             if (!_dispatcherQueue.TryEnqueue(() => _ = ExecuteActionsAsync(e.TriggerId, edge, epoch)))
             {
                 // false はディスパッチャのシャットダウン中＝終了経路。黙って捨てない。
@@ -405,9 +445,11 @@ public sealed partial class UiaTriggerService : IDisposable
     /// <param name="fallingCapableIds">
     /// 不成立化を通知できる（＝「条件成立中のみ録画」を完結できる）トリガ ID。監視を止めるときは空。
     /// </param>
-    private void EnqueueReconcile(IReadOnlySet<string> fallingCapableIds)
+    private void EnqueueReconcile(IReadOnlySet<string> fallingCapableIds, int epoch)
     {
-        int epoch = Interlocked.Increment(ref _monitorEpoch);
+        // 世代はここでは増やさない ── ReloadAsync の冒頭で確定した値を使う。
+        // ここで増やすと、その手前で新モニタが発火した分（旧値を掴んでいる）が
+        // 世代検査に落ちて捨てられる。
         if (!_dispatcherQueue.TryEnqueue(() => _ = ReconcileAutoStartedAsync(fallingCapableIds, epoch)))
             ActivityLog.Warn("trigger.action drop", "reconcile: dispatcher unavailable");
     }
@@ -510,9 +552,10 @@ public sealed partial class UiaTriggerService : IDisposable
             $"key='{key}' cannot be referenced from the filename template (allowed: word characters, dots and hyphens)");
     }
 
-    private void Unsubscribe(TriggerMonitor monitor)
+    private void Unsubscribe(TriggerMonitor monitor, EventHandler<TriggerFiredEventArgs>? fired)
     {
-        monitor.TriggerFired -= OnTriggerFired;
+        if (fired is not null)
+            monitor.TriggerFired -= fired;
         monitor.ResolutionChanged -= OnResolutionChanged;
         monitor.UnhandledException -= OnMonitorException;
     }
@@ -545,7 +588,8 @@ public sealed partial class UiaTriggerService : IDisposable
             if (_monitor is { } monitor)
             {
                 _monitor = null;
-                Unsubscribe(monitor);
+                Unsubscribe(monitor, _monitorFired);
+                _monitorFired = null;
                 // DisposeAsync が待つのは自分のディスパッチャとイベントキューだけで、
                 // こちらの発火ハンドラは TryEnqueue で即返すため行き止まりにならない
                 // （UiaTrigger サンプルホストの Dispose と同じ形）。

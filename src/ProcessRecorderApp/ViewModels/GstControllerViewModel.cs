@@ -317,9 +317,18 @@ namespace ProcessRecorderApp.ViewModels
             if (SelectedRecorder is not { } recorder)
                 return;
 
+            bool wasBusy = recorder.IsRecording || recorder.IsStopping;
+
             if (AppSettings.Default.ConfirmRecorderRemoval
                 && ConfirmRecorderRemovalAsync is not null
                 && !await ConfirmRecorderRemovalAsync(recorder))
+                return;
+
+            // ダイアログ表示中もメッセージループは回るので、UIA トリガや CLI がこの間に
+            // 録画を始めていることがある。利用者が確認したのは「止まっているレコーダーの削除」
+            // なので、状態が変わっていたら黙って録画ごと破棄せず中止する
+            // （最初から録画中なのを承知で確認した場合は従来どおり削除できる）。
+            if (!wasBusy && (recorder.IsRecording || recorder.IsStopping))
                 return;
 
             RemoveRecorder(recorder);
@@ -347,8 +356,23 @@ namespace ProcessRecorderApp.ViewModels
         public void StartRecordingAll()
         {
             foreach (var r in Recorders)
-                if (r.CanStartRecording)
+            {
+                if (!r.CanStartRecording)
+                    continue;
+                try
+                {
                     r.StartRecording();
+                }
+                catch (Exception)
+                {
+                    // 1台の開始失敗（SetState の拒否・テンプレートの書式誤り・保存先の作成失敗）で
+                    // 残りのレコーダーを道連れにしない ── イベント録画では「押したのに一部だけ
+                    // 録れていない」がそのまま取り逃しになる。これらの失敗は EventRecorder 側が
+                    // recording.start fail と LastError に残す（status が終了コード 15 で報告する）。
+                    // 例外: CanStartRecording 確認後のレースで "Already started" 等が出た場合は
+                    // 無記録だが、その場合レコーダーは既に意図した状態にある。
+                }
+            }
         }
         public bool CanStartRecordingAll => Recorders.Any(r => r.CanStartRecording);
 

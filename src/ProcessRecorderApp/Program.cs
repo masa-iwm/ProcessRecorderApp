@@ -68,7 +68,24 @@ public static class Program
                     if (string.IsNullOrEmpty(path))
                         path = "debug.txt";
 #endif
-                    _stdRedirector!.SetLogFile(path); // 空文字/null なら保存を停止する
+                    // 開けない・解決できないパスは保存を諦めて記録だけ残す。
+                    // ここは App の未処理例外ハンドラ購読より前に走るので、例外が漏れると
+                    // 保存済みの不正なパス1つで常駐ワーカーが毎回起動途中で死ぬ。
+                    try
+                    {
+                        // 相対パスは実行ファイル基準（AppDirectories 規約）。常駐ワーカーは最初に
+                        // 起動したシェルのカレントディレクトリをプロセス寿命ぶん引きずるため、
+                        // CWD 基準だと同じ設定でも起動のたびに別の場所へ出る。
+                        path = AppDirectories.ResolveOptional(path);
+
+                        if (_stdRedirector!.SetLogFile(path) is { } logFileError)
+                            ActivityLog.Error("log.file error", $"path='{path}' {logFileError.Message}");
+                    }
+                    catch (Exception ex)
+                    {
+                        // ResolveOptional（GetFullPath）が不正なパスで投げる経路への保険。
+                        ActivityLog.Error("log.file error", $"path='{path}' {ex.Message}");
+                    }
                 }
                 ApplyLogFile();
                 Settings.AppSettings.Default.PropertyChanged += (_, e) =>

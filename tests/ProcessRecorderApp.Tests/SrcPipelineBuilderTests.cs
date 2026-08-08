@@ -112,6 +112,36 @@ public class SrcPipelineBuilderTests
     }
 
     [Fact]
+    public void Parse_QuotedValueContainingBang_IsNotSplitAtTheBang()
+    {
+        // '!' は引用値の中に実在するデバイス表示名（例: Creative "Live! Cam" 系）経由で入る。
+        // gst_parse_launch は引用内の '!' を値として扱うので、ここで割ると
+        // 「録画は通るのにビルダーで開き直すと設定が壊れる」形になる。
+        var parsed = SrcPipelineBuilder.Parse(
+            "mfvideosrc device-name=\"Live! Cam Sync HD\" ! video/x-raw, width=640, height=480");
+
+        Assert.Equal("mfvideosrc", parsed.SourceElement);
+        Assert.Equal("Live! Cam Sync HD", parsed.Properties["device-name"]);
+        Assert.True(parsed.HasCaps);
+        Assert.Equal("640", parsed.CapsFields["width"]);
+        Assert.Empty(parsed.IntermediateElements);
+    }
+
+    [Fact]
+    public void RoundTrip_DeviceNameWithBangQuotesAndBackslash_IsPreserved()
+    {
+        var def = SrcPipelineBuilder.FindSource("mfvideosrc")!;
+        const string name = "Live! \"Cam\" \\ Sync";
+
+        string assembled = SrcPipelineBuilder.Assemble(
+            def, capsEnabled: false, new[] { ("device-name", name) }, new Dictionary<string, string>());
+        var parsed = SrcPipelineBuilder.Parse(assembled);
+
+        Assert.Equal("mfvideosrc", parsed.SourceElement);
+        Assert.Equal(name, parsed.Properties["device-name"]);
+    }
+
+    [Fact]
     public void Parse_ElementsAfterTheSource_AreReportedAsIntermediate()
     {
         var parsed = SrcPipelineBuilder.Parse("videotestsrc ! videoconvert ! videoscale");

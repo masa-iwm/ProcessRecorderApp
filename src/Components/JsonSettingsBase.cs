@@ -112,23 +112,38 @@ public abstract partial class JsonSettingsBase<
     /// 差し替えなら、途中で落ちても本体は前回の内容のまま残る。
     /// </para>
     /// </summary>
-    public void Save(string filePath, JsonTypeInfo<TSelf> jsonTypeInfo)
+    /// <param name="onSaveFailure">
+    /// 書き込み・差し替えに失敗したときの通知先（<see cref="LoadOrCreate"/> の
+    /// <c>onLoadFailure</c> と対称）。<b>ここで例外を投げない</b>のは、呼び出し元に
+    /// 無防備な経路があるため ── 終了経路（<c>AppWindow.Destroying</c>）で投げると
+    /// 後続の録画エンジンの破棄（moov の確定）まで巻き添えになり、デバウンス保存
+    /// （<c>DispatcherQueue</c> のコールバック）で投げると捕捉される保証が無い。
+    /// ディスク満杯・ウイルス対策ソフトによる一時ロック・保存先の権限は実際に起こる。
+    /// </param>
+    public void Save(string filePath, JsonTypeInfo<TSelf> jsonTypeInfo, Action<string>? onSaveFailure = null)
     {
         IsFirstRun = false;
 
-        string? dir = Path.GetDirectoryName(filePath);
-        if (!string.IsNullOrEmpty(dir))
-        {
-            Directory.CreateDirectory(dir);
-        }
-
         string json = JsonSerializer.Serialize((TSelf)this, jsonTypeInfo);
 
-        // 同じディレクトリの一時ファイルへ書いてから差し替える（同一ボリュームなので
-        // MoveFileEx の置換は原子的になる）。
-        string temporary = filePath + TemporaryFileSuffix;
-        File.WriteAllText(temporary, json);
-        File.Move(temporary, filePath, overwrite: true);
+        try
+        {
+            string? dir = Path.GetDirectoryName(filePath);
+            if (!string.IsNullOrEmpty(dir))
+            {
+                Directory.CreateDirectory(dir);
+            }
+
+            // 同じディレクトリの一時ファイルへ書いてから差し替える（同一ボリュームなので
+            // MoveFileEx の置換は原子的になる）。
+            string temporary = filePath + TemporaryFileSuffix;
+            File.WriteAllText(temporary, json);
+            File.Move(temporary, filePath, overwrite: true);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            onSaveFailure?.Invoke($"could not save '{filePath}': {ex.GetType().Name}: {ex.Message}");
+        }
     }
 
     protected virtual void OnLoaded() { }

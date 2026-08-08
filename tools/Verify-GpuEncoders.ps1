@@ -143,8 +143,28 @@ $null = New-Item -ItemType Directory -Force $recDir
 
 # ---------------------------------------------------------------- helpers
 
+# Kill only the workers that belong to THIS run. They are identified by the pid each
+# worker writes to the isolated activity.log ('app.start pid=N') under $WorkDir -- the
+# same discipline the C# harness uses (AppInstance.KillWorkers). Matching by process
+# name would also kill a real resident instance the user keeps running on this machine,
+# which is exactly what the DATA_DIR/KEY_PREFIX isolation above promises not to do
+# (an in-progress recording of that instance would be lost unfinalized).
 function Stop-AllWorkers {
-    Get-Process ProcessRecorderApp -ErrorAction SilentlyContinue | Stop-Process -Force
+    $workerIds = @()
+    foreach ($log in @((Join-Path $WorkDir 'activity.log'), (Join-Path $WorkDir 'activity.log.1'))) {
+        if (Test-Path $log) {
+            $found = Select-String -Path $log -Pattern 'app\.start pid=(\d+)' -AllMatches -ErrorAction SilentlyContinue
+            foreach ($m in @($found | ForEach-Object { $_.Matches })) {
+                $workerIds += [int]$m.Groups[1].Value
+            }
+        }
+    }
+    foreach ($workerId in @($workerIds | Sort-Object -Unique)) {
+        $p = Get-Process -Id $workerId -ErrorAction SilentlyContinue
+        if ($null -ne $p -and $p.ProcessName -eq 'ProcessRecorderApp') {
+            try { Stop-Process -Id $workerId -Force -ErrorAction Stop } catch { }
+        }
+    }
     Start-Sleep -Milliseconds 600
 }
 
@@ -160,13 +180,34 @@ function Invoke-Cli {
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError  = $true
 
-    $p   = [System.Diagnostics.Process]::Start($psi)
-    $out = $p.StandardOutput.ReadToEnd()
-    $err = $p.StandardError.ReadToEnd()
-    if (-not $p.WaitForExit($TimeoutMs)) { try { $p.Kill() } catch { } }
+    $p = [System.Diagnostics.Process]::Start($psi)
+
+    # Read both pipes asynchronously BEFORE waiting. A synchronous ReadToEnd
+    # (1) never returns while a hung CLI keeps stdout open, so the timeout below
+    #     would never fire and an unattended run would hang forever, and
+    # (2) deadlocks outright once the process fills the other pipe's buffer
+    #     (the same trap the C# harness documents in AppInstance.Run).
+    $outTask = $p.StandardOutput.ReadToEndAsync()
+    $errTask = $p.StandardError.ReadToEndAsync()
+
+    $timedOut = -not $p.WaitForExit($TimeoutMs)
+    if ($timedOut) {
+        try { $p.Kill() } catch { }
+        # Kill is asynchronous; give the pipes a moment to break so the reads finish.
+        $null = $p.WaitForExit(5000)
+    }
+
+    $out = ''
+    $err = ''
+    try { if ($outTask.Wait(2000)) { $out = $outTask.Result } } catch { }
+    try { if ($errTask.Wait(2000)) { $err = $errTask.Result } } catch { }
+
+    # After Kill() the exit code may be unreadable; report the timeout itself as the
+    # failure instead of aborting the whole script on $p.ExitCode.
+    $exit = if ($timedOut) { -1 } else { $p.ExitCode }
 
     return [pscustomobject]@{
-        ExitCode = $p.ExitCode
+        ExitCode = $exit
         StdOut   = $out.Trim()
         StdErr   = $err.Trim()
     }
@@ -407,9 +448,14 @@ function Get-AllH264EncodersOnThisMachine {
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError  = $true
     $p = [System.Diagnostics.Process]::Start($psi)
-    $out = $p.StandardOutput.ReadToEnd()
-    $null = $p.StandardError.ReadToEnd()
-    if (-not $p.WaitForExit(120000)) { try { $p.Kill() } catch { } }
+    # Async reads before waiting: a synchronous ReadToEnd would defeat the timeout and
+    # can deadlock when the other pipe's buffer fills (see Invoke-Cli).
+    $outTask = $p.StandardOutput.ReadToEndAsync()
+    $errTask = $p.StandardError.ReadToEndAsync()
+    if (-not $p.WaitForExit(120000)) { try { $p.Kill() } catch { }; $null = $p.WaitForExit(5000) }
+    $out = ''
+    try { if ($outTask.Wait(2000)) { $out = $outTask.Result } } catch { }
+    try { $null = $errTask.Wait(2000) } catch { }
 
     # Lines look like "nvcodec:  nvd3d11h264enc: NVENC H.264 Video Encoder D3D11 Mode"
     #
@@ -454,10 +500,15 @@ if ($gstInspect -and (Test-Path $gstInspect)) {
         $psi.RedirectStandardOutput = $true
         $psi.RedirectStandardError  = $true
         $p = [System.Diagnostics.Process]::Start($psi)
-        $null = $p.StandardOutput.ReadToEnd()
-        $null = $p.StandardError.ReadToEnd()
-        if (-not $p.WaitForExit(30000)) { try { $p.Kill() } catch { } }
-        if ($p.ExitCode -eq 0) { $present += $e }
+        # Async reads before waiting (see Invoke-Cli): the output is discarded but the
+        # pipes still fill up, and a synchronous ReadToEnd would defeat the timeout.
+        $outTask = $p.StandardOutput.ReadToEndAsync()
+        $errTask = $p.StandardError.ReadToEndAsync()
+        $timedOut = -not $p.WaitForExit(30000)
+        if ($timedOut) { try { $p.Kill() } catch { }; $null = $p.WaitForExit(5000) }
+        try { $null = $outTask.Wait(2000) } catch { }
+        try { $null = $errTask.Wait(2000) } catch { }
+        if (-not $timedOut -and $p.ExitCode -eq 0) { $present += $e }
     }
 } else {
     Write-Warning "gst-inspect-1.0.exe not found; cases will be derived from the app's own probe instead."

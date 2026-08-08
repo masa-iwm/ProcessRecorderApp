@@ -68,8 +68,42 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 $RuntimeRoot = (Resolve-Path $RuntimeRoot).Path.TrimEnd('\')
-if (-not (Get-Command $Objdump -ErrorAction SilentlyContinue)) {
+$objdumpCommand = Get-Command $Objdump -ErrorAction SilentlyContinue
+if (-not $objdumpCommand) {
     throw "objdump not found: '$Objdump'. Install MSYS2 binutils and pass -Objdump <path to objdump.exe>."
+}
+$ObjdumpExe = $objdumpCommand.Source
+
+# Run objdump through System.Diagnostics.Process, NOT the PowerShell pipeline with a
+# stderr redirect. In Windows PowerShell 5.1, redirecting a native command's stderr
+# (2>$null included) wraps every line in an ErrorRecord, and with
+# $ErrorActionPreference='Stop' the first warning objdump prints would terminate the
+# whole walk (.claude/rules/powershell.md bans 2>&1 for the same mechanism).
+# Also fail loudly when objdump cannot parse a file: a silently-empty import list makes
+# the closure smaller, and the closure is what decides which files may be DELETED from
+# the bundled runtime -- the exact failure mode this script's own docs call the top risk.
+function Get-ImportedDllNames {
+    param([string] $Path)
+
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName               = $ObjdumpExe
+    $psi.Arguments              = '-p "' + $Path + '"'
+    $psi.UseShellExecute        = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError  = $true
+    $p = [System.Diagnostics.Process]::Start($psi)
+    # Async reads before waiting, so neither pipe can fill up and deadlock the process.
+    $outTask = $p.StandardOutput.ReadToEndAsync()
+    $errTask = $p.StandardError.ReadToEndAsync()
+    $p.WaitForExit()
+    $out = $outTask.Result
+    $errText = $errTask.Result
+    if ($p.ExitCode -ne 0) {
+        throw "objdump failed for '$Path' (exit $($p.ExitCode)): $($errText.Trim())"
+    }
+    return @($out -split "`r?`n" | ForEach-Object {
+        if ($_ -match '^\s*DLL Name:\s*(\S+)\s*$') { $Matches[1] }
+    })
 }
 
 function Get-RelativePath {
@@ -131,9 +165,7 @@ while ($queue.Count -gt 0) {
     $closure[$rel] = $true
 
     $full = Join-Path $RuntimeRoot ($rel -replace '/', '\')
-    $imports = @(& $Objdump -p $full 2>$null |
-        Select-String -Pattern '^\s*DLL Name:\s*(\S+)\s*$' |
-        ForEach-Object { $_.Matches[0].Groups[1].Value })
+    $imports = @(Get-ImportedDllNames -Path $full)
 
     foreach ($imp in $imports) {
         $key = $imp.ToLowerInvariant()
