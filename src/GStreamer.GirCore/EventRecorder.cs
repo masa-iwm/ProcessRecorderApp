@@ -483,6 +483,9 @@ public partial class EventRecorder : ObservableObject, IDisposable
 
     private void InitializeCore()
     {
+        // ロック契約（このファイルの doc に分散している）を Debug ビルドで機械検査する。
+        System.Diagnostics.Debug.Assert(Monitor.IsEntered(_stateLock), "InitializeCore must run under _stateLock");
+
         // Dispose 済みなら作り直さない。復帰エスカレーションの Initialize() は
         // IsCancellationRequested を確認してから _stateLock を待つため、確認と取得の間に
         // Close/Dispose が完了していると、ここで破棄済みのレコーダーが蘇生してしまう
@@ -729,6 +732,8 @@ public partial class EventRecorder : ObservableObject, IDisposable
     /// </param>
     private void CloseCore(bool abandonedStop = false)
     {
+        System.Diagnostics.Debug.Assert(Monitor.IsEntered(_stateLock), "CloseCore must run under _stateLock");
+
         // Stop() 失敗時などの再入を防ぐ（Close→Stop→(例外)→Close のような経路）
         if (_closing)
             return;
@@ -768,9 +773,8 @@ public partial class EventRecorder : ObservableObject, IDisposable
             // _isAlive が立ち直った後に、旧セッション由来の復帰が走り出す。
             CancelPendingRestart();
 
-            while (_ringBuffer.TryDequeue(out var b))
-                b.Buffer.Dispose();
-            _ringBufferBytes = 0;
+            foreach (var b in _ringBuffer.DrainAll())
+                b.Dispose();
 
             // src パイプライン側
             if (abandonedStop)
@@ -831,17 +835,16 @@ public partial class EventRecorder : ObservableObject, IDisposable
     /// </summary>
     private volatile bool _isAlive = true;
 
-    private readonly ConcurrentQueue<(ulong Pts, Gst.Buffer Buffer, ulong Size)> _ringBuffer = [];
-
-    /// <summary>リングバッファが保持しているエンコード済みデータの合計バイト数（サイズ基準の退避用）。</summary>
-    private ulong _ringBufferBytes;
+    // 退避の不変条件（時間・サイズの2本立て、直近の1件は必ず残す）は
+    // RecordingRingBuffer にあり、L1（RecordingRingBufferTests）が守っている。
+    private readonly RecordingRingBuffer<Gst.Buffer> _ringBuffer = new();
 
     /// <summary>
     /// リングバッファのサイズ上限（512MiB）。時間基準(<see cref="BufferDuration"/>)の退避だけに頼らないための二次防御。
     ///
-    /// 退避条件の <c>pts - b.Pts</c> は符号なし演算のため、ソースの再起動などで PTS が巻き戻ると
-    /// アンダーフローして意図しない結果になりうる。またビットレートが極端に高い場合は、
-    /// 規定時間内であってもメモリを圧迫する。時間・サイズの両方で上限を掛ける。
+    /// 退避条件の符号なし減算は、ソースの再起動などで PTS が巻き戻るとアンダーフローして
+    /// 意図しない結果になりうる。またビットレートが極端に高い場合は、規定時間内であっても
+    /// メモリを圧迫する。時間・サイズの両方で上限を掛ける（<see cref="RecordingRingBuffer{T}.Evict"/>）。
     /// </summary>
     private const ulong MaxRingBufferBytes = 512UL * 1024 * 1024;
 
@@ -861,22 +864,22 @@ public partial class EventRecorder : ObservableObject, IDisposable
         // **エラーにはならないまま**中身の無い MP4 が出来上がる（実機の nvh264enc で観測）。
         // sink 側で実際にネゴシエートされたキャップスを渡して推測をやめさせる。
         bool appSrcCapsSet = false;
-        void PushRecordBuffer((ulong Pts, Gst.Buffer Buffer, ulong Size) b)
+        void PushRecordBuffer(ulong bufferPts, Gst.Buffer buffer)
         {
             if (!isIframeFound)
             {
-                if (b.Buffer.HasFlags(BufferFlags.DeltaUnit))
+                if (buffer.HasFlags(BufferFlags.DeltaUnit))
                     return;
                 else
                 {
-                    startPts = b.Pts;
+                    startPts = bufferPts;
                     isIframeFound = true;
                 }
             }
-            using MiniObject miniObject = new(Gst.Internal.MiniObjectOwnedHandle.FromUnowned(((GLib.BoxedRecord)b.Buffer).GetHandle()));
+            using MiniObject miniObject = new(Gst.Internal.MiniObjectOwnedHandle.FromUnowned(((GLib.BoxedRecord)buffer).GetHandle()));
             using MiniObject writableMiniObject = miniObject.MakeWritable()!;
             Gst.Buffer buf = new(Gst.Internal.BufferOwnedHandle.FromUnowned(((GLib.BoxedRecord)writableMiniObject)!.GetHandle()));
-            buf.Handle.SetPts(b.Pts - startPts);
+            buf.Handle.SetPts(bufferPts - startPts);
             buf.Handle.SetDts(Constants.CLOCK_TIME_NONE);
             // **数えるのは appsrc が受理した押し込みだけ。** PushBuffer は EOS 後は Eos、
             // 未始動なら Flushing を返してバッファを受け取らない。拒否も数えると
@@ -926,35 +929,14 @@ public partial class EventRecorder : ObservableObject, IDisposable
                     pts = (ulong)(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() * 1_000_000);
 
                 var copy = buffer.Copy()!;
-                var newBuf = (pts, copy, Size: copy.GetSize());
-                _ringBuffer.Enqueue(newBuf);
-                _ringBufferBytes += newBuf.Size;
+                _ringBuffer.Enqueue(pts, copy, copy.GetSize());
 
-                // 退避条件は「時間」と「サイズ」の2本立て。
-                // 時間: BufferDuration より古いバッファを捨てる（本来の意図）
-                // サイズ: MaxRingBufferBytes を超えたら時間に関係なく捨てる
-                //         （PTS 巻き戻しによる符号なし減算のアンダーフローや、
-                //           極端な高ビットレートでメモリを枯渇させないための二次防御）
+                // 退避条件（時間・サイズの2本立て）と「直近の1件は必ず残す」ガードは
+                // RecordingRingBuffer.Evict にあり、L1 が守っている。
+                // 退避したバッファの解放（ネイティブ）はここで行う。
                 ulong bufferDurationNs = (ulong)Math.Max(0, BufferDuration) * 1_000_000UL;
-
-                // 直近の1件（今 Enqueue した newBuf）は必ず残す。
-                // BufferDuration=0 では tooOld の条件が (pts - b.Pts) >= 0 ＝常に真になるため、
-                // このガードが無いと newBuf まで Dequeue して Dispose し、その直後の
-                // PushRecordBuffer(newBuf) が解放済みバッファを触ることになる。
-                // 症状は「録画は成功して終了コード 0 なのに、中身の無い MP4 が残る」
-                // ── 0 は MinBufferDuration ＝ UI からも設定できる正当な下限値で、
-                // 「事前バッファ無しで今から録る」という意味でなければならない。
-                while (_ringBuffer.Count > 1 && _ringBuffer.TryPeek(out var b))
-                {
-                    bool tooOld = (pts - b.Pts) >= bufferDurationNs;
-                    bool tooLarge = _ringBufferBytes > MaxRingBufferBytes;
-                    if (!tooOld && !tooLarge)
-                        break;
-                    if (!_ringBuffer.TryDequeue(out b))
-                        break;
-                    _ringBufferBytes -= Math.Min(_ringBufferBytes, b.Size);
-                    b.Buffer.Dispose();
-                }
+                foreach (var evicted in _ringBuffer.Evict(pts, bufferDurationNs, MaxRingBufferBytes))
+                    evicted.Dispose();
 
                 if (_IsRecording)
                 {
@@ -969,16 +951,16 @@ public partial class EventRecorder : ObservableObject, IDisposable
                     if (session != lastSeenSession)
                     {
                         // 新しい録画セッションの最初の周回。前セッションの I フレーム検出と
-                        // startPts を持ち越さず、リングバッファ全体（今 Enqueue した newBuf を
+                        // startPts を持ち越さず、リングバッファ全体（今 Enqueue した copy を
                         // 含む）を押し込む。フラグの false→true 遷移ではなく世代で検出する
                         // 理由は _recordingSession の doc を参照。
                         lastSeenSession = session;
                         isIframeFound = false;
-                        foreach (var b in _ringBuffer)
-                            PushRecordBuffer(b);
+                        foreach (var (bufferPts, b) in _ringBuffer)
+                            PushRecordBuffer(bufferPts, b);
                     }
                     else
-                        PushRecordBuffer(newBuf);
+                        PushRecordBuffer(pts, copy);
                 }
                 else
                     isIframeFound = false;
@@ -1364,6 +1346,8 @@ public partial class EventRecorder : ObservableObject, IDisposable
     /// </summary>
     private void CancelPendingRestart()
     {
+        System.Diagnostics.Debug.Assert(Monitor.IsEntered(_stateLock), "CancelPendingRestart must run under _stateLock");
+
         System.Threading.Tasks.Task? pending;
         lock (_restartLock)
         {
@@ -1514,6 +1498,8 @@ public partial class EventRecorder : ObservableObject, IDisposable
 
     private void StartCore()
     {
+        System.Diagnostics.Debug.Assert(Monitor.IsEntered(_stateLock), "StartCore must run under _stateLock");
+
         if (!IsInitialized)
             throw new InvalidOperationException("Not Initialized");
         if (_IsRecording)
@@ -1722,6 +1708,8 @@ public partial class EventRecorder : ObservableObject, IDisposable
     /// </summary>
     private bool WaitForPendingStop()
     {
+        System.Diagnostics.Debug.Assert(Monitor.IsEntered(_stateLock), "WaitForPendingStop must run under _stateLock");
+
         var pending = _stopTask;
         if (pending is null || pending.IsCompleted)
             return true;
