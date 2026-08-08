@@ -47,8 +47,8 @@
     <PackageVersion Include="System.CommandLine" Version="2.0.10" />
 
     <!-- UIA トリガ（GitHub Packages。プレリリースのため完全固定） -->
-    <PackageVersion Include="UiaTrigger.Core" Version="0.1.0-preview.5" />
-    <PackageVersion Include="UiaTrigger.Picker.WinUI" Version="0.1.0-preview.5" />
+    <PackageVersion Include="UiaTrigger.Core" Version="0.1.0-preview.6" />
+    <PackageVersion Include="UiaTrigger.Picker.WinUI" Version="0.1.0-preview.6" />
 
     <!-- テスト -->
     <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
