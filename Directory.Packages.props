@@ -16,10 +16,6 @@
   CentralPackageTransitivePinning は有効にしない。有効にすると推移的依存が
   直接依存へ昇格して復元グラフが変わる。ここでの目的は版の置き場所を 1 つにすることだけで、
   解決結果は変えない。
-
-  UiaTrigger.* だけ取得元が GitHub Packages（ルートの nuget.config の
-  packageSourceMapping）。その packageSourceMapping は NU1507（複数ソース + CPM）を
-  出さないための前提でもあるので、消さないこと。
 -->
 <Project>
   <PropertyGroup>
@@ -46,9 +42,9 @@
     <PackageVersion Include="GirCore.GstVideo-1.0" Version="0.8.1" />
     <PackageVersion Include="System.CommandLine" Version="2.0.10" />
 
-    <!-- UIA トリガ（GitHub Packages。プレリリースのため完全固定） -->
-    <PackageVersion Include="UiaTrigger.Core" Version="0.1.0-preview.8" />
-    <PackageVersion Include="UiaTrigger.Picker.WinUI" Version="0.1.0-preview.8" />
+    <!-- UIA トリガ（0.x のあいだは公開 API が動くので、上げるときは使用面を確かめる） -->
+    <PackageVersion Include="UiaTrigger.Core" Version="0.1.0" />
+    <PackageVersion Include="UiaTrigger.Picker.WinUI" Version="0.1.0" />
 
     <!-- テスト -->
     <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />

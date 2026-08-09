@@ -36,9 +36,6 @@ env:
   DOTNET_NOLOGO: 'true'
   DOTNET_CLI_TELEMETRY_OPTOUT: 'true'
   DOTNET_SKIP_FIRST_TIME_EXPERIENCE: 'true'
-  # UiaTrigger.* の復元認証（nuget.config が参照する）。publish の暗黙復元でも要る。
-  GITHUB_PACKAGES_USER: ${{ github.actor }}
-  GITHUB_PACKAGES_TOKEN: ${{ secrets.GITHUB_TOKEN }}
   # 同梱用ランタイムの置き場。Release アセット（prerelease）として上げてある。
   # tools/Fetch-GStreamerRuntime.ps1 の既定値と揃えること（更新手順は docs/runtime-update.md）。
   # 中身は licenses/third-party/COMPONENTS.tsv が正本で、下の検証がそれと突き合わせる。
@@ -52,7 +49,6 @@ jobs:
     timeout-minutes: 90
     permissions:
       contents: write     # Release にアセットを添付するため
-      packages: read      # UiaTrigger.* を GitHub Packages から復元するため（明示しないと none になる）
 
     steps:
       - name: Check out

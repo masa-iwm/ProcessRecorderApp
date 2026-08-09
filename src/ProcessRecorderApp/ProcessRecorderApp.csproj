@@ -58,8 +58,7 @@
     <!-- Variables ペインのキー/値グリッド表示・編集に使用。MIT License -->
     <PackageReference Include="WinUI.TableView" />
     <!-- 別アプリの UIA 変化を録画トリガ・テンプレート変数にする（監視 API と編集 UI）。
-         取得元は GitHub Packages（nuget.config を参照。読み取りにも認証が要る）。
-         版はルートの Directory.Packages.props（プレリリースのため完全固定）。MIT License -->
+         版はルートの Directory.Packages.props。MIT License -->
     <PackageReference Include="UiaTrigger.Core" />
     <PackageReference Include="UiaTrigger.Picker.WinUI" />
   </ItemGroup>

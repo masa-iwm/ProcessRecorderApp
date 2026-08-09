@@ -1587,44 +1587,17 @@ error APPX0002: Task 'WinAppSdkExpandPriContent' failed. Could not find file
   なお `HKLM\SYSTEM\CurrentControlSet\Control\FileSystem\LongPathsEnabled` を立てても
   **MakePri に効くかは未検証**。
 
-### UiaTrigger パッケージの取得（GitHub Packages）
+### パッケージの取得元
 
-`UiaTrigger.Core` / `UiaTrigger.Picker.WinUI` は当面 GitHub Packages
-（`https://nuget.pkg.github.com/masa-iwm/index.json`）から取得する。
-リポジトリルートの `nuget.config` が `packageSourceMapping` で `UiaTrigger.*` だけを
-このフィードへ向けており、他のパッケージの解決経路は変わらない。
+取得元は **nuget.org だけ**で、復元に認証は要らない（`UiaTrigger.Core` /
+`UiaTrigger.Picker.WinUI` も nuget.org から取る）。リポジトリルートの `nuget.config` が
+ソースを 1 つに固定しており、`<clear />` でマシン/ユーザー設定のソースを遮断する
+── 手元にだけ登録されたフィードから同名パッケージが解決されると、CI と手元で
+別の中身をビルドしうるため。
 
-**GitHub Packages は読み取りにも認証が必須**（無認証の index.json は 401）。
-資格情報は環境変数で与える。**専用の PAT を作る必要は無い** ── gh CLI のトークンに
-スコープを足して使えば、実体は gh が Windows 資格情報マネージャーで保管し、
-作成・保管・失効管理をこちらで持たずに済む:
-
-```powershell
-gh auth refresh -h github.com -s read:packages   # 1 回だけ（ブラウザで承認）
-
-# 開発シェル（PowerShell プロファイル等）で
-$env:GITHUB_PACKAGES_USER  = 'masa-iwm'
-$env:GITHUB_PACKAGES_TOKEN = gh auth token
-```
-
-**`gh auth token` は既定では `read:packages` を持たない。** その状態は紛らわしい形で現れる
-── フィードの `index.json` は **200** を返すのに、nupkg の取得だけが **403** になる
-（`gh auth status` の Token scopes で確認できる）。
-
-PAT を使う道もある（classic のみ。**GitHub Packages の NuGet レジストリは
-fine-grained PAT に対応していない**）。その場合もスコープは `read:packages` だけにし、
-`setx` での永続化は避ける ── ユーザー環境変数（レジストリ）に平文で残り、
-そのユーザーの全プロセスから読める。
-
-いずれも未設定のときの症状は「github ソースだけ 401/403 になり、`UiaTrigger.*` の解決だけが
-`NU1301` で失敗する」（他プロジェクトの復元は成功する）。CI では `GITHUB_TOKEN` を
-同じ環境変数へ写して復元する（[docs/ci.md](../docs/ci.md)）。
-UiaTrigger を nuget.org へ公開したら、`nuget.config` の github の 3 ブロックを消し、
-`Directory.Packages.props` の `Version` を更新するだけでよい。
-
-なお `packageSourceMapping` は取得元を絞るためだけのものではない ── パッケージ版の
-集中管理（次項）と複数ソースの組み合わせは、マッピングが無いと `NU1507` を出す。
-消さないこと。
+`packageSourceMapping` はソースが 1 つの今は解決結果を変えないが、書いたままにしてある
+── ソースを増やしたときに「どれをどこから取るか」を書き忘れると、パッケージ版の
+集中管理（次項）との組み合わせで `NU1507` になる。
 
 ### パッケージ版の集中管理
 
