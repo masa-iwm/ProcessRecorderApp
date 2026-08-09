@@ -81,7 +81,7 @@
     <PackageProjectUrl>https://github.com/masa-iwm/ProcessRecorderApp</PackageProjectUrl>
     <PublishRepositoryUrl>true</PublishRepositoryUrl>
 
-    <Version>0.1.0-preview.3</Version>
+    <Version>0.1.0-preview.4</Version>
 	</PropertyGroup>
   
   
