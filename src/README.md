@@ -1247,6 +1247,31 @@ GPU テクスチャになるため**アクセシブルテキストが 1 つも�
   `JsonSettingsBase.LoadOrCreate` がそれを黙って既定値へフォールバックする
   （＝全設定が初期化されたように見える）。編集は UTF-8 のまま保存すること。
 
+  **列挙は名前で書く** ── `PaneDisplayMode`（`"Top"` 等）とレコーダーの `Type`
+  （`"System"` / `"D3d12"`）。数値だと手で開いても意味が読めず、宣言の並びを変えた瞬間に
+  既存ファイルの意味が黙って変わる。変換器は `JsonStringEnumConverter<T>` の**総称版**
+  （非総称版は実行時リフレクションを要求するので Native AOT で使えない）を、
+  自前の列挙は型に・WinUI の列挙はプロパティに指定している。
+  **読み取りは数値も受ける**ので、数値で書かれた古いファイルもそのまま読める
+  （`DataVersion` は列挙ではないので整数のまま）。
+
+  手で直す側の支えとして、**同じディレクトリへ JSON Schema を随伴させる**
+  （`settings.schema.json`。`JsonSettingsBase.SaveSchema` が設定本体を書いた直後に書き、
+  内容が同じなら書き直さない）。生成は `System.Text.Json.Schema.JsonSchemaExporter` で、
+  **`JsonTypeInfo` を受ける多重定義だけを使う** ── `JsonSerializerOptions` と `Type` を
+  受ける側は実行時リフレクションで契約を作るため Native AOT で警告になり、しかも
+  本体の直列化とは別の解決器を通るのでソース生成側と食い違ったスキーマを出しうる。
+  設定本体の先頭には `$schema`（`AppSettings.SchemaReference`）が入り、隣のファイルを
+  **相対参照**で指す。これを実体のあるプロパティとして宣言しているのは、宣言しないと
+  手書きの `$schema` が `ExtensionData` に落ち、書き出し側と合わせて**同じキーが2回出る
+  壊れた JSON** になるため。読み込んだ値は上書きしない（別のスキーマを指せる）。
+
+  同じ内容を [docs/settings.schema.json](../docs/settings.schema.json) としてリポジトリにも
+  登録してある ── **設定の形の変更が差分としてレビューに乗る**ようにするため
+  （プロパティの増減・列挙の値・型の変化がここに出る）。ずれは L2 の
+  `SettingsSchemaTests` が検出する。更新はアプリを一度起動して設定を保存し、
+  書かれた `settings.schema.json` で上書きする。
+
   保存契機は3つ: **ウィンドウ破棄時・トレイ格納時・変更から約1秒のデバウンス**
   （`AttachAutoSave`。`AppSettings.PropertyChanged` / `Recorders.CollectionChanged` /
   `EventRecorder.TemplateVariablesChanged` が契機）。

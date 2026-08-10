@@ -48,3 +48,4 @@ CI の構成と理由は [docs/ci.md](docs/ci.md)。
 | [docs/gpu-verification.md](docs/gpu-verification.md) | GPU 実機検証の手順とレポートの読み方 |
 | [docs/environment-facts.md](docs/environment-facts.md) | 環境と実装の背景事実 |
 | [docs/runtime-update.md](docs/runtime-update.md) | 同梱ランタイムの更新手順 |
+| [docs/settings.schema.json](docs/settings.schema.json) | settings.json の JSON Schema（生成物。手で編集しない） |

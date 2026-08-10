@@ -108,6 +108,10 @@ exe を実行するとタスクトレイに常駐し、ウィンドウは表示�
   `.mp4` だけです。削除の結果からになったサブフォルダーは併せて削除しますが、
   保存先フォルダーそのものは削除しません。
 - アプリの設定は `%LOCALAPPDATA%\ProcessRecorderApp\settings.json` に保存されます。
+  同じ場所に **JSON Schema** を `settings.schema.json` として書き出し、設定ファイル側の
+  `$schema` がそれを指します。JSON Schema に対応したエディタ（VS Code 等）なら、
+  手で編集するときに補完と検証が効きます。同じ内容をリポジトリにも
+  [docs/settings.schema.json](docs/settings.schema.json) として登録しています。
 - 動作ログは `%LOCALAPPDATA%\ProcessRecorderApp\activity.log` に記録されます。
   記録されるのは、アプリの起動と終了、使用する H.264 エンコーダーの選択結果、
   レコーダーの初期化の成否、**録画の開始と終了（実際に書き出したファイル名と録画時間）**、

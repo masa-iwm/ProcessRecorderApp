@@ -239,7 +239,6 @@ function Write-Settings {
     # rasterizer, and a heavier source simply cannot keep up (a 3s recording then yields
     # well under a second of video). This script is about which encoder gets selected and
     # whether it produces a valid MP4, not about throughput.
-    $typeValue = if ($RecorderType -eq 'D3d12') { 1 } else { 0 }
     $src = if ($RecorderType -eq 'D3d12') {
         'd3d12testsrc is-live=true do-timestamp=true ! video/x-raw(memory:D3D12Memory), format=NV12, width=320, height=240, framerate=15/1'
     } else {
@@ -261,7 +260,7 @@ function Write-Settings {
       "Name": "R1",
       "BufferDuration": 2000,
       "FilenameTemplate": "$tmpl",
-      "Type": $typeValue,
+      "Type": "$RecorderType",
       "SrcPipeline": "$src",
       "EncodingProperties": $encProp
     }

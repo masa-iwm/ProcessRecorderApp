@@ -194,7 +194,6 @@ function Write-Settings {
         [int]$BufferDuration = 3000
     )
 
-    $typeValue = if ($RecorderType -eq 'D3d12') { 1 } else { 0 }
     $encProp   = if ([string]::IsNullOrEmpty($EncodingProperties)) { 'null' } else { '"' + $EncodingProperties + '"' }
     $tmpl      = ($recDir -replace '\\', '\\') + '\\{Name}_{Now:HHmmssfff}.mp4'
     $logPath   = ($WorkDir -replace '\\', '\\') + '\\debug.log'
@@ -212,7 +211,7 @@ function Write-Settings {
       "Name": "R1",
       "BufferDuration": $BufferDuration,
       "FilenameTemplate": "$tmpl",
-      "Type": $typeValue,
+      "Type": "$RecorderType",
       "SrcPipeline": "$SrcPipeline",
       "EncodingProperties": $encProp
     }

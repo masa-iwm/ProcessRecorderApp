@@ -14,6 +14,7 @@
 | `RuntimeClosureSeedSyncTests` | 閉包の種リスト ⇔ `tools/Get-GStreamerImportClosure.ps1` |
 | `GpuVerifyScriptParsingTests` | `tools/Verify-GpuEncoders.ps1` 内の正規表現（スクリプトから取り出して .NET で実行するので、規則が2か所に書かれない） |
 | `ThirdPartyLicenseTests` | `THIRD-PARTY-NOTICES.md` ⇔ `licenses/third-party/`（取得元・版・SHA256 の正本は `SOURCES.tsv` 1つ） |
+| `SettingsSchemaTests`（L2） | `docs/settings.schema.json` ⇔ アプリが settings.json の隣へ書く `settings.schema.json`（**発行物を起動して実際に書かせたものと突き合わせる**）／同じ保存で書かれた settings.json のキー集合 ⇔ スキーマの `properties`（過不足なく一致）／settings.json の `$schema` が相対参照であること。**L1 では検証できない**（`AppSettings` と `AppSettingsJsonContext` は WinUI アプリプロジェクト側）。機構そのものは L1 の `JsonSettingsBaseTests` |
 | `TerminalAssetPinTests` | `src/ProcessRecorderApp/Assets/Terminal/SOURCES.md` ⇔ 同 `vendor/` の実ファイル（**双方向**・SHA256）／版表記 ⇔ `THIRD-PARTY-NOTICES.md`／`.gitattributes` の `vendor/** -text` の存在。**xterm.js は `licenses/third-party/` の台帳には載せられない**（同梱・非同梱の両方に入るため。理由は `SOURCES.md`） |
 
 `tools/` のスクリプトは参考資料ではなく**テスト対象**である。
@@ -26,5 +27,8 @@
   `release.yml` がファイル名を名指しで検査する。
 - `licenses/third-party/SOURCES.tsv` / `COMPONENTS.tsv` ── スクリプト・テスト・
   `release.yml` が読む正本。
+- `docs/settings.schema.json` ── L2 の `SettingsSchemaTests` がこのパスを直接読む。
+  更新はアプリを一度起動して設定を保存し、書かれた `settings.schema.json` で上書きする
+  （手で編集しない ── 正本は `AppSettings` の型そのもの）。
 - `.gitattributes` ── 消すとチェックアウトで LF→CRLF 変換が起こり、
   **手元だけ緑・CI だけ赤**になる（`core.autocrlf` が true の環境があるため）。

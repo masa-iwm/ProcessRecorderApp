@@ -14,6 +14,19 @@ using System.Threading;
 
 namespace ProcessRecorderApp.GStreamer;
 
+/// <summary>
+/// 録画の方式。
+///
+/// <para>
+/// <b>settings.json には名前で書く</b>（<c>"System"</c> / <c>"D3d12"</c>）── 手で開いて直す
+/// ファイルなので、数値だと意味が読めないうえ、並びを変えた瞬間に既存ファイルの意味が
+/// 黙って変わる。<c>JsonStringEnumConverter&lt;T&gt;</c> の総称版を使うのは Native AOT のため
+/// （非総称版は実行時リフレクションを要求する）。読み取りは数値も受けるので、
+/// 数値で書かれた古いファイルもそのまま読める。
+/// </para>
+/// </summary>
+[System.Text.Json.Serialization.JsonConverter(
+    typeof(System.Text.Json.Serialization.JsonStringEnumConverter<EventRecordingType>))]
 public enum EventRecordingType
 {
     System,

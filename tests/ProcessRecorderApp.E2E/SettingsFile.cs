@@ -369,13 +369,13 @@ public sealed class RecorderSpec(string name)
         ["Name"] = Name,
         ["BufferDuration"] = BufferDuration,
         ["FilenameTemplate"] = FilenameTemplate ?? Path.Combine(recordingsDir, "{Name}_{Now:HHmmssfff}.mp4"),
-        ["Type"] = (int)Type,
+        ["Type"] = Type.ToString(),
         ["SrcPipeline"] = SrcPipeline,
         ["EncodingProperties"] = EncodingProperties,
     };
 }
 
-/// <summary>製品側の <c>EventRecordingType</c> と同じ並び（JSON には数値で入る）。</summary>
+/// <summary>製品側の <c>EventRecordingType</c> と同じ名前（JSON には名前で入る）。</summary>
 public enum EventRecordingType
 {
     System = 0,

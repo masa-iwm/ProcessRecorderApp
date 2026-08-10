@@ -14,8 +14,19 @@ namespace ProcessRecorderApp.Settings;
 
 public partial class AppSettings : JsonSettingsBase<AppSettings>
 {
+    /// <summary>設定ファイルの名前（保存先ディレクトリは <c>AppEnvironment</c> が決める）。</summary>
+    public const string SettingsFileName = "settings.json";
+
+    /// <summary>
+    /// 設定ファイルの隣に置く JSON Schema のファイル名。
+    /// <see cref="SchemaReference"/> がこの名前を <c>$schema</c> として書き込むので、
+    /// <b>相対参照のまま解決できるよう settings.json と同じディレクトリに置く</b>。
+    /// </summary>
+    public static readonly string SchemaFileName =
+        Path.GetFileName(GetSchemaFilePath(SettingsFileName));
+
     // 保存先は AppEnvironment が解決する（テストは PROCESSRECORDERAPP_DATA_DIR で隔離する）
-    private static readonly string FilePath = AppEnvironment.GetDataFilePath("settings.json");
+    private static readonly string FilePath = AppEnvironment.GetDataFilePath(SettingsFileName);
 
     /// <summary>
     /// settings.json の読み書きに使う型情報。<b>人が開いて読み・手で直すファイル</b>なので、
@@ -92,6 +103,28 @@ public partial class AppSettings : JsonSettingsBase<AppSettings>
     [JsonExtensionData]
     public Dictionary<string, JsonElement> ExtensionData { get; internal set; } = [];
 
+    /// <summary>
+    /// 隣に置いた JSON Schema への参照（<c>settings.json</c> の <c>$schema</c> キー）。
+    ///
+    /// <para>
+    /// <b>実体のあるプロパティにしてある。</b> 宣言しないと、手で書かれた <c>$schema</c> が
+    /// <see cref="ExtensionData"/> に落ち、こちらが書き出す <c>$schema</c> と合わせて
+    /// <b>同じキーが2回出る壊れた JSON</b> になる。
+    /// </para>
+    /// <para>
+    /// <b>読み込んだ値は上書きしない。</b> 利用者が別の場所（社内で配布したスキーマ等）を
+    /// 指していることがありうるので、既定値は「キーが無かったとき」にだけ効く。
+    /// </para>
+    /// <para>
+    /// <see cref="JsonPropertyOrderAttribute"/> で先頭へ出すのは、人がファイルを開いたときに
+    /// 「これは何のファイルで、どこに定義があるか」が最初に見えるようにするため。
+    /// </para>
+    /// </summary>
+    [System.ComponentModel.Browsable(false)]
+    [JsonPropertyName("$schema")]
+    [JsonPropertyOrder(-1)]
+    public string SchemaReference { get; internal set; } = SchemaFileName;
+
     // ウィンドウの位置/サイズ等、アプリが自動保存する内部状態のため PropertyGrid には表示しない。
     [System.ComponentModel.Browsable(false)]
     [ObservableProperty]
@@ -113,8 +146,16 @@ public partial class AppSettings : JsonSettingsBase<AppSettings>
     [ObservableProperty]
     public partial bool IsPropertyPaneCollapsed { get; set; } = false;
 
-    /// <summary>NavigationView のペイン表示モード。</summary>
+    /// <summary>
+    /// NavigationView のペイン表示モード。
+    ///
+    /// <para>
+    /// <b>settings.json には名前で書く</b>（<c>EventRecordingType</c> と同じ理由）。
+    /// 型が WinUI 側にあり属性を付けられないので、変換器はプロパティで指定する。
+    /// </para>
+    /// </summary>
     [System.ComponentModel.Description("PropDesc_PaneDisplayMode")]
+    [JsonConverter(typeof(JsonStringEnumConverter<Microsoft.UI.Xaml.Controls.NavigationViewPaneDisplayMode>))]
     [ObservableProperty]
     public partial Microsoft.UI.Xaml.Controls.NavigationViewPaneDisplayMode PaneDisplayMode { get; set; }
         = Microsoft.UI.Xaml.Controls.NavigationViewPaneDisplayMode.Top;
@@ -626,6 +667,8 @@ public partial class AppSettings : JsonSettingsBase<AppSettings>
         AppSettings loaded = LoadOrCreate(FilePath, SettingsTypeInfo, () => new(), ReportLoadFailure);
         IsFirstRun = loaded.IsFirstRun;
 
+        SchemaReference = loaded.SchemaReference;
+
         WindowWidth = loaded.WindowWidth;
         WindowHeight = loaded.WindowHeight;
         SettingsWidth = loaded.SettingsWidth;
@@ -786,6 +829,11 @@ public partial class AppSettings : JsonSettingsBase<AppSettings>
         }
 
         Save(FilePath, SettingsTypeInfo, ReportSaveFailure);
+
+        // 設定本体を書いた直後にスキーマを揃える（内容が同じなら書き込みは起きない）。
+        // **本体より先には書かない** ── 先に書くと、本体の保存に失敗したときに
+        // 「新しい形のスキーマ」と「古い内容の本体」が並ぶ。
+        SaveSchema(FilePath, SettingsTypeInfo, ReportSaveFailure);
     }
 
     private System.Threading.Timer? _saveDebounce;

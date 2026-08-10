@@ -118,6 +118,10 @@ goes away.
   are searched too, only `.mp4` files are deleted, and a sub-folder is removed when deleting left
   it empty — the output folder itself is never removed.
 - Application settings are stored in `%LOCALAPPDATA%\ProcessRecorderApp\settings.json`.
+  A matching **JSON Schema** is written next to it as `settings.schema.json`, and the settings file
+  points at it with `$schema` — an editor that understands JSON Schema (VS Code and others) then
+  gives you completion and validation while you edit the file by hand. The same schema is kept in
+  the repository as [docs/settings.schema.json](docs/settings.schema.json).
 - The activity log is written to `%LOCALAPPDATA%\ProcessRecorderApp\activity.log`. It records
   application start and exit, which H.264 encoder was selected, whether each recorder
   initialized, **the start and end of every recording (the file actually written and its

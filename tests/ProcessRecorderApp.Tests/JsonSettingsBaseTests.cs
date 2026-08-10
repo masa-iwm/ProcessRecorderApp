@@ -287,6 +287,129 @@ public class JsonSettingsBaseTests : IDisposable
         Assert.Equal(7, document.RootElement.GetProperty("Number").GetInt32());
     }
 
+    // ---- JSON Schema の随伴 ----
+
+    /// <summary>
+    /// スキーマは<b>本体の拡張子を置き換えた名前で隣に置く</b>（<c>settings.json</c> なら
+    /// <c>settings.schema.json</c>）。<c>settings.json.schema.json</c> のように積み増すと、
+    /// 設定本体に書く <c>$schema</c> の相対参照と食い違う。
+    /// </summary>
+    [Fact]
+    public void SchemaFilePath_ReplacesTheExtensionOfTheSettingsFile()
+    {
+        Assert.Equal(
+            Path.Combine(_dir, "settings.schema.json"),
+            JsonSettingsBase<SampleSettings>.GetSchemaFilePath(FilePath));
+    }
+
+    [Fact]
+    public void SaveSchema_WritesTheSchemaNextToTheSettingsFile()
+    {
+        JsonSettingsBase<SampleSettings>.SaveSchema(
+            FilePath, SampleSettingsJsonContext.Default.SampleSettings);
+
+        string schemaPath = JsonSettingsBase<SampleSettings>.GetSchemaFilePath(FilePath);
+        Assert.True(File.Exists(schemaPath), $"スキーマが書かれていない: {schemaPath}");
+
+        using var document = JsonDocument.Parse(File.ReadAllText(schemaPath));
+        Assert.Equal(
+            JsonSettingsBase<SampleSettings>.SchemaDialect,
+            document.RootElement.GetProperty("$schema").GetString());
+        Assert.Equal(nameof(SampleSettings), document.RootElement.GetProperty("title").GetString());
+        Assert.Equal("object", document.RootElement.GetProperty("type").GetString());
+    }
+
+    /// <summary>
+    /// <b>スキーマが、実際に書かれた設定ファイルと同じキーを持つこと。</b>
+    ///
+    /// <para>
+    /// これが随伴スキーマの唯一の存在理由 ── ずれた瞬間に、エディタが
+    /// <b>正しい設定ファイルへ赤線を引く</b>ようになる。名前付け（PascalCase か
+    /// camelCase か）や解決器の取り違えは、どちらのファイルも単体では正しく見えるので、
+    /// 突き合わせでしか捕まらない。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void SavedSchema_DescribesExactlyTheKeysThatSaveWrites()
+    {
+        var settings = SampleSettings.CreateDefault();
+        settings.Items.Add("a");
+        settings.Save(FilePath, SampleSettingsJsonContext.Default.SampleSettings);
+        JsonSettingsBase<SampleSettings>.SaveSchema(
+            FilePath, SampleSettingsJsonContext.Default.SampleSettings);
+
+        using var saved = JsonDocument.Parse(File.ReadAllText(FilePath));
+        using var schema = JsonDocument.Parse(File.ReadAllText(
+            JsonSettingsBase<SampleSettings>.GetSchemaFilePath(FilePath)));
+
+        var written = saved.RootElement.EnumerateObject()
+            .Select(p => p.Name).Order(StringComparer.Ordinal).ToArray();
+        var described = schema.RootElement.GetProperty("properties").EnumerateObject()
+            .Select(p => p.Name).Order(StringComparer.Ordinal).ToArray();
+
+        // 走査が壊れて 0 件になると「差が無い」で緑になる
+        Assert.NotEmpty(written);
+        Assert.Equal(described, written);
+    }
+
+    /// <summary>
+    /// <b>中身が同じなら書き直さない。</b> スキーマはビルドごとの定数なのに、保存は
+    /// 約1秒のデバウンスで何度も走る ── 毎回書くと、利用者が開いている設定ディレクトリで
+    /// ファイルの更新時刻だけが動き続ける。
+    /// </summary>
+    [Fact]
+    public void SaveSchema_DoesNotRewriteAnIdenticalFile()
+    {
+        string schemaPath = JsonSettingsBase<SampleSettings>.GetSchemaFilePath(FilePath);
+        JsonSettingsBase<SampleSettings>.SaveSchema(
+            FilePath, SampleSettingsJsonContext.Default.SampleSettings);
+
+        var marker = new DateTime(2000, 1, 2, 3, 4, 5, DateTimeKind.Utc);
+        File.SetLastWriteTimeUtc(schemaPath, marker);
+
+        JsonSettingsBase<SampleSettings>.SaveSchema(
+            FilePath, SampleSettingsJsonContext.Default.SampleSettings);
+
+        Assert.Equal(marker, File.GetLastWriteTimeUtc(schemaPath));
+    }
+
+    /// <summary>
+    /// 中身が違えば書き直す（上の「書かない」が「一度書いたら二度と直さない」に
+    /// 退行していないこと）。
+    /// </summary>
+    [Fact]
+    public void SaveSchema_RewritesAStaleFile()
+    {
+        string schemaPath = JsonSettingsBase<SampleSettings>.GetSchemaFilePath(FilePath);
+        Directory.CreateDirectory(_dir);
+        File.WriteAllText(schemaPath, "{ \"stale\": true }");
+
+        JsonSettingsBase<SampleSettings>.SaveSchema(
+            FilePath, SampleSettingsJsonContext.Default.SampleSettings);
+
+        Assert.Contains("\"title\"", File.ReadAllText(schemaPath), StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// <b>スキーマが書けなくても投げない。</b> スキーマは設定本体の付随物であり、
+    /// これで保存や終了処理を巻き添えにしてはならない（<c>Save</c> と同じ判断）。
+    /// 書けなかったことは呼び出し側へ通知する。
+    /// </summary>
+    [Fact]
+    public void SaveSchema_ReportsFailureInsteadOfThrowing()
+    {
+        string schemaPath = JsonSettingsBase<SampleSettings>.GetSchemaFilePath(FilePath);
+        // 差し替え先をディレクトリにして File.Move を確実に失敗させる
+        Directory.CreateDirectory(schemaPath);
+
+        string? reported = null;
+        JsonSettingsBase<SampleSettings>.SaveSchema(
+            FilePath, SampleSettingsJsonContext.Default.SampleSettings, d => reported = d);
+
+        Assert.NotNull(reported);
+        Assert.Contains(schemaPath, reported);
+    }
+
     // ---- 変更通知 ----
 
     [Fact]
