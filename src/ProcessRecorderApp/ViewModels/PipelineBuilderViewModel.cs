@@ -89,12 +89,25 @@ public sealed partial class PipelineBuilderViewModel : ObservableObject
     private IReadOnlyList<VideoDeviceInfo> VideoDevices => _videoDevices ??= GstIntrospect.GetVideoSourceDevices();
 
     /// <summary>
-    /// 画面キャプチャ対象のモニター（実際に出す大きさを持つ）。
-    /// 1 度だけ問い合わせて使い回す ── ダイアログを開くたびにデバイスを列挙し直すと、
-    /// プロバイダの起動・停止が UI スレッドで効いてくる。
+    /// 接続されているモニターの物理ピクセルでの大きさ（<c>EnumDisplayDevices</c> の並び）。
+    /// 1 度だけ問い合わせて使い回す。
     /// </summary>
-    private IReadOnlyList<VideoDeviceInfo> Monitors => _monitors ??= GstIntrospect.GetScreenCaptureMonitors();
-    private IReadOnlyList<VideoDeviceInfo>? _monitors;
+    private IReadOnlyList<string> MonitorResolutions => _monitorResolutions ??= GstIntrospect.GetMonitorResolutions();
+    private IReadOnlyList<string>? _monitorResolutions;
+
+    /// <summary>
+    /// いま選ばれている <c>monitor-index</c>（読めなければ -1）。
+    /// 解像度の選択肢をそのモニターに合わせるために見る。
+    /// </summary>
+    private int SelectedMonitorIndex()
+    {
+        var row = PropertyRows.FirstOrDefault(r => r.Name == "monitor-index");
+        return row is not null
+            && int.TryParse(row.Value, System.Globalization.NumberStyles.None,
+                System.Globalization.CultureInfo.InvariantCulture, out int index)
+            ? index
+            : -1;
+    }
 
     public IReadOnlyList<SrcElementDef> Sources => SrcPipelineBuilder.Sources;
 
@@ -308,9 +321,21 @@ public sealed partial class PipelineBuilderViewModel : ObservableObject
                 case "monitor-index":
                     return Enumerable.Range(0, Math.Max(1, MonitorCount)).Select(i => i.ToString()).ToArray();
                 case "monitor-resolution":
+                {
                     // モニターが実際に出す大きさ（DPI 仮想化されていない値）。
-                    // 取得できなければ null を返して自由入力へ倒す。
-                    return NonEmpty(Monitors.SelectMany(m => m.Resolutions));
+                    // **monitor-index が選ばれていれば、その 1 台を先頭に出す** ──
+                    // 利用者が選んだモニターの大きさがそのまま既定になる。
+                    // 並びが DXGI の出力順と完全に一致する保証は無いので、
+                    // ほかのモニターも選択肢として残す（取り違えても手で選び直せる）。
+                    var all = MonitorResolutions;
+                    if (all.Count == 0)
+                        return null;
+
+                    int index = SelectedMonitorIndex();
+                    return 0 <= index && index < all.Count
+                        ? NonEmpty(new[] { all[index] }.Concat(all))
+                        : NonEmpty(all);
+                }
                 case "mf-device-index":
                     return VideoDevices.Count > 0
                         ? Enumerable.Range(0, VideoDevices.Count).Select(i => i.ToString()).ToArray()
