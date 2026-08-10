@@ -97,6 +97,15 @@ public static class ContinuousBranch
         => SourceSize(srcPipeline).Length > 0;
 
     /// <summary>
+    /// <c>SrcPipeline</c> の caps が <c>framerate</c> を固定しているか。
+    /// 固定していないときフレームレートの上書きは効かせられない
+    /// ── 要求が <c>tee</c> を越えて伝播し、<b>本線まで同じレートに落ちる</b>。
+    /// </summary>
+    public static bool SourceFramerateIsPinned(string? srcPipeline)
+        => SrcPipelineBuilder.Parse(srcPipeline).CapsFields.TryGetValue("framerate", out string? rate)
+            && ContinuousFirstSampleBudget.TryParseFramerate(rate, out _, out _);
+
+    /// <summary>
     /// <c>SrcPipeline</c> の caps が固定している大きさ（<c>1920x1080</c>）。固定していなければ空。
     /// <c>tee</c> の手前を固定するのに使う。
     /// </summary>
@@ -160,7 +169,8 @@ public static class ContinuousBranch
         bool needsSystemMemory,
         string? framerate,
         string? resolution,
-        bool sourceSizeIsPinned)
+        bool sourceSizeIsPinned,
+        bool sourceFramerateIsPinned)
     {
         if (string.IsNullOrWhiteSpace(encoder))
             return new ContinuousBranchPlan("", null, false);
@@ -170,13 +180,26 @@ public static class ContinuousBranch
         // フレームレートは分数へ正規化する。caps の framerate は GstFraction なので、
         // "5" と書くと gst_caps_from_string が (int)5 として読み、
         // **どの要素も扱えない caps になってリンクに失敗する**（実測）。
+        //
+        // 解像度と同じく、**上流が固定されていないときは上書きを捨てる**。videorate の
+        // 要求も tee を越えて伝播するので、ソースが任意のレートを出せると
+        // **プレビューとイベント録画まで同じレートに落ちる**（実測: ソースの caps に
+        // framerate を書かずに枝を 5/1 にすると、プレビュー枝も 5/1 になった）。
+        // ただし固定に必要なのはソース側の caps だけである ── 解像度と違い、
+        // tee の手前の d3d12convert はレートを変えられないので吸収しない（実測）。
         string? rate = null;
         if (RequiresVideorate(framerate))
         {
-            if (TryNormalizeFramerate(framerate, out string normalized))
-                rate = normalized;
-            else
+            if (!TryNormalizeFramerate(framerate, out string normalized))
                 dropped.Add($"ContinuousFramerate='{framerate}' is not a frame rate (write it as 5/1 or 5); it was ignored");
+            else if (!sourceFramerateIsPinned)
+                dropped.Add(
+                    $"ContinuousFramerate='{framerate}' was ignored because the source pipeline does not pin "
+                    + "framerate. Changing only this branch would drag the whole capture (preview and event "
+                    + "recording included) down to that rate. Add framerate=... to the caps of SrcPipeline, "
+                    + "or clear ContinuousFramerate");
+            else
+                rate = normalized;
         }
 
         // 解像度の上書きは tee の入力が固定されているときだけ許す。

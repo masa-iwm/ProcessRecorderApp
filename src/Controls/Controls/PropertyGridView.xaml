@@ -24,8 +24,16 @@
                 <Border Background="Transparent"
                         ToolTipService.ToolTip="{x:Bind Value, Mode=OneWay}"
                         ToolTipService.Placement="Mouse">
+                    <!--
+                        **読み取り専用でも無効化しない（IsEnabled ではなく IsReadOnly）。**
+                        無効化すると選択もコピーもできなくなり、`LastError` /
+                        `ContinuousLastError` / `ActualEncodingProperties` のような
+                        **読むためだけに在る行の中身を取り出す手段が無くなる**
+                        ── これらは長く、貼り付けて調べるための値である。
+                        IsReadOnly なら編集は止まったまま選択と Ctrl+C が効く。
+                    -->
                     <TextBox Text="{x:Bind Value, Mode=TwoWay}"
-                             IsEnabled="{x:Bind IsEditable}"
+                             IsReadOnly="{x:Bind IsReadOnly}"
                              KeyDown="ValueTextBox_KeyDown"
                              HorizontalAlignment="Stretch"
                              TextWrapping="Wrap"
@@ -48,13 +56,12 @@
             文字列＋外部ビルダー: テキスト編集に加え、右端の「…」ボタンで編集支援ダイアログを起動する。
             TextEditTemplate と同じ表示/折り返し/エラー表示を踏襲しつつ、ボタン列を追加している。
 
-            **読み取り専用の扱いが TextEditTemplate と意図的に違う。**
-            `[ReadOnly(true)]` ＋ `[ValueBuilder]` は「直接は編集できないが、ビルダーでなら変更できる」
-            という意味なので、こちらでは
-              - テキストは IsEnabled ではなく IsReadOnly で止める（灰色にせず、選択・コピーを残す）
-              - 「…」は IsEditable に縛らない（読み取り専用でも押せなければビルダーへ到達できない）
-            としている。TextEditTemplate は従来どおり IsEnabled で無効化する。
-            **この差は意図であって、揃えないこと。**
+            読み取り専用でもテキストは無効化せず IsReadOnly で止める（TextEditTemplate と同じ。
+            灰色にせず、選択・コピーを残す）。加えてこちらは
+            **「…」を IsEditable に縛らない** ── `[ReadOnly(true)]` ＋ `[ValueBuilder]` は
+            「直接は編集できないが、ビルダーでなら変更できる」という意味なので、
+            読み取り専用でもボタンが押せなければビルダーへ到達できない。
+            **この一点だけが TextEditTemplate との差であり、揃えないこと。**
         -->
         <DataTemplate x:Key="BuilderTextEditTemplate" x:DataType="local:PropertyGridItem">
             <StackPanel Spacing="2" HorizontalAlignment="Stretch">

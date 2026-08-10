@@ -88,6 +88,14 @@ public sealed partial class PipelineBuilderViewModel : ObservableObject
     private int MonitorCount => _monitorCount ??= GstIntrospect.GetMonitorCount();
     private IReadOnlyList<VideoDeviceInfo> VideoDevices => _videoDevices ??= GstIntrospect.GetVideoSourceDevices();
 
+    /// <summary>
+    /// 画面キャプチャ対象のモニター（実際に出す大きさを持つ）。
+    /// 1 度だけ問い合わせて使い回す ── ダイアログを開くたびにデバイスを列挙し直すと、
+    /// プロバイダの起動・停止が UI スレッドで効いてくる。
+    /// </summary>
+    private IReadOnlyList<VideoDeviceInfo> Monitors => _monitors ??= GstIntrospect.GetScreenCaptureMonitors();
+    private IReadOnlyList<VideoDeviceInfo>? _monitors;
+
     public IReadOnlyList<SrcElementDef> Sources => SrcPipelineBuilder.Sources;
 
     public ObservableCollection<PipelineFieldRow> PropertyRows { get; } = [];
@@ -299,6 +307,10 @@ public sealed partial class PipelineBuilderViewModel : ObservableObject
             {
                 case "monitor-index":
                     return Enumerable.Range(0, Math.Max(1, MonitorCount)).Select(i => i.ToString()).ToArray();
+                case "monitor-resolution":
+                    // モニターが実際に出す大きさ（DPI 仮想化されていない値）。
+                    // 取得できなければ null を返して自由入力へ倒す。
+                    return NonEmpty(Monitors.SelectMany(m => m.Resolutions));
                 case "mf-device-index":
                     return VideoDevices.Count > 0
                         ? Enumerable.Range(0, VideoDevices.Count).Select(i => i.ToString()).ToArray()

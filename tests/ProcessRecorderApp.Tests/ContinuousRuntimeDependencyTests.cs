@@ -40,8 +40,8 @@ public class ContinuousRuntimeDependencyTests
 
     private static string Build(
         EventRecordingType type, string encoder, bool needsSystemMemory,
-        string? framerate, string? resolution, bool sourceSizeIsPinned = true)
-        => ContinuousBranch.Plan(type, encoder, needsSystemMemory, framerate, resolution, sourceSizeIsPinned).Branch;
+        string? framerate, string? resolution, bool sourceSizeIsPinned = true, bool sourceFramerateIsPinned = true)
+        => ContinuousBranch.Plan(type, encoder, needsSystemMemory, framerate, resolution, sourceSizeIsPinned, sourceFramerateIsPinned).Branch;
 
     /// <summary>
     /// 常時録画が<b>無条件に</b>使う要素は、すべて同梱ランタイムに在ること。

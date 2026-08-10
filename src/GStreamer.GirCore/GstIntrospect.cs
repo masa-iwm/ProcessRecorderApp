@@ -44,6 +44,77 @@ public static partial class GstIntrospect
         }
     }
 
+    /// <summary>
+    /// 画面キャプチャの対象モニターと、それぞれが実際に出す大きさを取得する。
+    ///
+    /// <para>
+    /// <b>Win32 の <c>GetMonitorInfo</c> で代用してはいけない。</b> あちらは DPI 仮想化の
+    /// 影響を受け、<c>d3d12screencapturesrc</c> が実際に出す大きさと食い違う
+    /// （実測: 2194x1234 と 3840x2160。175% スケーリングの機械）。
+    /// デバイスプロバイダの caps は<b>キャプチャが出す当の値</b>なので、
+    /// これを唯一の出所にする。
+    /// </para>
+    /// <para>
+    /// 並びは <c>d3d12screencapturesrc</c> の <c>monitor-index</c> と同じ
+    /// （どちらも同じ列挙を使う）。取得できなければ空を返し、UI は自由入力へ倒れる。
+    /// </para>
+    /// </summary>
+    public static IReadOnlyList<VideoDeviceInfo> GetScreenCaptureMonitors()
+    {
+        var result = new List<VideoDeviceInfo>();
+        try
+        {
+            // d3d12 のプロバイダだけを使う。DeviceMonitor は d3d11 の同じモニターも
+            // 列挙するので、そのままだと 1 台が 2 つに見え、monitor-index とずれる。
+            using var provider = DeviceProviderFactory.GetByName("d3d12screencapturedeviceprovider");
+            if (provider is null)
+                return result;
+
+            provider.Start();
+            try
+            {
+                var list = provider.GetDevices();
+                if (list is not null)
+                {
+                    try
+                    {
+                        uint n = GLib.List.Length(list);
+                        for (uint i = 0; i < n; i++)
+                        {
+                            IntPtr ptr = GLib.List.NthData(list, i);
+                            if (ptr == IntPtr.Zero)
+                                continue;
+
+                            try
+                            {
+                                using var device = Device.NewFromPointer(ptr, true);
+                                result.Add(ReadDevice(device));
+                            }
+                            catch (Exception ex)
+                            {
+                                DebugLogEx.Log(DebugLevel.Warning,
+                                    $"introspection failed for one monitor; skipped\n{ex}");
+                            }
+                        }
+                    }
+                    finally
+                    {
+                        GLib.List.Free(list);
+                    }
+                }
+            }
+            finally
+            {
+                provider.Stop();
+            }
+        }
+        catch
+        {
+            // 内省に失敗した場合は空一覧を返し、UI 側は自由入力へフォールバックする
+        }
+        return result;
+    }
+
     /// <summary>mfvideosrc 対応のビデオ入力デバイス一覧と、それぞれの対応 caps を取得する。</summary>
     public static IReadOnlyList<VideoDeviceInfo> GetVideoSourceDevices()
     {

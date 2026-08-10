@@ -25,8 +25,8 @@ public class ContinuousBranchTests
     /// </summary>
     private static string Build(
         EventRecordingType type, string encoder, bool needsSystemMemory,
-        string? framerate, string? resolution, bool sourceSizeIsPinned = true)
-        => ContinuousBranch.Plan(type, encoder, needsSystemMemory, framerate, resolution, sourceSizeIsPinned).Branch;
+        string? framerate, string? resolution, bool sourceSizeIsPinned = true, bool sourceFramerateIsPinned = true)
+        => ContinuousBranch.Plan(type, encoder, needsSystemMemory, framerate, resolution, sourceSizeIsPinned, sourceFramerateIsPinned).Branch;
 
     [Fact]
     public void AnEmptyEncoder_ProducesNoBranchAtAll()
@@ -63,7 +63,7 @@ public class ContinuousBranchTests
     public void AnUnreadableFramerate_IsDroppedInsteadOfProducingBrokenCaps(string framerate)
     {
         var plan = ContinuousBranch.Plan(
-            EventRecordingType.D3d12, Encoder, false, framerate, "", sourceSizeIsPinned: true);
+            EventRecordingType.D3d12, Encoder, false, framerate, "", sourceSizeIsPinned: true, sourceFramerateIsPinned: true);
 
         Assert.DoesNotContain(ContinuousBranch.VideorateFactory, plan.Branch);
         Assert.NotNull(plan.DroppedOverride);
@@ -85,7 +85,7 @@ public class ContinuousBranchTests
     public void AResolutionOverride_IsDroppedWhenTheSourceSizeIsNotPinned()
     {
         var plan = ContinuousBranch.Plan(
-            EventRecordingType.D3d12, Encoder, false, "", "1280x720", sourceSizeIsPinned: false);
+            EventRecordingType.D3d12, Encoder, false, "", "1280x720", sourceSizeIsPinned: false, sourceFramerateIsPinned: true);
 
         Assert.DoesNotContain("width=1280", plan.Branch);
         Assert.DoesNotContain("d3d12convert", plan.Branch);
@@ -98,7 +98,7 @@ public class ContinuousBranchTests
     public void AResolutionOverride_IsAppliedWhenTheSourceSizeIsPinned()
     {
         var plan = ContinuousBranch.Plan(
-            EventRecordingType.D3d12, Encoder, false, "", "1280x720", sourceSizeIsPinned: true);
+            EventRecordingType.D3d12, Encoder, false, "", "1280x720", sourceSizeIsPinned: true, sourceFramerateIsPinned: true);
 
         Assert.Contains("width=1280, height=720", plan.Branch);
         Assert.Null(plan.DroppedOverride);
@@ -134,7 +134,7 @@ public class ContinuousBranchTests
     public void ScalingInTheBranch_PinsTheSizeInFrontOfTheTee()
     {
         string branch = ContinuousBranch.Plan(
-            EventRecordingType.D3d12, Encoder, false, "", "960x540", sourceSizeIsPinned: true).Branch;
+            EventRecordingType.D3d12, Encoder, false, "", "960x540", sourceSizeIsPinned: true, sourceFramerateIsPinned: true).Branch;
 
         string withPin = EventRecorder.BuildSinkPipeline(
             EventRecordingType.D3d12, "d3d12testsrc", Encoder, false, branch, "1920x1080");
@@ -170,6 +170,46 @@ public class ContinuousBranchTests
     [InlineData("videotestsrc ! video/x-raw,width=0,height=240", "")]
     public void SourceSize_ReadsTheCapsOfTheSourcePipeline(string srcPipeline, string expected)
         => Assert.Equal(expected, ContinuousBranch.SourceSize(srcPipeline));
+
+    /// <summary>
+    /// <b>フレームレートの上書きも、上流が固定されていなければ捨てる。</b>
+    /// <c>videorate</c> の要求も <c>tee</c> を越えて伝播するので、ソースが任意のレートを
+    /// 出せると<b>プレビューとイベント録画まで同じレートに落ちる</b>
+    /// （実測: ソースの caps に framerate を書かずに枝を 5/1 にすると、プレビュー枝も 5/1）。
+    /// </summary>
+    [Fact]
+    public void AFramerateOverride_IsDroppedWhenTheSourceFramerateIsNotPinned()
+    {
+        var plan = ContinuousBranch.Plan(
+            EventRecordingType.D3d12, Encoder, false, "5/1", "",
+            sourceSizeIsPinned: true, sourceFramerateIsPinned: false);
+
+        Assert.DoesNotContain(ContinuousBranch.VideorateFactory, plan.Branch);
+        Assert.NotNull(plan.DroppedOverride);
+        Assert.Contains("ContinuousFramerate", plan.DroppedOverride!);
+        Assert.Contains("SrcPipeline", plan.DroppedOverride!);
+    }
+
+    [Fact]
+    public void AFramerateOverride_IsAppliedWhenTheSourceFramerateIsPinned()
+    {
+        var plan = ContinuousBranch.Plan(
+            EventRecordingType.D3d12, Encoder, false, "5", "",
+            sourceSizeIsPinned: true, sourceFramerateIsPinned: true);
+
+        Assert.Contains("framerate=5/1", plan.Branch);
+        Assert.Null(plan.DroppedOverride);
+    }
+
+    [Theory]
+    [InlineData("d3d12screencapturesrc ! video/x-raw(memory:D3D12Memory), framerate=30/1", true)]
+    [InlineData("d3d12screencapturesrc ! video/x-raw(memory:D3D12Memory)", false)]
+    [InlineData("videotestsrc ! video/x-raw,width=320,height=240", false)]
+    [InlineData("videotestsrc ! video/x-raw,framerate=15", true)]
+    [InlineData("videotestsrc ! video/x-raw,framerate=abc", false)]
+    [InlineData("", false)]
+    public void SourceFramerateIsPinned_ReadsTheCapsOfTheSourcePipeline(string srcPipeline, bool expected)
+        => Assert.Equal(expected, ContinuousBranch.SourceFramerateIsPinned(srcPipeline));
 
     [Fact]
     public void TheBranchHangsOffTheSameTeeAndEndsInAnAppsink()

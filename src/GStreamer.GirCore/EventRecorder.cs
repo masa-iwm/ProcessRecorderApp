@@ -834,7 +834,8 @@ public partial class EventRecorder : ObservableObject, IDisposable
                 var plan = ContinuousBranch.Plan(
                     Type, continuousEncoder.LaunchString, continuousEncoder.NeedsSystemMemory,
                     ContinuousFramerate, ContinuousResolution,
-                    ContinuousBranch.SourceSizeIsPinned(SrcPipeline));
+                    ContinuousBranch.SourceSizeIsPinned(SrcPipeline),
+                    ContinuousBranch.SourceFramerateIsPinned(SrcPipeline));
                 continuousBranch = plan.Branch;
                 droppedOverride = plan.DroppedOverride;
                 // 枝の中で拡縮するなら、tee の手前も同じ大きさで固定しないと

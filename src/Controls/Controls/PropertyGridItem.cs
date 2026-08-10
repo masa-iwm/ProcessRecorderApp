@@ -73,10 +73,14 @@ public sealed partial class PropertyGridItem : INotifyPropertyChanged
     /// true の場合、利用者は値を直接編集できない（<see cref="Value"/> の setter もコミットしない）。
     ///
     /// <para>
-    /// 見え方は編集の種類で異なる。<see cref="PropertyEditKind.Builder"/> の行だけは
-    /// テキストを無効化せず読み取り専用にし（選択・コピーを残す）、「…」ボタンも押せる
+    /// <b>テキストの行は読み取り専用でも無効化しない。</b> 無効化すると選択もコピーも
+    /// できなくなり、<c>LastError</c> / <c>ContinuousLastError</c> /
+    /// <c>ActualEncodingProperties</c> のような<b>読むためだけに在る行の中身を
+    /// 取り出す手段が無くなる</b>（貼り付けて調べるための値である）。
+    /// <see cref="PropertyEditKind.Builder"/> の行はさらに「…」ボタンも押せる
     /// ── <c>[ReadOnly(true)]</c> ＋ <c>[ValueBuilder]</c> は「直接は編集できないが
-    /// ビルダーでなら変更できる」という意味だからである。ほかの種類は無効化される。
+    /// ビルダーでなら変更できる」という意味だからである。
+    /// テキスト以外（トグル・選択肢）は従来どおり無効化される。
     /// </para>
     /// </summary>
     public bool IsReadOnly { get; init; }

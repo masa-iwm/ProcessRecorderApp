@@ -137,6 +137,13 @@ public static partial class SrcPipelineBuilder
             ],
             capsFields:
             [
+                // **解像度も選べるようにしてある。** 常時録画のフレームレート／解像度の
+                // 上書きは、ソースの caps がこれらを固定しているときにしか効かせられない
+                // ── 枝の要求は tee を越えて上流へ伝播するので、固定していないと
+                // プレビューとイベント録画まで一緒に縮む（src/README.md「解像度の上書きには
+                // 上流の固定が要る」）。選択肢はモニターが実際に出す大きさを
+                // GstIntrospect.GetScreenCaptureMonitors から動的に取る。
+                new CapsFieldDef("resolution", isResolution: true, defaultValue: "", dynamicKey: "monitor-resolution"),
                 new CapsFieldDef("framerate", defaultValue: "15/1"),
             ],
             memoryFeature: "memory:D3D12Memory"),
