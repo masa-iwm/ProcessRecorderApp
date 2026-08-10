@@ -10,6 +10,8 @@
 | `CleanupIntervalBudgetTests` | `RecordingCleanupScheduler.MaximumIntervalHours` ⇔ resw の `PropDesc_RecordingCleanupIntervalHours`（en/ja）と `src/README.md` の設定表／`Task.Delay` の上限（約 1,193 時間）を超えないこと |
 | `RecorderSettingsMirrorTests` | `EventRecorderSettings` の各プロパティ ⇔ 4 箇所の手書きミラー（`EventRecorder` の switch と ctor、`GstEventRecorderViewModel` の switch と ctor）／`AppSettings` のコレクション差し替え時の要素購読 |
 | `CampbellPaletteTests` | `CampbellPalette` の選択色（XAML 形式 ⇔ CSS 形式）／`terminal.js` に色のリテラルを持たせない |
+| `ContinuousSegmentBudgetTests` | `EventRecorderSettings.MinContinuousSegmentSeconds` / `MaxContinuousSegmentSeconds` ⇔ resw の `PropDesc_Rec_ContinuousSegmentSeconds`（en/ja）と `src/README.md` の常時録画の設定表（3 面。定数・文言・文書のどれを動かしても落ちる） |
+| `ContinuousRuntimeDependencyTests` | 常時録画が使う GStreamer 要素 ⇔ `licenses/third-party/COMPONENTS.tsv`。**`videorate` が同梱に在ること**（別 fps はこれが無いと使えない）と、「`ContinuousFramerate` が空なら `videorate` を出さない」ガード（`ContinuousBranch.RequiresVideorate` と `EventRecorder.ResolveContinuousEncoder`）の存在を固定する。**開発機と CI はフル構成の GStreamer なので、この対応が無いと同梱配布でだけ壊れる** |
 | `EncoderCatalogScriptSyncTests` | `EncoderCatalog` ⇔ `tools/Verify-GpuEncoders.ps1` のエンコーダー行 |
 | `RuntimeClosureSeedSyncTests` | 閉包の種リスト ⇔ `tools/Get-GStreamerImportClosure.ps1` |
 | `GpuVerifyScriptParsingTests` | `tools/Verify-GpuEncoders.ps1` 内の正規表現（スクリプトから取り出して .NET で実行するので、規則が2か所に書かれない） |

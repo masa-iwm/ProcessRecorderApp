@@ -73,16 +73,64 @@ GPU 無しで再現できる根拠: `d3d12testsrc ! video/x-raw(memory:D3D12Memo
 
 守っている不変条件: プレビュー分岐の `queue` が既定の `max-size-bytes`（10485760）のままだと、このバイト上限は高解像度で「フレーム数の上限」に化ける ── queue は上限を超えていても1件目は必ず受け取るので、1 フレームが 5242880 バイト（上限の半分）を超えると常に 1 フレームしか保持できない。NV12/I420（幅×高さ×1.5 バイト）では約 3.5Mpx ＝ 2560x1440 以上がこの領域で、1440p の 1 フレーム（約 5.5MB）は上限 10MB を下回るのに該当し、4K（約 12.4MB）は上限そのものも超える。PAUSED 中はプレビュー appsink が preroll でブロックしているので queue は排出されず、満杯の queue が tee を塞ぎ、エンコーダーが枯渇し、録画 appsink が preroll せず、パイプラインは PLAYING に到達しない ── 循環待ち。対策は2点で、(1) プレビュー queue を leaky かつバイト・時間無制限にする、(2) 初期化は `SetState` の ASYNC 返答を成功扱いせず実際に PLAYING へ達するのを待つ。
 
-ケースは6件: 4K 画面キャプチャ構成（`d3d12screencapturesrc monitor-index=<n>`・`qsvh264enc rate-control=icq icq-quality=30 gop-size=15`・`BufferDuration=10000`）、`d3d12testsrc` による解像度スイープ（320x240 / 1920x1080 / 2560x1440 / 3840x2160 ── 1920x1080 以下は閾値未満、2560x1440 以上が「1 フレーム ＞ 5242880 バイト」の循環待ちの領域。スクリプト自身もこの式で各行に注記を付ける）、4K での自動選択（停止した候補が受理されず棄却され、次の候補が試されること）。スイープが `d3d12screencapturesrc` ではなく `d3d12testsrc` なのは、結果をその機械のモニタ構成に依存させないため。エンコーダー行はカタログと `EncoderCatalogScriptSyncTests` で結び付けてあり、カタログを変えるとテストが落ちてこの行の更新判断を迫る。
+ケースは11件。前半6件は上記の循環待ちの回帰検証: 4K 画面キャプチャ構成（`d3d12screencapturesrc monitor-index=<n>`・`qsvh264enc rate-control=icq icq-quality=30 gop-size=15`・`BufferDuration=10000`）、`d3d12testsrc` による解像度スイープ（320x240 / 1920x1080 / 2560x1440 / 3840x2160 ── 1920x1080 以下は閾値未満、2560x1440 以上が「1 フレーム ＞ 5242880 バイト」の循環待ちの領域。スクリプト自身もこの式で各行に注記を付ける）、4K での自動選択（停止した候補が受理されず棄却され、次の候補が試されること）。スイープが `d3d12screencapturesrc` ではなく `d3d12testsrc` なのは、結果をその機械のモニタ構成に依存させないため。エンコーダー行はカタログと `EncoderCatalogScriptSyncTests` で結び付けてあり、カタログを変えるとテストが落ちてこの行の更新判断を迫る。
+
+### 常時録画の 5 件（`tee` の枝が 3 本になったぶん）
+
+**上の実測はすべて枝が 2 本のときのもの**なので、常時録画（`ContinuousRecording`）を入れた構成では取り直しが要る。追加ケースは、`d3d12testsrc` の 1920x1080 / 2560x1440 / 3840x2160 に常時録画を足したもの（同じフレームレート）、4K のイベント録画に 5fps・1280x720 の常時枝を足したもの（`videorate` ＋ スケーラーを通す、実運用で想定している形）、そして画面キャプチャ構成に 5fps の常時枝を足したもの。
+
+見たいのは3つ:
+
+- 3 本目の消費者が増えたことで、**録画側 appsink が `PlayingStateTimeoutMs` 内に preroll できなくなっていないか**（`never reached PLAYING` が出ないこと）。
+- **常時枝が詰まってもパイプライン全体を道連れにしないこと**（枝の `queue` は `leaky=downstream`、`appsink` は `async=false`。設計どおりなら道連れにならない）。
+- 4K で **2 本目のエンコーダーを作れるか**（GPU のセッション数・メモリの上限に当たらないか）。
+
+常時録画の合否はイベント録画とは**別に**判定する（どちらが壊れたのか分かるように）。条件は `recorder.continuous-init ok` がちょうど1件・`... fail` が0件・**閉じたセグメントが1本以上**・閉じたセグメントがすべて構造的に妥当・`continuous.error` / `continuous.leak` / `continuous.overshoot` が0件。**ワーカーを kill した時点で開いていたセグメントは未確定で当たり前**なので数えない（CLI に正常終了のコマンドが無いため）。レポートの表には `segments (closed/bad)` の列が増える。
+
+常時録画のセグメントは `R1_c00000.mp4` のように名前で分かれるので、イベント録画のファイルとは名前で数え分けている。
 
 判定は `recorder.init ok` / `recorder.init fail` / `never reached PLAYING` の署名の有無と MP4 の構造で行う ── 製品自身がこの署名を **`activity.log`** に出すので、`.dot` ファイルを読む必要はない。スクリプトが署名を読むのも `activity.log` であって `debug.log` ではない（`Verify-GpuEncoders.ps1` が `gst.encoder` 行を読むのは `debug.log` 側 ── 2つのスクリプトで読むログが違う）。赤い実行を手で調べるときも作業ディレクトリの `activity.log` を見る。
 
-この往復で最も無駄になりやすいのは「古いバイナリで走らせてしまうこと」。そのため発行物の `GStreamer.dll` に修正の目印（リテラル文字列 `leaky=downstream`）が入っているかを先に検査し、無ければ警告して終了コード 1 を返す。この検査には罠がある: アセンブリ中の UTF-16 文字列は偶数バイト境界に無いことがあるため、`Encoding.Unicode.GetString` をオフセット 0 だけに掛けると符号単位が1バイトずれて1件も一致せず、正しい発行物を「古いビルド」と誤報する。オフセット 0 と 1 の両方を試すこと（素の `grep` も ASCII として探すため UTF-16 には一致しない）。
+この往復で最も無駄になりやすいのは「古いバイナリで走らせてしまうこと」。そのため発行物にリテラル文字列の目印が入っているかを先に検査し、無ければ警告して終了コード 1 を返す。目印は2つ ── `leaky=downstream`（循環待ちの修正）と `max-size-buffers=8`（常時録画の枝の queue。この機能が入ったビルドにしか無い）。
+
+この検査には罠が2つある。**(1) UTF-16 の境界**: アセンブリ中の文字列は偶数バイト境界に無いことがあるため、`Encoding.Unicode.GetString` をオフセット 0 だけに掛けると符号単位が1バイトずれて1件も一致せず、正しい発行物を「古いビルド」と誤報する。オフセット 0 と 1 の両方を試すこと（素の `grep` も ASCII として探すため UTF-16 には一致しない）。**(2) 発行の形**: 目印は非 AOT では `GStreamer.dll` に、**Native AOT ではネイティブイメージ（`ProcessRecorderApp.exe`）に**入る ── AOT 発行物には `GStreamer.dll` そのものが存在しないので、そちらだけを見ると**配布の既定形（AOT）では必ず「古いビルド」と誤報する**。両方を探すこと。実測で確認済み。
 
 `-SmokeTest` は GPU の無い機械で「スクリプト自身」を検証するモードで、本件の回帰検証にはならない。緑の経路（`videotestsrc`）と赤の経路（`identity drop-probability=1.0` ── caps は通してバッファだけ捨てるので、リンクと状態遷移は成功するのに PLAYING へ達しない）の両方を回す。緑だけを回しても、停止を検出できないスクリプトは緑になるため。赤側の合格条件は「`never reached PLAYING` が 1 件以上・`recorder.init fail` がちょうど 1 件・`recorder.init ok` が 0 件」── CLI の終了コードは記録されるだけで、この判定には入らない。
 
 パラメータ: `-PublishDir` / `-WorkDir` / `-RecordSeconds`（既定 4）/ `-MonitorIndex`（既定 1。製品側の `monitor-index` の既定は `0` なので、モニタが1台の機械では既定のまま流すと画面キャプチャのケースが範囲外の index になる ── 実機のモニタ構成に合わせて指定する）/ `-SmokeTest` / `-KeepWorkDir`。
 
+
+### 走らせ方（常時録画を含む）
+
+GPU 実機に**発行物一式**（`dotnet publish -p:PublishProfile=win-x64-aot` の出力）とこのリポジトリの `tools/` を持ち込み、PowerShell で:
+
+```powershell
+# 1. まずハーネス自身を確かめる（GPU 不要・1分程度）。3 件すべて OK で終了コード 0 になること。
+.\tools\Verify-HighResolution.ps1 -SmokeTest -PublishDir <発行ディレクトリ>
+
+# 2. 本番。11 ケース。既定の録画窓 4 秒＋常時録画の待ちで 10〜15 分程度。
+.\tools\Verify-HighResolution.ps1 -PublishDir <発行ディレクトリ> -MonitorIndex 1
+```
+
+- 冒頭の `Fixed build : YES` と `Continuous : YES` を必ず確認する。どちらかが NO なら、それ以降の結果は無意味（古いバイナリ）。
+- 終了コード 0 なら全ケース期待どおり。1 なら `FAILED cases: N` と作業ディレクトリのパスが出るので、そのディレクトリごと持ち帰る（`activity.log` と `debug.log` が入っている）。
+- レポートは `high-resolution-report.md`。全ケース OK のときは `%TEMP%` にコピーして作業ディレクトリを消すので、**レポートだけ持ち帰れば足りる**。
+- `-MonitorIndex` は画面キャプチャの 2 ケースだけに効く。範囲外を指定すると状態遷移が失敗して `IsInitialized=false` になるので、他の失敗と区別が付く。
+- セグメント長は `-ContinuousSegmentSeconds`（既定 5 秒）。
+- **走行時間を決めるのは `-ContinuousMinSegments`（既定 2）** ── 常時録画のケースは
+  「この本数のセグメントができるまで」待つ。既定の 2 は**分割が 1 回起きることしか見ていない**。
+  ローテーションを繰り返させたいときはこちらを上げる:
+
+  ```powershell
+  # 常時録画の各ケースで 20 本回す（各ケース ＋約 100 秒。全体で 10 分ほど延びる）
+  .\tools\Verify-HighResolution.ps1 -PublishDir <発行ディレクトリ> -MonitorIndex 1 `
+      -ContinuousMinSegments 20 -ContinuousWaitSeconds 180
+  ```
+
+- `-ContinuousWaitSeconds`（既定 45）は**その待ちの上限**であって走行時間ではない。
+  上限に達しても要求本数に届かなかったケースは**失敗**になり、レポートにその旨が出る
+  ── 短く終わった長回しが緑に見えないようにするため。本数を上げたら上限も一緒に上げること
+  （目安: `本数 × セグメント長 + 30 秒`）。
 ## 未検証の項目
 
 検証済みの範囲（対になる事実）: 同梱ランタイムを NVIDIA/Intel の実機で流した検証は

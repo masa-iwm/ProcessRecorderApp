@@ -328,7 +328,7 @@ internal static class ActivationCommands
     ///
     /// <para>
     /// 標準出力は1行1レコーダーで、列は TAB 区切りの
-    /// <c>名前 / 初期化済み / 録画中 / 直近のファイル / 直近の障害</c>。
+    /// <c>名前 / 初期化済み / 録画中 / 直近のファイル / 常時録画 / 常時録画のファイル / 直近の障害</c>。
     /// <b>自由記述である「直近の障害」は必ず最後の列に置く。</b> 途中に置くと、
     /// 理由文に TAB が混ざったときに後続の列の意味がずれる。あわせて改行と TAB は空白へ潰し、
     /// <b>1レコーダー＝1行</b>を崩さない（<c>ActivityLog</c> と同じ規約）。
@@ -355,6 +355,9 @@ internal static class ActivationCommands
                 recorder.IsInitialized,
                 recorder.IsRecording,
                 recorder.LastFilename,
+                RecorderCliRules.ContinuousState(
+                    recorder.ContinuousRecording, recorder.IsContinuousRecording, recorder.ContinuousLastError),
+                recorder.ContinuousLastFilename,
                 recorder.LastError));
 
             if (RecorderCliRules.IsHealthy(recorder.IsInitialized, recorder.LastError))

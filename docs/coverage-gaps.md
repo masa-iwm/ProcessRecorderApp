@@ -53,6 +53,22 @@ Log 画面の表示は 2 経路ある。**既定は WebView2 の中の xterm.js*
 
 E2E ハーネスは `SettingsFile.DefaultEncoder = "x264enc"` を固定しており、配布 zip に同梱するランタイム一式には x264 が無い。`release.yml` のフィルタは `FullyQualifiedName~SmokeTests|FullyQualifiedName~RuntimeResolutionTests`（`~` は部分一致）なので、同梱物に対して流れるのは `SmokeTests`・`GuiSmokeTests`（L3 の GUI スモークもここで走る）・`RuntimeResolutionTests` の 3 クラスで、**事前バッファ・停止の同期性・ファイル名テンプレートなどの録画系 E2E は同梱物に対しては一度も流れない**。非同梱版と共通のコードなので「アプリの不具合」は `build.yml` で捕まる。捕まらないのは「その runtimes の組み合わせでしか出ない問題」。なお停止結果の規則そのものはランタイム非依存の L1（`RecordingStopRulesTests`）が押さえている。
 
+### 常時録画（`ContinuousRecording`）の実機・同梱面
+
+3 つ、自動では守られていない面がある。
+
+**(1) 高解像度での `PLAYING` 到達（1 回測定済み・自動では守られない）。** 常時録画を有効にすると `tee` の枝が 2 本から 3 本に増える。GPU 実機で `tools/Verify-HighResolution.ps1` の全 11 ケースが通ることを確認済み（結果は `docs/environment-facts.md`。4K でハードウェアエンコーダー 2 本同時を含む）。**ただしこれは CI で回らない一度きりの測定**なので、解像度や枝の構成、queue の方針、`appsink` の `async` を触る変更のときは**必ず流し直すこと**（手順は `docs/gpu-verification.md`）。開発機では GPU が無く 320x240 / 1280x720 までしか踏めない。
+
+なお既定の測定で分かるのは**「分割が 1 回起きること」まで**である ── スクリプトは既定でセグメントが 2 本（＝閉じたもの 1 本）できた時点で待つのをやめる。**4K で長時間ローテーションを繰り返したときの挙動は未測定**。そこを見るときは走行時間を決めている `-ContinuousMinSegments` を上げること（`-ContinuousWaitSeconds` はその待ちの**上限**であって走行時間ではない。上げ忘れると要求本数に届かず失敗する）:
+
+```powershell
+.\tools\Verify-HighResolution.ps1 -PublishDir <発行ディレクトリ> -MonitorIndex 1 `
+    -ContinuousMinSegments 20 -ContinuousWaitSeconds 180
+```
+
+**(2) `videorate` が無い GStreamer。** `ContinuousFramerate` を空でない値にすると枝に `videorate` が入る。**同梱ランタイムには入れてある**（`libgstvideorate.dll`。`ContinuousRuntimeDependencyTests` が `COMPONENTS.tsv` との一致を固定する）が、**利用者が別途入れた GStreamer には無いことがある** ── そのとき「`videorate` が無い」と名指しで失敗して枝だけ落ちる経路（`EventRecorder.ResolveContinuousEncoder`）を、**実際に流す自動テストは無い**（開発機も CI もフル構成なので再現できない）。要素を意図的に隠したツリーで手で 1 回確かめること。
+
+**(3) B フレームを出すエンコーダー。** `ContinuousEncodingProperties` を手書きして B フレームを有効にすると PTS が並べ替えられ、`ContinuousRecorder` は巻き戻しとして扱ってセグメントを切り直す（`continuous.error` に畳んで 1 行）。カタログの候補はすべて低遅延（B フレーム無し）なので**自動テストではこの経路に入らない**。同じ制約はイベント録画の `PushRecordBuffer` にもあり、そちらも同様に守られていない。
 ### 言語強制マトリクスのうちホストの表示言語と重なる行
 
 `LanguageMatrixTests` は `PROCESSRECORDERAPP_LANG` で ja-JP / en-US / de-DE の 3 言語を回すが、**ホストの表示言語と一致する行はそのホストでは何も検証していない**（強制してもしなくても同じ表示になるため。表示言語 ja の開発機では ja-JP の行が、en-US の GitHub ランナーでは en-US と de-DE の行が空回りする）。**CI が別の表示言語のホストで走ることで初めて全行が実際に効く。** 言語解決を触るときは、どのホストでどの行が効いているかを意識すること。検出が生きているかは、言語強制フック（`ApplyLanguageOverride`）を無効化する注入で「ホストの表示言語と異なる行だけが赤になる」ことで確かめられる。この非対称の根拠は `LanguageMatrixTests` の冒頭 doc にも書いてある。

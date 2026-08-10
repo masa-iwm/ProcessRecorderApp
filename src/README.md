@@ -94,6 +94,7 @@
 
 - **sinkパイプライン**（常時稼働）:
   `映像ソース → (D3D12変換/オーバーレイ) → tee → [プレビュー用 appsink] / [エンコーダー → h264parse → appsink name=sink]`
+  （常時録画が有効なら 3 本目の枝 `appsink name=cont` が加わる。後述「常時録画」）
 - **srcパイプライン**（録画中のみ稼働）:
   `appsrc name=src ! h264parse ! mp4mux faststart=true name=mux ! filesink name=file`
 
@@ -105,6 +106,7 @@
 録画開始（`IsRecording = true`）の**最初の1回だけ**、リングバッファ全体を直近のIフレームから
 `appsrc`（srcパイプライン）へ流し込むことで、「録画開始前」の映像を含んだ MP4 が生成される
 （`PushRecordBuffer` / `isIframeFound`）。以降は新規バッファのみを逐次流し込む。
+
 
 #### パラメータセット（SPS/PPS）は全 IDR の直前で繰り返す（重要）
 
@@ -146,6 +148,104 @@ NVIDIA 機の `nvh264enc` で実際に発生し、本対応で解消すること
 > `_appSink.GetCaps()` を使ってはいけない ── これは appsink に設定された
 > （テンプレート由来でしばしば `ANY` な）キャップスであって、ネゴシエート結果ではない。
 
+### 常時録画（`ContinuousRecording`）
+
+イベント録画とは別に、**別のフレームレート・別のエンコード設定で回り続け、
+一定時間ごとにファイルが切り替わる**録画。事前バッファは効かない（設計どおり）。
+レコーダーごとに有効／無効を切り替える。
+
+`tee` の 3 本目の枝としてイベント録画と**同じキャプチャを共有する**
+（`ContinuousBranch.Build`。キャプチャは 1 回で済み、2 本目のデバイスを開けない
+ソースでも常時録画ができる）。
+
+```
+tee name=t
+  ! [プレビュー]
+ t. ! queue ! エンコーダー ! h264parse ! appsink name=sink        ← イベント録画
+ t. ! queue leaky=downstream ! [videorate ! caps] ! [スケール ! caps]
+      ! エンコーダー ! h264parse ! appsink name=cont async=false  ← 常時録画
+```
+
+枝の 3 つの決定と根拠:
+
+- **`appsink name=cont` の `async=false` は必須。** sink が preroll を待つと、低い
+  フレームレートのときこの枝が `PLAYING` 到達を握る ── `PlayingStateTimeoutMs` の
+  doc が名指ししている唯一の誤検出形（低 fps × 出力の遅いエンコーダー）が常時録画そのもの。
+  代わりに「枝が 1 フレームも出さない」が無音にならないよう、
+  `ContinuousFirstSampleBudget`（フレームレートから逆算）を超えたら
+  `ContinuousLastError` に出す。
+- **常時枝の `queue` は `leaky=downstream`。** 詰まったときに `tee` を止めて録画を優先するのは
+  **イベント録画の枝の役目**であり、**常時録画がイベント録画を道連れにしてはならない**。
+  バイト・時間の上限を外すのはプレビュー枝と同じ理由（解像度に依存させない）。
+- **`videorate` は `ContinuousFramerate` が空でないときだけ入れる。**
+  `videorate`（`libgstvideorate.dll`）は**同梱ランタイムに入れてある**が、
+  利用者が別途入れた GStreamer には無いことがある。無条件に書くと、
+  **フレームレートを変えていない構成まで巻き添えで初期化に失敗する**。
+  要求されたのに要素が無い場合は、`ParseLaunch` の
+  `no element` ではなく「`videorate` が無い」と名指しで失敗させる
+  （`EventRecorder.ResolveContinuousEncoder`）。この整合は
+  `ContinuousRuntimeDependencyTests`（L1）が固定している。
+
+**解像度はソースの caps ではなく変換段で効かせる。** `d3d12screencapturesrc` の src caps は
+モニター解像度に固定されており、ソース側 capsfilter では交渉に失敗する。
+D3d12 経路は `d3d12convert`、System 経路は `videoscale`（どちらも同梱済み）。
+
+#### 分割（セグメント）
+
+**`splitmuxsink` は使わない**（同梱ランタイムに `libgstmultifile.dll` が無い）。
+`ContinuousRecorder`（C#）が `appsink name=cont` から H.264 のアクセスユニットを引き、
+セグメントごとに `appsrc ! h264parse ! mp4mux ! filesink` を作り直す。
+
+切り替えは
+(1) 次のセグメント用パイプラインを先に `PLAYING` にし、
+(2) 旧パイプラインへ EOS を送って**排出はプールスレッドへ逃がし**、
+(3) 当のキーフレームは新しい方へ押し込む
+── フレームの欠落はゼロで、`splitmuxsink async-finalize` と同じことを既存の要素だけで行う。
+排出中のパイプラインは 2 本までに制限する（`ContinuousRecorder.MaxFinalizersInFlight`）。
+
+**切り替えるのはキーフレームだけ**（`SegmentRotationRules.ShouldRotate`）。
+非キーフレームで切ると次のセグメントの先頭が P フレームになり、書き出し側の
+I フレームゲートが次の I まで捨てる ── そのぶんの映像が丸ごと欠ける。
+したがって**GOP が長いとその分だけ超過する**。自動選択のエンコーダーは
+`EncoderCatalog.GopSize` が入るので数フレーム分で収まるが、
+`ContinuousEncodingProperties` を手書きするなら GOP を必ず固定すること。
+超過は `SegmentRotationRules.IsOvershooting`（「2 倍」と「＋30 秒」の厳しい方）で
+検出して `continuous.overshoot` に残す。
+
+セグメントの書き出しに **`faststart=true` は付けない** ── faststart は EOS のあとに
+ファイル全体を書き直すので、数分ごとの切り替えでそれをやると分割のたびに I/O が跳ねる。
+常時録画のセグメントは書庫であって、先頭からのシークの即応性は要らない。
+
+**ファイル名はセグメントごとに展開し直す**（`{Now}` が毎回変わるので自然に一意になる）。
+それでも直前のセグメント、**または まだ排出中のセグメント**と同じ名前になった場合は
+通し番号を足す ── 排出は非同期なので、同じ名前で `filesink` を開くと
+**まだ書き終わっていないファイルを切り詰める**（`{Now:HHmm}` だけのテンプレートで起こりうる）。
+
+**常時録画側の失敗はイベント録画を巻き添えにしない**（隔離契約）。枝は同じ `ParseLaunch` に
+同居するので、`InitializeCore` は**2 段**で組む ── 枝つきで失敗したら、
+同じエンコーダー候補で**枝なしをもう一度**試し、成功したら `IsInitialized` は立てたうえで
+理由を `ContinuousLastError` と `recorder.continuous-init fail` に残す。
+常時録画側のエンコーダーに独自の候補チェーンは持たせない（先頭 1 件のみ）。
+
+| 設定 | 既定 | 意味 |
+|---|---|---|
+| `ContinuousRecording` | `false` | 常時録画を行うか。**反映は `Initialize` で効く**（枝は sink パイプラインの文字列そのもの） |
+| `ContinuousFramerate` | 空欄 | 常時録画のフレームレート（`5/1`）。空欄ならイベント録画と同じ。**空欄でないときだけ `videorate` を入れる** |
+| `ContinuousResolution` | 空欄 | 常時録画の解像度（`1280x720`）。空欄ならイベント録画と同じ |
+| `ContinuousEncodingProperties` | 空欄 | 常時録画のエンコーダー起動文字列。空欄なら自動選択。手書きするなら GOP を固定すること |
+| `ContinuousFilenameTemplate` | `{Now:yyyyMMdd_HHmmss}_{Name}_c{Segment}.mp4` | セグメントごとに展開し直す（`{Now}` は毎回変わる） |
+| `ContinuousSegmentSeconds` | `600` | 分割間隔（秒）。**5 未満は 5、86400 を超える値は 86400** として扱う（セグメントが長いほど異常終了で失う範囲が広がる。書き込み中のファイルは常に未確定） |
+
+読み取り専用の観測値は `IsContinuousRecording` / `ContinuousLastFilename` /
+`ContinuousLastError` / `ActualContinuousEncodingProperties` / `ContinuousSegmentCount`。
+
+`activity.log` のイベント名は `continuous.start` / `continuous.finalize` /
+`continuous.finalize backlog` / `continuous.overshoot` / `continuous.error` / `continuous.stop` /
+`continuous.leak`（一覧は後述の activity.log の表）。
+
+**セグメントも既存の自動削除の対象**（`.mp4` を更新時刻で掃く）。書き込み中のセグメントは
+更新時刻が常に最新なので消えない。ただし保持は日単位・掃除間隔は最短 1 時間で、
+**その間のディスク枯渇に対する防御は無い**（容量監視はこのアプリには無い）。
 ### 録画種別とパイプライン文字列
 
 `EventRecordingType { System, D3d12 }`（既定 `D3d12`）で、GPU経路とCPU経路を切り替える。
@@ -272,6 +372,10 @@ GOP は固定値とし、想定される最低フレームレート（15fps）�
 - `{Now}` — 録画開始時刻（`IFormattable` の書式指定子が使える）
 - `{Name}` — レコーダー名
 - `{ENV.変数名}` — 環境変数
+- `{Segment}` — **常時録画のセグメント番号**（5桁0詰め）。`ContinuousFilenameTemplate` の
+  展開時だけ辞書へ重ねる（イベント録画の `FilenameTemplate` では未登録キーとして原文のまま残る）。
+  書式指定（`{Segment:000}`）は効かない ── `FilenameTemplate.Format` の書式は
+  `IFormattable` にしか適用されず、この値は `string` だから（桁揃えは呼び出し側で済ませてある）。
 - 上記以外 — `EventRecorder.TemplateVariables`（`static ConcurrentDictionary<string, string>`）
   に登録されたユーザー定義変数。CLI の `--set`/`--get`（後述）と Variables 画面
   （`TemplateVariablesViewModel.cs`）、UIA トリガの発火（`{トリガID}`。後述
@@ -880,15 +984,21 @@ CommandOutcome { ShowWindow, ToastTitle, ToastMessage, ConsoleOutput, ConsoleErr
 
 #### `status` の出力
 
-標準出力は**1行1レコーダー**で、TAB 区切りの5列:
+標準出力は**1行1レコーダー**で、TAB 区切りの7列:
 
 ```
-名前	初期化済み	録画中	直近のファイル	直近の障害
-R1	True	False	C:\rec\R1_120050511.mp4	
-R2	False	False		ERROR: pipeline doesn't want to play.
+名前	初期化済み	録画中	直近のファイル	常時録画	常時録画のファイル	直近の障害
+R1	True	False	C:\rec\R1_120050511.mp4	on	C:\rec\R1_c00003.mp4	
+R2	False	False		off		ERROR: pipeline doesn't want to play.
 ```
 
 - 真偽値は `bool.ToString()`（`True`/`False`）で、**カルチャに依存しない**。
+- **常時録画の列は1語**（`off` / `on` / `pending` / `error`。`RecorderCliRules.ContinuousState`）。
+  自由記述の列を2つ持てないため畳んである ── 理由は `ContinuousLastError`（PropertyGrid）と
+  `activity.log` の `continuous.*` にある。`pending` は「有効だが最初のフレームがまだ」で、
+  「そもそも設定していない」（`off`）とは別のこと。
+- **常時録画の状態は終了コードに効かない。** 常時録画の失敗がイベント録画の健全性を
+  汚さないのが隔離契約で（`IsHealthy` は見ていない）、既存のスクリプトの挙動も変えない。
 - **自由記述である「直近の障害」は必ず最後の列**に置く。途中に置くと、理由文に TAB が
   混ざったときに後続の列の意味がずれる。改行と TAB は空白へ潰し、1レコーダー＝1行を崩さない
   （`ActivityLog` と同じ規約）。
@@ -1350,6 +1460,14 @@ GPU テクスチャになるため**アクセシブルテキストが 1 つも�
 | `recorder.warning` | WARN | 同上 | 両方のバスの `Warning`。連続する同一内容は畳んで `repeated=N` を添える |
 | `recorder.eos` | INFO | 同上 | sink 側バスの `Eos` |
 | `recorder.restart` | INFO / WARN | 同上／`RestartSinkSrc` | 自動復帰の予約と、その結果（`ok` / `failed`） |
+| `recorder.continuous-init ok` / `recorder.continuous-init fail` | INFO / WARN | `EventRecorder.StartContinuous` ／ `InitializeCore` | 常時録画の枝を組めた（エンコーダー・fps・解像度・分割間隔）／組めなかったので**枝だけ落とした**（イベント録画は無事＝隔離契約） |
+| `continuous.start` | INFO | `ContinuousRecorder.OpenSegment` | 常時録画のセグメントを開いた（ファイル名・通し番号・分割間隔） |
+| `continuous.finalize` | INFO | `ContinuousRecorder.FinalizeSegment` | セグメントを確定させた（`result=ok｜timeout｜error`） |
+| `continuous.finalize backlog` | WARN | `ContinuousRecorder.WaitForFinalizers` | 排出中のセグメントが上限に達したまま予算内に片付かなかった |
+| `continuous.overshoot` | WARN | `ContinuousRecorder.Proc` | 分割点でキーフレームが来ず、セグメントが設定値を大きく超えた（原因はほぼ GOP 長。1セグメントにつき1行） |
+| `continuous.error` | ERROR / WARN | `ContinuousRecorder` ／ `EventRecorder.CloseCore` | 常時録画側の障害（最初のフレームが来ない・排出の失敗・PTS の巻き戻し・押し込みの拒否）。**`recorder.error` とは別にする** ── 常時録画の障害でイベント録画の状態表示を汚さないため |
+| `continuous.stop` | INFO | `ContinuousRecorder.Close` | 常時録画を止めた（書いたセグメント数） |
+| `continuous.leak` | WARN | 同上 | 常時録画の pull スレッドが上限内に降りず、書き出しパイプラインの解放を諦めた（`recorder.leak` と同じ規律） |
 | `log.terminal` | INFO / WARN | `LogTerminalView` | Log 画面のターミナルが起きた（`ready renderer=webgl｜dom`）／WebView2 を諦めてリスト表示に落ちた（`fallback=list`）。**どちらのレンダラーで描いているかは画面から見分けが付かない**ので、ここが唯一の観測点になる |
 | `log.file error` | ERROR | `Program.Main`（`ApplyLogFile`） | `DebugLogFile` を開けなかった（切断されたドライブ・権限など）。保存は諦めて捕捉は継続する ── 投げると未処理例外ハンドラの購読前なので、不正なパス1つで常駐ワーカーが起動できなくなる |
 | `gst.debug` | INFO | `DebugLogEx.TrySetThreshold` | `GstDebug` の変更を実行中に適用した（`threshold='...'`）。適用先は GStreamer の内部状態だけで画面にもファイルにも痕跡が残らないので、ここが唯一の観測点になる |

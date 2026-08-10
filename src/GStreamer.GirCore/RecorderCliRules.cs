@@ -49,8 +49,8 @@ public static class RecorderCliRules
         => $"{name}\t{lastFilename}";
 
     /// <summary>
-    /// <c>status</c> の標準出力 1 行（TAB 区切りの 5 列:
-    /// <c>名前 / 初期化済み / 録画中 / 直近のファイル / 直近の障害</c>）。
+    /// <c>status</c> の標準出力 1 行（TAB 区切りの 7 列:
+    /// <c>名前 / 初期化済み / 録画中 / 直近のファイル / 常時録画 / 常時録画のファイル / 直近の障害</c>）。
     ///
     /// <para>
     /// <b>自由記述である「直近の障害」は必ず最後の列。</b> 途中に置くと、理由文に TAB が
@@ -60,13 +60,48 @@ public static class RecorderCliRules
     /// </para>
     /// </summary>
     public static string FormatStatusLine(
-        string name, bool isInitialized, bool isRecording, string? lastFilename, string? lastError)
+        string name, bool isInitialized, bool isRecording, string? lastFilename,
+        string continuousState, string? continuousFilename, string? lastError)
         => string.Join('\t',
             name,
             isInitialized.ToString(),
             isRecording.ToString(),
             lastFilename ?? string.Empty,
+            continuousState,
+            continuousFilename ?? string.Empty,
             FlattenToOneLine(lastError));
+
+    /// <summary>常時録画が設定されていない。</summary>
+    public const string ContinuousOff = "off";
+
+    /// <summary>常時録画が回っていてセグメントを書いている。</summary>
+    public const string ContinuousOn = "on";
+
+    /// <summary>有効だが、まだ最初のフレームが来ていない（起動直後の窓）。</summary>
+    public const string ContinuousPending = "pending";
+
+    /// <summary>有効だが障害が出ている。詳細は activity.log の <c>continuous.*</c>。</summary>
+    public const string ContinuousError = "error";
+
+    /// <summary>
+    /// <c>status</c> の常時録画の列（1 語）。
+    ///
+    /// <para>
+    /// <b>1 語に畳むのは、自由記述の列を 2 つ持てないため。</b> 「直近の障害」は
+    /// 必ず最後の列でなければならず、常時録画の障害文をもう 1 列足すとその規約が崩れる。
+    /// 詳細は PropertyGrid の <c>ContinuousLastError</c> と <c>activity.log</c> にある。
+    /// </para>
+    /// <para>
+    /// <b>この列は終了コードには効かない。</b> 常時録画の失敗がイベント録画の健全性を
+    /// 汚さないのが隔離契約であり（<see cref="IsHealthy"/> は見ていない）、
+    /// 既存のスクリプトの挙動も変えない。
+    /// </para>
+    /// </summary>
+    public static string ContinuousState(bool enabled, bool running, string? lastError)
+        => !enabled ? ContinuousOff
+            : 0 < FlattenToOneLine(lastError).Length ? ContinuousError
+            : running ? ContinuousOn
+            : ContinuousPending;
 
     /// <summary>
     /// <c>status</c> の健全判定。不健全（初期化されていない、または直近の障害が残っている）

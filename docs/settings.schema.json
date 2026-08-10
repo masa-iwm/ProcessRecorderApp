@@ -434,6 +434,27 @@
               "string",
               "null"
             ]
+          },
+          "ContinuousRecording": {
+            "type": "boolean"
+          },
+          "ContinuousFramerate": {
+            "type": "string"
+          },
+          "ContinuousResolution": {
+            "type": "string"
+          },
+          "ContinuousEncodingProperties": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ContinuousFilenameTemplate": {
+            "type": "string"
+          },
+          "ContinuousSegmentSeconds": {
+            "type": "integer"
           }
         }
       }

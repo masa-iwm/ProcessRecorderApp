@@ -21,6 +21,9 @@ goes away.
   record is part of the file.
 - **Several recorders at once** — configure and record from multiple sources (screen, camera,
   and so on) simultaneously.
+- **Continuous recording alongside it** — each recorder can also keep a second, always-on
+  recording at its own frame rate, resolution and encoder settings, cut into files on a fixed
+  interval. The pre-buffer does not apply to it.
 - **Video sources** — screen capture, webcams (through Media Foundation), and test patterns.
 - **Live preview** — watch the selected recorder's video in the app window in real time.
 - **Burnt-in timestamp** — the date and time are rendered into the recorded video.

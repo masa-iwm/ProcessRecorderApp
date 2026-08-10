@@ -237,7 +237,7 @@
     <value>Stop recording on the specified recorder.</value>
   </data>
   <data name="Cli_StatusDesc" xml:space="preserve">
-    <value>Report the state of every recorder (name, initialized, recording, last file, last failure).</value>
+    <value>Report the state of every recorder (name, initialized, recording, last file, continuous state, continuous file, last failure).</value>
   </data>
   <data name="Cli_RecorderError" xml:space="preserve">
     <value>Recorder '{0}' is not healthy: {1}</value>
@@ -287,6 +287,9 @@
   <data name="PropCat_Output" xml:space="preserve">
     <value>Output</value>
   </data>
+  <data name="PropCat_Continuous" xml:space="preserve">
+    <value>Continuous recording</value>
+  </data>
   <data name="PropDesc_OutputDirectory" xml:space="preserve">
     <value>Folder the recordings are written to. Pick one with the "..." button, or type a path. Leave empty to use the folder the executable is in. A relative path is resolved against that same folder. A recorder whose filename template is an absolute path ignores this setting.</value>
   </data>
@@ -328,6 +331,39 @@
   </data>
   <data name="PropDesc_Rec_EncodingProperties" xml:space="preserve">
     <value>Encoding properties applied to the recording pipeline.</value>
+  </data>
+  <data name="PropDesc_Rec_ContinuousRecording" xml:space="preserve">
+    <value>Whether to keep a second recording running at all times, cut into files on a fixed interval. The pre-buffer does not apply to it. Takes effect the next time the recorder is initialized.</value>
+  </data>
+  <data name="PropDesc_Rec_ContinuousFramerate" xml:space="preserve">
+    <value>Frame rate for the continuous recording, written as a fraction such as 5/1. Leave it empty to run at the same rate as the event recording. Any other rate needs the videorate element; the bundled runtime carries it, but a GStreamer installed separately may not.</value>
+  </data>
+  <data name="PropDesc_Rec_ContinuousResolution" xml:space="preserve">
+    <value>Frame size for the continuous recording, such as 1280x720. Leave it empty to keep the size the event recording uses.</value>
+  </data>
+  <data name="PropDesc_Rec_ContinuousEncodingProperties" xml:space="preserve">
+    <value>Encoding properties for the continuous recording. Leave it empty to have an encoder chosen automatically. If you write your own, pin the GOP length: files are only cut on a key frame, so a long GOP delays every cut.</value>
+  </data>
+  <data name="PropDesc_Rec_ContinuousFilenameTemplate" xml:space="preserve">
+    <value>Filename template for the continuous recording. It is expanded again for every file, so {Now} moves with each one; {Segment} is a five-digit counter.</value>
+  </data>
+  <data name="PropDesc_Rec_ContinuousSegmentSeconds" xml:space="preserve">
+    <value>How many seconds one continuous-recording file covers before the next one starts. Between 5 and 86400. The cut lands on the following key frame, so a long GOP makes the file run over.</value>
+  </data>
+  <data name="PropDesc_Rec_IsContinuousRecording" xml:space="preserve">
+    <value>Whether the continuous recording is running right now.</value>
+  </data>
+  <data name="PropDesc_Rec_ContinuousLastFilename" xml:space="preserve">
+    <value>Path of the continuous-recording file being written right now.</value>
+  </data>
+  <data name="PropDesc_Rec_ContinuousLastError" xml:space="preserve">
+    <value>The most recent problem detected on the continuous recording (empty when healthy). It is kept apart from the recorder error so that a fault here never hides the state of the event recording.</value>
+  </data>
+  <data name="PropDesc_Rec_ActualContinuousEncodingProperties" xml:space="preserve">
+    <value>Encoder the continuous recording actually started with.</value>
+  </data>
+  <data name="PropDesc_Rec_ContinuousSegmentCount" xml:space="preserve">
+    <value>How many continuous-recording files have been written since this recorder was initialized.</value>
   </data>
   <data name="PropDesc_Rec_LastFilename" xml:space="preserve">
     <value>Path of the most recently recorded file.</value>

@@ -56,4 +56,5 @@ lib/gstreamer-1.0/libgstqsv.dll	gst-plugins-bad
 lib/gstreamer-1.0/libgsttypefindfunctions.dll	gst-plugins-base
 lib/gstreamer-1.0/libgstvideoconvertscale.dll	gst-plugins-base
 lib/gstreamer-1.0/libgstvideoparsersbad.dll	gst-plugins-bad
+lib/gstreamer-1.0/libgstvideorate.dll	gst-plugins-base
 lib/gstreamer-1.0/libgstvideotestsrc.dll	gst-plugins-base

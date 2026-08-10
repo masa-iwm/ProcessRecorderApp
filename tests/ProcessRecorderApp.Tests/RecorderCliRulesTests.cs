@@ -55,27 +55,56 @@ public class RecorderCliRulesTests
         => Assert.Equal("R1\tC:\\rec\\a.mp4", RecorderCliRules.FormatRecorderLine("R1", "C:\\rec\\a.mp4"));
 
     [Fact]
-    public void FormatStatusLine_HasFiveTabSeparatedColumns_WithTheFreeTextLast()
+    public void FormatStatusLine_HasSevenTabSeparatedColumns_WithTheFreeTextLast()
     {
-        string line = RecorderCliRules.FormatStatusLine("R1", true, false, "C:\\rec\\a.mp4", "boom");
+        string line = RecorderCliRules.FormatStatusLine(
+            "R1", true, false, "C:\\rec\\a.mp4",
+            RecorderCliRules.ContinuousOn, "C:\\rec\\a_c00001.mp4", "boom");
 
-        Assert.Equal(new[] { "R1", "True", "False", "C:\\rec\\a.mp4", "boom" }, line.Split('\t'));
+        Assert.Equal(
+            new[] { "R1", "True", "False", "C:\\rec\\a.mp4", "on", "C:\\rec\\a_c00001.mp4", "boom" },
+            line.Split('\t'));
     }
 
     /// <summary>
     /// 自由記述の「直近の障害」に TAB・改行が混ざっても、1 レコーダー＝1 行・
-    /// 5 列を崩さない（<c>ActivityLog</c> と同じ規約）。
+    /// 7 列を崩さない（<c>ActivityLog</c> と同じ規約）。
     /// </summary>
     [Fact]
     public void FormatStatusLine_FlattensTabsAndNewlinesInTheError()
     {
         string line = RecorderCliRules.FormatStatusLine(
-            "R1", false, false, null, "ERROR: line1\r\nline2\tcolumn");
+            "R1", false, false, null, RecorderCliRules.ContinuousOff, null,
+            "ERROR: line1\r\nline2\tcolumn");
 
-        Assert.Equal(5, line.Split('\t').Length);
+        Assert.Equal(7, line.Split('\t').Length);
         Assert.DoesNotContain('\n', line);
-        Assert.Equal("ERROR: line1 line2 column", line.Split('\t')[4]);
+        Assert.Equal("ERROR: line1 line2 column", line.Split('\t')[6]);
     }
+
+    /// <summary>
+    /// 常時録画の列は 1 語に畳む（自由記述の列を 2 つ持てないため）。
+    /// 「有効なのに回っていない」を <c>off</c> と言ってはいけない ── 起動直後の窓と
+    /// 「そもそも設定していない」は別のことである。
+    /// </summary>
+    [Theory]
+    [InlineData(false, false, null, RecorderCliRules.ContinuousOff)]
+    [InlineData(false, false, "boom", RecorderCliRules.ContinuousOff)]
+    [InlineData(true, true, null, RecorderCliRules.ContinuousOn)]
+    [InlineData(true, false, null, RecorderCliRules.ContinuousPending)]
+    [InlineData(true, true, "boom", RecorderCliRules.ContinuousError)]
+    [InlineData(true, false, "boom", RecorderCliRules.ContinuousError)]
+    [InlineData(true, true, "   ", RecorderCliRules.ContinuousOn)]
+    public void ContinuousState_IsOneWord(bool enabled, bool running, string? lastError, string expected)
+        => Assert.Equal(expected, RecorderCliRules.ContinuousState(enabled, running, lastError));
+
+    /// <summary>
+    /// <b>常時録画の障害は健全判定に効かない（隔離契約）。</b> 効かせると、常時録画の
+    /// 設定ミスだけで <c>status</c> が終了コード 15 を返し始め、既存のスクリプトが壊れる。
+    /// </summary>
+    [Fact]
+    public void ContinuousTrouble_DoesNotMakeTheRecorderUnhealthy()
+        => Assert.True(RecorderCliRules.IsHealthy(isInitialized: true, lastError: null));
 
     // ---- 健全判定 ----
 

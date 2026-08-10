@@ -92,6 +92,84 @@ public partial class EventRecorderSettings : ObservableObject, Components.IPrope
     [Description("PropDesc_Rec_EncodingProperties")]
     [ObservableProperty]
     public partial string? EncodingProperties { get; set; }
+
+    /// <summary>常時録画のセグメント長(秒)の下限。</summary>
+    public const int MinContinuousSegmentSeconds = 5;
+
+    /// <summary>
+    /// 常時録画のセグメント長(秒)の上限（24 時間 ＝ 86400 秒）。
+    /// セグメントが長いほど、異常終了で <c>moov</c> ごと失う範囲が広がる
+    /// （書き込み中のファイルは常に未確定で、確定するのは切り替えか終了のときだけ）。
+    /// </summary>
+    public const int MaxContinuousSegmentSeconds = 86_400;
+
+    /// <summary>常時録画のセグメント長(秒)を有効範囲へ丸める。</summary>
+    public static int ClampContinuousSegmentSeconds(int value)
+        => Math.Clamp(value, MinContinuousSegmentSeconds, MaxContinuousSegmentSeconds);
+
+    /// <summary>
+    /// 常時録画（イベント録画とは別の枝を常に回し、一定時間ごとにファイルを切り替える）を行うか。
+    /// <b>反映は <c>Initialize</c> で効く</b> ── 枝は sink パイプラインの文字列そのものなので、
+    /// 組み立て直さないと増減できない（<see cref="SrcPipeline"/> / <see cref="Type"/> と同じ）。
+    /// </summary>
+    [Category("PropCat_Continuous")]
+    [Description("PropDesc_Rec_ContinuousRecording")]
+    [ObservableProperty]
+    public partial bool ContinuousRecording { get; set; }
+
+    /// <summary>
+    /// 常時録画のフレームレート（<c>5/1</c> のような分数）。空ならイベント録画と同じ。
+    /// <b>空でないときだけ <c>videorate</c> を挿入する</b> ── <c>videorate</c> は同梱ランタイムに
+    /// 入れてあるが、利用者が別途入れた GStreamer には無いことがある。無条件に書くと、
+    /// フレームレートを変えていない構成まで巻き添えで初期化に失敗する。
+    /// </summary>
+    [Category("PropCat_Continuous")]
+    [Description("PropDesc_Rec_ContinuousFramerate")]
+    [ObservableProperty]
+    public partial string ContinuousFramerate { get; set; } = "";
+
+    /// <summary>
+    /// 常時録画の解像度（<c>1280x720</c>）。空ならイベント録画と同じ。
+    /// 効かせるのはソースの caps ではなく変換段（<c>d3d12convert</c> / <c>videoscale</c>）
+    /// ── 画面キャプチャの src caps はモニター解像度に固定されており、
+    /// ソース側 capsfilter では交渉に失敗する。
+    /// </summary>
+    [Category("PropCat_Continuous")]
+    [Description("PropDesc_Rec_ContinuousResolution")]
+    [ObservableProperty]
+    public partial string ContinuousResolution { get; set; } = "";
+
+    /// <summary>
+    /// 常時録画のエンコーダー起動文字列。空なら自動選択（イベント側と同じ規則）。
+    /// <b>手書きするなら GOP を必ず固定すること</b> ── セグメントの切り替えはキーフレームでしか
+    /// 行わないので、GOP が長いとその分だけ分割が遅れる。
+    /// </summary>
+    [Category("PropCat_Continuous")]
+    [Description("PropDesc_Rec_ContinuousEncodingProperties")]
+    [ObservableProperty]
+    public partial string? ContinuousEncodingProperties { get; set; }
+
+    /// <summary>
+    /// 常時録画のファイル名テンプレート。<b>セグメントごとに展開し直す</b>ので
+    /// <c>{Now}</c> は毎回変わる。<c>{Segment}</c> は 5 桁 0 詰めの連番。
+    /// </summary>
+    [Category("PropCat_Continuous")]
+    [Description("PropDesc_Rec_ContinuousFilenameTemplate")]
+    [ObservableProperty]
+    public partial string ContinuousFilenameTemplate { get; set; } = "{Now:yyyyMMdd_HHmmss}_{Name}_c{Segment}.mp4";
+
+    /// <summary>
+    /// 常時録画のセグメント長(秒)。設定値は常に <see cref="ClampContinuousSegmentSeconds"/> で丸める
+    /// （<see cref="BufferDuration"/> と同じ理由で <c>[ObservableProperty]</c> にしない）。
+    /// </summary>
+    [Category("PropCat_Continuous")]
+    [Description("PropDesc_Rec_ContinuousSegmentSeconds")]
+    public int ContinuousSegmentSeconds
+    {
+        get => _continuousSegmentSeconds;
+        set => SetProperty(ref _continuousSegmentSeconds, ClampContinuousSegmentSeconds(value));
+    }
+    private int _continuousSegmentSeconds = 600;
 }
 
 public partial class EventRecorder : ObservableObject, IDisposable
@@ -106,6 +184,12 @@ public partial class EventRecorder : ObservableObject, IDisposable
     private GstApp.AppSrc? _appSrc;
     private Element? _mux;
     private Element? _file;
+
+    /// <summary>常時録画の枝の終端 appsink（sink パイプラインの一部）。</summary>
+    private GstApp.AppSink? _continuousSink;
+
+    /// <summary>常時録画エンジン。常時録画が無効か、枝を組めなかった場合は null。</summary>
+    private ContinuousRecorder? _continuous;
 
     static int _instanceCount = 0;
     [ObservableProperty]
@@ -246,6 +330,87 @@ public partial class EventRecorder : ObservableObject, IDisposable
     [ObservableProperty]
     public partial string? ActualEncodingProperties { get; private set; }
 
+    [ObservableProperty]
+    public partial bool ContinuousRecording { get; set; }
+    partial void OnContinuousRecordingChanged(bool value)
+    {
+        if (_currentSettings?.ContinuousRecording != value)
+            _currentSettings?.ContinuousRecording = value;
+    }
+
+    [ObservableProperty]
+    public partial string ContinuousFramerate { get; set; } = "";
+    partial void OnContinuousFramerateChanged(string value)
+    {
+        if (_currentSettings?.ContinuousFramerate != value)
+            _currentSettings?.ContinuousFramerate = value;
+    }
+
+    [ObservableProperty]
+    public partial string ContinuousResolution { get; set; } = "";
+    partial void OnContinuousResolutionChanged(string value)
+    {
+        if (_currentSettings?.ContinuousResolution != value)
+            _currentSettings?.ContinuousResolution = value;
+    }
+
+    [ObservableProperty]
+    public partial string? ContinuousEncodingProperties { get; set; }
+    partial void OnContinuousEncodingPropertiesChanged(string? value)
+    {
+        if (_currentSettings?.ContinuousEncodingProperties != value)
+            _currentSettings?.ContinuousEncodingProperties = value;
+    }
+
+    [ObservableProperty]
+    public partial string ContinuousFilenameTemplate { get; set; } = "";
+    partial void OnContinuousFilenameTemplateChanged(string value)
+    {
+        if (_currentSettings?.ContinuousFilenameTemplate != value)
+            _currentSettings?.ContinuousFilenameTemplate = value;
+    }
+
+    /// <summary>常時録画のセグメント長(秒)。設定・VM と同じく 3 箇所すべてで丸める。</summary>
+    public int ContinuousSegmentSeconds
+    {
+        get => _continuousSegmentSeconds;
+        set
+        {
+            if (SetProperty(ref _continuousSegmentSeconds,
+                    EventRecorderSettings.ClampContinuousSegmentSeconds(value))
+                && _currentSettings is { } settings
+                && settings.ContinuousSegmentSeconds != _continuousSegmentSeconds)
+            {
+                settings.ContinuousSegmentSeconds = _continuousSegmentSeconds;
+            }
+        }
+    }
+    private int _continuousSegmentSeconds;
+
+    /// <summary>常時録画の枝が実際に動いているか（初期化に成功し、セグメントを書いている）。</summary>
+    [ObservableProperty]
+    public partial bool IsContinuousRecording { get; private set; }
+
+    /// <summary>常時録画が現在書いているセグメントのパス。</summary>
+    [ObservableProperty]
+    public partial string? ContinuousLastFilename { get; private set; }
+
+    /// <summary>
+    /// 常時録画側だけで起きた障害（正常時は <see langword="null"/>）。
+    /// <b><see cref="LastError"/> とは別にする</b> ── 常時録画の設定ミスが
+    /// イベント録画の状態表示を汚さないようにするため（隔離契約）。
+    /// </summary>
+    [ObservableProperty]
+    public partial string? ContinuousLastError { get; private set; }
+
+    /// <summary>常時録画で実際に動いたエンコーダーの起動文字列。</summary>
+    [ObservableProperty]
+    public partial string? ActualContinuousEncodingProperties { get; private set; }
+
+    /// <summary>初期化してから書き出したセグメントの本数。</summary>
+    [ObservableProperty]
+    public partial int ContinuousSegmentCount { get; private set; }
+
 
     private void Settings_PropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
     {
@@ -260,6 +425,12 @@ public partial class EventRecorder : ObservableObject, IDisposable
             case nameof(Type): if (Type != settings.Type) Type = settings.Type; break;
             case nameof(SrcPipeline): if (SrcPipeline != settings.SrcPipeline) SrcPipeline = settings.SrcPipeline; break;
             case nameof(EncodingProperties): if (EncodingProperties != settings.EncodingProperties) EncodingProperties = settings.EncodingProperties; break;
+            case nameof(ContinuousRecording): if (ContinuousRecording != settings.ContinuousRecording) ContinuousRecording = settings.ContinuousRecording; break;
+            case nameof(ContinuousFramerate): if (ContinuousFramerate != settings.ContinuousFramerate) ContinuousFramerate = settings.ContinuousFramerate; break;
+            case nameof(ContinuousResolution): if (ContinuousResolution != settings.ContinuousResolution) ContinuousResolution = settings.ContinuousResolution; break;
+            case nameof(ContinuousEncodingProperties): if (ContinuousEncodingProperties != settings.ContinuousEncodingProperties) ContinuousEncodingProperties = settings.ContinuousEncodingProperties; break;
+            case nameof(ContinuousFilenameTemplate): if (ContinuousFilenameTemplate != settings.ContinuousFilenameTemplate) ContinuousFilenameTemplate = settings.ContinuousFilenameTemplate; break;
+            case nameof(ContinuousSegmentSeconds): if (ContinuousSegmentSeconds != settings.ContinuousSegmentSeconds) ContinuousSegmentSeconds = settings.ContinuousSegmentSeconds; break;
         }
     }
 
@@ -280,6 +451,13 @@ public partial class EventRecorder : ObservableObject, IDisposable
         this.Type = settings.Type;
         this.SrcPipeline = settings.SrcPipeline;
         this.EncodingProperties = settings.EncodingProperties ?? string.Empty;
+
+        this.ContinuousRecording = settings.ContinuousRecording;
+        this.ContinuousFramerate = settings.ContinuousFramerate;
+        this.ContinuousResolution = settings.ContinuousResolution;
+        this.ContinuousEncodingProperties = settings.ContinuousEncodingProperties ?? string.Empty;
+        this.ContinuousFilenameTemplate = settings.ContinuousFilenameTemplate;
+        this.ContinuousSegmentSeconds = settings.ContinuousSegmentSeconds;
     }
 
     /// <summary>
@@ -374,8 +552,14 @@ public partial class EventRecorder : ObservableObject, IDisposable
     private const string PreviewQueue =
         "queue leaky=downstream max-size-buffers=1 max-size-bytes=0 max-size-time=0";
 
+    /// <param name="continuousBranch">
+    /// 常時録画の枝（<see cref="ContinuousBranch.Build"/> の出力）。空なら枝を足さない。
+    /// <b>既定値を空にしてあるのは、枝の有無で既存の呼び出しと出力を変えないため</b>
+    /// ── 常時録画を切っている構成のパイプライン文字列は、この機能を入れる前と 1 文字も変わらない。
+    /// </param>
     public static string BuildSinkPipeline(
-        EventRecordingType type, string? srcPipeline, string encoder, bool needsSystemMemory)
+        EventRecordingType type, string? srcPipeline, string encoder, bool needsSystemMemory,
+        string continuousBranch = "")
     {
         // D3d12 経路でのみ、システムメモリを要求するエンコーダーの手前にダウンロードを挟む
         string download = type == EventRecordingType.D3d12 && needsSystemMemory
@@ -450,7 +634,8 @@ public partial class EventRecorder : ObservableObject, IDisposable
                 h264parse config-interval=-1 !
                 video/x-h264, stream-format=byte-stream, alignment=au, profile=main !
                 appsink name=sink
-                """;
+                """
+            + (continuousBranch.Length == 0 ? "" : "\n" + continuousBranch);
     }
 
     /// <summary>
@@ -525,14 +710,44 @@ public partial class EventRecorder : ObservableObject, IDisposable
         for (int i = 0; i < candidates.Count; i++)
         {
             var candidate = candidates[i];
+            string? continuousFailure = null;
             try
             {
-                InitializeWith(candidate);
+                // **常時録画の隔離契約（2 段初期化）。**
+                // 常時枝は同じ ParseLaunch に同居するので、常時録画側の設定ミス
+                // （壊れたエンコーダー文字列・無い要素・通らない解像度）が
+                // そのままイベント録画を殺してしまう ── このアプリでは最悪の退行。
+                // 枝つきで組めなかったら、**同じ候補で枝なしをもう一度試す**。
+                // それも駄目なら、初めて「その候補の失敗」として次の候補へ送る。
+                if (ContinuousRecording)
+                {
+                    try
+                    {
+                        InitializeWith(candidate, withContinuous: true);
+                    }
+                    catch (Exception continuousEx)
+                    {
+                        Close();
+                        continuousFailure = continuousEx.Message;
+                        InitializeWith(candidate, withContinuous: false);
+                    }
+                }
+                else
+                    InitializeWith(candidate, withContinuous: false);
 
                 // 初期化できた＝「今の状態」は正常。前回の障害表示を消す
                 // （StartCore が録画開始時に消すのと同じ規約。消さないと、パイプラインを
                 //  直して復帰させても status が終了コード 15 を返し続ける）。
                 LastError = null;
+
+                if (continuousFailure is not null)
+                {
+                    string isolated = "the continuous-recording branch could not be built, so it is off; "
+                        + $"the event recording is unaffected: {continuousFailure}";
+                    ContinuousLastError = isolated;
+                    Components.ActivityLog.Warn("recorder.continuous-init fail",
+                        $"recorder='{Name}' {isolated}");
+                }
 
                 // 採用結果は activity.log へ出す。DebugLogEx.Log（gst_debug_log 経由）は
                 // GST_DEBUG が未設定だと何も出力しないため、既定の起動では「どのエンコーダーが
@@ -595,12 +810,20 @@ public partial class EventRecorder : ObservableObject, IDisposable
     public const int PlayingStateTimeoutMs = 5000;
 
     /// <summary>指定したエンコーダー候補ひとつでパイプラインを構築して再生を開始する。</summary>
-    private void InitializeWith(H264EncoderDef encoder)
+    private void InitializeWith(H264EncoderDef encoder, bool withContinuous = false)
     {
         try
         {
+            H264EncoderDef? continuousEncoder = withContinuous ? ResolveContinuousEncoder() : null;
+            string continuousBranch = continuousEncoder is null
+                ? ""
+                : ContinuousBranch.Build(
+                    Type, continuousEncoder.LaunchString, continuousEncoder.NeedsSystemMemory,
+                    ContinuousFramerate, ContinuousResolution);
+
             string SinkPipelineStr =
-                BuildSinkPipeline(Type, SrcPipeline, encoder.LaunchString, encoder.NeedsSystemMemory);
+                BuildSinkPipeline(Type, SrcPipeline, encoder.LaunchString, encoder.NeedsSystemMemory,
+                    continuousBranch);
             const string SrcPipelineStr =
                 "appsrc format=time name=src ! h264parse ! mp4mux faststart=true name=mux ! filesink name=file";
 
@@ -652,6 +875,12 @@ public partial class EventRecorder : ObservableObject, IDisposable
             // 「実際に動いたエンコーダー」を読み取り専用プロパティへ出す。
             // 自動選択・フォールバックが起きた場合、UI 改修なしでその結果が見える。
             ActualEncodingProperties = encoder.LaunchString;
+
+            // 常時録画は sink パイプラインが PLAYING になってから起こす。
+            // ここで投げると呼び出し側（InitializeCore）が枝なしで組み直す。
+            if (continuousEncoder is not null)
+                StartContinuous(continuousEncoder);
+
             IsInitialized = true;
         }
         catch
@@ -659,6 +888,119 @@ public partial class EventRecorder : ObservableObject, IDisposable
             Close();
             throw;
         }
+    }
+
+    /// <summary>
+    /// 常時録画のエンコーダーを決める。
+    ///
+    /// <para>
+    /// <b>独自の候補チェーンは持たない。</b> 明示指定があればそれ 1 件、無ければ
+    /// カタログの解決結果の<b>先頭 1 件だけ</b>を使う。入れ子のフォールバックを作ると、
+    /// 候補数 × 2 段の <c>ParseLaunch</c> が起動時間に効くうえ、
+    /// どの組み合わせで動いたのかが <see cref="ActualContinuousEncodingProperties"/> から読めなくなる
+    /// ── 常時枝が組めないときは、黙って別のエンコーダーへ滑るより
+    /// <b>枝を落として理由を残す</b>方（2 段初期化）を選ぶ。
+    /// </para>
+    /// </summary>
+    private H264EncoderDef ResolveContinuousEncoder()
+    {
+        // フレームレートを変えるには videorate が要る。同梱ランタイムには入れてあるが、
+        // 利用者が別途入れた GStreamer には無いことがある。ParseLaunch の「no element」より先に、
+        // 何が足りないのかを名指しで失敗させる。
+        if (ContinuousBranch.RequiresVideorate(ContinuousFramerate)
+            && !EncoderCatalog.ProbeWithGStreamer(ContinuousBranch.VideorateFactory))
+        {
+            throw new InvalidOperationException(
+                $"the '{ContinuousBranch.VideorateFactory}' element is not available in this GStreamer runtime, "
+                + $"so the continuous recording cannot run at ContinuousFramerate={ContinuousFramerate}. "
+                + "Clear ContinuousFramerate to run it at the same rate as the event recording.");
+        }
+
+        if (!string.IsNullOrEmpty(ContinuousEncodingProperties))
+        {
+            string factory = ContinuousEncodingProperties.Split(' ', StringSplitOptions.RemoveEmptyEntries) is [var first, ..]
+                ? first
+                : ContinuousEncodingProperties;
+            return new H264EncoderDef(
+                factory, ContinuousEncodingProperties, EncoderCatalog.NeedsSystemMemoryFor(factory, Type));
+        }
+
+        var resolved = EncoderCatalog.Resolve(Type, PreferredH264Encoder, EncoderCatalog.ProbeWithGStreamer);
+        foreach (var attempt in EncoderCatalog.ExpandAttempts(resolved))
+            return attempt;
+
+        throw new InvalidOperationException(
+            $"no usable H.264 encoder was found for the continuous recording (Type={Type}).");
+    }
+
+    /// <summary>常時枝の <c>appsink</c> を掴んでエンジンを起こす。</summary>
+    private void StartContinuous(H264EncoderDef encoder)
+    {
+        _continuousSink = _sinkPipeline?.GetByName(ContinuousBranch.AppSinkName) as GstApp.AppSink
+            ?? throw new InvalidOperationException(
+                $"the continuous branch did not expose an appsink named '{ContinuousBranch.AppSinkName}'.");
+
+        // 最初のサンプルを待つ予算は「実際に流れるフレームレート」から逆算する。
+        // 上書きが無ければソース側 caps の framerate を使う（解析は SrcPipelineBuilder。
+        // 規則を 2 か所に書かないため）。
+        string framerate = ContinuousBranch.RequiresVideorate(ContinuousFramerate)
+            ? ContinuousFramerate
+            : SrcPipelineBuilder.Parse(SrcPipeline).CapsFields.TryGetValue("framerate", out var sourceRate)
+                ? sourceRate
+                : "";
+
+        _continuous = new ContinuousRecorder(
+            new ContinuousHost(this),
+            _continuousSink,
+            ContinuousFilenameTemplate,
+            ContinuousSegmentSeconds,
+            ContinuousFirstSampleBudget.For(framerate));
+        _continuous.Start();
+
+        ActualContinuousEncodingProperties = encoder.LaunchString;
+        Components.ActivityLog.Info("recorder.continuous-init ok",
+            $"recorder='{Name}' encoder='{encoder.LaunchString}' "
+            + $"framerate='{ContinuousFramerate}' resolution='{ContinuousResolution}' "
+            + $"segmentSeconds={ContinuousSegmentSeconds}");
+    }
+
+    /// <summary>
+    /// 常時録画エンジンから <see cref="EventRecorder"/> の観測値へ書き戻す口。
+    /// 入れ子クラスなので外側の private セッターへ触れる。
+    /// </summary>
+    private sealed class ContinuousHost(EventRecorder owner) : IContinuousRecorderHost
+    {
+        public string Name => owner.Name;
+
+        public string ResolveSegmentPath(string template, int segmentIndex)
+            => owner.ResolveContinuousPath(template, segmentIndex);
+
+        public void OnContinuousStatus(bool running, string? currentFile, int segmentCount)
+        {
+            owner.IsContinuousRecording = running;
+            owner.ContinuousLastFilename = currentFile;
+            owner.ContinuousSegmentCount = segmentCount;
+        }
+
+        public void OnContinuousError(string message) => owner.ContinuousLastError = message;
+    }
+
+    /// <summary>
+    /// 常時録画のセグメント 1 本ぶんのパスを決める。<c>{Segment}</c> は 5 桁 0 詰めの連番として
+    /// テンプレート変数に重ねる（<c>FilenameTemplate.Format</c> の書式指定は
+    /// <see cref="IFormattable"/> にしか効かないため、桁揃えは呼び出し側で済ませる）。
+    /// </summary>
+    private string ResolveContinuousPath(string template, int segmentIndex)
+    {
+        var variables = new Dictionary<string, string>(TemplateVariables)
+        {
+            ["Segment"] = segmentIndex.ToString("00000", System.Globalization.CultureInfo.InvariantCulture),
+        };
+
+        string filename = GStreamer.FilenameTemplate.Format(
+            template, Name, System.DateTime.Now, variables, Environment.GetEnvironmentVariable);
+
+        return Path.IsPathRooted(filename) ? filename : Path.Combine(OutputDirectory, filename);
     }
 
     /// <summary>
@@ -770,6 +1112,30 @@ public partial class EventRecorder : ObservableObject, IDisposable
             ActualType = EventRecordingType.System;
             ActualSrcPipeline = null;
             ActualEncodingProperties = null;
+            ActualContinuousEncodingProperties = null;
+            ContinuousLastError = null;
+
+            // **常時録画の確定はイベント側の排出と並行に走らせる。**
+            // 直列にすると停止の予算（MaxAdvisedStopFinalizeTimeoutMs + StopFinalizeSlackMs
+            //  < ランチャーの結果待ち）が崩れ、stop-recording がタイムアウトを返し始める。
+            // **例外を持ち帰らせない。** ここで投げると Wait が AggregateException を出し、
+            // 常時録画の後始末の失敗がレコーダーの破棄そのものの失敗に化ける（隔離契約が崩れる）。
+            var continuous = _continuous;
+            _continuous = null;
+            System.Threading.Tasks.Task? continuousClose = continuous is null
+                ? null
+                : System.Threading.Tasks.Task.Run(() =>
+                {
+                    try
+                    {
+                        continuous.Close();
+                    }
+                    catch (Exception ex)
+                    {
+                        Components.ActivityLog.Error("continuous.error",
+                            $"recorder='{Name}' the continuous recording did not shut down cleanly: {ex.Message}");
+                    }
+                });
 
             if (_IsRecording)
             {
@@ -786,9 +1152,14 @@ public partial class EventRecorder : ObservableObject, IDisposable
             // パイプラインへ SetState したり Initialize() を呼んだりする。
             CancelPendingRestart();
 
+            // 常時録画のスレッドが降りるまで sink 側を壊してはいけない（cont appsink を読んでいる）。
+            bool continuousStopped = continuousClose is null
+                || continuousClose.Wait(StopFinalizeTimeoutMs + StopFinalizeSlackMs);
+
             _isAlive = false;
             bool pullStopped = _pullPreviewThread?.Join(5000) ?? true;
             pullStopped &= _pullSampleThread?.Join(5000) ?? true;
+            pullStopped &= continuousStopped;
             _pullPreviewThread = null;
             _pullSampleThread = null;
 
@@ -859,6 +1230,7 @@ public partial class EventRecorder : ObservableObject, IDisposable
                 // ので、Dispose はせず参照だけ落とす（recorder.leak は上で記録済み）。
                 _previewSink = null;
                 _appSink = null;
+                _continuousSink = null;
                 _sinkBus = null;
                 _sinkPipeline = null;
             }
@@ -868,6 +1240,8 @@ public partial class EventRecorder : ObservableObject, IDisposable
                 _previewSink = null;
                 _appSink?.Dispose();
                 _appSink = null;
+                _continuousSink?.Dispose();
+                _continuousSink = null;
                 _sinkBus?.Dispose();
                 _sinkBus = null;
                 _sinkPipeline?.Dispose();

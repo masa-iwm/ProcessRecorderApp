@@ -376,6 +376,45 @@ public sealed class RecorderSpec(string name)
         return this;
     }
 
+
+    /// <summary>常時録画（イベント録画とは別に回り続け、一定時間でファイルが切り替わる）を有効にするか。</summary>
+    public bool ContinuousRecording { get; set; }
+
+    /// <summary>常時録画のフレームレート（<c>5/1</c>）。空ならイベント録画と同じ。</summary>
+    public string ContinuousFramerate { get; set; } = "";
+
+    /// <summary>常時録画の解像度（<c>320x240</c>）。空ならイベント録画と同じ。</summary>
+    public string ContinuousResolution { get; set; } = "";
+
+    /// <summary>null なら自動選択。</summary>
+    public string? ContinuousEncodingProperties { get; set; }
+
+    /// <summary>null なら「録画先ディレクトリ配下の <c>{Name}_c{Segment}.mp4</c>」。</summary>
+    public string? ContinuousFilenameTemplate { get; set; }
+
+    /// <summary>常時録画のセグメント長(秒)。製品の下限は 5。</summary>
+    public int ContinuousSegmentSeconds { get; set; } = 600;
+
+    /// <summary>
+    /// 常時録画を有効にし、セグメントを最短（5 秒）にする。
+    ///
+    /// <para>
+    /// <b><see cref="ContinuousEncodingProperties"/> は指定しない</b>
+    /// ── 空にすると <c>EncoderCatalog</c> の解決結果（GOP を固定した起動文字列）が使われる。
+    /// <c>SettingsFile.DefaultEncoder</c>（素の <c>x264enc</c>）を渡すと GOP が
+    /// エンコーダー既定になり、<b>キーフレームが数秒〜十数秒に 1 枚しか出ない</b>ので
+    /// 分割が設定値どおりに起きない（実測: 5 秒設定で 10 秒超過）。
+    /// これは製品の仕様どおりの挙動で（切り替えはキーフレームでのみ行う）、
+    /// 手書きするなら GOP を固定することが要る ── ハーネスがそれを踏むと、
+    /// 分割の検査が「製品の欠陥」ではなく「設定の誤り」で落ちる。
+    /// </para>
+    /// </summary>
+    public RecorderSpec WithContinuous(int segmentSeconds = 5)
+    {
+        ContinuousRecording = true;
+        ContinuousSegmentSeconds = segmentSeconds;
+        return this;
+    }
     internal JsonObject ToJson(string recordingsDir) => new()
     {
         ["Name"] = Name,
@@ -384,6 +423,13 @@ public sealed class RecorderSpec(string name)
         ["Type"] = Type.ToString(),
         ["SrcPipeline"] = SrcPipeline,
         ["EncodingProperties"] = EncodingProperties,
+        ["ContinuousRecording"] = ContinuousRecording,
+        ["ContinuousFramerate"] = ContinuousFramerate,
+        ["ContinuousResolution"] = ContinuousResolution,
+        ["ContinuousEncodingProperties"] = ContinuousEncodingProperties,
+        ["ContinuousFilenameTemplate"] = ContinuousFilenameTemplate
+            ?? Path.Combine(recordingsDir, "{Name}_c{Segment}.mp4"),
+        ["ContinuousSegmentSeconds"] = ContinuousSegmentSeconds,
     };
 }
 

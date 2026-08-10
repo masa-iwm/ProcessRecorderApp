@@ -18,10 +18,14 @@ public sealed class StatusCommandTests(PublishedApp app, ITestOutputHelper outpu
     /// <summary>製品側 <c>ActivationCommands.ExitCode_RecorderUnhealthy</c> と一致していること。</summary>
     private const int ExitRecorderUnhealthy = 15;
 
-    /// <summary>1行の列数（名前 / 初期化済み / 録画中 / 直近のファイル / 直近の障害）。</summary>
-    private const int ColumnCount = 5;
+    /// <summary>
+    /// 1行の列数（名前 / 初期化済み / 録画中 / 直近のファイル / 常時録画 / 常時録画のファイル / 直近の障害）。
+    /// </summary>
+    private const int ColumnCount = 7;
 
-    private sealed record StatusRow(string Name, bool Initialized, bool Recording, string LastFilename, string LastError);
+    private sealed record StatusRow(
+        string Name, bool Initialized, bool Recording, string LastFilename,
+        string Continuous, string ContinuousFilename, string LastError);
 
     /// <summary>
     /// <c>status</c> の標準出力を解析する。<b>列数そのものを表明する</b> ──
@@ -45,7 +49,9 @@ public sealed class StatusCommandTests(PublishedApp app, ITestOutputHelper outpu
                 ParseBoolean(cells[1], line),
                 ParseBoolean(cells[2], line),
                 cells[3],
-                cells[4]));
+                cells[4],
+                cells[5],
+                cells[6]));
         }
         return rows;
     }
@@ -91,6 +97,9 @@ public sealed class StatusCommandTests(PublishedApp app, ITestOutputHelper outpu
         Assert.All(before, r => Assert.Equal("", r.LastError));
         // まだ一度も録画していないので、直近のファイルは無い。
         Assert.All(before, r => Assert.Equal("", r.LastFilename));
+        // 常時録画は既定で無効なので off のまま（この機能を入れる前と同じ挙動であること）。
+        Assert.All(before, r => Assert.Equal("off", r.Continuous));
+        Assert.All(before, r => Assert.Equal("", r.ContinuousFilename));
 
         // --- 録画中 ---
         var start = instance.Run("start-recording-all");

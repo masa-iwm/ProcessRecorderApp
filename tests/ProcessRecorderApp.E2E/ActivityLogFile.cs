@@ -52,6 +52,18 @@ public static class ActivityLogFile
         // 「recording.stop が2件」を数えている既存の表明が黙って3件になる。
         "recording.stop empty",
         "recording.aborted",
+        // 常時録画。**分割は継続する方が損失が小さい**ので、1 本の失敗ではエンジンを止めない。
+        // "continuous.finalize backlog" は "continuous.finalize" より長いので、
+        // 最長一致の表に両方載せておかないと backlog が finalize として数えられる。
+        "recorder.continuous-init ok",
+        "recorder.continuous-init fail",
+        "continuous.start",
+        "continuous.finalize",
+        "continuous.finalize backlog",
+        "continuous.overshoot",
+        "continuous.error",
+        "continuous.stop",
+        "continuous.leak",
         // Log 画面のターミナル。**どちらのレンダラーで描いているかは画面から見分けが付かない**ので、
         // ここが「WebView2 が実際に起きた」ことを確かめられる唯一の自動的な観測点になる。
         "log.terminal",

@@ -22,7 +22,7 @@
 - 取得元・版・SHA256 は [`licenses/third-party/SOURCES.tsv`](licenses/third-party/SOURCES.tsv)。
   取得は `tools/Fetch-ThirdPartyLicenses.ps1`、照合は `-Verify` で行えます。
 - どのファイルがどのプロジェクト由来かは
-  [`licenses/third-party/COMPONENTS.tsv`](licenses/third-party/COMPONENTS.tsv)（同梱 45 ファイル全件）。
+  [`licenses/third-party/COMPONENTS.tsv`](licenses/third-party/COMPONENTS.tsv)（同梱 46 ファイル全件）。
 - 同梱版の配布 zip では、これらは発行物直下の `licenses/third-party/` に入ります。
   `license.txt` と本ファイルは**同梱・非同梱の両方**に入ります。
 
@@ -73,7 +73,7 @@
 > 削除候補の名前が**残す 44 件のバイナリの中に文字列として現れないこと**も確認しています
 > （`libgst….dll` の形と、`lib` と `.dll` を落とした gmodule の形の両方で 0 件）。
 
-## GStreamer プラグイン（14）
+## GStreamer プラグイン（15）
 
 いずれも GStreamer 1.28.4 の一部で、**申告ライセンスはすべて LGPL** です
 （`gst-inspect-1.0` の `License` 行の実測値）。
@@ -83,6 +83,7 @@
 | `coreelements` | gstreamer | `queue` / `tee` / `capsfilter` / `filesink` / `identity` |
 | `app` | gst-plugins-base | `appsrc` / `appsink`（録画とプレビューの受け渡し） |
 | `videoconvertscale` | gst-plugins-base | `videoconvert` |
+| `videorate` | gst-plugins-base | `videorate`（常時録画のフレームレート変更） |
 | `videotestsrc` | gst-plugins-base | テストパターン（設定で選べるソース） |
 | `typefindfunctions` | gst-plugins-base | 型判定 |
 | `isomp4` | gst-plugins-good | `mp4mux` |
@@ -197,7 +198,7 @@ LGPL は「対応するソースの入手先を示すこと」を求めます。
 > `gitlab.freedesktop.org` と `gcc.gnu.org` が実際にそうで、`SOURCES.tsv` が
 > GitHub ミラーを使っているのはそのためです）。
 > **GStreamer は4サブプロジェクトを別行にしてあります。** ディレクトリ索引
-> （`.../src/`）1行で済ませると版が固定されず、**同梱 45 ファイルのうち 33 件**
+> （`.../src/`）1行で済ませると版が固定されず、**同梱 46 ファイルのうち 34 件**
 > ＝最大の塊が最も弱い指し方になってしまうためです。
 
 > **libffi・Orc・PCRE2・zlib・proxy-libintl の URL は、cerbero が

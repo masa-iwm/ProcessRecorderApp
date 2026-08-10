@@ -11,7 +11,7 @@
 #   - 非同梱（`ProcessRecorderApp-<tag>-win-x64.zip`）
 #       利用者側に GStreamer(MinGW) か MSYS2(UCRT64) が要る。軽い。
 #   - 同梱  （`ProcessRecorderApp-<tag>-win-x64-gstreamer.zip`）
-#       削減した runtimes（45 ファイル・49.7MB）を同梱する。
+#       削減した runtimes（46 ファイル・49.8MB）を同梱する。
 #       **x264 と libav を含まないので GPL を持ち込まない。** Type=System は
 #       `mfh264enc` に落ちる（**openh264 は特許の都合で同梱しない**
 #       ── THIRD-PARTY-NOTICES.md「2.」。同梱版の GPU 実機検証で、System の

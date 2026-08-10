@@ -65,7 +65,7 @@
 param(
     [string] $ArchivePath,
     [string] $Uri = 'https://github.com/masa-iwm/ProcessRecorderApp/releases/download/gstreamer-runtime-v1.28.4/gstreamer-runtime-win-x64-v1.28.4.zip',
-    [string] $Sha256 = '22E099ABD5659F6A3F0B394B078D90E7B5FD0B52ABF418A9ACD085607F1A4AC7',
+    [string] $Sha256 = '6EEA576748BD648DD63481DC7ACE69215EC4C7487B7D01F2CD4BD6349C4C5D38',
     [string] $Destination
 )
 

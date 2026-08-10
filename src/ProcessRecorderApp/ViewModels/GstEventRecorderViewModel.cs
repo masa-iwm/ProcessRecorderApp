@@ -40,6 +40,18 @@ namespace ProcessRecorderApp.ViewModels
             ActualSrcPipeline = model.ActualSrcPipeline;
             ActualEncodingProperties = model.ActualEncodingProperties;
             LastError = model.LastError;
+
+            ContinuousRecording = model.ContinuousRecording;
+            ContinuousFramerate = model.ContinuousFramerate;
+            ContinuousResolution = model.ContinuousResolution;
+            ContinuousEncodingProperties = model.ContinuousEncodingProperties;
+            ContinuousFilenameTemplate = model.ContinuousFilenameTemplate;
+            ContinuousSegmentSeconds = model.ContinuousSegmentSeconds;
+            IsContinuousRecording = model.IsContinuousRecording;
+            ContinuousLastFilename = model.ContinuousLastFilename;
+            ContinuousLastError = model.ContinuousLastError;
+            ActualContinuousEncodingProperties = model.ActualContinuousEncodingProperties;
+            ContinuousSegmentCount = model.ContinuousSegmentCount;
         }
 
         /// <summary>
@@ -85,6 +97,17 @@ namespace ProcessRecorderApp.ViewModels
                 case nameof(Model.ActualSrcPipeline): if (ActualSrcPipeline != Model.ActualSrcPipeline) ActualSrcPipeline = Model.ActualSrcPipeline; break;
                 case nameof(Model.ActualEncodingProperties): if (ActualEncodingProperties != Model.ActualEncodingProperties) ActualEncodingProperties = Model.ActualEncodingProperties; break;
                 case nameof(Model.LastError): if (LastError != Model.LastError) LastError = Model.LastError; break;
+                case nameof(Model.ContinuousRecording): if (ContinuousRecording != Model.ContinuousRecording) ContinuousRecording = Model.ContinuousRecording; break;
+                case nameof(Model.ContinuousFramerate): if (ContinuousFramerate != Model.ContinuousFramerate) ContinuousFramerate = Model.ContinuousFramerate; break;
+                case nameof(Model.ContinuousResolution): if (ContinuousResolution != Model.ContinuousResolution) ContinuousResolution = Model.ContinuousResolution; break;
+                case nameof(Model.ContinuousEncodingProperties): if (ContinuousEncodingProperties != Model.ContinuousEncodingProperties) ContinuousEncodingProperties = Model.ContinuousEncodingProperties; break;
+                case nameof(Model.ContinuousFilenameTemplate): if (ContinuousFilenameTemplate != Model.ContinuousFilenameTemplate) ContinuousFilenameTemplate = Model.ContinuousFilenameTemplate; break;
+                case nameof(Model.ContinuousSegmentSeconds): if (ContinuousSegmentSeconds != Model.ContinuousSegmentSeconds) ContinuousSegmentSeconds = Model.ContinuousSegmentSeconds; break;
+                case nameof(Model.IsContinuousRecording): if (IsContinuousRecording != Model.IsContinuousRecording) IsContinuousRecording = Model.IsContinuousRecording; break;
+                case nameof(Model.ContinuousLastFilename): if (ContinuousLastFilename != Model.ContinuousLastFilename) ContinuousLastFilename = Model.ContinuousLastFilename; break;
+                case nameof(Model.ContinuousLastError): if (ContinuousLastError != Model.ContinuousLastError) ContinuousLastError = Model.ContinuousLastError; break;
+                case nameof(Model.ActualContinuousEncodingProperties): if (ActualContinuousEncodingProperties != Model.ActualContinuousEncodingProperties) ActualContinuousEncodingProperties = Model.ActualContinuousEncodingProperties; break;
+                case nameof(Model.ContinuousSegmentCount): if (ContinuousSegmentCount != Model.ContinuousSegmentCount) ContinuousSegmentCount = Model.ContinuousSegmentCount; break;
             }
         }
 
@@ -267,6 +290,108 @@ namespace ProcessRecorderApp.ViewModels
         [Description("PropDesc_Rec_LastError")]
         [ObservableProperty]
         public partial string? LastError { get; private set; }
+
+        [Category("PropCat_Continuous")]
+        [Description("PropDesc_Rec_ContinuousRecording")]
+        [ObservableProperty]
+        public partial bool ContinuousRecording { get; set; }
+        partial void OnContinuousRecordingChanged(bool value)
+        {
+            if (Model.ContinuousRecording != value)
+                Model.ContinuousRecording = value;
+        }
+
+        [Category("PropCat_Continuous")]
+        [Description("PropDesc_Rec_ContinuousFramerate")]
+        [ObservableProperty]
+        public partial string ContinuousFramerate { get; set; } = "";
+        partial void OnContinuousFramerateChanged(string value)
+        {
+            if (Model.ContinuousFramerate != value)
+                Model.ContinuousFramerate = value;
+        }
+
+        [Category("PropCat_Continuous")]
+        [Description("PropDesc_Rec_ContinuousResolution")]
+        [ObservableProperty]
+        public partial string ContinuousResolution { get; set; } = "";
+        partial void OnContinuousResolutionChanged(string value)
+        {
+            if (Model.ContinuousResolution != value)
+                Model.ContinuousResolution = value;
+        }
+
+        [Category("PropCat_Continuous")]
+        [Description("PropDesc_Rec_ContinuousEncodingProperties")]
+        [ObservableProperty]
+        public partial string? ContinuousEncodingProperties { get; set; }
+        partial void OnContinuousEncodingPropertiesChanged(string? value)
+        {
+            if (Model.ContinuousEncodingProperties != value)
+                Model.ContinuousEncodingProperties = value;
+        }
+
+        [Category("PropCat_Continuous")]
+        [Description("PropDesc_Rec_ContinuousFilenameTemplate")]
+        [ObservableProperty]
+        public partial string ContinuousFilenameTemplate { get; set; } = "";
+        partial void OnContinuousFilenameTemplateChanged(string value)
+        {
+            if (Model.ContinuousFilenameTemplate != value)
+                Model.ContinuousFilenameTemplate = value;
+        }
+
+        /// <summary>
+        /// 常時録画のセグメント長(秒)。Model / Settings と同じく、ここでも
+        /// <see cref="EventRecorderSettings.ClampContinuousSegmentSeconds"/> で丸める
+        /// （3 箇所すべてで丸めないと、範囲外の値が UI 上に残り続ける）。
+        /// </summary>
+        [Category("PropCat_Continuous")]
+        [Description("PropDesc_Rec_ContinuousSegmentSeconds")]
+        public int ContinuousSegmentSeconds
+        {
+            get => _continuousSegmentSeconds;
+            set
+            {
+                if (SetProperty(ref _continuousSegmentSeconds,
+                        EventRecorderSettings.ClampContinuousSegmentSeconds(value))
+                    && Model.ContinuousSegmentSeconds != _continuousSegmentSeconds)
+                {
+                    Model.ContinuousSegmentSeconds = _continuousSegmentSeconds;
+                }
+            }
+        }
+        private int _continuousSegmentSeconds;
+
+        [ReadOnly(true)]
+        [Category("PropCat_Continuous")]
+        [Description("PropDesc_Rec_IsContinuousRecording")]
+        [ObservableProperty]
+        public partial bool IsContinuousRecording { get; private set; }
+
+        [ReadOnly(true)]
+        [Category("PropCat_Continuous")]
+        [Description("PropDesc_Rec_ContinuousLastFilename")]
+        [ObservableProperty]
+        public partial string? ContinuousLastFilename { get; private set; }
+
+        [ReadOnly(true)]
+        [Category("PropCat_Continuous")]
+        [Description("PropDesc_Rec_ContinuousLastError")]
+        [ObservableProperty]
+        public partial string? ContinuousLastError { get; private set; }
+
+        [ReadOnly(true)]
+        [Category("PropCat_Continuous")]
+        [Description("PropDesc_Rec_ActualContinuousEncodingProperties")]
+        [ObservableProperty]
+        public partial string? ActualContinuousEncodingProperties { get; private set; }
+
+        [ReadOnly(true)]
+        [Category("PropCat_Continuous")]
+        [Description("PropDesc_Rec_ContinuousSegmentCount")]
+        [ObservableProperty]
+        public partial int ContinuousSegmentCount { get; private set; }
 
 
         [property: Description("PropDesc_Rec_StartRecording")]

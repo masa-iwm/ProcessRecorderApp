@@ -17,14 +17,25 @@ public sealed record Mp4Probe(
     bool HasMdat,
     bool HasAvcC,
     double? DurationSeconds,
-    bool StartsOnASyncSample)
+    bool StartsOnASyncSample,
+    uint SampleCount)
 {
     /// <summary>再生可能な MP4 として最低限成立しているか。</summary>
     public bool IsValid => HasFtyp && HasMoov && HasMdat && HasAvcC && DurationSeconds is > 0;
 
+    /// <summary>
+    /// 実効フレームレート（サンプル数 ÷ 尺）。<c>ContinuousFramerate</c> が効いているかを
+    /// 見るのに使う。<b>厳密には一致しない</b> ── エンコーダーのプライムと丸めがあるので、
+    /// 比較は緩い範囲で行うこと。
+    /// </summary>
+    public double? EffectiveFramerate
+        => DurationSeconds is > 0 && 0 < SampleCount ? SampleCount / DurationSeconds : null;
+
     public override string ToString() =>
         $"{Path} ({Length:N0} bytes) ftyp={HasFtyp} moov={HasMoov} mdat={HasMdat} avcC={HasAvcC} " +
         $"duration={(DurationSeconds is { } d ? d.ToString("F3") + "s" : "(none)")} " +
+        $"samples={SampleCount} " +
+        $"fps={(EffectiveFramerate is { } f ? f.ToString("F2") : "(none)")} " +
         $"startsOnSync={StartsOnASyncSample}";
 }
 
@@ -77,6 +88,7 @@ public static class Mp4File
         bool hasFtyp = false, hasMoov = false, hasMdat = false, hasAvcC = false;
         double? duration = null;
         bool startsOnSyncSample = true;
+        uint sampleCount = 0;
 
         Span<byte> header = stackalloc byte[16];
         long position = 0;
@@ -131,6 +143,7 @@ public static class Mp4File
                     hasAvcC = IndexOfFourCc(payload, "avcC") >= 0;
                     duration = ReadDurationFromMvhd(payload);
                     startsOnSyncSample = ReadStartsOnSyncSample(payload);
+                    sampleCount = ReadSampleCount(payload);
                     break;
                 }
             }
@@ -138,7 +151,31 @@ public static class Mp4File
             position += size;
         }
 
-        return new Mp4Probe(path, length, hasFtyp, hasMoov, hasMdat, hasAvcC, duration, startsOnSyncSample);
+        return new Mp4Probe(
+            path, length, hasFtyp, hasMoov, hasMdat, hasAvcC, duration, startsOnSyncSample, sampleCount);
+    }
+
+    /// <summary>
+    /// トラックのサンプル（＝フレーム）数を <c>stsz</c> から読む。
+    ///
+    /// <para>
+    /// 尺と組み合わせると実効フレームレートが出るので、<c>ContinuousFramerate</c> の
+    /// 上書きが本当に効いているかを、外部ツール無しで確かめられる
+    /// ── <b>尺だけでは分からない</b>（15fps でも 5fps でも 5 秒は 5 秒である）。
+    /// </para>
+    /// <para>
+    /// <c>stsz</c> は 4cc の直後から version(1) flags(3) sample_size(4) sample_count(4)。
+    /// 映像トラックしか無い前提なので、最初の 1 つだけを読む。
+    /// </para>
+    /// </summary>
+    private static uint ReadSampleCount(byte[] moovPayload)
+    {
+        int index = IndexOfFourCc(moovPayload, "stsz");
+        if (index < 0)
+            return 0;
+
+        var span = moovPayload.AsSpan(index + 4);
+        return span.Length < 12 ? 0 : BinaryPrimitives.ReadUInt32BigEndian(span[8..12]);
     }
 
     /// <summary>

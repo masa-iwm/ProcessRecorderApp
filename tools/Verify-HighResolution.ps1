@@ -59,6 +59,16 @@ param(
     [string]$WorkDir,
     [int]$RecordSeconds = 4,
     [int]$MonitorIndex = 1,
+    [int]$ContinuousSegmentSeconds = 5,
+    # How many segments a continuous case must produce before it moves on. The default (2)
+    # only proves that the split happens at all. Raise it to soak the rotation -- e.g.
+    # -ContinuousMinSegments 20 -ContinuousWaitSeconds 180 runs each continuous case for
+    # about 20 x ContinuousSegmentSeconds.
+    [int]$ContinuousMinSegments = 2,
+    # Upper bound on that wait. Reaching it without the requested number of segments FAILS
+    # the case: a soak that quietly stopped short would otherwise look identical to one
+    # that succeeded.
+    [int]$ContinuousWaitSeconds = 45,
     [switch]$SmokeTest,
     [switch]$KeepWorkDir
 )
@@ -80,31 +90,46 @@ if (-not (Test-Path $exe)) {
 # OLD binaries. The fix puts a literal string into the assembly, so its presence is a
 # direct, unambiguous check -- much better than trusting a timestamp.
 $fixMarker = 'leaky=downstream'
-$gstDll = Join-Path $PublishDir 'GStreamer.dll'
-$hasFix = $false
-if (Test-Path $gstDll) {
-    $bytes = [System.IO.File]::ReadAllBytes($gstDll)
-    # The literal lives in the assembly's user string heap as UTF-16. Decode the whole
-    # file and use IndexOf rather than a byte loop -- a hand-rolled scan in PowerShell 5.1
-    # is slow enough to notice.
-    #
-    # BOTH byte alignments must be tried. The string does not start at an even file
-    # offset, so decoding from byte 0 splits every UTF-16 code unit across the wrong pair
-    # and finds nothing. Measured: the marker sits at odd alignment in the current build,
-    # so an offset-0-only check reports "old build" for a correctly fixed one -- which is
-    # exactly the false negative that would send someone chasing a phantom.
-    foreach ($enc in @([System.Text.Encoding]::Unicode, [System.Text.Encoding]::UTF8)) {
-        foreach ($offset in 0, 1) {
-            if ($offset -ge $bytes.Length) { continue }
-            $text = $enc.GetString($bytes, $offset, $bytes.Length - $offset)
-            if ($text.IndexOf($fixMarker, [System.StringComparison]::Ordinal) -ge 0) {
-                $hasFix = $true
-                break
+
+# The continuous-recording branch has its own queue with a different bound, so this
+# literal is present only in a build that has the feature. Without it the continuous rows
+# below would fail for the boring reason (old binaries) and look like a product defect.
+$continuousMarker = 'max-size-buffers=8'
+
+# BOTH publish shapes must be searched. The literal lives in the managed assembly's user
+# string heap for a framework/selfcontained publish, and inside the native image for a
+# Native AOT publish -- where GStreamer.dll does not exist at all. Looking only at
+# GStreamer.dll reports "old build" for every AOT publish, which is the shipped form and
+# this script's own default. Measured on both.
+function Test-Marker {
+    param([string]$Marker)
+
+    foreach ($name in 'GStreamer.dll', 'ProcessRecorderApp.exe') {
+        $path = Join-Path $PublishDir $name
+        if (-not (Test-Path $path)) { continue }
+        $bytes = [System.IO.File]::ReadAllBytes($path)
+        # Decode the whole file and use IndexOf rather than a byte loop -- a hand-rolled
+        # scan in PowerShell 5.1 is slow enough to notice.
+        #
+        # BOTH byte alignments must be tried. The string does not start at an even file
+        # offset, so decoding from byte 0 splits every UTF-16 code unit across the wrong
+        # pair and finds nothing. Measured: the marker sits at odd alignment in the
+        # current build, so an offset-0-only check reports "old build" for a correctly
+        # fixed one -- which is exactly the false negative that would send someone
+        # chasing a phantom.
+        foreach ($enc in @([System.Text.Encoding]::Unicode, [System.Text.Encoding]::UTF8)) {
+            foreach ($offset in 0, 1) {
+                if ($offset -ge $bytes.Length) { continue }
+                $text = $enc.GetString($bytes, $offset, $bytes.Length - $offset)
+                if ($text.IndexOf($Marker, [System.StringComparison]::Ordinal) -ge 0) { return $true }
             }
         }
-        if ($hasFix) { break }
     }
+    return $false
 }
+
+$hasFix = Test-Marker $fixMarker
+$hasContinuous = Test-Marker $continuousMarker
 
 if (-not $WorkDir) {
     $WorkDir = Join-Path ([System.IO.Path]::GetTempPath()) ("pra-hires-verify-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
@@ -191,13 +216,22 @@ function Write-Settings {
         [string]$RecorderType,          # 'System' | 'D3d12'
         [string]$SrcPipeline,
         [string]$EncodingProperties,    # $null => automatic selection
-        [int]$BufferDuration = 3000
+        [int]$BufferDuration = 3000,
+        [bool]$Continuous = $false,     # second, always-on recording on a third tee branch
+        [string]$ContinuousFramerate = '',
+        [string]$ContinuousResolution = '',
+        [int]$ContinuousSegmentSeconds = 5
     )
 
     $encProp   = if ([string]::IsNullOrEmpty($EncodingProperties)) { 'null' } else { '"' + $EncodingProperties + '"' }
     $tmpl      = ($recDir -replace '\\', '\\') + '\\{Name}_{Now:HHmmssfff}.mp4'
     $logPath   = ($WorkDir -replace '\\', '\\') + '\\debug.log'
     $dotPath   = ($dotDir  -replace '\\', '\\')
+
+    # Continuous recording writes its own segments next to the event recording. The
+    # template keeps them apart by name so the two can be counted separately.
+    $contTmpl  = ($recDir -replace '\\', '\\') + '\\{Name}_c{Segment}.mp4'
+    $contFlag  = if ($Continuous) { 'true' } else { 'false' }
 
     $json = @"
 {
@@ -213,7 +247,13 @@ function Write-Settings {
       "FilenameTemplate": "$tmpl",
       "Type": "$RecorderType",
       "SrcPipeline": "$SrcPipeline",
-      "EncodingProperties": $encProp
+      "EncodingProperties": $encProp,
+      "ContinuousRecording": $contFlag,
+      "ContinuousFramerate": "$ContinuousFramerate",
+      "ContinuousResolution": "$ContinuousResolution",
+      "ContinuousEncodingProperties": null,
+      "ContinuousFilenameTemplate": "$contTmpl",
+      "ContinuousSegmentSeconds": $ContinuousSegmentSeconds
     }
   ]
 }
@@ -333,6 +373,18 @@ if ($SmokeTest) {
         Note = 'harness self-check of the FAILURE path -- proves this script can actually see a stall'
         ExpectStall = $true
     })
+    # The continuous rows are the reason this script was extended, so the harness for them
+    # has to be self-checked too: settings.json shape, segment counting, and the separate
+    # continuous verdict. This one runs anywhere (no GPU, no Quick Sync).
+    $cases.Add([pscustomobject]@{
+        Name = 'smoke: System / videotestsrc 320x240 with a continuous branch at 5fps'
+        Type = 'System'
+        Src  = 'videotestsrc is-live=true do-timestamp=true ! videoconvert ! video/x-raw,format=I420,width=320,height=240,framerate=15/1'
+        Enc  = $null; Buffer = 3000
+        Continuous = $true; ContinuousFramerate = '5/1'
+        Note = 'harness self-check of the continuous half -- proves the segment checks actually run'
+        ExpectStall = $false
+    })
 }
 else {
 
@@ -366,16 +418,73 @@ $cases.Add([pscustomobject]@{
     Note = 'candidate fallback at 4K, now that a stalled candidate is rejected instead of accepted'
 })
 
+# ---- continuous recording -------------------------------------------------------------
+#
+# Continuous recording adds a THIRD branch to the same tee (a second encoder, optionally a
+# videorate and a scaler, ending in an appsink). The measurements that produced the
+# leaky preview queue were taken with TWO branches, so the resolution sweep has to be
+# repeated with three -- that is the whole point of running this on the real machine.
+#
+# What could go wrong and is invisible without a GPU:
+#   * a third consumer of the tee slows every branch enough that the recording appsink
+#     no longer prerolls inside PlayingStateTimeoutMs -> "never reached PLAYING",
+#   * the continuous branch itself stalls and takes the pipeline down with it (it must
+#     not: its queue is leaky and its appsink is async=false),
+#   * the second encoder cannot be created at 4K (GPU session/memory limits).
+#
+# The event recording is checked exactly as in the rows above; the continuous side is
+# checked separately (segments written, each one a valid MP4) so a failure says which
+# half broke.
+foreach ($wh in @('1920x1080', '2560x1440', '3840x2160')) {
+    $parts = $wh.Split('x')
+    $cases.Add([pscustomobject]@{
+        Name = "continuous: d3d12testsrc $wh, event + always-on branch, same framerate"
+        Type = 'D3d12'
+        Src  = "d3d12testsrc is-live=true do-timestamp=true ! video/x-raw(memory:D3D12Memory), format=NV12, width=$($parts[0]), height=$($parts[1]), framerate=15/1"
+        Enc  = $reportedEnc; Buffer = 3000
+        Continuous = $true
+        Note = 'three tee branches at this resolution -- the two-branch measurements do not cover this'
+    })
+}
+
+# Different frame rate AND a smaller frame size on the continuous branch: this is the
+# shape the feature exists for (a light always-on archive next to the event recording).
+# It is also the only row that exercises videorate, which lives in the bundled runtime
+# but not necessarily in a separately installed GStreamer.
+$cases.Add([pscustomobject]@{
+    Name = 'continuous: d3d12testsrc 3840x2160 event + 5fps 1280x720 always-on branch'
+    Type = 'D3d12'
+    Src  = 'd3d12testsrc is-live=true do-timestamp=true ! video/x-raw(memory:D3D12Memory), format=NV12, width=3840, height=2160, framerate=15/1'
+    Enc  = $reportedEnc; Buffer = 3000
+    Continuous = $true; ContinuousFramerate = '5/1'; ContinuousResolution = '1280x720'
+    Note = 'videorate + scaler on the third branch, which is the intended production shape'
+})
+
+# Screen capture with the continuous branch, at whatever the monitor actually is. The
+# rows above use d3d12testsrc so they do not depend on the monitor layout; this one does,
+# and that is exactly why it is worth one row.
+$cases.Add([pscustomobject]@{
+    Name = "continuous: REPORTED screen capture, monitor-index=$MonitorIndex, event + 5fps always-on branch"
+    Type = 'D3d12'; Src = $reportedSrc; Enc = $reportedEnc; Buffer = 10000
+    Continuous = $true; ContinuousFramerate = '5/1'
+    Note = 'the real capture source with three branches (monitor-layout dependent)'
+})
+
 }   # end of the non-smoke case list
 
 # ---------------------------------------------------------------- run
 
 Write-Host "Publish dir : $PublishDir"
 Write-Host "Work dir    : $WorkDir"
-Write-Host ("Fixed build : " + $(if ($hasFix) { 'YES (found the leaky preview queue in GStreamer.dll)' } else { 'NO -- THIS LOOKS LIKE AN OLD BUILD' }))
+Write-Host ("Fixed build : " + $(if ($hasFix) { 'YES (found the leaky preview queue)' } else { 'NO -- THIS LOOKS LIKE AN OLD BUILD' }))
+Write-Host ("Continuous  : " + $(if ($hasContinuous) { 'YES (this build has the continuous-recording branch)' } else { 'NO -- continuous rows will fail on old binaries' }))
 if (-not $hasFix) {
-    Write-Warning "GStreamer.dll does not contain the fix marker '$fixMarker'."
+    Write-Warning "Neither GStreamer.dll nor ProcessRecorderApp.exe contains the fix marker '$fixMarker'."
     Write-Warning "You are probably running binaries from before the N1 fix. Copy the new publish output and re-run."
+}
+if (-not $hasContinuous) {
+    Write-Warning "The build does not contain the continuous-recording marker '$continuousMarker'."
+    Write-Warning "The continuous rows below cannot pass. Copy a newer publish output and re-run."
 }
 Write-Host ''
 
@@ -389,8 +498,13 @@ function Invoke-Case {
     Remove-Item (Join-Path $WorkDir 'activity.log') -Force -ErrorAction SilentlyContinue
     Remove-Item (Join-Path $WorkDir 'debug.log')    -Force -ErrorAction SilentlyContinue
 
+    $isContinuous = [bool]$Case.Continuous
     Write-Settings -RecorderType $Case.Type -SrcPipeline $Case.Src `
-                   -EncodingProperties $Case.Enc -BufferDuration $Case.Buffer
+                   -EncodingProperties $Case.Enc -BufferDuration $Case.Buffer `
+                   -Continuous $isContinuous `
+                   -ContinuousFramerate ([string]$Case.ContinuousFramerate) `
+                   -ContinuousResolution ([string]$Case.ContinuousResolution) `
+                   -ContinuousSegmentSeconds $ContinuousSegmentSeconds
 
     # The very first launch on a machine builds the GStreamer plugin registry, which can
     # take longer than the launcher's wait. Retry once.
@@ -408,12 +522,34 @@ function Invoke-Case {
     $stop = Invoke-Cli 'stop-recording-all'
     Start-Sleep -Seconds 2
 
+    # Continuous recording is cut on key frames, so wait until it has produced the
+    # requested number of segments. The segment still open when the workers are killed is
+    # EXPECTED to be incomplete (there is no CLI command that shuts the app down cleanly),
+    # so the checks below only validate the segments that were closed while the app ran
+    # -- which is why the wait targets ContinuousMinSegments and the verdict then asks for
+    # ContinuousMinSegments - 1 closed ones.
+    $contWaitedOut = $false
+    if ($isContinuous) {
+        $deadline = (Get-Date).AddSeconds($ContinuousWaitSeconds)
+        while ($true) {
+            if (@(Get-ChildItem $recDir -Filter 'R1_c*.mp4' -ErrorAction SilentlyContinue).Count -ge $ContinuousMinSegments) { break }
+            if ((Get-Date) -ge $deadline) { $contWaitedOut = $true; break }
+            Start-Sleep -Seconds 1
+        }
+    }
+
     $status = Invoke-Cli 'status'
 
     Stop-AllWorkers   # flush the log writers
 
     $initOk    = @(Get-ActivityLines 'recorder\.init ok')
     $initFail  = @(Get-ActivityLines 'recorder\.init fail')
+    # The continuous branch picks its own encoder (its properties are left empty so the
+    # catalog resolves it). Reporting it matters for the same reason the event encoder is
+    # reported: on a real machine this is where you find out WHICH hardware encoder ran,
+    # and whether two of them ran at once.
+    $contSelected = (@(Get-ActivityLines 'recorder\.continuous-init ok') |
+                     ForEach-Object { if ($_ -match "encoder='([^']*)'") { $matches[1] } } | Select-Object -Last 1)
     $selected  = (@(Get-ActivityLines 'gst\.encoder selected') |
                   ForEach-Object { if ($_ -match "encoder='([^']*)'") { $matches[1] } } | Select-Object -Last 1)
 
@@ -421,8 +557,24 @@ function Invoke-Case {
     # a .dot file: the pipeline linked and changed state but never reached PLAYING.
     $stalled = @(Get-ActivityLines 'never reached PLAYING')
 
-    $mp4   = Get-ChildItem $recDir -Filter *.mp4 -ErrorAction SilentlyContinue | Select-Object -First 1
+    # The event recording and the continuous segments live in the same folder and are told
+    # apart by name (the continuous template ends in _c<segment>.mp4).
+    $contFiles = @(Get-ChildItem $recDir -Filter 'R1_c*.mp4' -ErrorAction SilentlyContinue |
+                   Sort-Object CreationTimeUtc)
+    $mp4   = Get-ChildItem $recDir -Filter *.mp4 -ErrorAction SilentlyContinue |
+             Where-Object { $_.Name -notlike 'R1_c*' } | Select-Object -First 1
     $probe = if ($mp4) { Test-Mp4 $mp4.FullName } else { $null }
+
+    # Only the segments that were CLOSED count: the last one was open when the workers
+    # were killed, so it has no moov and is expected to be unusable.
+    $contClosed = @($contFiles | Select-Object -First ([Math]::Max(0, $contFiles.Count - 1)))
+    $contBad    = @($contClosed | Where-Object {
+        $p = Test-Mp4 $_.FullName
+        -not ($p.HasFtyp -and $p.HasMoov -and $p.HasMdat -and $p.HasAvc1 -and $p.DurationSec -gt 0)
+    })
+    $contInitOk   = @(Get-ActivityLines 'recorder\.continuous-init ok')
+    $contInitFail = @(Get-ActivityLines 'recorder\.continuous-init fail')
+    $contErrors   = @(Get-ActivityLines 'continuous\.(error|leak|overshoot)')
 
     if ($Case.ExpectStall) {
         # Inverted expectation: this case is OK precisely when the stall IS reported.
@@ -433,6 +585,18 @@ function Invoke-Case {
               ($initOk.Count -eq 1) -and ($initFail.Count -eq 0) -and ($stalled.Count -eq 0) -and
               ($null -ne $probe) -and $probe.HasFtyp -and $probe.HasMoov -and $probe.HasMdat -and
               $probe.HasAvc1 -and ($probe.DurationSec -gt 0)
+
+        # The continuous half is judged separately so a failure says which one broke:
+        # the event recording above, or the always-on branch here.
+        if ($isContinuous) {
+            # Ask for one fewer CLOSED segment than requested: the last one is still open
+            # when the workers are killed. With the default (2) this is the original
+            # "at least one closed segment"; with -ContinuousMinSegments 20 it makes a soak
+            # that stopped short fail instead of passing quietly.
+            $ok = $ok -and ($contInitOk.Count -eq 1) -and ($contInitFail.Count -eq 0) -and
+                  ($contClosed.Count -ge ($ContinuousMinSegments - 1)) -and
+                  ($contBad.Count -eq 0) -and ($contErrors.Count -eq 0) -and (-not $contWaitedOut)
+        }
     }
 
     return [pscustomobject]@{
@@ -448,6 +612,15 @@ function Invoke-Case {
         DurationSec = if ($probe) { $probe.DurationSec } else { $null }
         ValidMp4    = if ($probe) { $probe.HasFtyp -and $probe.HasMoov -and $probe.HasMdat -and $probe.HasAvc1 } else { $false }
         Ok          = $ok
+        Continuous  = $isContinuous
+        ContSelected   = $contSelected
+        ContWaitedOut  = $contWaitedOut
+        ContSegments   = $contFiles.Count
+        ContClosed     = $contClosed.Count
+        ContBad        = $contBad.Count
+        ContInitOk     = $contInitOk.Count
+        ContInitFail   = $contInitFail.Count
+        ContErrorText  = ($contErrors -join "`n")
         Status      = $status.StdOut
         InitFailText = ($initFail -join "`n")
         StalledText  = ($stalled -join "`n")
@@ -489,6 +662,7 @@ $null = $sb.AppendLine()
 $null = $sb.AppendLine("- Machine: $env:COMPUTERNAME")
 $null = $sb.AppendLine("- Publish dir: ``$PublishDir``")
 $null = $sb.AppendLine("- Build contains the N1 fix: **$(if ($hasFix) { 'yes' } else { 'NO -- results below are meaningless' })**")
+$null = $sb.AppendLine("- Build has continuous recording: **$(if ($hasContinuous) { 'yes' } else { 'NO -- the continuous rows are meaningless' })**")
 $null = $sb.AppendLine("- Screen-capture monitor index: $MonitorIndex")
 $null = $sb.AppendLine("- Recording window per case: ${RecordSeconds}s")
 $null = $sb.AppendLine()
@@ -496,12 +670,19 @@ $null = $sb.AppendLine('A case counts as OK only if all of these hold: start and
 $null = $sb.AppendLine('`recorder.init ok` and no `recorder.init fail`, no "never reached PLAYING" anywhere, and a')
 $null = $sb.AppendLine('structurally valid MP4 with a non-zero duration.')
 $null = $sb.AppendLine()
-$null = $sb.AppendLine('| Case | start/stop | selected encoder | init ok/fail | stalled | MP4 | duration | result |')
-$null = $sb.AppendLine('|---|---|---|---|---|---|---|---|')
+$null = $sb.AppendLine("Continuous rows add: exactly one ``recorder.continuous-init ok`` and no ``... fail``, at least")
+$null = $sb.AppendLine("$($ContinuousMinSegments - 1) CLOSED segment(s) out of the $ContinuousMinSegments asked for, every closed segment structurally")
+$null = $sb.AppendLine('valid, and no `continuous.error` / `continuous.leak` / `continuous.overshoot`. The segment')
+$null = $sb.AppendLine('still open when the workers are killed is expected to be incomplete and is not counted')
+$null = $sb.AppendLine('(there is no CLI command that shuts the app down cleanly).')
+$null = $sb.AppendLine()
+$null = $sb.AppendLine('| Case | start/stop | selected encoder | init ok/fail | stalled | MP4 | duration | segments (closed/bad) | result |')
+$null = $sb.AppendLine('|---|---|---|---|---|---|---|---|---|')
 foreach ($r in $results) {
-    $null = $sb.AppendLine(('| {0} | {1}/{2} | `{3}` | {4}/{5} | {6} | {7} | {8}s | {9} |' -f `
+    $seg = if ($r.Continuous) { '{0} ({1}/{2})' -f $r.ContSegments, $r.ContClosed, $r.ContBad } else { '-' }
+    $null = $sb.AppendLine(('| {0} | {1}/{2} | `{3}` | {4}/{5} | {6} | {7} | {8}s | {9} | {10} |' -f `
         $r.Case, $r.StartExit, $r.StopExit, $r.Selected, $r.InitOk, $r.InitFail, $r.Stalled,
-        $(if ($r.ValidMp4) { 'valid' } else { 'INVALID' }), $r.DurationSec,
+        $(if ($r.ValidMp4) { 'valid' } else { 'INVALID' }), $r.DurationSec, $seg,
         $(if ($r.Ok) { 'OK' } else { '**FAILED**' })))
 }
 
@@ -513,8 +694,16 @@ foreach ($r in $results) {
     $null = $sb.AppendLine()
     $null = $sb.AppendLine("- $($r.Note)")
     $null = $sb.AppendLine("- MP4 bytes: $($r.Mp4Bytes)")
+    if ($r.Continuous) {
+        $null = $sb.AppendLine("- continuous encoder: ``$($r.ContSelected)``")
+        $null = $sb.AppendLine("- continuous segments: $($r.ContSegments) written, $($r.ContClosed) closed, $($r.ContBad) unusable (asked for $ContinuousMinSegments)")
+        if ($r.ContWaitedOut) {
+            $null = $sb.AppendLine("- **the wait timed out before $ContinuousMinSegments segments appeared** (-ContinuousWaitSeconds $ContinuousWaitSeconds)")
+        }
+    }
     if ($r.Status) {
-        $null = $sb.AppendLine('- `status` output (name / initialised / recording / last file / last error):')
+        $null = $sb.AppendLine('- `status` output (name / initialised / recording / last file /')
+    $null = $sb.AppendLine('  continuous / continuous file / last error -- trailing empty columns are not shown):')
         $null = $sb.AppendLine('```')
         $null = $sb.AppendLine($r.Status)
         $null = $sb.AppendLine('```')
@@ -562,4 +751,5 @@ if ($failed.Count -gt 0) {
     }
 }
 
-exit $(if ($failed.Count -gt 0 -or -not $hasFix) { 1 } else { 0 })
+$continuousRequested = @($results | Where-Object { $_.Continuous }).Count -gt 0
+exit $(if ($failed.Count -gt 0 -or -not $hasFix -or ($continuousRequested -and -not $hasContinuous)) { 1 } else { 0 })
