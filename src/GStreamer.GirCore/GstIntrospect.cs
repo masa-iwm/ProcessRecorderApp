@@ -45,27 +45,33 @@ public static partial class GstIntrospect
     }
 
     /// <summary>
-    /// 接続されているモニターの<b>物理ピクセル</b>での大きさ（例: <c>3840x2160</c>）を
-    /// <c>EnumDisplayDevices</c> の並びで返す。
+    /// 接続されているモニターの<b>物理ピクセル</b>での大きさ（例: <c>3840x2160</c>）を、
+    /// <c>d3d12screencapturesrc</c> の <c>monitor-index</c> と<b>同じ並び</b>で返す。
     ///
     /// <para>
-    /// <b>GStreamer のデバイスプロバイダを使ってはいけない。</b> 一度そう実装したところ、
-    /// <c>gst_device_provider_get_devices</c> の GList を辿る経路でメモリを壊し、
-    /// <b>パイプライン編集ダイアログでソースを切り替えただけでアプリが落ちた</b>
-    /// （<c>Microsoft.UI.Xaml.dll</c> の 0xc0000005 と、
-    /// <c>GetDynamicChoices → ToArray</c> でのアクセス違反を実測）。
-    /// ここは Win32 だけで済ませる。
+    /// <b>並びは DXGI の <c>EnumAdapters1</c> × <c>EnumOutputs</c> を平坦化した順</b>である
+    /// （上流 <c>gst_d3d12_screen_capture_find_nth_monitor</c> と同じ走査）。
+    /// <c>EnumDisplayDevices</c> や <c>EnumDisplayMonitors</c> の順ではない ──
+    /// アダプターが複数ある機械で番号がずれる。
+    /// <b>読めなかったモニターも空文字で席を残す</b>こと ── 詰めると以降の番号が
+    /// 1 つずつずれ、直そうとしている取り違えをそのまま作ってしまう。
     /// </para>
     /// <para>
-    /// <b><c>GetMonitorInfo</c> でも代用してはいけない。</b> あちらは DPI 仮想化の影響を
-    /// 受け、キャプチャが実際に出す大きさと食い違う（実測: 2194x1234 と 3840x2160。
-    /// 175% スケーリングの機械）。<c>EnumDisplaySettings</c> が返すのは<b>ディスプレイの
-    /// 現在のモード</b>で、プロセスの DPI 認識に関係なく物理ピクセルである。
+    /// <b>大きさは <c>EnumDisplaySettings</c>（<c>ENUM_CURRENT_SETTINGS</c>）で取る。</b>
+    /// キャプチャ側も同じ値を使っている（上流の <c>gst_d3d12_dxgi_capture_open</c> は
+    /// <c>dmPelsWidth</c> / <c>dmPelsHeight</c> から大きさを決める）。
+    /// <c>GetMonitorInfo</c> の <c>rcMonitor</c> や <c>DXGI_OUTPUT_DESC.DesktopCoordinates</c> で
+    /// 代用してはいけない ── DPI 仮想化の影響を受け、キャプチャが実際に出す大きさと
+    /// 食い違う（実測: 2194x1234 と 3840x2160。175% スケーリングの機械）。
     /// </para>
     /// <para>
-    /// 並びが <c>d3d12screencapturesrc</c> の <c>monitor-index</c>（DXGI の出力列挙）と
-    /// 完全に一致する保証は無い。呼び出し側は「その番号の値」だけに依存せず、
-    /// <b>全モニターの大きさを選択肢として出す</b>こと。
+    /// <b>GStreamer のデバイスプロバイダで取ってはいけない。</b> 一度そう実装したところ、
+    /// <c>gst_device_provider_get_devices</c> の <c>GList</c> を gir-core で包む経路が
+    /// メモリを壊し、ダイアログでソースを切り替えただけでアプリが落ちた。
+    /// </para>
+    /// <para>
+    /// 取得できなければ空を返し、UI 側は自由入力へ倒れる（<c>CreateDXGIFactory1</c> が
+    /// 失敗する機械では <c>d3d12screencapturesrc</c> 自体も動かない）。
     /// </para>
     /// </summary>
     public static IReadOnlyList<string> GetMonitorResolutions()
@@ -75,26 +81,46 @@ public static partial class GstIntrospect
         {
             unsafe
             {
-                for (uint i = 0; ; i++)
+                Guid iid = IID_IDXGIFactory1;
+                IntPtr factory;
+                if (CreateDXGIFactory1(&iid, &factory) != 0 || factory == IntPtr.Zero)
+                    return result;
+
+                try
                 {
-                    DISPLAY_DEVICE device = default;
-                    device.cb = sizeof(DISPLAY_DEVICE);
-                    if (!EnumDisplayDevices(null, i, &device, 0))
-                        break;
-
-                    // 画面に出ていないアダプターと、ミラードライバ（画面を複製するだけの
-                    // 仮想デバイス。desktop に付いた状態で列挙されうる）は飛ばす
-                    if ((device.StateFlags & DISPLAY_DEVICE_ATTACHED_TO_DESKTOP) == 0
-                        || (device.StateFlags & DISPLAY_DEVICE_MIRRORING_DRIVER) != 0)
-                        continue;
-
-                    DEVMODE mode = default;
-                    mode.dmSize = (ushort)sizeof(DEVMODE);
-                    if (EnumDisplaySettings(device.DeviceName, ENUM_CURRENT_SETTINGS, &mode)
-                        && 0 < mode.dmPelsWidth && 0 < mode.dmPelsHeight)
+                    for (uint adapterIndex = 0; ; adapterIndex++)
                     {
-                        result.Add($"{mode.dmPelsWidth}x{mode.dmPelsHeight}");
+                        IntPtr adapter;
+                        if (EnumAdapters1(factory, adapterIndex, &adapter) != 0 || adapter == IntPtr.Zero)
+                            break;
+
+                        try
+                        {
+                            for (uint outputIndex = 0; ; outputIndex++)
+                            {
+                                IntPtr output;
+                                if (EnumOutputs(adapter, outputIndex, &output) != 0 || output == IntPtr.Zero)
+                                    break;
+
+                                try
+                                {
+                                    result.Add(ReadOutputSize(output));
+                                }
+                                finally
+                                {
+                                    ComRelease(output);
+                                }
+                            }
+                        }
+                        finally
+                        {
+                            ComRelease(adapter);
+                        }
                     }
+                }
+                finally
+                {
+                    ComRelease(factory);
                 }
             }
         }
@@ -105,22 +131,87 @@ public static partial class GstIntrospect
         return result;
     }
 
+    /// <summary>
+    /// 1 つの DXGI 出力から物理ピクセルの大きさを読む。読めなければ空文字
+    /// （<b>席は残す</b> ── 上流の走査は <c>GetDesc</c> / <c>GetMonitorInfo</c> の
+    /// 失敗だけを数えずに飛ばすので、そこは呼び出し側でも数えない）。
+    /// </summary>
+    private static unsafe string ReadOutputSize(IntPtr output)
+    {
+        DXGI_OUTPUT_DESC desc;
+        if (GetOutputDesc(output, &desc) != 0)
+            return "";
+
+        MONITORINFOEXW info = default;
+        info.cbSize = (uint)sizeof(MONITORINFOEXW);
+        if (!GetMonitorInfo(desc.Monitor, &info))
+            return "";
+
+        DEVMODE mode = default;
+        mode.dmSize = (ushort)sizeof(DEVMODE);
+        return EnumDisplaySettings(info.szDevice, ENUM_CURRENT_SETTINGS, &mode)
+            && 0 < mode.dmPelsWidth && 0 < mode.dmPelsHeight
+            ? $"{mode.dmPelsWidth}x{mode.dmPelsHeight}"
+            : "";
+    }
+
     private const int ENUM_CURRENT_SETTINGS = -1;
-    private const uint DISPLAY_DEVICE_ATTACHED_TO_DESKTOP = 0x00000001;
-    private const uint DISPLAY_DEVICE_MIRRORING_DRIVER = 0x00000008;
+
+    // {770aae78-f26f-4dba-a829-253c83d1b387}（Windows SDK の dxgi.h と一致）
+    private static readonly Guid IID_IDXGIFactory1 =
+        new(0x770aae78, 0xf26f, 0x4dba, 0xa8, 0x29, 0x25, 0x3c, 0x83, 0xd1, 0xb3, 0x87);
+
+    // COM の vtable のスロット番号。**Windows SDK の dxgi.h の Vtbl 構造体から数えた値**で、
+    // 間違えると別の関数を呼んでアクセス違反になる。NativeStructSizes と同じく検査で固定する。
+    private const int SlotRelease = 2;              // IUnknown::Release
+    private const int SlotEnumAdapters1 = 12;       // IDXGIFactory1::EnumAdapters1
+    private const int SlotEnumOutputs = 7;          // IDXGIAdapter::EnumOutputs
+    private const int SlotGetOutputDesc = 7;        // IDXGIOutput::GetDesc
+
+    private static unsafe void* Slot(IntPtr obj, int index) => (*(void***)obj)[index];
+
+    private static unsafe int EnumAdapters1(IntPtr factory, uint index, IntPtr* adapter)
+        => ((delegate* unmanaged[Stdcall]<IntPtr, uint, IntPtr*, int>)Slot(factory, SlotEnumAdapters1))(
+            factory, index, adapter);
+
+    private static unsafe int EnumOutputs(IntPtr adapter, uint index, IntPtr* output)
+        => ((delegate* unmanaged[Stdcall]<IntPtr, uint, IntPtr*, int>)Slot(adapter, SlotEnumOutputs))(
+            adapter, index, output);
+
+    private static unsafe int GetOutputDesc(IntPtr output, DXGI_OUTPUT_DESC* desc)
+        => ((delegate* unmanaged[Stdcall]<IntPtr, DXGI_OUTPUT_DESC*, int>)Slot(output, SlotGetOutputDesc))(
+            output, desc);
+
+    private static unsafe uint ComRelease(IntPtr obj)
+        => ((delegate* unmanaged[Stdcall]<IntPtr, uint>)Slot(obj, SlotRelease))(obj);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct RECT
+    {
+        public int Left, Top, Right, Bottom;
+    }
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private unsafe struct DXGI_OUTPUT_DESC
+    {
+        public fixed char DeviceName[32];
+        public RECT DesktopCoordinates;
+        public int AttachedToDesktop;
+        public uint Rotation;
+        public IntPtr Monitor;
+    }
 
     // **文字列は fixed バッファで持つ（ByValTStr ではない）。** ソース生成の P/Invoke
     // （LibraryImport）は実行時マーシャリングを必要とする型を扱えず、SYSLIB1051 になる。
     // blittable にしておけば AOT でもそのまま渡せる。
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-    private unsafe struct DISPLAY_DEVICE
+    private unsafe struct MONITORINFOEXW
     {
-        public int cb;
-        public fixed char DeviceName[32];
-        public fixed char DeviceString[128];
-        public uint StateFlags;
-        public fixed char DeviceID[128];
-        public fixed char DeviceKey[128];
+        public uint cbSize;
+        public RECT rcMonitor;
+        public RECT rcWork;
+        public uint dwFlags;
+        public fixed char szDevice[32];
     }
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
@@ -158,119 +249,136 @@ public static partial class GstIntrospect
         public uint dmPanningHeight;
     }
 
-    [LibraryImport("user32.dll", EntryPoint = "EnumDisplayDevicesW", StringMarshalling = StringMarshalling.Utf16)]
+    [LibraryImport("dxgi.dll")]
+    private static unsafe partial int CreateDXGIFactory1(Guid* riid, IntPtr* ppFactory);
+
+    [LibraryImport("user32.dll", EntryPoint = "GetMonitorInfoW")]
     [return: MarshalAs(UnmanagedType.Bool)]
-    private static unsafe partial bool EnumDisplayDevices(string? lpDevice, uint iDevNum, DISPLAY_DEVICE* lpDisplayDevice, uint dwFlags);
+    private static unsafe partial bool GetMonitorInfo(IntPtr monitor, MONITORINFOEXW* info);
 
     [LibraryImport("user32.dll", EntryPoint = "EnumDisplaySettingsW", StringMarshalling = StringMarshalling.Utf16)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static unsafe partial bool EnumDisplaySettings(char* lpszDeviceName, int iModeNum, DEVMODE* lpDevMode);
 
-    /// <summary>mfvideosrc 対応のビデオ入力デバイス一覧と、それぞれの対応 caps を取得する。</summary>
+    /// <summary>
+    /// <c>mfvideosrc</c> 対応のビデオ入力デバイス一覧と、それぞれの対応 caps を取得する。
+    ///
+    /// <para>
+    /// <b>gir-core のオブジェクト束縛を通してはいけない。</b> <c>gst_device_provider_get_devices</c>
+    /// が返す <c>GList</c> を <c>Device.NewFromPointer</c> で包む書き方はマネージドヒープを壊し、
+    /// <b>あとから無関係な場所でアクセス違反になる</b>（実測: <c>ucrtbase.dll</c> の
+    /// 0xc0000409 と、CoreCLR の FailFast が示す <c>DispatchResolve.FindImplSlotInSimpleMap</c>
+    /// でのアクセス違反）。
+    /// <b>カメラが 1 台も無い機械では起きない</b> ── <c>GList</c> が空で走査に入らないので、
+    /// カメラの無い CI と開発機は緑のまま、利用者の機械でだけ落ちる。
+    /// </para>
+    /// <para>
+    /// そのためここは C の API を直接呼ぶ。所有権は <c>gst_device_provider_get_devices</c> が
+    /// transfer full ── 各要素を <c>gst_object_unref</c> し、リスト自体を <c>g_list_free</c> する。
+    /// </para>
+    /// </summary>
     public static IReadOnlyList<VideoDeviceInfo> GetVideoSourceDevices()
     {
         var result = new List<VideoDeviceInfo>();
+
+        // Media Foundation のデバイスプロバイダのみを使う。
+        // (DeviceMonitor は ksvideosrc など他プロバイダも列挙し、同一カメラが重複するため。
+        //  mfdeviceprovider を直接使うことで mfvideosrc の device-index 並びとも一致する)
+        IntPtr factory = gst_device_provider_factory_get_by_name("mfdeviceprovider");
+        if (factory == IntPtr.Zero)
+            return result;
+
+        IntPtr provider = gst_device_provider_factory_get(factory);
+        gst_object_unref(factory);
+        if (provider == IntPtr.Zero)
+            return result;
+
         try
         {
-            // Media Foundation のデバイスプロバイダのみを使う。
-            // (DeviceMonitor は ksvideosrc など他プロバイダも列挙し、同一カメラが重複するため。
-            //  mfdeviceprovider を直接使うことで mfvideosrc の device-index 並びとも一致する)
-            using var provider = DeviceProviderFactory.GetByName("mfdeviceprovider");
-            if (provider is null)
+            if (!gst_device_provider_start(provider))
                 return result;
 
-            provider.Start();
+            IntPtr list = gst_device_provider_get_devices(provider);
             try
             {
-                var list = provider.GetDevices();
-                if (list is not null)
+                // GList は { data, next, prev }。next は 1 ポインタぶん先。
+                for (IntPtr node = list; node != IntPtr.Zero; node = Marshal.ReadIntPtr(node, IntPtr.Size))
                 {
+                    IntPtr device = Marshal.ReadIntPtr(node, 0);
+                    if (device == IntPtr.Zero)
+                        continue;
+
                     try
                     {
-                        uint n = GLib.List.Length(list);
-                        for (uint i = 0; i < n; i++)
-                        {
-                            IntPtr ptr = GLib.List.NthData(list, i);
-                            if (ptr == IntPtr.Zero)
-                                continue;
-
-                            // 1台の異常（表示名・caps のマーシャリング失敗）で列挙全体を
-                            // 空にしない ── その1台だけ飛ばして続行する。
-                            // owned: true の参照は using が解放する。
-                            try
-                            {
-                                using var device = Device.NewFromPointer(ptr, true);
-                                result.Add(ReadDevice(device));
-                            }
-                            catch (Exception ex)
-                            {
-                                DebugLogEx.Log(DebugLevel.Warning,
-                                    $"introspection failed for one device; skipped\n{ex}");
-                            }
-                        }
+                        result.Add(ReadDevice(device));
                     }
-                    finally
+                    catch (Exception ex)
                     {
-                        // 例外で抜けてもリストノードは解放する（消費済みの要素は using が解放済み）。
-                        GLib.List.Free(list);
+                        // 1台の異常で列挙全体を空にしない ── その1台だけ飛ばして続行する。
+                        DebugLogEx.Log(DebugLevel.Warning,
+                            $"introspection failed for one device; skipped\n{ex}");
                     }
+
+                    gst_object_unref(device);
                 }
             }
             finally
             {
-                provider.Stop();
+                if (list != IntPtr.Zero)
+                    g_list_free(list);
             }
         }
-        catch
+        finally
         {
-            // 内省に失敗した場合は空一覧を返し、UI 側は自由入力へフォールバックする
+            gst_device_provider_stop(provider);
+            gst_object_unref(provider);
         }
+
         return result;
     }
 
-    // 1 デバイスの表示名と caps 構造から format/解像度/framerate を収集する
-    private static VideoDeviceInfo ReadDevice(Device device)
+    private static VideoDeviceInfo ReadDevice(IntPtr device)
     {
-        string name = device.GetDisplayName() ?? "";
+        string name = TakeString(gst_device_get_display_name(device));
+
         // 挿入順を保ちつつ重複排除する
         var formats = new List<string>();
         var resolutions = new List<string>();
         var framerates = new List<string>();
 
-        void AddUnique(List<string> to, string value)
+        static void AddUnique(List<string> to, string? value)
         {
             if (!string.IsNullOrEmpty(value) && !to.Contains(value))
                 to.Add(value);
         }
 
-        try
+        IntPtr caps = gst_device_get_caps(device);
+        if (caps != IntPtr.Zero)
         {
-            using var caps = device.GetCaps();
-            if (caps is not null)
+            try
             {
-                uint size = caps.GetSize();
+                uint size = gst_caps_get_size(caps);
                 for (uint s = 0; s < size; s++)
                 {
-                    // GetStructure は caps 所有の借用参照のため Dispose しない
-                    var st = caps.GetStructure(s);
-                    if (st is null)
+                    // caps 所有の借用参照（transfer none）なので解放しない
+                    IntPtr st = gst_caps_get_structure(caps, s);
+                    if (st == IntPtr.Zero)
                         continue;
 
-                    string? fmt = st.GetString("format");
-                    if (fmt is not null)
-                        AddUnique(formats, fmt);
+                    AddUnique(formats, Marshal.PtrToStringUTF8(gst_structure_get_string(st, "format")));
 
-                    if (st.GetInt("width", out int w) && st.GetInt("height", out int h))
+                    if (gst_structure_get_int(st, "width", out int w)
+                        && gst_structure_get_int(st, "height", out int h))
                         AddUnique(resolutions, $"{w}x{h}");
 
-                    if (st.GetFraction("framerate", out int num, out int den) && den != 0)
+                    if (gst_structure_get_fraction(st, "framerate", out int num, out int den) && den != 0)
                         AddUnique(framerates, $"{num}/{den}");
                 }
             }
-        }
-        catch
-        {
-            // caps 読み取り失敗時は取得済み分のみ返す
+            finally
+            {
+                gst_mini_object_unref(caps);
+            }
         }
 
         return new VideoDeviceInfo
@@ -281,4 +389,82 @@ public static partial class GstIntrospect
             Framerates = framerates,
         };
     }
+
+    /// <summary>transfer full の <c>gchar*</c> を文字列にして解放する。</summary>
+    private static string TakeString(IntPtr utf8)
+    {
+        if (utf8 == IntPtr.Zero)
+            return "";
+        try
+        {
+            return Marshal.PtrToStringUTF8(utf8) ?? "";
+        }
+        finally
+        {
+            g_free(utf8);
+        }
+    }
+
+    [LibraryImport(ImportResolver.Library, StringMarshalling = StringMarshalling.Utf8)]
+    private static partial IntPtr gst_device_provider_factory_get_by_name(string factoryname);
+
+    [LibraryImport(ImportResolver.Library)]
+    private static partial IntPtr gst_device_provider_factory_get(IntPtr factory);
+
+    [LibraryImport(ImportResolver.Library)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool gst_device_provider_start(IntPtr provider);
+
+    [LibraryImport(ImportResolver.Library)]
+    private static partial void gst_device_provider_stop(IntPtr provider);
+
+    [LibraryImport(ImportResolver.Library)]
+    private static partial IntPtr gst_device_provider_get_devices(IntPtr provider);
+
+    [LibraryImport(ImportResolver.Library)]
+    private static partial IntPtr gst_device_get_display_name(IntPtr device);
+
+    [LibraryImport(ImportResolver.Library)]
+    private static partial IntPtr gst_device_get_caps(IntPtr device);
+
+    [LibraryImport(ImportResolver.Library)]
+    private static partial uint gst_caps_get_size(IntPtr caps);
+
+    [LibraryImport(ImportResolver.Library)]
+    private static partial IntPtr gst_caps_get_structure(IntPtr caps, uint index);
+
+    [LibraryImport(ImportResolver.Library, StringMarshalling = StringMarshalling.Utf8)]
+    private static partial IntPtr gst_structure_get_string(IntPtr structure, string fieldname);
+
+    [LibraryImport(ImportResolver.Library, StringMarshalling = StringMarshalling.Utf8)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool gst_structure_get_int(IntPtr structure, string fieldname, out int value);
+
+    [LibraryImport(ImportResolver.Library, StringMarshalling = StringMarshalling.Utf8)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool gst_structure_get_fraction(IntPtr structure, string fieldname,
+        out int numerator, out int denominator);
+
+    [LibraryImport(ImportResolver.Library)]
+    private static partial void gst_object_unref(IntPtr obj);
+
+    [LibraryImport(ImportResolver.Library)]
+    private static partial void gst_mini_object_unref(IntPtr obj);
+
+    [LibraryImport(ImportResolver.LibraryGLib)]
+    private static partial void g_free(IntPtr mem);
+
+    [LibraryImport(ImportResolver.LibraryGLib)]
+    private static partial void g_list_free(IntPtr list);
+
+    /// <summary>
+    /// P/Invoke で使う構造体の大きさ。Windows の定義とずれると、
+    /// <b>スタックの隣を書き潰してあとから無関係な場所で落ちる</b>ので検査で固定する。
+    /// </summary>
+    internal static unsafe (int OutputDesc, int MonitorInfo, int Devmode) NativeStructSizes()
+        => (sizeof(DXGI_OUTPUT_DESC), sizeof(MONITORINFOEXW), sizeof(DEVMODE));
+
+    /// <summary>COM の vtable のスロット番号。dxgi.h の Vtbl 構造体から数えた値。</summary>
+    internal static (int Release, int EnumAdapters1, int EnumOutputs, int GetOutputDesc) NativeVtableSlots()
+        => (SlotRelease, SlotEnumAdapters1, SlotEnumOutputs, SlotGetOutputDesc);
 }

@@ -220,14 +220,19 @@ tee name=t
 > 選択肢は接続モニターの**物理ピクセル**（`GstIntrospect.GetMonitorResolutions`。
 > `monitor-index` が選ばれていればそのモニターの値が先頭に出る）。
 >
-> **GStreamer のデバイスプロバイダで取ってはいけない。** 一度そう実装したところ、
-> `gst_device_provider_get_devices` の GList を辿る経路でメモリを壊し、
-> **ダイアログでソースを切り替えただけでアプリが落ちた**
-> （`Microsoft.UI.Xaml.dll` の `0xc0000005` と、`GetDynamicChoices → ToArray` での
-> アクセス違反を実測）。**`GetMonitorInfo` でも代用してはいけない** ── DPI 仮想化の
-> 影響を受け、キャプチャが実際に出す大きさと食い違う（実測: 2194x1234 と 3840x2160）。
-> `EnumDisplaySettings` が返すのはディスプレイの現在のモードなので、プロセスの
-> DPI 認識に依存せず物理ピクセルが得られる（DPI 非対応のテストホストで 3840x2160 を実測）。
+> **並びは DXGI の `EnumAdapters1` × `EnumOutputs` を平坦化した順**で、これは
+> `d3d12screencapturesrc` が `monitor-index` を解く走査そのものである。
+> `EnumDisplayDevices` / `EnumDisplayMonitors` の順で代用すると、アダプターが
+> 複数ある機械で番号がずれる。
+>
+> **大きさは `EnumDisplaySettings` で取る。** キャプチャ側も同じ値を使う。
+> `GetMonitorInfo` の `rcMonitor` や `DXGI_OUTPUT_DESC.DesktopCoordinates` は
+> DPI 仮想化の影響を受け、実際に出る大きさと食い違う（175% の機械で 2194x1234 と 3840x2160）。
+
+> **`show-cursor=true` はプロセスごと落としうる（上流の欠陥）。**
+> カーソル形状を組み立てる `PtrInfo::BuildTexture` が `std::vector::resize` を
+> 投げっぱなしにしており、C++ 例外が抜けると `std::terminate` → `abort` になる。
+> **アプリ側では捕捉できない。** 既定の `false` のままにすること。
 
 #### フレームレートの上書きにも「上流の固定」が要る
 

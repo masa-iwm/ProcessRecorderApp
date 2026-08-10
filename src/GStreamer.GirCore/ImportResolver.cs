@@ -23,9 +23,15 @@ internal static class ImportResolver
     private const string LinuxLibraryGObjectName = "libgobject-2.0.so.0";
     private const string OsxLibraryGObjectName = "libgobject-2.0.0.dylib";
 
+    public const string LibraryGLib = "GLib";
+    private const string WindowsLibraryGLibName = "libglib-2.0-0.dll";
+    private const string LinuxLibraryGLibName = "libglib-2.0.so.0";
+    private const string OsxLibraryGLibName = "libglib-2.0.0.dylib";
+
     private static IntPtr TargetLibraryPointer = IntPtr.Zero;
     private static IntPtr TargetLibraryVideoPointer = IntPtr.Zero;
     private static IntPtr TargetLibraryGObjectPointer = IntPtr.Zero;
+    private static IntPtr TargetLibraryGLibPointer = IntPtr.Zero;
 
     public static IntPtr Resolve(string libraryName, Assembly assembly, DllImportSearchPath? searchPath)
     {
@@ -59,6 +65,16 @@ internal static class ImportResolver
 
             return TargetLibraryGObjectPointer;
         }
+        else if (libraryName == LibraryGLib)
+        {
+            if (TargetLibraryGLibPointer != IntPtr.Zero)
+                return TargetLibraryGLibPointer;
+
+            var osDependentLibraryName = GetOsDependentLibraryGLibName();
+            TargetLibraryGLibPointer = NativeLibrary.Load(osDependentLibraryName, assembly, searchPath);
+
+            return TargetLibraryGLibPointer;
+        }
         return IntPtr.Zero;
     }
 
@@ -88,6 +104,20 @@ internal static class ImportResolver
 
         throw new System.Exception("Unknown platform");
     }
+    private static string GetOsDependentLibraryGLibName()
+    {
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            return WindowsLibraryGLibName;
+
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+            return OsxLibraryGLibName;
+
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+            return LinuxLibraryGLibName;
+
+        throw new System.Exception("Unknown platform");
+    }
+
     private static string GetOsDependentLibraryGObjectName()
     {
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))

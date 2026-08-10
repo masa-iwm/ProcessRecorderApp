@@ -21,6 +21,24 @@ namespace ProcessRecorderApp.Tests;
 /// </summary>
 public class MonitorResolutionTests
 {
+    /// <summary>
+    /// <b>P/Invoke で渡す構造体が Windows の定義と同じ大きさであること。</b>
+    /// ずれると <c>EnumDisplayDevices</c> / <c>EnumDisplaySettings</c> がスタックの隣を
+    /// 書き潰し、<b>あとから無関係な場所でアクセス違反になる</b>（原因が現場に残らない）。
+    /// </summary>
+    [Fact]
+    public void TheNativeStructs_HaveTheSizeWindowsExpects()
+    {
+        var (outputDesc, monitorInfo, devmode) = GstIntrospect.NativeStructSizes();
+        Assert.Equal(96, outputDesc);       // DXGI_OUTPUT_DESC
+        Assert.Equal(104, monitorInfo);     // MONITORINFOEXW
+        Assert.Equal(220, devmode);         // DEVMODEW
+
+        // vtable のスロット（dxgi.h の Vtbl 構造体の並び）。ずれると別の関数を呼ぶ。
+        var slots = GstIntrospect.NativeVtableSlots();
+        Assert.Equal((2, 12, 7, 7), slots);
+    }
+
     [Fact]
     public void EveryConnectedMonitor_ReportsAPlausiblePhysicalSize()
     {

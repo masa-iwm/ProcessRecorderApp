@@ -26,8 +26,13 @@ public sealed partial class PipelineFieldRow : ObservableObject
     public required string Name { get; init; }
     public string? Description { get; init; }
     public FieldEditKind EditKind { get; init; }
-    /// <summary>Choice のときの選択肢。</summary>
-    public string[] Choices { get; init; } = Array.Empty<string>();
+    /// <summary>
+    /// Choice のときの選択肢。<b>あとから差し替わる</b>（monitor-index を変えると
+    /// 解像度の選択肢がそのモニターのものになる）ので、XAML の束縛は OneWay にすること
+    /// ── x:Bind の既定は OneTime で、差し替えても画面に出ない。
+    /// </summary>
+    [ObservableProperty]
+    public partial string[] Choices { get; set; } = Array.Empty<string>();
 
     /// <summary>
     /// 行の「有効」チェックボックスの AutomationId。値エディタ側は <see cref="Name"/> を
@@ -256,11 +261,34 @@ public sealed partial class PipelineBuilderViewModel : ObservableObject
                     Value = value,
                 });
             }
+
+            // **monitor-index を変えたら解像度の行を作り直す。**
+            // GetDynamicChoices は行を組み立てるときに 1 度しか走らないので、
+            // ここで結び直さないと最初のモニターの値のまま固まる。
+            var indexRow = PropertyRows.FirstOrDefault(r => r.Name == "monitor-index");
+            var resolutionRow = CapsRows.FirstOrDefault(r => r.Name == "resolution");
+            if (indexRow is not null && resolutionRow is not null)
+                indexRow.Changed += () => SyncResolutionToMonitor(resolutionRow);
         }
         finally
         {
             _suppressUpdate = prevSuppress;
         }
+    }
+
+    /// <summary>
+    /// 解像度の行を、いま選ばれている monitor-index のモニターの大きさへ合わせる。
+    /// <b>選択肢を先に差し替えてから値を入れる</b> ── 逆にすると ComboBox が
+    /// 候補に無い値を捨てて空に戻す。
+    /// </summary>
+    private void SyncResolutionToMonitor(PipelineFieldRow resolutionRow)
+    {
+        string[]? choices = GetDynamicChoices("monitor-resolution");
+        if (choices is null || choices.Length == 0)
+            return;
+
+        resolutionRow.Choices = choices;
+        resolutionRow.Value = choices[0];
     }
 
     // 初期値と、必要に応じて補正した選択肢を決める。
@@ -322,19 +350,15 @@ public sealed partial class PipelineBuilderViewModel : ObservableObject
                     return Enumerable.Range(0, Math.Max(1, MonitorCount)).Select(i => i.ToString()).ToArray();
                 case "monitor-resolution":
                 {
-                    // モニターが実際に出す大きさ（DPI 仮想化されていない値）。
-                    // **monitor-index が選ばれていれば、その 1 台を先頭に出す** ──
-                    // 利用者が選んだモニターの大きさがそのまま既定になる。
-                    // 並びが DXGI の出力順と完全に一致する保証は無いので、
-                    // ほかのモニターも選択肢として残す（取り違えても手で選び直せる）。
+                    // **選ばれている monitor-index のモニターの大きさだけを出す。**
+                    // 並びは d3d12screencapturesrc の monitor-index と同じ（DXGI 順）。
+                    // 番号が範囲外・大きさが読めないときは選択肢を出さず自由入力へ倒す
+                    // ── 別のモニターの値を並べても取り違えるだけで害しかない。
                     var all = MonitorResolutions;
-                    if (all.Count == 0)
-                        return null;
-
                     int index = SelectedMonitorIndex();
-                    return 0 <= index && index < all.Count
-                        ? NonEmpty(new[] { all[index] }.Concat(all))
-                        : NonEmpty(all);
+                    return 0 <= index && index < all.Count && 0 < all[index].Length
+                        ? [all[index]]
+                        : null;
                 }
                 case "mf-device-index":
                     return VideoDevices.Count > 0

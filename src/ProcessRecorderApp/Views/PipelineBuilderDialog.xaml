@@ -47,7 +47,7 @@
                           au:AutomationProperties.AutomationId="{x:Bind EnabledAutomationId}" />
                 <TextBlock Grid.Column="1" Text="{x:Bind Name}" ToolTipService.ToolTip="{x:Bind Description}"
                            VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
-                <ComboBox Grid.Column="2" ItemsSource="{x:Bind Choices}" SelectedItem="{x:Bind Value, Mode=TwoWay}"
+                <ComboBox Grid.Column="2" ItemsSource="{x:Bind Choices, Mode=OneWay}" SelectedItem="{x:Bind Value, Mode=TwoWay}"
                           IsEnabled="{x:Bind Enabled, Mode=OneWay}" HorizontalAlignment="Stretch"
                           au:AutomationProperties.Name="{x:Bind Name}"
                           au:AutomationProperties.AutomationId="{x:Bind Name}" />
