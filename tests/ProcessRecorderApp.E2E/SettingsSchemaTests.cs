@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 using Xunit;
 
 namespace ProcessRecorderApp.E2E;
@@ -90,6 +91,52 @@ public sealed class SettingsSchemaTests(PublishedApp app, ITestOutputHelper outp
         // 走査が壊れて 0 件になると「差が無い」で緑になる
         Assert.NotEmpty(written);
         Assert.Equal(described, written);
+    }
+
+    /// <summary>
+    /// <b>手で書かれた <c>$schema</c> が、次の保存で失われないこと。</b>
+    ///
+    /// <para>
+    /// <c>AppSettings.SchemaReference</c> の doc は「読み込んだ値は上書きしない」と約束している
+    /// ── 社内で配布したスキーマを指す運用がありうるため。ところがこの約束は
+    /// <b>属性1つ（<c>[JsonInclude]</c>）に依存している</b>: setter が internal なので、
+    /// これが無いとソース生成の逆シリアライズが代入をせず、値は黙って既定値に戻る。
+    /// 落ちるのは初回の保存（デバウンス1秒）で、エラーも警告も出ない。
+    /// </para>
+    /// <para>
+    /// 他の検査では捕まらない ── <see cref="Settings_PointAtTheSchemaFileNextToThem"/> は
+    /// 既定値そのものを期待しているので、<b>戻ってしまった値と区別が付かない</b>。
+    /// キーを持つファイルから始める必要がある。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void AHandEditedSchemaReference_SurvivesTheNextSave()
+    {
+        const string Custom = "https://example.invalid/company-schemas/settings.v3.json";
+
+        var settings = new SettingsFile { SchemaReference = Custom };
+        settings.AddRecorder("R1");
+
+        using var instance = AppInstance.Create(app, settings);
+
+        // 保存を起こす（そして「保存が走った」証拠も同時に作る）
+        Assert.Equal(0, instance.Run("--set", "Kept=on-disk").ExitCode);
+        Assert.Equal(0, instance.Run("--persist", "Kept").ExitCode);
+
+        Thread.Sleep(DebounceMargin);
+        instance.KillWorkers();
+
+        string saved = File.ReadAllText(instance.SettingsPath);
+        output.WriteLine(saved);
+        Assert.Contains("on-disk", saved, StringComparison.Ordinal);   // 保存が走った証拠
+
+        using var document = JsonDocument.Parse(saved);
+        Assert.True(document.RootElement.TryGetProperty("$schema", out var schema),
+            "保存された settings.json に $schema が無い。");
+        Assert.Equal(Custom, schema.GetString());
+
+        // 同じキーが2回出る壊れた JSON になっていないこと（実体プロパティにしてある理由）。
+        Assert.Single(Regex.Matches(saved, @"""\$schema"""));
     }
 
     /// <summary>

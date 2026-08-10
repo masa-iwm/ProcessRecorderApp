@@ -231,6 +231,13 @@ public sealed class SettingsFile
         return recorder;
     }
 
+    /// <summary>
+    /// <c>$schema</c> に書き込む値。null なら書かない（＝キーの無い通常の初期状態）。
+    /// 利用者が社内で配布したスキーマを指す運用がありうるので、
+    /// <b>読み込んだ値が保存で失われないこと</b>を E2E から確かめるために使う。
+    /// </summary>
+    public string? SchemaReference { get; set; }
+
     /// <summary>settings.json を書き出す。既存ファイルは上書きする。</summary>
     public void WriteTo(string path, string recordingsDir)
     {
@@ -244,6 +251,11 @@ public sealed class SettingsFile
             ["GstDebug"] = GstDebug,
             ["PreferredH264Encoder"] = PreferredH264Encoder,
         };
+
+        // 既定では書かない（`$schema` が無いファイルが通常の初期状態）。
+        // 指定されたときだけ書き、「手で書かれた値が保存で失われないか」を見られるようにする。
+        if (SchemaReference is { } schemaReference)
+            root["$schema"] = schemaReference;
 
         if (GstDebugDumpDotDir is { } dotDir)
             root["GstDebugDumpDotDir"] = dotDir;

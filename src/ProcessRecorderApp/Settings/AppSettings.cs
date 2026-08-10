@@ -123,6 +123,10 @@ public partial class AppSettings : JsonSettingsBase<AppSettings>
     [System.ComponentModel.Browsable(false)]
     [JsonPropertyName("$schema")]
     [JsonPropertyOrder(-1)]
+    // setter が internal なので [JsonInclude] が要る。無いとソース生成の逆シリアライズが
+    // 代入をせず、手で書かれた値が次の保存で黙って既定値へ戻る（上の約束が破れる）。
+    // 同じファイルの UiaTriggers / TemplateVariables / Recorders / UiaTriggerAssignments と同じ形。
+    [JsonInclude]
     public string SchemaReference { get; internal set; } = SchemaFileName;
 
     // ウィンドウの位置/サイズ等、アプリが自動保存する内部状態のため PropertyGrid には表示しない。
