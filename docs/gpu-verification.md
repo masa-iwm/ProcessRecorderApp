@@ -100,6 +100,37 @@ GPU 無しで再現できる根拠: `d3d12testsrc ! video/x-raw(memory:D3D12Memo
 パラメータ: `-PublishDir` / `-WorkDir` / `-RecordSeconds`（既定 4）/ `-MonitorIndex`（既定 1。製品側の `monitor-index` の既定は `0` なので、モニタが1台の機械では既定のまま流すと画面キャプチャのケースが範囲外の index になる ── 実機のモニタ構成に合わせて指定する）/ `-SmokeTest` / `-KeepWorkDir`。
 
 
+### 本線のフレームレートが落ちる件の 3 件
+
+常時録画に**フレームレート制限**（`ContinuousFramerate`）を掛けると、**本線（イベント録画）の
+実 fps が落ちる**という報告がある（1920x1080@30 のカメラで、本線の MP4 が 12fps 程度）。
+制限を切ると本線は 30fps 弱に戻る。
+
+**交渉された caps では分からない。** 実測した `.dot` では本線・プレビューとも `30/1` のままで、
+落ちているのは実際に入ったフレーム数の方である。そこでレポートには
+**`event fps` の列**（`stsz` のフレーム数 ÷ `mvhd` の duration）を出す。
+
+3 件は**常時録画の設定だけが違う**（ソースもイベント側のエンコーダーも同じ）:
+
+| 行 | 常時録画 | 枝の中身 |
+|---|---|---|
+| `fps: ... continuous OFF (baseline)` | 無効 | ── |
+| `fps: ... continuous ON, no framerate override` | 有効・解像度のみ | `d3d12convert` |
+| `fps: ... continuous ON at 5fps (videorate)` | 有効・5fps＋解像度 | `videorate` ＋ `d3d12convert` |
+
+読み方: 3 行の `event fps` が揃っていれば再現していない。**2 行目が揃っていて 3 行目だけ落ちるなら
+`videorate` そのものが原因**（枝が増えたことでも 2 本目のエンコーダーでもない ── 2 行目の方が
+エンコード量は多いのに落ちないため）。
+
+**開発機では再現できない。** GPU が無い機械（WARP）では、`videotestsrc` → `d3d12upload` の形でも
+`d3d12testsrc` でも、`videorate` の有無で throughput に差が出ないことを実測済み
+（640x360 で 24.2 / 24.4 / 25.2 fps、1920x1080 ではパイプライン自体が 7.3fps で頭打ち）。
+GPU 実機でしか切り分けられない。
+
+なお `.dot` で見えていた直接の詰まりは、**イベント枝の `queue` が既定の `max-size-bytes`
+（10MB）を超えて満杯**になっていたこと（1080p NV12 は 1 フレーム約 3.1MB なので 4 枚で超える）。
+これは設計どおりの背圧で、律速はその下流（エンコーダー）にある。
+
 ### 走らせ方（常時録画を含む）
 
 GPU 実機に**発行物一式**（`dotnet publish -p:PublishProfile=win-x64-aot` の出力）とこのリポジトリの `tools/` を持ち込み、PowerShell で:

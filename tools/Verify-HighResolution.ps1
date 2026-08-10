@@ -272,7 +272,7 @@ function Test-Mp4 {
         $br = New-Object System.IO.BinaryReader($fs)
         $res = [pscustomobject]@{
             HasFtyp = $false; HasMoov = $false; HasMdat = $false
-            HasAvc1 = $false; DurationSec = $null
+            HasAvc1 = $false; DurationSec = $null; FrameCount = $null; EffectiveFps = $null
         }
 
         while ($fs.Position -lt $fs.Length - 8) {
@@ -312,6 +312,17 @@ function Test-Mp4 {
                     $fs.Position = $start + 8
                     $moov = $br.ReadBytes([int]($size - 8))
                     $res.HasAvc1 = [System.Text.Encoding]::ASCII.GetString($moov).Contains('avcC')
+                    # stsz の sample_count = フレーム数。duration と合わせて実効 fps を出す。
+                    # **交渉された caps の framerate ではなく、実際に入ったフレーム数で見る**
+                    # ── 本線が落ちる現象は caps 上は 30/1 のままで起きる。
+                    $txt = [System.Text.Encoding]::ASCII.GetString($moov)
+                    $ix = $txt.IndexOf('stsz')
+                    if ($ix -ge 0 -and ($ix + 16) -lt $moov.Length) {
+                        # stsz: size(4) type(4) ver+flags(4) sample_size(4) sample_count(4)
+                        $c = $ix + 12
+                        $res.FrameCount = ([uint32]$moov[$c] -shl 24) -bor ([uint32]$moov[$c+1] -shl 16) -bor ([uint32]$moov[$c+2] -shl 8) -bor [uint32]$moov[$c+3]
+                        if ($res.DurationSec -gt 0) { $res.EffectiveFps = [math]::Round($res.FrameCount / $res.DurationSec, 1) }
+                    }
                 }
             }
             $fs.Position = $start + $size
@@ -407,6 +418,29 @@ foreach ($wh in @('320x240', '1920x1080', '2560x1440', '3840x2160')) {
         Note = if ([int]$parts[0] * [int]$parts[1] * 3 / 2 -gt 5242880) { 'ABOVE the old threshold -- this used to deadlock' } else { 'below the old threshold -- this used to work; must still work' }
     })
 }
+
+# 本線のフレームレートが落ちる件の切り分け。**3 行の差は常時録画の設定だけ**で、
+# ソースもイベント側のエンコーダーも同じ。実効 fps（stsz のフレーム数 / duration）を
+# 突き合わせる ── **交渉された caps は 3 行とも 30/1 のまま**なので caps では分からない。
+# 開発機（GPU 無し）では videorate の有無で差が出ないことを実測済み。GPU が要る。
+$fpsSrc = 'd3d12testsrc is-live=true do-timestamp=true ! video/x-raw(memory:D3D12Memory), format=NV12, width=1920, height=1080, framerate=30/1'
+$cases.Add([pscustomobject]@{
+    Name = 'fps: 1920x1080@30, continuous OFF (baseline)'
+    Type = 'D3d12'; Src = $fpsSrc; Enc = $reportedEnc; Buffer = 3000
+    Note = 'the event line on its own -- the number the other two rows must match'
+})
+$cases.Add([pscustomobject]@{
+    Name = 'fps: 1920x1080@30, continuous ON, no framerate override'
+    Type = 'D3d12'; Src = $fpsSrc; Enc = $reportedEnc; Buffer = 3000
+    Continuous = $true; ContinuousResolution = '960x540'
+    Note = 'three branches and a second encoder, but no videorate'
+})
+$cases.Add([pscustomobject]@{
+    Name = 'fps: 1920x1080@30, continuous ON at 5fps (videorate)'
+    Type = 'D3d12'; Src = $fpsSrc; Enc = $reportedEnc; Buffer = 3000
+    Continuous = $true; ContinuousFramerate = '5/1'; ContinuousResolution = '960x540'
+    Note = 'the reported configuration -- the event MP4 came out at about 12fps'
+})
 
 # Automatic selection at 4K exercises the candidate fallback with the new PLAYING wait in
 # the loop: if a candidate stalls it must be rejected and the next one tried.
@@ -610,6 +644,8 @@ function Invoke-Case {
         Stalled     = $stalled.Count
         Mp4Bytes    = if ($mp4) { $mp4.Length } else { 0 }
         DurationSec = if ($probe) { $probe.DurationSec } else { $null }
+        FrameCount  = if ($probe) { $probe.FrameCount } else { $null }
+        EffectiveFps = if ($probe) { $probe.EffectiveFps } else { $null }
         ValidMp4    = if ($probe) { $probe.HasFtyp -and $probe.HasMoov -and $probe.HasMdat -and $probe.HasAvc1 } else { $false }
         Ok          = $ok
         Continuous  = $isContinuous
@@ -676,13 +712,14 @@ $null = $sb.AppendLine('valid, and no `continuous.error` / `continuous.leak` / `
 $null = $sb.AppendLine('still open when the workers are killed is expected to be incomplete and is not counted')
 $null = $sb.AppendLine('(there is no CLI command that shuts the app down cleanly).')
 $null = $sb.AppendLine()
-$null = $sb.AppendLine('| Case | start/stop | selected encoder | init ok/fail | stalled | MP4 | duration | segments (closed/bad) | result |')
-$null = $sb.AppendLine('|---|---|---|---|---|---|---|---|---|')
+$null = $sb.AppendLine('| Case | start/stop | selected encoder | init ok/fail | stalled | MP4 | duration | event fps | segments (closed/bad) | result |')
+$null = $sb.AppendLine('|---|---|---|---|---|---|---|---|---|---|')
 foreach ($r in $results) {
     $seg = if ($r.Continuous) { '{0} ({1}/{2})' -f $r.ContSegments, $r.ContClosed, $r.ContBad } else { '-' }
-    $null = $sb.AppendLine(('| {0} | {1}/{2} | `{3}` | {4}/{5} | {6} | {7} | {8}s | {9} | {10} |' -f `
+    $fps = if ($null -ne $r.EffectiveFps) { '{0} ({1}f)' -f $r.EffectiveFps, $r.FrameCount } else { 'n/a' }
+    $null = $sb.AppendLine(('| {0} | {1}/{2} | `{3}` | {4}/{5} | {6} | {7} | {8}s | {9} | {10} | {11} |' -f `
         $r.Case, $r.StartExit, $r.StopExit, $r.Selected, $r.InitOk, $r.InitFail, $r.Stalled,
-        $(if ($r.ValidMp4) { 'valid' } else { 'INVALID' }), $r.DurationSec, $seg,
+        $(if ($r.ValidMp4) { 'valid' } else { 'INVALID' }), $r.DurationSec, $fps, $seg,
         $(if ($r.Ok) { 'OK' } else { '**FAILED**' })))
 }
 
