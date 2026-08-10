@@ -186,9 +186,48 @@ tee name=t
   （`EventRecorder.ResolveContinuousEncoder`）。この整合は
   `ContinuousRuntimeDependencyTests`（L1）が固定している。
 
-**解像度はソースの caps ではなく変換段で効かせる。** `d3d12screencapturesrc` の src caps は
-モニター解像度に固定されており、ソース側 capsfilter では交渉に失敗する。
-D3d12 経路は `d3d12convert`、System 経路は `videoscale`（どちらも同梱済み）。
+#### 解像度の上書きには「上流の固定」が要る（重要）
+
+拡縮そのものは変換段で行う（D3d12 は `d3d12convert`、System は `videoscale`。どちらも同梱済み）。
+**問題は、枝の capsfilter が要求する幅・高さが上流へ伝播することである。**
+
+拡縮できる要素は「素通し（passthrough）」を最も好むので、下流の固定された大きさを
+**そのまま上流への希望として差し出す**。`tee` はすべての枝の希望を交差させるため、
+その固定値が `tee` を越えてソースまで届き、ソースが任意の大きさを出せる場合
+（`d3d12screencapturesrc` は `width:[1,2147483647]` を名乗る）**ソースが小さい方を選ぶ**
+── プレビューもイベント録画も一緒に縮む。出来上がった MP4 は「妥当」なままなので、
+大きさを直接読む以外に検出できない。
+
+実測（`docs/environment-facts.md` に記録）:
+
+| 構成 | プレビュー枝 |
+|---|---|
+| 3840x2160 のキャプチャ ＋ 常時枝 960x540 | **960x540**（本線まで縮む） |
+| ソースの caps を 1920x1080 に固定 ＋ 常時枝 960x540（D3d12） | **960x540**（`tee` の手前の `d3d12convert` が吸収する） |
+| 上に加えて **`tee` の手前の capsfilter も 1920x1080 に固定** | **1920x1080**（正しい） |
+
+したがって製品の規則は 2 つ:
+
+1. **ソースの caps が幅・高さを固定していないときは、解像度の上書きを捨てる**
+   （`ContinuousBranch.SourceSizeIsPinned`）。理由と直し方（`SrcPipeline` の caps に
+   `width` / `height` を書く）を `ContinuousLastError` と `recorder.continuous-init fail` に出す。
+   **常時録画のために本線の録画を壊すことは許されない**ので、捨てるのは上書きの方である。
+2. 枝で拡縮するときは **`tee` の手前も同じ大きさで固定する**（`BuildSinkPipeline` の
+   `pinnedResolution`）。D3d12 経路は `tee` の手前に `d3d12convert` が居るので、
+   ソース側の固定だけでは足りない。
+
+> **モニターの物理サイズを Win32 から取って自動で固定してはいけない。**
+> `GetMonitorInfo` は DPI 仮想化の影響を受け、`d3d12screencapturesrc` が実際に出す
+> 大きさと食い違う（実測: 2194x1234 と 3840x2160 ── 175% スケーリング）。
+> 間違った値で固定すると、**別の大きさで同じ事故を起こす**。
+
+#### フレームレートは分数で書く
+
+caps の `framerate` は `GstFraction` なので、`5` と書くと `(int)5` として読まれ、
+**どの要素も扱えない caps になってリンクに失敗する**
+（実測: `could not link videorate0 to ..., can't handle caps video/x-raw, framerate=(int)5`）。
+設定には素の数字も書けるが、枝を組む前に `ContinuousBranch.TryNormalizeFramerate` が
+`5` → `5/1` へ正規化する。読めない値は上書きを捨てて理由を残す。
 
 #### 分割（セグメント）
 
@@ -494,6 +533,14 @@ Windows App SDK 側の `Microsoft.Windows.Storage.Pickers` を使う** ── �
     右上の「グラフを保存」（`MainPageViewModel.SaveDebugGraphsCommand`）は、いま生きている
     パイプライン（全レコーダーの sink/src とプレビュー）の `.dot` を
     `GstDebugDumpDotDir`（空欄ならデータディレクトリ）へ書き、結果を `gst.dot` に残す。
+    **初期化に失敗したときも同じ設定の場所へ `<名前>.init-failed.dot` を書く**
+    （`EventRecorder.WriteFailureGraph`。破棄の前に書く ── `Close()` を過ぎると
+    「どこまで組めていたか」を見る手段が無くなる）。`GstDebugDumpDotDir` が空欄なら
+    **何も書かない**（頼まれてもいない場所へファイルを撒かないため）。
+    書けるのは<b>パイプラインが出来たあとの失敗</b>だけで、`ParseLaunch` のリンク失敗では
+    パイプラインそのものが無いので `.dot` は原理的に作れない ── その場合の手がかりは
+    `gst.encoder candidate-failed` に添える**パイプライン文字列**の方である
+    （要素名しか言わないリンクエラーを、実際に書いた caps と突き合わせられる）。
     **`gst_debug_bin_to_dot_file` は使えない** ── あちらは `gst_init` の時点で控えた
     `priv_gst_dump_dot_dir` しか見ず、未設定なら無言で何も書かない（既定の起動がそれ）。
     代わりに `DebugBinToDotData` で受け取ってアプリ側が書く（`GStreamer/DebugLogEx.WriteDotFile`）。
@@ -1460,7 +1507,7 @@ GPU テクスチャになるため**アクセシブルテキストが 1 つも�
 | `recorder.warning` | WARN | 同上 | 両方のバスの `Warning`。連続する同一内容は畳んで `repeated=N` を添える |
 | `recorder.eos` | INFO | 同上 | sink 側バスの `Eos` |
 | `recorder.restart` | INFO / WARN | 同上／`RestartSinkSrc` | 自動復帰の予約と、その結果（`ok` / `failed`） |
-| `recorder.continuous-init ok` / `recorder.continuous-init fail` | INFO / WARN | `EventRecorder.StartContinuous` ／ `InitializeCore` | 常時録画の枝を組めた（エンコーダー・fps・解像度・分割間隔）／組めなかったので**枝だけ落とした**（イベント録画は無事＝隔離契約） |
+| `recorder.continuous-init ok` / `recorder.continuous-init fail` | INFO / WARN | `EventRecorder.StartContinuous` ／ `InitializeCore` ／ `InitializeWith` | 常時録画の枝を組めた（エンコーダー・fps・解像度・分割間隔）／組めなかったので**枝だけ落とした**（イベント録画は無事＝隔離契約）。**上書きだけを捨てた場合も同じ名前で出す**（読めないフレームレート・上流が固定されていないのに指定された解像度）── どちらも「設定が黙って効いていない」という同じ事故だからである |
 | `continuous.start` | INFO | `ContinuousRecorder.OpenSegment` | 常時録画のセグメントを開いた（ファイル名・通し番号・分割間隔） |
 | `continuous.finalize` | INFO | `ContinuousRecorder.FinalizeSegment` | セグメントを確定させた（`result=ok｜timeout｜error`） |
 | `continuous.finalize backlog` | WARN | `ContinuousRecorder.WaitForFinalizers` | 排出中のセグメントが上限に達したまま予算内に片付かなかった |

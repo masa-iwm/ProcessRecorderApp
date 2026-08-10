@@ -18,7 +18,9 @@ public sealed record Mp4Probe(
     bool HasAvcC,
     double? DurationSeconds,
     bool StartsOnASyncSample,
-    uint SampleCount)
+    uint SampleCount,
+    int FrameWidth,
+    int FrameHeight)
 {
     /// <summary>再生可能な MP4 として最低限成立しているか。</summary>
     public bool IsValid => HasFtyp && HasMoov && HasMdat && HasAvcC && DurationSeconds is > 0;
@@ -33,6 +35,7 @@ public sealed record Mp4Probe(
 
     public override string ToString() =>
         $"{Path} ({Length:N0} bytes) ftyp={HasFtyp} moov={HasMoov} mdat={HasMdat} avcC={HasAvcC} " +
+        $"{FrameWidth}x{FrameHeight} " +
         $"duration={(DurationSeconds is { } d ? d.ToString("F3") + "s" : "(none)")} " +
         $"samples={SampleCount} " +
         $"fps={(EffectiveFramerate is { } f ? f.ToString("F2") : "(none)")} " +
@@ -89,6 +92,7 @@ public static class Mp4File
         double? duration = null;
         bool startsOnSyncSample = true;
         uint sampleCount = 0;
+        int frameWidth = 0, frameHeight = 0;
 
         Span<byte> header = stackalloc byte[16];
         long position = 0;
@@ -144,6 +148,7 @@ public static class Mp4File
                     duration = ReadDurationFromMvhd(payload);
                     startsOnSyncSample = ReadStartsOnSyncSample(payload);
                     sampleCount = ReadSampleCount(payload);
+                    (frameWidth, frameHeight) = ReadFrameSize(payload);
                     break;
                 }
             }
@@ -152,7 +157,36 @@ public static class Mp4File
         }
 
         return new Mp4Probe(
-            path, length, hasFtyp, hasMoov, hasMdat, hasAvcC, duration, startsOnSyncSample, sampleCount);
+            path, length, hasFtyp, hasMoov, hasMdat, hasAvcC, duration, startsOnSyncSample, sampleCount,
+            frameWidth, frameHeight);
+    }
+
+    /// <summary>
+    /// 映像の幅・高さを <c>avc1</c> のサンプルエントリから読む。
+    ///
+    /// <para>
+    /// <b>尺やサンプル数では代用できない。</b> 常時録画の枝に解像度を指定すると、その要求が
+    /// <c>tee</c> を越えてソースまで伝播し、<b>イベント録画まで一緒に縮む</b>ことがある
+    /// ── 出来上がった MP4 は「妥当」なままなので、大きさを直接読む以外に検出できない。
+    /// </para>
+    /// <para>
+    /// VisualSampleEntry の並びは 4cc の直後から
+    /// reserved(6) / data_reference_index(2) / pre_defined(2) / reserved(2) /
+    /// pre_defined(12) / width(2) / height(2)。
+    /// </para>
+    /// </summary>
+    private static (int Width, int Height) ReadFrameSize(byte[] moovPayload)
+    {
+        int index = IndexOfFourCc(moovPayload, "avc1");
+        if (index < 0)
+            return (0, 0);
+
+        var span = moovPayload.AsSpan(index + 4);
+        if (span.Length < 32)
+            return (0, 0);
+
+        return (BinaryPrimitives.ReadUInt16BigEndian(span[24..26]),
+                BinaryPrimitives.ReadUInt16BigEndian(span[26..28]));
     }
 
     /// <summary>

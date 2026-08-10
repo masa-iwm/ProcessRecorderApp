@@ -304,6 +304,13 @@ public partial class AppSettings : JsonSettingsBase<AppSettings>
         => GStreamer.EventRecorder.OutputDirectory = Components.AppDirectories.ResolveOrBase(value);
 
     /// <summary>
+    /// 初期化に失敗したパイプラインのグラフ（<c>.dot</c>）の保存先も、Log 画面の
+    /// 「グラフを保存」と同じ設定を使う。空欄なら書かない（頼まれていない場所へ撒かない）。
+    /// </summary>
+    partial void OnGstDebugDumpDotDirChanged(string value)
+        => GStreamer.EventRecorder.DebugDumpDotDirectory = Components.AppDirectories.ResolveOptional(value) ?? "";
+
+    /// <summary>
     /// <see cref="OutputDirectory"/> のビルダー識別キー。
     /// <b><c>PropCat_</c> / <c>PropDesc_</c> で始めてはいけない</b>（<see cref="EncoderChoiceListKey"/> と同じ理由）。
     /// </summary>
@@ -739,6 +746,8 @@ public partial class AppSettings : JsonSettingsBase<AppSettings>
         GStreamer.EventRecorder.PreferredH264Encoder = PreferredH264Encoder;
         GStreamer.EventRecorder.StopFinalizeTimeoutMs = StopFinalizeTimeoutMs;
         GStreamer.EventRecorder.OutputDirectory = Components.AppDirectories.ResolveOrBase(OutputDirectory);
+        GStreamer.EventRecorder.DebugDumpDotDirectory =
+            Components.AppDirectories.ResolveOptional(GstDebugDumpDotDir) ?? "";
         Components.LogBuffer.Shared.MaxLines = LogScrollbackLines;
 
         // テンプレート変数を実行時ストアへ復元する。

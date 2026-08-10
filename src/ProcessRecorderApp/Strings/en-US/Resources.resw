@@ -339,7 +339,7 @@
     <value>Frame rate for the continuous recording, written as a fraction such as 5/1. Leave it empty to run at the same rate as the event recording. Any other rate needs the videorate element; the bundled runtime carries it, but a GStreamer installed separately may not.</value>
   </data>
   <data name="PropDesc_Rec_ContinuousResolution" xml:space="preserve">
-    <value>Frame size for the continuous recording, such as 1280x720. Leave it empty to keep the size the event recording uses.</value>
+    <value>Frame size for the continuous recording, such as 1280x720. Leave it empty to keep the size the event recording uses. It only takes effect when the source pipeline pins width and height in its caps: scaling one branch otherwise drags the whole capture (preview and event recording included) down to that size, so the override is dropped and the reason is reported.</value>
   </data>
   <data name="PropDesc_Rec_ContinuousEncodingProperties" xml:space="preserve">
     <value>Encoding properties for the continuous recording. Leave it empty to have an encoder chosen automatically. If you write your own, pin the GOP length: files are only cut on a key frame, so a long GOP delays every cut.</value>

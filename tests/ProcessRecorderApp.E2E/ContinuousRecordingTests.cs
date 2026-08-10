@@ -35,6 +35,104 @@ public sealed class ContinuousRecordingTests(PublishedApp app, ITestOutputHelper
 
     private static readonly TimeSpan ExitBudget = TimeSpan.FromSeconds(420);
 
+    /// <summary>
+    /// <b>常時録画の解像度がイベント録画を縮めないこと。</b>
+    ///
+    /// <para>
+    /// 枝の capsfilter が要求する幅・高さは、拡縮できる要素を素通りして <c>tee</c> を越え、
+    /// <b>ソースまで伝播する</b> ── ソースが任意の大きさを出せる場合、ソースは小さい方を選び、
+    /// プレビューもイベント録画も一緒に縮む（実機の 3840x2160 のキャプチャが常時枝の
+    /// 960x540 に引きずられた）。出来上がった MP4 は「妥当」なままなので、
+    /// <b>大きさを直接読む以外に検出できない</b>。
+    /// </para>
+    /// <para>
+    /// 製品は、ソースの caps が幅・高さを固定していないときは上書きの方を捨てる。
+    /// ここではその結果として<b>イベント録画がソースの大きさのまま</b>であることを見る。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void AResolutionOverride_NeverShrinksTheEventRecording()
+    {
+        var settings = new SettingsFile();
+        var recorder = settings.AddRecorder("R1").WithContinuous(SegmentSeconds);
+        // **幅・高さを書かないソース。** videotestsrc は既定の 320x240 を出すが、
+        // 下流が小さい大きさを要求すればそれに合わせてしまう（画面キャプチャと同じ性質）。
+        recorder.SrcPipeline =
+            "videotestsrc is-live=true do-timestamp=true ! videoconvert ! video/x-raw,format=I420,framerate=15/1";
+        recorder.ContinuousResolution = "160x120";
+
+        using var instance = AppInstance.Create(app, settings);
+
+        Assert.Equal(0, instance.Run("start-recording", "R1").ExitCode);
+        Thread.Sleep(TimeSpan.FromSeconds(2));
+        Assert.Equal(0, instance.Run("stop-recording", "R1").ExitCode);
+
+        string eventFile = instance.ListRecordings().Single(p => !Path.GetFileName(p).Contains("_c0"));
+        var probe = Mp4File.Probe(eventFile);
+        output.WriteLine(probe.ToString());
+
+        Assert.True(probe.IsValid, probe.ToString());
+        Assert.NotEqual(160, probe.FrameWidth);
+        Assert.Equal(320, probe.FrameWidth);
+        Assert.Equal(240, probe.FrameHeight);
+
+        // 上書きを捨てたことは黙って済ませない。
+        var log = instance.ReadActivityLog();
+        Assert.NotEmpty(ActivityLogFile.Events(log, "recorder.continuous-init fail"));
+        // イベント録画は無傷（レコーダー自体の初期化は成功している）
+        Assert.Empty(ActivityLogFile.Events(log, "recorder.init fail"));
+
+        CloseGracefully(instance);
+    }
+
+    /// <summary>
+    /// <b>D3d12 経路でも、常時録画の解像度がイベント録画を縮めないこと。</b>
+    ///
+    /// <para>
+    /// こちらは<b>ソースの caps が幅・高さを固定している</b>のに壊れる経路である
+    /// ── D3d12 では <c>tee</c> の手前に <c>d3d12convert</c> が居り、枝の要求を
+    /// そこで吸収してしまうため（実測でプレビューが 960x540 に落ちた）。
+    /// 製品は枝で拡縮するときに <c>tee</c> の手前も固定する。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void OnTheD3d12Path_AResolutionOverride_NeverShrinksTheEventRecording()
+    {
+        var settings = new SettingsFile();
+        var recorder = settings.AddRecorder("R1").WithContinuous(SegmentSeconds);
+        recorder.Type = EventRecordingType.D3d12;
+        recorder.SrcPipeline =
+            "d3d12testsrc is-live=true do-timestamp=true ! "
+            + "video/x-raw(memory:D3D12Memory), format=NV12, width=640, height=480, framerate=15/1";
+        recorder.ContinuousResolution = "320x240";
+
+        using var instance = AppInstance.Create(app, settings);
+
+        Assert.Equal(0, instance.Run("start-recording", "R1").ExitCode);
+        Thread.Sleep(TimeSpan.FromSeconds(2));
+        Assert.Equal(0, instance.Run("stop-recording", "R1").ExitCode);
+
+        string eventFile = instance.ListRecordings().Single(p => !Path.GetFileName(p).Contains("_c0"));
+        var probe = Mp4File.Probe(eventFile);
+        output.WriteLine(probe.ToString());
+
+        Assert.True(probe.IsValid, probe.ToString());
+        Assert.Equal(640, probe.FrameWidth);
+        Assert.Equal(480, probe.FrameHeight);
+
+        CloseGracefully(instance);
+
+        // 常時録画の方は指定どおり縮んでいること（固定が効きすぎて上書きが死んでいない）
+        var segments = Segments(instance, "R1");
+        Assert.NotEmpty(segments);
+        var segment = Mp4File.Probe(segments[0]);
+        output.WriteLine(segment.ToString());
+        Assert.Equal(320, segment.FrameWidth);
+        Assert.Equal(240, segment.FrameHeight);
+
+        Assert.Empty(ActivityLogFile.Events(instance.ReadActivityLog(), "recorder.continuous-init fail"));
+    }
+
     private static IReadOnlyList<string> Segments(AppInstance instance, string recorder)
         => [.. Directory.GetFiles(instance.RecordingsDir, recorder + "_c*.mp4")
             .OrderBy(File.GetCreationTimeUtc)];

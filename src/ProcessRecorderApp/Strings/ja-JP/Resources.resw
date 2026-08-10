@@ -339,7 +339,7 @@
     <value>常時録画のフレームレート。5/1 のような分数で書きます。空欄ならイベント録画と同じレートで回ります。別のレートにするには videorate 要素が必要です。同梱のランタイムには入っていますが、別途入れた GStreamer には無いことがあります。</value>
   </data>
   <data name="PropDesc_Rec_ContinuousResolution" xml:space="preserve">
-    <value>常時録画の解像度。1280x720 のように書きます。空欄ならイベント録画と同じ大きさのままです。</value>
+    <value>常時録画の解像度。1280x720 のように書きます。空欄ならイベント録画と同じ大きさのままです。効くのは SrcPipeline の caps が width と height を固定しているときだけです ── そうでないと、この枝だけを縮めるつもりが取り込み全体（プレビューとイベント録画を含む）まで同じ大きさに縮んでしまうため、指定は無視して理由を通知します。</value>
   </data>
   <data name="PropDesc_Rec_ContinuousEncodingProperties" xml:space="preserve">
     <value>常時録画のエンコード設定。空欄なら自動で選びます。自分で書く場合は GOP の長さを必ず固定してください ── ファイルの切り替えはキーフレームでしか行わないので、GOP が長いとその分だけ切り替えが遅れます。</value>

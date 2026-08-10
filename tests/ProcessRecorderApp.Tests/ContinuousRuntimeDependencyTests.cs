@@ -38,6 +38,11 @@ public class ContinuousRuntimeDependencyTests
     private static bool IsBundled(string pluginFileName)
         => BundledPlugins().Any(p => p.EndsWith("/" + pluginFileName, StringComparison.OrdinalIgnoreCase));
 
+    private static string Build(
+        EventRecordingType type, string encoder, bool needsSystemMemory,
+        string? framerate, string? resolution, bool sourceSizeIsPinned = true)
+        => ContinuousBranch.Plan(type, encoder, needsSystemMemory, framerate, resolution, sourceSizeIsPinned).Branch;
+
     /// <summary>
     /// 常時録画が<b>無条件に</b>使う要素は、すべて同梱ランタイムに在ること。
     /// ここが崩れると、常時録画は同梱配布で一切動かない。
@@ -90,15 +95,15 @@ public class ContinuousRuntimeDependencyTests
         Assert.False(ContinuousBranch.RequiresVideorate(""));
         Assert.DoesNotContain(
             ContinuousBranch.VideorateFactory,
-            ContinuousBranch.Build(EventRecordingType.D3d12, "x264enc", false, "", "1280x720"));
+            Build(EventRecordingType.D3d12, "x264enc", false, "", "1280x720"));
         Assert.DoesNotContain(
             ContinuousBranch.VideorateFactory,
-            ContinuousBranch.Build(EventRecordingType.System, "x264enc", false, "", ""));
+            Build(EventRecordingType.System, "x264enc", false, "", ""));
 
         // (2) 要求されたときだけ出す
         Assert.Contains(
             ContinuousBranch.VideorateFactory,
-            ContinuousBranch.Build(EventRecordingType.D3d12, "x264enc", false, "5/1", ""));
+            Build(EventRecordingType.D3d12, "x264enc", false, "5/1", ""));
 
         // (3) 無いときは名指しで失敗させる
         string recorder = File.ReadAllText(
@@ -120,7 +125,7 @@ public class ContinuousRuntimeDependencyTests
         Assert.DoesNotContain("splitmuxsink", ContinuousBranch.SegmentWriterPipeline, StringComparison.Ordinal);
         Assert.DoesNotContain(
             "splitmuxsink",
-            ContinuousBranch.Build(EventRecordingType.D3d12, "x264enc", false, "5/1", "640x360"),
+            Build(EventRecordingType.D3d12, "x264enc", false, "5/1", "640x360"),
             StringComparison.Ordinal);
     }
 }

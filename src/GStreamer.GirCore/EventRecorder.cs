@@ -559,11 +559,21 @@ public partial class EventRecorder : ObservableObject, IDisposable
     /// </param>
     public static string BuildSinkPipeline(
         EventRecordingType type, string? srcPipeline, string encoder, bool needsSystemMemory,
-        string continuousBranch = "")
+        string continuousBranch = "", string pinnedResolution = "")
     {
         // D3d12 経路でのみ、システムメモリを要求するエンコーダーの手前にダウンロードを挟む
         string download = type == EventRecordingType.D3d12 && needsSystemMemory
             ? "d3d12download ! video/x-raw(memory:SystemMemory) ! videoconvert ! "
+            : "";
+
+        // **tee の手前の幅・高さの固定。** 常時録画の枝で拡縮するときだけ効かせる。
+        // これが無いと、枝の capsfilter が要求する小さい大きさを手前の d3d12convert が
+        // 吸収して**プレビューとイベント録画まで縮む** ── ソースの caps を固定していても
+        // 起こる（変換が tee の手前に居るため）。実測: ソース 1920x1080 固定・枝 960x540 で
+        // プレビューが 960x540 になり、この固定を足すと 1920x1080 に戻った。
+        string pinned = ContinuousBranch.TryParseResolution(pinnedResolution, out int pinnedWidth, out int pinnedHeight)
+            ? $", width={pinnedWidth.ToString(System.Globalization.CultureInfo.InvariantCulture)}"
+                + $", height={pinnedHeight.ToString(System.Globalization.CultureInfo.InvariantCulture)}"
             : "";
 
         return $"""
@@ -624,7 +634,7 @@ public partial class EventRecorder : ObservableObject, IDisposable
                                 videoconvert ! {encoder}
                                 """",
                     EventRecordingType.D3d12 => $""""
-                                d3d12upload ! d3d12convert ! video/x-raw(memory:D3D12Memory), format=NV12 !
+                                d3d12upload ! d3d12convert ! video/x-raw(memory:D3D12Memory), format=NV12{pinned} !
                                 dwriteclockoverlay time-format="%Y-%m-%d %H:%M:%S" auto-resize=false font-family=Arial font-size=36 !
                                 tee name=t ! {PreviewQueue} ! d3d12download ! video/x-raw(memory:SystemMemory) ! appsink max-buffers=1 drop=true name=preview t. ! queue !
                                 {download}{encoder}
@@ -766,7 +776,8 @@ public partial class EventRecorder : ObservableObject, IDisposable
                 Close();
                 failures.Add($"{candidate.LaunchString}: {ex.Message}");
                 Components.ActivityLog.Warn("gst.encoder candidate-failed",
-                    $"recorder='{Name}' encoder='{candidate.LaunchString}': {ex.Message}");
+                    $"recorder='{Name}' encoder='{candidate.LaunchString}': {ex.Message}"
+                    + $" pipeline='{_lastAttemptedSinkPipeline}'");
 
                 if (i == candidates.Count - 1)
                 {
@@ -815,15 +826,30 @@ public partial class EventRecorder : ObservableObject, IDisposable
         try
         {
             H264EncoderDef? continuousEncoder = withContinuous ? ResolveContinuousEncoder() : null;
-            string continuousBranch = continuousEncoder is null
-                ? ""
-                : ContinuousBranch.Build(
+            string continuousBranch = "";
+            string? droppedOverride = null;
+            string pinnedResolution = "";
+            if (continuousEncoder is not null)
+            {
+                var plan = ContinuousBranch.Plan(
                     Type, continuousEncoder.LaunchString, continuousEncoder.NeedsSystemMemory,
-                    ContinuousFramerate, ContinuousResolution);
+                    ContinuousFramerate, ContinuousResolution,
+                    ContinuousBranch.SourceSizeIsPinned(SrcPipeline));
+                continuousBranch = plan.Branch;
+                droppedOverride = plan.DroppedOverride;
+                // 枝の中で拡縮するなら、tee の手前も同じ大きさで固定しないと
+                // 手前の変換が枝の要求を吸収して本線まで縮む。
+                if (plan.AppliesResolution)
+                    pinnedResolution = ContinuousBranch.SourceSize(SrcPipeline);
+            }
 
             string SinkPipelineStr =
                 BuildSinkPipeline(Type, SrcPipeline, encoder.LaunchString, encoder.NeedsSystemMemory,
-                    continuousBranch);
+                    continuousBranch, pinnedResolution);
+
+            // 失敗したときに「何を組もうとしたのか」を残す。リンク失敗のメッセージは
+            // 要素名しか言わないので、これが無いと caps の書き方の誤りを机上で追えない。
+            _lastAttemptedSinkPipeline = SinkPipelineStr;
             const string SrcPipelineStr =
                 "appsrc format=time name=src ! h264parse ! mp4mux faststart=true name=mux ! filesink name=file";
 
@@ -879,16 +905,78 @@ public partial class EventRecorder : ObservableObject, IDisposable
             // 常時録画は sink パイプラインが PLAYING になってから起こす。
             // ここで投げると呼び出し側（InitializeCore）が枝なしで組み直す。
             if (continuousEncoder is not null)
+            {
                 StartContinuous(continuousEncoder);
+
+                // 効かせられなかった上書きは黙って捨てない。設定が無視されたことは
+                // 画面からは分からないので、状態と activity.log の両方へ出す。
+                if (droppedOverride is not null)
+                {
+                    ContinuousLastError = droppedOverride;
+                    Components.ActivityLog.Warn("recorder.continuous-init fail",
+                        $"recorder='{Name}' {droppedOverride}");
+                }
+            }
 
             IsInitialized = true;
         }
         catch
         {
+            // **破棄する前にグラフを残す。** Close() がパイプラインを捨てるので、
+            // ここを過ぎると「どこまで組めていたか」を見る手段が無くなる。
+            WriteFailureGraph();
             Close();
             throw;
         }
     }
+
+    /// <summary>
+    /// 初期化に失敗したときのパイプライングラフ（<c>.dot</c>）を書き出す。
+    ///
+    /// <para>
+    /// <b>書けるのは「パイプラインが出来たあとの失敗」だけ。</b> <c>ParseLaunch</c> の
+    /// リンク失敗ではパイプラインそのものが存在しないので <c>.dot</c> は原理的に作れない
+    /// ── その場合の手がかりは <c>gst.encoder candidate-failed</c> に添える
+    /// パイプライン文字列の方である（要素名しか言わないリンクエラーを、書いた caps と
+    /// 突き合わせられる）。
+    /// </para>
+    /// <para>
+    /// 保存先が設定されていなければ<b>何も書かずに返る</b>（<c>DebugLogEx</c> と同じ規約）。
+    /// 頼まれてもいないのに実行ファイルの隣へファイルを撒かないため。
+    /// </para>
+    /// </summary>
+    private void WriteFailureGraph()
+    {
+        string directory = DebugDumpDotDirectory;
+        if (string.IsNullOrEmpty(directory) || _sinkPipeline is not { } pipeline)
+            return;
+
+        try
+        {
+            string written = DebugLogEx.WriteDotFile(
+                pipeline, directory, $"{Name}.init-failed", System.DateTime.Now);
+            Components.ActivityLog.Info("gst.dot", $"recorder='{Name}' file='{written}'");
+        }
+        catch (Exception ex)
+        {
+            // 診断のための処理で初期化の失敗を上書きしない（元の例外を投げ直す側が本体）。
+            Components.ActivityLog.Error("gst.dot", $"recorder='{Name}' {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// 直近に組もうとした sink パイプライン文字列（失敗の診断用）。
+    /// <c>ParseLaunch</c> のリンクエラーは要素名しか言わないので、これが無いと
+    /// caps の書き方の誤り（<c>framerate=5</c> と <c>5/1</c> の違い等）を追えない。
+    /// </summary>
+    private string? _lastAttemptedSinkPipeline;
+
+    /// <summary>
+    /// <c>.dot</c> の保存先（<c>AppSettings.GstDebugDumpDotDir</c> の static ミラー）。
+    /// 空なら書かない。<c>GStreamer.GirCore</c> は <c>AppSettings</c> を知らない設計なので、
+    /// <see cref="OutputDirectory"/> と同じく static のミラーとして受け取る。
+    /// </summary>
+    public static string DebugDumpDotDirectory { get; set; } = "";
 
     /// <summary>
     /// 常時録画のエンコーダーを決める。
