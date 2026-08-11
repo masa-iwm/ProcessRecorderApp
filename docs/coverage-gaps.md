@@ -4,6 +4,23 @@
 
 ## 一覧
 
+### カメラ（`mfvideosrc`）のデバイス列挙
+
+`GstIntrospect.GetVideoSourceDevices` が実際にデバイスを1台でも読めること。**どの層も検出できない**:
+
+- L1 は GStreamer を初期化しない（`DebugThresholdTests` が「初期化前の挙動」を見ており、
+  どれか1つのテストが初期化すると順序依存で壊れる）。
+- 開発機と CI に**カメラが無い**。`gst_device_provider_get_devices` が空リストを返すので、
+  1台ぶんの処理（表示名・caps の読み出しと解放）が1行も走らない。
+
+実際にこれで2回落とした ── gir-core の `GList` 経路がヒープを壊す件（カメラのある機械でだけ
+再現）と、`gst_device_provider_factory_get_by_name` の戻り値を factory と取り違えて
+**選択肢が黙って空になる**件。どちらも緑のまま出荷された。
+
+ここを触るときは、**カメラのある機械で SrcPipeline 編集画面を開き、`mfvideosrc` の
+device-name / 解像度 / フレームレートの選択肢が実際に出ることを目で確かめる**こと。
+`debug.log` の `video devices: count=` が件数を出すので、空なら 0 と分かる。
+
 ### 録画エンジンの寿命（App 所有）
 
 録画エンジン（`Controller`＋全 `EventRecorder`＋常時稼働 sink パイプライン）はプロセス寿命で `App` が所有し、ページはそれを受け取ってバインドするだけ、という構造の退行。2 件の注入をいずれもどの層も検出できない ── 現在のアーキテクチャではプロセス生存中にページ破棄が起きないため、所有関係を壊しても外から観測できる差が出ない。この構造（`App.xaml.cs` の起動時初期化、`MainPageViewModel` が破棄しないこと）を変えるときは、発行物に対する手動確認で録画の開始・停止が通ることを確かめること。

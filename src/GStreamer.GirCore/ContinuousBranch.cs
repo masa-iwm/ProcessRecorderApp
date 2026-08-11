@@ -41,7 +41,21 @@ public static class ContinuousBranch
     public const string AppSinkName = "cont";
 
     /// <summary>フレームレートを変えるために必要な要素（<b>同梱ランタイムには入っていない</b>）。</summary>
+    /// <summary>
+    /// フレームレート変換の<b>要素名</b>。<c>ElementFactory.Find</c> と
+    /// 同梱台帳の検査に使うので、<b>プロパティを付けてはいけない</b>
+    /// ── 付けると「この GStreamer には videorate drop-only=true が無い」と
+    /// 誤って報告し、常時録画が丸ごと無効になる。パイプラインへ出す文字列は
+    /// <see cref="VideorateElement"/> の方。
+    /// </summary>
     public const string VideorateFactory = "videorate";
+
+    /// <summary>
+    /// 常時枝へ出すフレームレート変換。<b><c>drop-only=true</c> は外せない</b> ──
+    /// 既定の <c>videorate</c> は次のフレームが来るまで前のバッファを持ち続けるので、
+    /// tee の手前のプールのバッファを掴みっぱなしにして<b>本線の録画を落とす</b>。
+    /// </summary>
+    public const string VideorateElement = VideorateFactory + " drop-only=true";
 
     /// <summary>
     /// <b>常時録画の枝の <c>queue</c>。<c>leaky=downstream</c> は意図的。</b>
@@ -241,8 +255,26 @@ public static class ContinuousBranch
         // D3D12 メモリのまま通る。実測で確認済み）。**メモリ機能を書き落とさないこと** ──
         // D3d12 経路で video/x-raw と書くとシステムメモリを要求してしまい、
         // 上流に d3d12download が無いのでリンクに失敗する。
+        //
+        // **drop-only=true は外せない。** 既定（false）の videorate は「次のフレームが来るまで
+        // 前のバッファを持ち続ける」ので、常時枝が tee の手前のプールのバッファを 1 枚
+        // 掴みっぱなしになり、**本線の録画のフレームレートが落ちる**。
+        // 実測（実機・カメラ 1920x1080@30、20 秒窓の実効 fps）:
+        //
+        //   常時録画なし                        29.9fps
+        //   常時録画あり・フレームレート上書き無し 29.9fps
+        //   常時録画あり・5fps（drop-only 無し）  11.9fps  ← 本線が落ちる
+        //
+        // 上流の実装がそのまま根拠で、drop-only のときだけ
+        // `gst_buffer_replace (&videorate->prevbuf, NULL)`（"No need to keep the buffer
+        // around for longer"）を通る。**合成ソース（videotestsrc / d3d12testsrc）では
+        // 再現しない** ── 実カメラでのみ出るので、この機械の測定では捕まえられない。
+        //
+        // 落として困らない: 常時録画は必ず「下げる」方向にしか使わず、
+        // ソースが止まったときに複製フレームを書庫へ入れる方が困る。
         if (rate is not null)
-            sb.Append("videorate ! ").Append(memory).Append(", framerate=").Append(rate).Append(" ! ");
+            sb.Append(VideorateElement).Append(" ! ").Append(memory)
+              .Append(", framerate=").Append(rate).Append(" ! ");
 
         if (d3d12)
         {

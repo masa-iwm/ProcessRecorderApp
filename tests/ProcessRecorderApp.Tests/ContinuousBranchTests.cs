@@ -260,6 +260,24 @@ public class ContinuousBranchTests
     }
 
     /// <summary>
+    /// <b><c>VideorateFactory</c> は要素名であってパイプライン片ではない。</b>
+    /// ここに <c>drop-only=true</c> のようなプロパティを混ぜると
+    /// <c>ElementFactory.Find</c> が必ず失敗し、**同梱ランタイムに videorate が在っても**
+    /// 「この GStreamer には無い」と誤って報告して<b>常時録画が丸ごと無効になる</b>
+    /// （実際に一度そうした）。パイプラインへ出す方には drop-only が要る ──
+    /// 既定の videorate は前のバッファを持ち続け、tee の手前のプールを掴んで
+    /// 本線の録画のフレームレートを落とすため。
+    /// </summary>
+    [Fact]
+    public void TheVideorateFactoryName_IsAnElementName_AndTheEmittedElementKeepsDropOnly()
+    {
+        Assert.DoesNotContain(" ", ContinuousBranch.VideorateFactory);
+        Assert.DoesNotContain("=", ContinuousBranch.VideorateFactory);
+        Assert.StartsWith(ContinuousBranch.VideorateFactory + " ", ContinuousBranch.VideorateElement);
+        Assert.Contains("drop-only=true", ContinuousBranch.VideorateElement);
+    }
+
+    /// <summary>
     /// <b>D3d12 経路の framerate capsfilter からメモリ機能を落とさない。</b>
     /// <c>video/x-raw, framerate=X</c> と書くとシステムメモリを要求してしまい、
     /// 上流に <c>d3d12download</c> が無いのでリンクに失敗して初期化ごと落ちる。
@@ -270,7 +288,7 @@ public class ContinuousBranchTests
         string branch = Build(EventRecordingType.D3d12, Encoder, false, "5/1", "");
 
         Assert.True(ContinuousBranch.RequiresVideorate("5/1"));
-        Assert.Contains("videorate ! video/x-raw(memory:D3D12Memory), framerate=5/1", branch);
+        Assert.Contains("videorate drop-only=true ! video/x-raw(memory:D3D12Memory), framerate=5/1", branch);
     }
 
     [Fact]
@@ -278,7 +296,7 @@ public class ContinuousBranchTests
     {
         string branch = Build(EventRecordingType.System, Encoder, false, "5/1", "");
 
-        Assert.Contains("videorate ! video/x-raw, framerate=5/1", branch);
+        Assert.Contains("videorate drop-only=true ! video/x-raw, framerate=5/1", branch);
         Assert.DoesNotContain("D3D12Memory", branch);
     }
 

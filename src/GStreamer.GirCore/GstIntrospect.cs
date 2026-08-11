@@ -284,14 +284,15 @@ public static partial class GstIntrospect
         // Media Foundation のデバイスプロバイダのみを使う。
         // (DeviceMonitor は ksvideosrc など他プロバイダも列挙し、同一カメラが重複するため。
         //  mfdeviceprovider を直接使うことで mfvideosrc の device-index 並びとも一致する)
-        IntPtr factory = gst_device_provider_factory_get_by_name("mfdeviceprovider");
-        if (factory == IntPtr.Zero)
-            return result;
-
-        IntPtr provider = gst_device_provider_factory_get(factory);
-        gst_object_unref(factory);
+        // **gst_device_provider_factory_get_by_name が返すのは GstDeviceProvider であって
+        // factory ではない**（transfer full）。factory と取り違えて
+        // gst_device_provider_factory_get へ渡すと NULL が返り、**選択肢が黙って空になる**。
+        IntPtr provider = gst_device_provider_factory_get_by_name("mfdeviceprovider");
         if (provider == IntPtr.Zero)
+        {
+            DebugLogEx.Log(DebugLevel.Warning, "mfdeviceprovider is not available; no camera choices");
             return result;
+        }
 
         try
         {
@@ -334,6 +335,7 @@ public static partial class GstIntrospect
             gst_object_unref(provider);
         }
 
+        DebugLogEx.Log(DebugLevel.Info, $"video devices: count={result.Count}");
         return result;
     }
 
@@ -407,9 +409,6 @@ public static partial class GstIntrospect
 
     [LibraryImport(ImportResolver.Library, StringMarshalling = StringMarshalling.Utf8)]
     private static partial IntPtr gst_device_provider_factory_get_by_name(string factoryname);
-
-    [LibraryImport(ImportResolver.Library)]
-    private static partial IntPtr gst_device_provider_factory_get(IntPtr factory);
 
     [LibraryImport(ImportResolver.Library)]
     [return: MarshalAs(UnmanagedType.Bool)]
