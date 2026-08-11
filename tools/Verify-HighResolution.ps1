@@ -566,10 +566,16 @@ if (-not [string]::IsNullOrEmpty($CameraName)) {
         ContinuousEnc = $reportedEnc
         Note = 'the reported FAILING case -- one recorder only'
     })
+    # **この行だけ ContinuousResolution を付けない。** 常時録画の設定は全レコーダー共通で、
+    # 2 台目の画面キャプチャは caps に width/height を持たない ── 製品は仕様どおり
+    # 上書きを捨てて recorder.continuous-init fail を出すので（src/README.md）、
+    # このハーネスの合格条件（fail が 0 件）に必ず引っかかる。
+    # この行が見たいのは拡縮ではなく**同時 4 セッション**なので、上書きは外す。
+    # 拡縮を見る行は上の 1 台構成（caps を固定したカメラ）が受け持つ。
     $cases.Add([pscustomobject]@{
         Name = "fps3: camera + screen capture (TWO recorders), both continuous 5fps"
         Type = 'D3d12'; Src = $camSrc; Enc = $reportedEnc; Buffer = 3000; Seconds = $camSeconds
-        Continuous = $true; ContinuousFramerate = '5/1'; ContinuousResolution = '960x540'
+        Continuous = $true; ContinuousFramerate = '5/1'
         ContinuousEnc = $reportedEnc
         SecondSrc = $reportedSrc; SecondType = 'D3d12'
         Note = 'the full reported setup -- four encoder sessions at once (event x2 + continuous x2). event fps is R1 (the camera)'
