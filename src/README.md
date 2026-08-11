@@ -233,8 +233,12 @@ tee name=t
 > カーソル形状を組み立てる `PtrInfo::BuildTexture` の中で `abort()` に至る。
 > **MinGW 版の GStreamer で起き、MSVC 版では起きない**（`gst-launch` の1行で再現。
 > アプリは関与していない）。**アプリ側では捕捉できない。** 既定の `false` のままにすること。
+> **同梱ランタイム（`gstreamer-runtime-v1.28.6-r2` 以降）にはこの修正を当てた
+> `libgstd3d12.dll` を積んでいる**が、**非同梱配布は利用者の GStreamer をそのまま使うので
+> 従来どおり**（修正は上流のリリースにはまだ入っていない）。
 > 詳細と、MSVC 版へ替えても「隠れるだけ」でありうる理由は
-> [docs/environment-facts.md](../docs/environment-facts.md)。
+> [docs/environment-facts.md](../docs/environment-facts.md)、
+> 改変版の中身は [THIRD-PARTY-NOTICES.md](../THIRD-PARTY-NOTICES.md)。
 
 #### フレームレートの上書きにも「上流の固定」が要る
 

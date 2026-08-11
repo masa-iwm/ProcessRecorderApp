@@ -1,0 +1,40 @@
+From b508b0101499ded0aaf8ebc0e7d0520e046b2e71 Mon Sep 17 00:00:00 2001
+From: masa-iwm <37230118+masa-iwm@users.noreply.github.com>
+Date: Tue, 11 Aug 2026 17:03:45 +0900
+Subject: [PATCH] d3d12screencapturesrc: Fix out-of-bounds access with
+ monochrome cursors
+
+Fixed an issue where attempting to capture monochrome cursors,
+such as high-contrast cursors, resulted in an out-of-bounds access.
+The code for d3d11screencapturesrc was correct,
+and the access range has now been aligned with it.
+
+Fixes: https://gitlab.freedesktop.org/gstreamer/gstreamer/-/work_items/5259
+---
+ subprojects/gst-plugins-bad/sys/d3d12/gstd3d12dxgicapture.cpp | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/subprojects/gst-plugins-bad/sys/d3d12/gstd3d12dxgicapture.cpp b/subprojects/gst-plugins-bad/sys/d3d12/gstd3d12dxgicapture.cpp
+index fa9ad5ea9c8..9260c394c76 100644
+--- a/subprojects/gst-plugins-bad/sys/d3d12/gstd3d12dxgicapture.cpp
++++ b/subprojects/gst-plugins-bad/sys/d3d12/gstd3d12dxgicapture.cpp
+@@ -256,6 +256,7 @@ struct PtrInfo
+     stride_ = width_ * 4;
+     UINT pstride = 4;
+     auto size = height_ * stride_;
++    auto mask_offset = height_ * shape_info.Pitch;
+     texture_.resize (size);
+     xor_texture_.resize (size);
+ 
+@@ -267,7 +268,7 @@ struct PtrInfo
+       for (UINT col = 0; col < width_; col++) {
+         auto src_pos = (row * shape_info.Pitch) + (col / 8);
+         auto and_mask = (shape_buffer[src_pos] >> (7 - (col % 8))) & 0x1;
+-        auto xor_mask = (shape_buffer[src_pos + size] >> (7 - (col % 8))) & 0x1;
++        auto xor_mask = (shape_buffer[src_pos + mask_offset] >> (7 - (col % 8))) & 0x1;
+         auto dst_pos = (row * stride_) + (col * pstride);
+ 
+         if (and_mask) {
+-- 
+GitLab
+

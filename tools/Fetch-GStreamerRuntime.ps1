@@ -10,7 +10,13 @@
     docs/runtime-update.md.
 
     What the bundled release ships is the official GStreamer 1.28.6 MinGW runtime
-    (LGPL-only selection) trimmed to what this app can actually build: 46 files, 49.8 MB.
+    (LGPL-only selection) trimmed to what this app can actually build: 46 files, 49.9 MB.
+
+    One of those 46 files is NOT an upstream binary. libgstd3d12.dll is built from the
+    1.28.6 sources plus patches/gst-plugins-bad-1.28.6-d3d12-monochrome-cursor.patch,
+    which fixes an out-of-bounds read that aborts the process when d3d12screencapturesrc
+    composes a monochrome cursor. THIRD-PARTY-NOTICES.md carries the provenance.
+
     It has no x264 and no libav, so a bundled build does not carry GPL plugins;
     Type=System falls through to mfh264enc. Hardware encoders (d3d11, d3d12, nvcodec,
     amfcodec, qsv, mediafoundation) are present.
@@ -46,8 +52,8 @@
     private repository (e.g. a private fork) need an authenticated request and return 404
     otherwise (verified). In that case fetch the asset yourself and pass -ArchivePath:
 
-        gh release download gstreamer-runtime-v1.28.6 -p gstreamer-runtime-win-x64-v1.28.6.zip
-        tools/Fetch-GStreamerRuntime.ps1 -ArchivePath .\gstreamer-runtime-win-x64-v1.28.6.zip
+        gh release download gstreamer-runtime-v1.28.6-r2 -p gstreamer-runtime-win-x64-v1.28.6-r2.zip
+        tools/Fetch-GStreamerRuntime.ps1 -ArchivePath .\gstreamer-runtime-win-x64-v1.28.6-r2.zip
 
     That is exactly what .github/workflows/release.yml does, so the workflow works either way.
 
@@ -64,8 +70,8 @@
 [CmdletBinding()]
 param(
     [string] $ArchivePath,
-    [string] $Uri = 'https://github.com/masa-iwm/ProcessRecorderApp/releases/download/gstreamer-runtime-v1.28.6/gstreamer-runtime-win-x64-v1.28.6.zip',
-    [string] $Sha256 = '1C939215602ECFA2FC0BCA73F327EE9938BF6480462F02AEB4081D3D2F00F2F8',
+    [string] $Uri = 'https://github.com/masa-iwm/ProcessRecorderApp/releases/download/gstreamer-runtime-v1.28.6-r2/gstreamer-runtime-win-x64-v1.28.6-r2.zip',
+    [string] $Sha256 = '6FA7D925A1F965AE43EDE125F89F3467156D3B79BE1E22F2FBA374E8CB2CEEE5',
     [string] $Destination
 )
 

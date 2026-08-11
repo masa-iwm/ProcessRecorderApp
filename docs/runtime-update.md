@@ -47,13 +47,18 @@
 4. zip を作る ── ルートは `win-x64/`、**エントリ区切りは `/`**（PowerShell 5.1 の
    `ZipFile.CreateFromDirectory` は `\` で書き、規格違反なので読み替えが黙って外れる）。
    SHA256 を採取する。
-5. Release を作ってアセットを上げる:
+5. 上流のバイナリを差し替えた場合（パッチを当てた自前ビルドなど）は、
+   **パッチを `patches/` へ置き**、`THIRD-PARTY-NOTICES.md` に改変の事実・対応する
+   ソース・ツールチェーン・公式ビルドとの同一性の実測を書く（LGPL の
+   「対応するソースを示す」義務は、改変した側では **上流の tarball だけでは満たない**）。
+   差し替えたファイルは **import ・閉包・要素一覧を公式ビルドと突き合わせる**。
+6. Release を作ってアセットを上げる:
    `gh release create gstreamer-runtime-v<版> <zip> --target <フル SHA> --prerelease`
    （`--target` に短縮 SHA を渡すと HTTP 422 になる。フル SHA かブランチ名を渡す）。
-6. 既定値を**2箇所、対で**更新する:
+7. 既定値を**2箇所、対で**更新する:
    - `tools/Fetch-GStreamerRuntime.ps1` ── `-Uri` と `-Sha256` の既定値
    - `.github/workflows/release.yml` ── `GSTREAMER_RUNTIME_TAG` / `GSTREAMER_RUNTIME_ASSET`
-7. **唯一のゲート**（この整合を見る自動テストは無い）:
+8. **唯一のゲート**（この整合を見る自動テストは無い）:
    `gh release download <新タグ>` で落とし、`tools/Fetch-GStreamerRuntime.ps1
    -ArchivePath <zip>` を **`-Sha256` を指定せずに**通す（＝`release.yml` と同じ呼び方）。
    既定値と実物がずれていると release の fetch がハッシュ不一致で落ちる。

@@ -16,3 +16,7 @@ licenses/third-party/** -text
 # 上と同じ「手元は緑・CI だけ赤」になる。自作の index.html / terminal.js は
 # この配下に置かないので、フォルダー単位の1規則で済む。
 src/ProcessRecorderApp/Assets/Terminal/vendor/** -text
+
+# 同梱ランタイムへ当てたパッチも原文そのもの。改行を書き換えると
+# `git apply` が通らなくなり、「対応するソースを示す」という目的そのものが損なわれる。
+patches/** -text

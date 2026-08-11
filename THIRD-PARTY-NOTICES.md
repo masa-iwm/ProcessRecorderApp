@@ -37,13 +37,15 @@
 ## 由来（provenance）
 
 公式インストーラ **`gstreamer-1.0-mingw-x86_64-1.28.6.exe`** の
-**Runtime / LGPL-only** 構成でインストールしたバイナリを、**改変せずに**、
+**Runtime / LGPL-only** 構成でインストールしたバイナリを、
 **このアプリが実際に構築しうる要素だけ**へ絞ったものです。
+**46 ファイル中 45 ファイルは上流のバイナリそのまま**で、残る 1 件
+`libgstd3d12.dll` だけが**改変版**です（下記「改変している唯一のファイル」）。
 
 | | ファイル数 | サイズ | zip |
 |---|---:|---:|---:|
 | インストール直後 | 349 | 254MB | 79.5MB |
-| **同梱物（現在）** | **46** | **49.8MB** | **16.0MB** |
+| **同梱物（現在）** | **46** | **49.9MB** | **16.0MB** |
 
 **一覧は、下記の種から辿った推移閉包そのものです**（それ以外は1件も入っていません）。
 このアプリが読み込まない `webrtc` / `rtsp` / `rtspserver` / `sctp` / `mse` / `play` /
@@ -53,6 +55,36 @@
 `mpeg2enc` などは1つも入っていない）。インストーラの LGPL-only 選択と、
 削減後の実測の両方で確認しています。**`libstdc++` / `libgcc` は GPL-3.0 ですが
 例外条項が付いています** ── 下記「1.」を参照。
+
+### 改変している唯一のファイル: `libgstd3d12.dll`
+
+同梱の `libgstd3d12.dll` は**上流のバイナリではありません**。GStreamer 1.28.6 の
+`gst-plugins-bad` に修正を1つ当てて自前でビルドしたものです。
+
+- **修正内容**: `d3d12screencapturesrc` がモノクロ（ハイコントラスト）カーソルを取り込む
+  ときの範囲外読み出し。XOR プレーンの開始位置に**出力 RGBA バッファの大きさ**を足して
+  いたのを、入力側の `shape_info.Pitch * height_` に直すもの（`gstd3d12dxgicapture.cpp`
+  の 2 行）。`d3d11screencapturesrc` 側は元から正しく、そちらへ合わせた形です。
+- **対応するソース**: 上流 1.28.6 のソース（下記「版とソースの入手先」の gst-plugins-bad）
+  ＋ [`patches/gst-plugins-bad-1.28.6-d3d12-monochrome-cursor.patch`](patches/gst-plugins-bad-1.28.6-d3d12-monochrome-cursor.patch)。
+  同じ変更は fork の
+  <https://gitlab.freedesktop.org/masa-iwm/gstreamer/-/commit/b508b0101499ded0aaf8ebc0e7d0520e046b2e71>
+  にもあります。上流の課題は
+  <https://gitlab.freedesktop.org/gstreamer/gstreamer/-/work_items/5259> で、
+  **上流のリリースにはまだ入っていません**。
+- **ビルドに使ったツールチェーン**: MinGW-W64 GCC 14.1.0（ucrt / posix / seh）。
+  cerbero の 14.2.0 とは別物です（バイナリの `GCC:` 文字列で確認）。同梱の
+  `libstdc++-6.dll` は 14.2.0 で、より新しい側なので読み込めます。
+- **SHA256**: `bf8c5a08e9756c056d80566eef23ff54210aca4e00882db9423c8b5870c3a6ed`
+- **公式ビルドとの同一性（実測）**: PE のインポートは1件も違いません。この木の閉包は
+  46 ファイル・removable 0、まっさらなレジストリでの要素は 268 件で公式ビルドの木と
+  完全一致、blacklist は 0 件。`gst-inspect-1.0 d3d12` の `Version` は 1.28.6、
+  `License` は LGPL、`Source module` は gst-plugins-bad です。
+- **確かめていないこと**: **クラッシュそのものの解消は、この開発機では確認できません**
+  （WARP ＋ RDP でモノクロカーソルの経路に入らない）。当てた修正は
+  [`docs/environment-facts.md`](docs/environment-facts.md) に書いた原因分析と
+  同じ箇所・同じ値です。取り込みが動くこと（`show-cursor=true` で 60 フレーム、終了コード 0）
+  だけは同梱する木そのもので確認しています。
 
 ### 一覧の作り方（再現手順）
 
@@ -99,7 +131,7 @@
 | `typefindfunctions` | gst-plugins-base | 型判定 |
 | `isomp4` | gst-plugins-good | `mp4mux` |
 | `videoparsersbad` | gst-plugins-bad | `h264parse` |
-| `d3d12` | gst-plugins-bad | 画面キャプチャ / 変換 / プレビュー / D3D12 エンコーダー |
+| `d3d12`（**改変版**） | gst-plugins-bad | 画面キャプチャ / 変換 / プレビュー / D3D12 エンコーダー |
 | `d3d11` | gst-plugins-bad | D3D11 経路のエンコーダー |
 | `mediafoundation` | gst-plugins-bad | カメラ入力・Media Foundation エンコーダー |
 | `nvcodec` | gst-plugins-bad | NVIDIA NVENC |
@@ -187,6 +219,11 @@ LGPL は「対応するソースの入手先を示すこと」を求めます。
 **下記の版そのもの**です（版は cerbero のレシピと、バイナリに埋め込まれた
 版文字列の両方で確認しました）。
 
+> **`libgstd3d12.dll` だけは「下記の版そのもの」ではありません。**
+> gst-plugins-bad 1.28.6 のソースに
+> [`patches/gst-plugins-bad-1.28.6-d3d12-monochrome-cursor.patch`](patches/gst-plugins-bad-1.28.6-d3d12-monochrome-cursor.patch)
+> を当てたものが対応するソースです（上記「改変している唯一のファイル」）。
+
 | プロジェクト | 版 | ソース（版を固定した実体） |
 |---|---|---|
 | GStreamer core | 1.28.6 | <https://gstreamer.freedesktop.org/src/gstreamer/gstreamer-1.28.6.tar.xz> |
@@ -253,10 +290,12 @@ Cisco のロイヤリティフリー枠は「**Cisco が公開しているバイ
 
 ### 3. LGPL の義務
 
-同梱物は **改変せず動的リンク（DLL）** しています。したがって
+同梱物は**動的リンク（DLL）**で、**46 件中 45 件は改変していません**
+（`libgstd3d12.dll` だけが改変版 ── 上記「改変している唯一のファイル」）。したがって
 
 - 対応するソースの入手先を示すこと ── **上記「版とソースの入手先」に版を固定した
-  URL で記載**
+  URL で記載**。改変した `libgstd3d12.dll` は、そのソースと
+  `patches/` のパッチを合わせたものが対応するソース
 - **利用者が DLL を差し替えられる状態を保つこと** ── 現状そうなっています。
   `GStreamerRuntimeLocator` は PATH・環境変数・レジストリ・MSYS2 を同梱物より
   **優先**するので、利用者は自分のビルドに差し替えられます
