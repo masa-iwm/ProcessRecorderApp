@@ -351,7 +351,7 @@ public sealed partial class PipelineBuilderViewModel : ObservableObject
                 case "monitor-resolution":
                 {
                     // **選ばれている monitor-index のモニターの大きさだけを出す。**
-                    // 並びは d3d12screencapturesrc の monitor-index と同じ（DXGI 順）。
+                    // 並びは d3d12screencapturesrc / d3d11screencapturesrc の monitor-index と同じ（DXGI 順）。
                     // 番号が範囲外・大きさが読めないときは選択肢を出さず自由入力へ倒す
                     // ── 別のモニターの値を並べても取り違えるだけで害しかない。
                     var all = MonitorResolutions;

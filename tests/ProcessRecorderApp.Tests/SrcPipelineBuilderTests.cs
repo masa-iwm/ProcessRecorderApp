@@ -21,11 +21,35 @@ public class SrcPipelineBuilderTests
 
     [Theory]
     [InlineData("d3d12screencapturesrc")]
+    [InlineData("d3d11screencapturesrc")]
     [InlineData("mfvideosrc")]
     [InlineData("d3d12testsrc")]
     [InlineData("videotestsrc")]
     public void Sources_ContainsTheSupportedElement(string elementName)
         => Assert.NotNull(SrcPipelineBuilder.FindSource(elementName));
+
+    /// <summary>
+    /// D3D11 版の画面キャプチャは <c>memory:D3D11Memory</c> を名乗ること。
+    ///
+    /// <para>
+    /// このメモリ機能は <b>録画種別の両方で通ることを実測して選んでいる</b> ──
+    /// <c>Type=D3d12</c> は <c>d3d12upload</c> が D3D11Memory を受け、<c>Type=System</c> は
+    /// D3D11 のメモリが CPU からマップできるので <c>videoconvert</c> が受ける。
+    /// ここをシステムメモリ（機能なし）へ変えると、画面全体を毎フレーム
+    /// CPU へ読み戻す経路に黙って変わるので、値を固定しておく。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void D3d11ScreenCapture_UsesD3d11Memory()
+    {
+        var def = SrcPipelineBuilder.FindSource("d3d11screencapturesrc");
+
+        Assert.NotNull(def);
+        Assert.Equal("memory:D3D11Memory", def.MemoryFeature);
+        Assert.Contains(def.Properties, p => p.Name == "show-cursor");
+        Assert.Contains(def.Properties, p => p.Name == "monitor-index" && p.DynamicKey == "monitor-index");
+        Assert.Contains(def.CapsFields, c => c.Name == "resolution" && c.DynamicKey == "monitor-resolution");
+    }
 
     [Fact]
     public void FindSource_UnknownElement_ReturnsNull()
@@ -272,11 +296,12 @@ public class SrcPipelineBuilderTests
     // ---- Parse → Assemble ラウンドトリップ ----
 
     /// <summary>
-    /// 4 ソースそれぞれについて、既定値どおりに組んだ文字列が
+    /// 5 ソースそれぞれについて、既定値どおりに組んだ文字列が
     /// Parse → Assemble を通しても同一文字列に戻ることを確認する。
     /// </summary>
     [Theory]
     [InlineData("d3d12screencapturesrc monitor-index=0 show-cursor=false ! video/x-raw(memory:D3D12Memory), framerate=15/1")]
+    [InlineData("d3d11screencapturesrc monitor-index=0 show-cursor=true ! video/x-raw(memory:D3D11Memory), width=3840, height=2160, framerate=15/1")]
     [InlineData("mfvideosrc device-index=0 ! video/x-raw, format=NV12, width=1920, height=1080, framerate=15/1")]
     [InlineData("d3d12testsrc is-live=true do-timestamp=true pattern=smpte ! video/x-raw(memory:D3D12Memory), format=NV12, width=1280, height=720, framerate=15/1")]
     [InlineData("videotestsrc is-live=true do-timestamp=true pattern=smpte ! video/x-raw, format=I420, width=1280, height=720, framerate=15/1")]

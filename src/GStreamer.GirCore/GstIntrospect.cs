@@ -46,7 +46,9 @@ public static partial class GstIntrospect
 
     /// <summary>
     /// 接続されているモニターの<b>物理ピクセル</b>での大きさ（例: <c>3840x2160</c>）を、
-    /// <c>d3d12screencapturesrc</c> の <c>monitor-index</c> と<b>同じ並び</b>で返す。
+    /// <c>d3d12screencapturesrc</c> の <c>monitor-index</c> と<b>同じ並び</b>で返す
+    /// （<c>d3d11screencapturesrc</c> も同じ並び ── 上流の
+    /// <c>gst_d3d11_screen_capture_find_nth_monitor</c> は D3D12 側と同じ走査である）。
     ///
     /// <para>
     /// <b>並びは DXGI の <c>EnumAdapters1</c> × <c>EnumOutputs</c> を平坦化した順</b>である

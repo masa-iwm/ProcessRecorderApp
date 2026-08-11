@@ -28,7 +28,7 @@ CI は2つのワークフローに分かれる。`build.yml` は push のたび�
 トリガーは `v*` タグの push と `workflow_dispatch`。`build.yml` と分けるのは、同梱用の GStreamer ランタイムを毎回取得するため push のたびに走らせる価値が無いから。**発行は Native AOT（`win-x64-aot`。`build.yml` の AOT ジョブと同じ形態）で、配布するのは AOT 版のみ** ── selfcontained(ReadyToRun) は CI の検証用で配布しない。**同梱・非同梱の2つの zip** を作る:
 
 - 非同梱（`ProcessRecorderApp-<tag>-win-x64.zip`）── 利用者側に GStreamer(MinGW) か MSYS2(UCRT64) が要る。軽い。
-- 同梱（`ProcessRecorderApp-<tag>-win-x64-gstreamer.zip`）── 削減済み runtimes（46 ファイル・49.8MB）を同梱する。x264 と libav を含まないので GPL を持ち込まず、openh264 も特許の都合で含まない。同梱構成の `Type=System` は `mfh264enc` に落ちる。
+- 同梱（`ProcessRecorderApp-<tag>-win-x64-gstreamer.zip`）── 削減済み runtimes（46 ファイル・49.9MB）を同梱する。x264 と libav を含まないので GPL を持ち込まず、openh264 も特許の都合で含まない。同梱構成の `Type=System` は `mfh264enc` に落ちる。
 
 **このジョブは MSYS2 を入れない。** そのため同梱物がランタイム解決の唯一の候補になり、`gst.runtime selected=bundled` を実際に踏める唯一の場所である ── 開発機や `build.yml` では、解決順（元の PATH → 環境変数 → レジストリ → MSYS2 → 同梱物）の都合で同梱物が必ず負けるため、ここでしか検証できない。流すのはエンコーダーに依存しないスモークだけ ── フィルタ `FullyQualifiedName~SmokeTests|FullyQualifiedName~RuntimeResolutionTests` は部分一致なので、実際に走るのは `SmokeTests`・`GuiSmokeTests`・`RuntimeResolutionTests` の 3 クラス。録画系 E2E が流れないのは、ハーネスが `SettingsFile.DefaultEncoder = "x264enc"` を固定しており同梱物に x264 が無いため（詳細は docs/coverage-gaps.md）。
 

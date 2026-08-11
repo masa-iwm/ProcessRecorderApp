@@ -236,6 +236,10 @@ tee name=t
 > **同梱ランタイム（`gstreamer-runtime-v1.28.6-r2` 以降）にはこの修正を当てた
 > `libgstd3d12.dll` を積んでいる**が、**非同梱配布は利用者の GStreamer をそのまま使うので
 > 従来どおり**（修正は上流のリリースにはまだ入っていない）。
+> **カーソルを写したいなら `d3d11screencapturesrc` を選べる**
+> （パイプラインの編集ダイアログのソース一覧にある）。**上流の D3D11 側は
+> 同じ処理が元から正しい**。ただしこの要素は**拡縮できない** ──
+> caps でモニターの実寸以外を要求すると `Internal data stream error` になる。
 > 詳細と、MSVC 版へ替えても「隠れるだけ」でありうる理由は
 > [docs/environment-facts.md](../docs/environment-facts.md)、
 > 改変版の中身は [THIRD-PARTY-NOTICES.md](../THIRD-PARTY-NOTICES.md)。
@@ -421,7 +425,7 @@ GOP は固定値とし、想定される最低フレームレート（15fps）�
 何に実機が要るか（大半は WARP で足りる）・スクリプトの使い方・レポートの読み方・
 改造時の制約は [docs/gpu-verification.md](../docs/gpu-verification.md)。
 映像ソース（`SrcPipeline`）は GStreamer のパイプライン文字列そのものを保持しており、画面
-キャプチャ(`d3d12screencapturesrc`)・カメラ(`mfvideosrc`)・テストパターン
+キャプチャ(`d3d12screencapturesrc` / `d3d11screencapturesrc`)・カメラ(`mfvideosrc`)・テストパターン
 (`d3d12testsrc`/`videotestsrc`)などを組み立てて指定する（UI 上は Pipeline Builder ダイアログ、
 `ProcessRecorderApp/Views/PipelineBuilderDialog.xaml` 経由。ソースの候補・プロパティ定義は
 `GStreamer.GirCore/SrcPipelineBuilder.cs`、カメラ/モニタの実機列挙は `GstIntrospect.cs`）。

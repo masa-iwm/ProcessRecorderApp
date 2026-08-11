@@ -148,6 +148,40 @@ public static partial class SrcPipelineBuilder
             ],
             memoryFeature: "memory:D3D12Memory"),
 
+        // 画面キャプチャ(D3D11): 上の D3D12 版と同じ形で、メモリ機能だけが D3D11Memory。
+        // **D3D12 版は show-cursor=true でプロセスごと落ちうる**（上流の欠陥。同梱ランタイムは
+        // 直したビルドを積むが、非同梱配布では利用者の GStreamer 次第 ──
+        // docs/environment-facts.md）。**上流の D3D11 側は同じ処理が元から正しい**ので、
+        // カーソルを写したい構成の逃げ道として置いてある。
+        //
+        // **memory:D3D11Memory は Type=D3d12 でも Type=System でも通る**（実測）──
+        // 前者は d3d12upload が D3D11Memory を受け、後者は D3D11 のメモリが CPU から
+        // マップできるので videoconvert が受ける。したがって D3D12 版と違い、
+        // 種別との組み合わせで初期化に失敗する形にはならない。
+        //
+        // **この要素は拡縮できない。** caps でモニターの実寸以外を要求すると
+        // `Internal data stream error` になり 1 フレームも流れない（実測: 3840x2160 の画面へ
+        // 1024x768 を要求）。解像度の選択肢は GstIntrospect.GetMonitorResolutions が返す
+        // 実寸そのものなので通る ── **任意の大きさを名乗る d3d12screencapturesrc とはここが違う**。
+        // monitor-index の並びは D3D12 版と同一（上流 gst_d3d11_screen_capture_find_nth_monitor は
+        // EnumAdapters1 × EnumOutputs の平坦化で、D3D12 側と同じ走査）。
+        new SrcElementDef(
+            elementName: "d3d11screencapturesrc",
+            displayName: Localization.GetString("Resources/Src_ScreenCaptureD3d11_DisplayName"),
+            properties:
+            [
+                new SrcPropertyDef("monitor-index", SrcPropertyKind.Int, "0",
+                    description: Localization.GetString("Resources/Src_MonitorIndex_Desc"), dynamicKey: "monitor-index"),
+                new SrcPropertyDef("show-cursor", SrcPropertyKind.Bool, "false",
+                    description: Localization.GetString("Resources/Src_ShowCursor_Desc")),
+            ],
+            capsFields:
+            [
+                new CapsFieldDef("resolution", isResolution: true, defaultValue: "", dynamicKey: "monitor-resolution"),
+                new CapsFieldDef("framerate", defaultValue: "15/1"),
+            ],
+            memoryFeature: "memory:D3D11Memory"),
+
         // カメラ: format/解像度/framerate はデバイス caps から動的取得する。
         new SrcElementDef(
             elementName: "mfvideosrc",

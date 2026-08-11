@@ -454,6 +454,9 @@
   <data name="Src_ScreenCapture_DisplayName" xml:space="preserve">
     <value>画面キャプチャ (d3d12screencapturesrc)</value>
   </data>
+  <data name="Src_ScreenCaptureD3d11_DisplayName" xml:space="preserve">
+    <value>画面キャプチャ (d3d11screencapturesrc)</value>
+  </data>
   <data name="Src_Camera_DisplayName" xml:space="preserve">
     <value>カメラ (mfvideosrc)</value>
   </data>
