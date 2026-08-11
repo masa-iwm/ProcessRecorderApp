@@ -159,6 +159,8 @@ public static class EncoderCatalog
     /// 固定を外すと <c>d3d12download</c> の src もこの要素の sink も
     /// <c>video/x-raw(memory:D3D11Memory)</c> で折り合う（実測）ので、現行の形は
     /// <c>d3d12download ! videoconvert !</c> である。
+    /// <b>この形で NVIDIA/Intel 実機の全ケースが OK</b>（<c>tools/Verify-GpuEncoders.ps1</c>。
+    /// NVENC の 3 経路とも <c>retries</c> 0 で有効な MP4）。
     /// </para>
     /// </summary>
     private static readonly H264EncoderDef NvD3d11 = new("nvd3d11h264enc", $"nvd3d11h264enc gop-size={GopSize}", NeedsSystemMemory: true);
