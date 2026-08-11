@@ -230,9 +230,11 @@ tee name=t
 > DPI 仮想化の影響を受け、実際に出る大きさと食い違う（175% の機械で 2194x1234 と 3840x2160）。
 
 > **`show-cursor=true` はプロセスごと落としうる（上流の欠陥）。**
-> カーソル形状を組み立てる `PtrInfo::BuildTexture` が `std::vector::resize` を
-> 投げっぱなしにしており、C++ 例外が抜けると `std::terminate` → `abort` になる。
-> **アプリ側では捕捉できない。** 既定の `false` のままにすること。
+> カーソル形状を組み立てる `PtrInfo::BuildTexture` の中で `abort()` に至る。
+> **MinGW 版の GStreamer で起き、MSVC 版では起きない**（`gst-launch` の1行で再現。
+> アプリは関与していない）。**アプリ側では捕捉できない。** 既定の `false` のままにすること。
+> 詳細と、MSVC 版へ替えても「隠れるだけ」でありうる理由は
+> [docs/environment-facts.md](../docs/environment-facts.md)。
 
 #### フレームレートの上書きにも「上流の固定」が要る
 
