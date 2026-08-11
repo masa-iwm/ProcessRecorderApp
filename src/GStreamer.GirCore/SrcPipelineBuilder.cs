@@ -236,6 +236,87 @@ public static partial class SrcPipelineBuilder
             ]),
     ]);
 
+
+    /// <summary>
+    /// ソースを切り替えたときに、いまの入力のうち<b>新しいソースにも在る項目だけ</b>を引き継ぐ。
+    ///
+    /// <para>
+    /// <c>d3d12screencapturesrc</c> と <c>d3d11screencapturesrc</c> のように
+    /// <b>プロパティも caps も同じ顔ぶれ</b>のソースが並んでいるため、切り替えのたびに
+    /// 既定値へ戻されると、モニター番号や解像度を毎回入れ直すことになる。
+    /// </para>
+    /// <para>
+    /// <b>名前が一致するものだけを運ぶ。</b> 引き継ぎ先のカタログに無い項目は捨てる ──
+    /// カメラの <c>device-name</c> を画面キャプチャへ運ぶような、
+    /// <b>その要素では意味を成さない値</b>が残ると、パイプラインが黙って壊れる。
+    /// </para>
+    /// <para>
+    /// 戻り値は <see cref="Parse"/> と同じ形にしてある。呼び出し側（ビルダー UI）は
+    /// 「既存文字列を開いたとき」と同じ経路で行を組み直せる ── 分岐が増えない。
+    /// </para>
+    /// </summary>
+    /// <param name="target">切り替え先のソース定義。</param>
+    /// <param name="properties">いま入力されているプロパティ（要素プロパティ名 → 値）。</param>
+    /// <param name="capsValues">
+    /// いま入力されている caps（<c>CapsFieldDef.Name</c> → 値。解像度は "幅x高さ" のまま渡す）。
+    /// </param>
+    /// <param name="capsEnabled">caps を出力する設定になっているか。</param>
+    public static ParsedSrcPipeline CarryOver(
+        SrcElementDef target,
+        IReadOnlyDictionary<string, string> properties,
+        IReadOnlyDictionary<string, string> capsValues,
+        bool capsEnabled)
+    {
+        ArgumentNullException.ThrowIfNull(target);
+
+        var carriedProperties = new Dictionary<string, string>();
+        foreach (var def in target.Properties)
+        {
+            if (properties is not null
+                && properties.TryGetValue(def.Name, out string? value)
+                && !string.IsNullOrEmpty(value))
+            {
+                carriedProperties[def.Name] = value;
+            }
+        }
+
+        var carriedCaps = new Dictionary<string, string>();
+        foreach (var def in target.CapsFields)
+        {
+            if (capsValues is null
+                || !capsValues.TryGetValue(def.Name, out string? value)
+                || string.IsNullOrEmpty(value))
+            {
+                continue;
+            }
+
+            if (def.IsResolution)
+            {
+                // 解析結果と同じ形（width / height）で返す ── 呼び出し側は Parse の結果と
+                // 同じ読み方ができる。読めない文字列は運ばない（黙って幅だけ入るのを避ける）。
+                var (w, h) = SplitResolution(value);
+                if (w is not null && h is not null)
+                {
+                    carriedCaps["width"] = w;
+                    carriedCaps["height"] = h;
+                }
+            }
+            else
+            {
+                carriedCaps[def.Name] = value;
+            }
+        }
+
+        return new ParsedSrcPipeline
+        {
+            SourceElement = target.ElementName,
+            Properties = carriedProperties,
+            CapsFields = carriedCaps,
+            MemoryFeature = target.MemoryFeature,
+            HasCaps = capsEnabled,
+        };
+    }
+
     /// <summary>要素名からカタログ定義を取得する(未登録なら null)。</summary>
     public static SrcElementDef? FindSource(string? elementName)
         => elementName is null ? null : Sources.FirstOrDefault(s => s.ElementName == elementName);

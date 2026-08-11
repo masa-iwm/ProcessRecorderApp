@@ -123,10 +123,14 @@ public sealed partial class PipelineBuilderViewModel : ObservableObject
     public partial SrcElementDef? SelectedSource { get; set; }
     partial void OnSelectedSourceChanged(SrcElementDef? value)
     {
-        // ユーザー操作によるソース変更では、その要素の既定で UI を組み直す
+        // ユーザー操作によるソース変更では、**名前が一致する項目だけを引き継いで**組み直す。
+        // 画面キャプチャの D3D12 版と D3D11 版は項目の顔ぶれが同じなので、
+        // 既定へ戻すとモニター番号や解像度を毎回入れ直すことになる。
+        // 引き継ぎの規則は SrcPipelineBuilder.CarryOver（L1 で縛ってある）。
         if (_suppressUpdate || value is null)
             return;
-        RebuildForSource(value, parsed: null);
+        RebuildForSource(value, SrcPipelineBuilder.CarryOver(
+            value, CurrentPropertyValues(), CurrentCapsValues(), CapsEnabled));
         NotRecognized = false;
         UpdatePreview();
     }
@@ -176,6 +180,26 @@ public sealed partial class PipelineBuilderViewModel : ObservableObject
             UpdatePreview();
         else
             Preview = currentPipeline;
+    }
+
+    /// <summary>有効なプロパティ行の現在値（名前 → 値）。</summary>
+    private Dictionary<string, string> CurrentPropertyValues()
+    {
+        var values = new Dictionary<string, string>();
+        foreach (var row in PropertyRows)
+            if (row.Enabled)
+                values[row.Name] = row.Value;
+        return values;
+    }
+
+    /// <summary>有効な caps 行の現在値（行名 → 値。解像度は "幅x高さ" のまま）。</summary>
+    private Dictionary<string, string> CurrentCapsValues()
+    {
+        var values = new Dictionary<string, string>();
+        foreach (var row in CapsRows)
+            if (row.Enabled)
+                values[row.Name] = row.Value;
+        return values;
     }
 
     /// <summary>選択ソースの定義(と任意で解析結果)から各行を組み立て直す。</summary>

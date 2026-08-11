@@ -293,6 +293,124 @@ public class SrcPipelineBuilderTests
         Assert.Equal("d3d12testsrc", result);
     }
 
+    // ---- ソース切り替え時の引き継ぎ（CarryOver） ----
+
+    /// <summary>
+    /// 画面キャプチャの D3D12 版 → D3D11 版。<b>項目の顔ぶれが同じなので全部運ぶ。</b>
+    /// ここが落ちると、ソースを切り替えるたびにモニター番号と解像度を入れ直すことになる。
+    /// </summary>
+    [Fact]
+    public void CarryOver_BetweenTheTwoScreenCaptures_KeepsEveryField()
+    {
+        var target = SrcPipelineBuilder.FindSource("d3d11screencapturesrc");
+        Assert.NotNull(target);
+
+        var carried = SrcPipelineBuilder.CarryOver(
+            target,
+            new Dictionary<string, string> { ["monitor-index"] = "2", ["show-cursor"] = "true" },
+            new Dictionary<string, string> { ["resolution"] = "3840x2160", ["framerate"] = "30/1" },
+            capsEnabled: true);
+
+        Assert.Equal("d3d11screencapturesrc", carried.SourceElement);
+        Assert.Equal("2", carried.Properties["monitor-index"]);
+        Assert.Equal("true", carried.Properties["show-cursor"]);
+        Assert.Equal("3840", carried.CapsFields["width"]);
+        Assert.Equal("2160", carried.CapsFields["height"]);
+        Assert.Equal("30/1", carried.CapsFields["framerate"]);
+        Assert.True(carried.HasCaps);
+    }
+
+    /// <summary>
+    /// 引き継ぎ先に無い項目は運ばない。<b>その要素では意味を成さない値が残ると
+    /// パイプラインが黙って壊れる</b>ため、名前の一致だけを条件にする。
+    /// </summary>
+    [Fact]
+    public void CarryOver_DropsFieldsTheTargetDoesNotHave()
+    {
+        var target = SrcPipelineBuilder.FindSource("d3d12screencapturesrc");
+        Assert.NotNull(target);
+
+        var carried = SrcPipelineBuilder.CarryOver(
+            target,
+            new Dictionary<string, string> { ["device-name"] = "HD Pro Webcam C920", ["monitor-index"] = "1" },
+            new Dictionary<string, string> { ["format"] = "NV12", ["framerate"] = "15/1" },
+            capsEnabled: true);
+
+        Assert.False(carried.Properties.ContainsKey("device-name"));
+        Assert.Equal("1", carried.Properties["monitor-index"]);
+        // d3d12screencapturesrc の caps は解像度と framerate だけ（format は持たない）
+        Assert.False(carried.CapsFields.ContainsKey("format"));
+        Assert.Equal("15/1", carried.CapsFields["framerate"]);
+    }
+
+    /// <summary>
+    /// 読めない解像度は運ばない。<b>幅だけが入った中途半端な状態</b>を作らないため。
+    /// </summary>
+    [Fact]
+    public void CarryOver_UnparsableResolution_IsNotCarried()
+    {
+        var target = SrcPipelineBuilder.FindSource("d3d11screencapturesrc");
+        Assert.NotNull(target);
+
+        var carried = SrcPipelineBuilder.CarryOver(
+            target,
+            new Dictionary<string, string>(),
+            new Dictionary<string, string> { ["resolution"] = "3840" },
+            capsEnabled: true);
+
+        Assert.False(carried.CapsFields.ContainsKey("width"));
+        Assert.False(carried.CapsFields.ContainsKey("height"));
+    }
+
+    /// <summary>caps を出さない設定は引き継ぎでも保たれる。</summary>
+    [Fact]
+    public void CarryOver_KeepsTheCapsEnabledState()
+    {
+        var target = SrcPipelineBuilder.FindSource("d3d11screencapturesrc");
+        Assert.NotNull(target);
+
+        var carried = SrcPipelineBuilder.CarryOver(
+            target, new Dictionary<string, string>(), new Dictionary<string, string>(), capsEnabled: false);
+
+        Assert.False(carried.HasCaps);
+    }
+
+    /// <summary>
+    /// 引き継いだ結果をそのまま組み直すと、<b>要素名だけが変わった同じ設定</b>になること。
+    /// ダイアログが行う「切り替え → 再生成」を通しで再現する。
+    /// </summary>
+    [Fact]
+    public void CarryOver_ThenAssemble_ChangesOnlyTheElementName()
+    {
+        const string before = "d3d12screencapturesrc monitor-index=2 show-cursor=true ! video/x-raw(memory:D3D12Memory), width=3840, height=2160, framerate=30/1";
+        var parsed = SrcPipelineBuilder.Parse(before);
+        var target = SrcPipelineBuilder.FindSource("d3d11screencapturesrc");
+        Assert.NotNull(target);
+
+        var capsValues = new Dictionary<string, string>
+        {
+            ["resolution"] = SrcPipelineBuilder.JoinResolution(
+                parsed.CapsFields["width"], parsed.CapsFields["height"]) ?? "",
+            ["framerate"] = parsed.CapsFields["framerate"],
+        };
+        var carried = SrcPipelineBuilder.CarryOver(target, parsed.Properties, capsValues, capsEnabled: true);
+
+        string after = SrcPipelineBuilder.Assemble(
+            target,
+            capsEnabled: carried.HasCaps,
+            properties: target.Properties.Select(p => (p.Name, carried.Properties.TryGetValue(p.Name, out var v) ? v : "")),
+            capsValues: new Dictionary<string, string>
+            {
+                ["resolution"] = SrcPipelineBuilder.JoinResolution(
+                    carried.CapsFields["width"], carried.CapsFields["height"]) ?? "",
+                ["framerate"] = carried.CapsFields["framerate"],
+            });
+
+        Assert.Equal(
+            "d3d11screencapturesrc monitor-index=2 show-cursor=true ! video/x-raw(memory:D3D11Memory), width=3840, height=2160, framerate=30/1",
+            after);
+    }
+
     // ---- Parse → Assemble ラウンドトリップ ----
 
     /// <summary>
