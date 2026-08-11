@@ -381,7 +381,7 @@ I フレームゲートが次の I まで捨てる ── そのぶんの映像�
 
 #### GOP 長は `BufferDuration` より十分に短くなければならない（重要）
 
-全候補に `gop-size=60`（`x264enc` は `key-int-max=60`）を明示している。
+全候補に GOP 長を明示している（`gop-size` / `x264enc` は `key-int-max`）。
 **これは画質設定ではなく、アプリの中核契約を成立させるための制約**。
 
 録画開始時、`PushRecordBuffer` は最初の I フレームが見つかるまでバッファを捨て続ける
@@ -391,7 +391,19 @@ I フレームゲートが次の I まで捨てる ── そのぶんの映像�
 つまり「録画ボタンを押す前の映像が残る」というアプリの中核価値が、
 エラーも警告も無いまま静かに消える。
 
-実測（15fps / `BufferDuration`=2000ms / 録画窓3秒 / `tools/Verify-GpuEncoders.ps1`）:
+**GOP 長はフレーム数ではなく「秒」で決める。** `EncoderCatalog.TargetKeyframeIntervalSeconds`
+（2 秒）を実際のフレームレートに掛けたものが `gop-size` になる ── 本線はソースの caps の
+`framerate`、常時録画の枝は `ContinuousFramerate`（無ければソース側）から取る。
+既定の 30fps なら 60 フレーム、15fps なら 30 フレーム、常時枝が 5fps なら 10 フレーム。
+
+**フレーム数を固定してはいけない。** 実測（同じ 60 フレーム固定で走らせた場合）:
+
+| 経路 | フレームレート | GOP 間隔 | 起きたこと |
+|---|---|---|---|
+| 常時録画の枝 | 5fps | 12秒 | 5 秒のセグメントが**キーフレーム待ちで 10 秒へ**（`continuous.overshoot`） |
+| イベント録画 | 15fps | 4秒 | 事前バッファ 3 秒の構成で、押してから 4 秒ぶん録画が始まらない（3 秒の窓のうち残ったのは 1.467 秒） |
+
+以前の実測（15fps / `BufferDuration`=2000ms / 録画窓3秒 / `tools/Verify-GpuEncoders.ps1`）:
 
 | エンコーダー設定 | GOP 間隔 | 生成尺 |
 |---|---|---|
@@ -400,21 +412,16 @@ I フレームゲートが次の I まで捨てる ── そのぶんの映像�
 | `mfh264enc gop-size=30` | 2.0秒 | 2.0〜2.4秒 |
 | `gop-size=15` | 1.0秒 | 4.3〜6.1秒（＝録画窓＋事前バッファ） |
 
-**この表が示しているのはフレーム数ではなく「GOP 間隔 対 バッファ長」の比**である。
-フレームレートは利用者の `SrcPipeline` 側にあり `EncoderCatalog` からは分からないので
-GOP は固定値とし、**既定のソース（30fps）で 2 秒間隔＝既定の `BufferDuration`（10秒）に 5 本**、
-下限とみなす 15fps でも 4 秒間隔＝2.5 本が入る `60` を選んでいる。
-`EncoderCatalogResolveTests.EveryCandidate_PinsAShortGopLength` が
-**「30fps と 15fps の両方で、GOP 2 本ぶんが既定の事前バッファに収まること」**として
-この不変条件を守る（フレーム数の上限ではなく比で見るのは、フレームレートの既定を
-上げたときに「秒では短くなったのにテストが落ちる」という逆の事故を避けるため）。
+`EncoderCatalogResolveTests` が、**目標間隔からのずれが 1 フレーム未満であること**と
+**既定のフレームレートで GOP 2 本ぶんが既定の事前バッファに収まること**を縛る。
 
-> **`BufferDuration` を既定より小さくすると同じ事故が戻る。** 上の表は事前バッファ 2 秒での
-> 実測で、GOP 間隔がバッファ長と同じになると生成尺が GOP の位相で当たり外れになる。
-> 既定を下げるときは GOP 長も一緒に見直すこと。
+> **`BufferDuration` を GOP 間隔（2 秒）の 2 倍より小さくすると、事前バッファは効かなくなる。**
+> 既定は 10 秒なので通常は問題にならない。
 
-> `EncodingProperties` で手動指定する場合も同じ制約がかかる。長い GOP を指定すると
-> 事前バッファが効かなくなるが、アプリは警告を出さない。
+> `EncodingProperties` / `ContinuousEncodingProperties` で手動指定する場合は
+> **自分で GOP を固定すること** ── 指定した文字列がそのまま使われるので、
+> ここで説明した逆算は効かない。長い GOP を指定すると事前バッファもセグメント分割も
+> 効かなくなるが、アプリは警告を出さない。
 - 採用されたエンコーダーは、読み取り専用の `ActualEncodingProperties` に出る（UI 改修不要）。
   加えて `Console.Error` へ `gst.encoders` / `gst.encoder selected` / `gst.encoder candidate-failed`
   の各行を出力する（`StandardStreamRedirector` が捕捉し、アプリ内 Log 画面と

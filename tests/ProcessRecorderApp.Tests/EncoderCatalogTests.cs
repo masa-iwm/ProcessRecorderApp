@@ -172,6 +172,63 @@ public class EncoderCatalogResolveTests
         Assert.DoesNotContain("bitrate=2000000", x264.LaunchString);
     }
 
+    /// <summary>
+    /// GOP 長は<b>フレームレートから「秒」で逆算する</b>こと。
+    ///
+    /// <para>
+    /// フレーム数を固定すると、低いレートの経路で間隔が伸び切る ── <b>実測: 60 フレーム固定の
+    /// まま 5fps の常時録画枝を走らせると 12 秒間隔になり、5 秒のセグメントが
+    /// キーフレーム待ちで 10 秒へ伸びた</b>（<c>continuous.overshoot</c>）。
+    /// ここが壊れると、常時録画の分割間隔とイベント録画の立ち上がりが同時に狂う。
+    /// </para>
+    /// </summary>
+    [Theory]
+    [InlineData("30/1", 60)]
+    [InlineData("15/1", 30)]
+    [InlineData("5/1", 10)]
+    [InlineData("60/1", 120)]
+    [InlineData("30000/1001", 60)]   // 29.97fps
+    public void GopForFramerate_KeepsTheKeyframeIntervalAtTheTarget(string framerate, int expected)
+    {
+        Assert.Equal(expected, EncoderCatalog.GopForFramerate(framerate));
+
+        // 目標間隔（秒）からのずれが 1 フレーム未満であること。
+        ContinuousFirstSampleBudget.TryParseFramerate(framerate, out int numerator, out int denominator);
+        double fps = (double)numerator / denominator;
+        double seconds = EncoderCatalog.GopForFramerate(framerate) / fps;
+        Assert.True(Math.Abs(seconds - EncoderCatalog.TargetKeyframeIntervalSeconds) < 1.0 / fps,
+            $"{framerate} で {seconds:0.###} 秒間隔（目標 {EncoderCatalog.TargetKeyframeIntervalSeconds} 秒）");
+    }
+
+    /// <summary>
+    /// framerate が読めないときは既定のフレームレートぶんに倒す。
+    /// <b>0 や極端に小さい値を返してはいけない</b> ── そのまま起動文字列に入る。
+    /// </summary>
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("variable")]
+    [InlineData("30/0")]
+    public void GopForFramerate_UnreadableFramerate_FallsBackToTheDefault(string? framerate)
+        => Assert.Equal(EncoderCatalog.GopSize, EncoderCatalog.GopForFramerate(framerate));
+
+    /// <summary>
+    /// 低いフレームレートでも候補の起動文字列に反映されること
+    /// （<see cref="EncoderCatalog.Resolve"/> の <c>gop</c> 引数を落とすと、
+    /// カタログの既定値が黙って使われて上の事故に戻る）。
+    /// </summary>
+    [Fact]
+    public void CandidatesFor_LowFramerate_PinsTheShorterGop()
+    {
+        var candidates = EncoderCatalog.CandidatesFor(EventRecordingType.D3d12, EncoderCatalog.GopForFramerate("5/1"));
+
+        var qsv = candidates.Single(c => c.FactoryName == "qsvh264enc");
+        Assert.Contains("gop-size=10", qsv.LaunchString);
+
+        var x264 = candidates.Single(c => c.FactoryName == "x264enc");
+        Assert.Contains("key-int-max=10", x264.LaunchString);
+    }
+
     [Fact]
     public void EveryCandidate_PinsAShortGopLength()
     {

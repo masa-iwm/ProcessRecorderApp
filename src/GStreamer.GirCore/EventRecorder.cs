@@ -680,7 +680,12 @@ public partial class EventRecorder : ObservableObject, IDisposable
                 new H264EncoderDef(factory, EncodingProperties, EncoderCatalog.NeedsSystemMemoryFor(factory, Type))];
         }
 
-        var resolved = EncoderCatalog.Resolve(Type, PreferredH264Encoder, EncoderCatalog.ProbeWithGStreamer);
+        // GOP 長は**ソースの framerate から**決める。フレーム数を固定すると
+        // 低いレートのソースでキーフレーム間隔が伸び、事前バッファの短い構成で
+        // 録画の立ち上がりがそのぶん遅れる（EncoderCatalog.TargetKeyframeIntervalSeconds）。
+        var resolved = EncoderCatalog.Resolve(
+            Type, PreferredH264Encoder, EncoderCatalog.ProbeWithGStreamer,
+            EncoderCatalog.GopForFramerate(SourceFramerate()));
         return EncoderCatalog.ExpandAttempts(resolved).ToArray();
     }
 
@@ -998,6 +1003,17 @@ public partial class EventRecorder : ObservableObject, IDisposable
     /// <b>枝を落として理由を残す</b>方（2 段初期化）を選ぶ。
     /// </para>
     /// </summary>
+    /// <summary>ソースの caps が名乗る framerate（無ければ空）。</summary>
+    private string SourceFramerate()
+        => SrcPipelineBuilder.Parse(SrcPipeline).CapsFields.TryGetValue("framerate", out var rate) ? rate : "";
+
+    /// <summary>
+    /// 常時録画の枝を実際に流れるフレームレート。上書きが効く場合はそれ、
+    /// 効かなければソース側の framerate。
+    /// </summary>
+    private string ContinuousEffectiveFramerate()
+        => ContinuousBranch.RequiresVideorate(ContinuousFramerate) ? ContinuousFramerate : SourceFramerate();
+
     private H264EncoderDef ResolveContinuousEncoder()
     {
         // フレームレートを変えるには videorate が要る。同梱ランタイムには入れてあるが、
@@ -1021,7 +1037,13 @@ public partial class EventRecorder : ObservableObject, IDisposable
                 factory, ContinuousEncodingProperties, EncoderCatalog.NeedsSystemMemoryFor(factory, Type));
         }
 
-        var resolved = EncoderCatalog.Resolve(Type, PreferredH264Encoder, EncoderCatalog.ProbeWithGStreamer);
+        // **枝のレートで GOP を決める。** 本線と同じフレーム数を使うと、
+        // 5fps の枝ではキーフレームが 12 秒間隔になり、セグメントの分割は
+        // キーフレームでしか行えないので 5 秒の設定が 10 秒へ伸びる（実測。
+        // continuous.overshoot がこれを報じる）。
+        var resolved = EncoderCatalog.Resolve(
+            Type, PreferredH264Encoder, EncoderCatalog.ProbeWithGStreamer,
+            EncoderCatalog.GopForFramerate(ContinuousEffectiveFramerate()));
         foreach (var attempt in EncoderCatalog.ExpandAttempts(resolved))
             return attempt;
 
@@ -1039,11 +1061,7 @@ public partial class EventRecorder : ObservableObject, IDisposable
         // 最初のサンプルを待つ予算は「実際に流れるフレームレート」から逆算する。
         // 上書きが無ければソース側 caps の framerate を使う（解析は SrcPipelineBuilder。
         // 規則を 2 か所に書かないため）。
-        string framerate = ContinuousBranch.RequiresVideorate(ContinuousFramerate)
-            ? ContinuousFramerate
-            : SrcPipelineBuilder.Parse(SrcPipeline).CapsFields.TryGetValue("framerate", out var sourceRate)
-                ? sourceRate
-                : "";
+        string framerate = ContinuousEffectiveFramerate();
 
         _continuous = new ContinuousRecorder(
             new ContinuousHost(this),

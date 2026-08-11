@@ -18,14 +18,27 @@ namespace ProcessRecorderApp.E2E;
 [Collection(E2ECollection.Name)]
 public sealed class PreBufferTests(PublishedApp app, ITestOutputHelper output)
 {
-    /// <summary>録画ボタンを押してから停止するまでの時間。</summary>
-    private static readonly TimeSpan RecordingWindow = TimeSpan.FromSeconds(3);
+    /// <summary>
+    /// 録画ボタンを押してから停止するまでの時間。
+    ///
+    /// <para>
+    /// <b>GOP 長に合わせて決めてある。</b> 録画は最初の I フレームから始まるので、
+    /// 対照側（事前バッファ 0ms）は<b>必ず GOP 1 つぶんを失う</b> ── カタログの GOP は
+    /// **フレームレートから 2 秒で逆算**されるので、このハーネスの既定ソース（15fps）では
+    /// 30 フレーム＝2 秒。窓を GOP の 3 倍以上に取ることで、対照にも意味のある尺を残す。
+    /// </para>
+    /// </summary>
+    private static readonly TimeSpan RecordingWindow = TimeSpan.FromSeconds(6);
 
-    /// <summary>事前バッファ長。GOP（15fps で 1 秒）より十分長いこと。</summary>
-    private const int PreBufferMs = 3000;
+    /// <summary>
+    /// 事前バッファ長。<b>GOP（このハーネスの 15fps で 2 秒）より
+    /// 十分長いこと</b> ── バッファの中に I フレームが1枚も無いと遡れる映像が存在せず、
+    /// 「事前バッファ有り」の側が製品と無関係な理由で対照と同じ尺になる。
+    /// </summary>
+    private const int PreBufferMs = 6000;
 
     /// <summary>リングバッファが満たされるまで待つ時間（事前バッファ長＋余裕）。</summary>
-    private static readonly TimeSpan SettleTime = TimeSpan.FromSeconds(6);
+    private static readonly TimeSpan SettleTime = TimeSpan.FromSeconds(9);
 
     [Fact]
     public void WithPreBuffer_TheRecordingReachesBackBeforeTheStartCommand()
@@ -39,21 +52,21 @@ public sealed class PreBufferTests(PublishedApp app, ITestOutputHelper output)
         // 下の差分が事前バッファ以外の理由で開いてしまい、判定が意味を失う。
         //
         // 下限が録画窓（3秒）よりかなり低いのには理由が2つある:
-        //   - 録画は最初の I フレームから始まるので、GOP 1つぶん（15fps / GOP 15 で 1 秒）まで削れる
+        //   - 録画は最初の I フレームから始まるので、GOP 1つぶん（2 秒）まで削れる
         //   - 実効の録画窓は CLI の往復ぶんだけ伸び縮みする。AOT 発行物はランチャーの起動が速く、
         //     同じ設定でも selfcontained より短くなる（実測: 3.267s → 2.267s）
-        Assert.True(withoutPreBuffer >= 1.8,
+        Assert.True(withoutPreBuffer >= 3.5,
             $"事前バッファ無しの尺が短すぎます: {withoutPreBuffer:F3}s（録画窓は {RecordingWindow.TotalSeconds}s）");
 
-        // これが本体の判定。事前バッファ 3000ms・GOP 1秒なので、遡れるのは
-        // リングバッファ内の最も古い I フレームまで＝2.0〜3.0 秒ぶん。
+        // これが本体の判定。事前バッファ 6000ms・GOP 2 秒なので、遡れるのは
+        // リングバッファ内の最も古い I フレームまで＝4.0〜6.0 秒ぶん。
         // 立ち上がりエッジでリングバッファ全体を push しない退行では、この差が 0 以下になる
         // （録画開始後の最初の I フレームから始まるので、むしろ対照より短くなる）。
         Assert.True(withPreBuffer - withoutPreBuffer >= 1.5,
             $"事前バッファぶんの差が足りません: 有り {withPreBuffer:F3}s / 無し {withoutPreBuffer:F3}s");
 
         // 絶対値の下限（差分だけだと対照が壊れて短くなった場合に緩むため、補助として置く）。
-        Assert.True(withPreBuffer >= 4.5,
+        Assert.True(withPreBuffer >= 9.0,
             $"事前バッファ有りの尺が短すぎます: {withPreBuffer:F3}s");
     }
 

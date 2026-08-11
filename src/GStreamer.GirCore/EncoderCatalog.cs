@@ -101,35 +101,63 @@ public static class EncoderCatalog
     ///         → 3.2秒 と 5.067秒。GOP の位相次第で当たり外れが出る</item>
     /// </list>
     ///
-    /// フレームレートは利用者の <c>SrcPipeline</c> 側にあり、ここからは分からないので固定値にする。
-    /// <b>既定のソースは 30fps</b>（<see cref="SrcPipelineBuilder"/> の caps の既定）なので
-    /// <b>60 フレーム＝2 秒間隔</b>で、既定の <c>BufferDuration</c>（10 秒）に 5 本入る。
-    /// 低い方へ振れて 15fps でも 4 秒間隔で 2.5 本入る。
-    /// <b>この値だけを見てはいけない</b> ── 利用者が <c>BufferDuration</c> を小さくすると
-    /// 同じ事故が戻る（上の実測はバッファ 2 秒の例）。関係式は
-    /// <c>GopBudgetTests</c>（L1）が縛っている。
+    /// <b>固定のフレーム数ではなく、実際のフレームレートから「秒」で逆算する。</b>
+    /// フレーム数を固定すると、低いフレームレートの経路で間隔が伸び切る ──
+    /// <b>実測: 60 フレーム固定のまま 5fps の常時録画枝を走らせると 12 秒間隔になり、
+    /// 5 秒のセグメントがキーフレーム待ちで 10 秒へ伸びた</b>
+    /// （<c>continuous.overshoot</c>。分割はキーフレームでしか行えない）。
+    /// 同じ理由で、イベント録画側も 15fps のソースでは 4 秒間隔になり、
+    /// 事前バッファの短い構成では録画の立ち上がりがそのぶん遅れる。
     /// </summary>
-    public const int GopSize = 60;
+    public const int TargetKeyframeIntervalSeconds = 2;
+
+    /// <summary>
+    /// caps に framerate が無い・読めないときに想定するフレームレート。
+    /// <see cref="SrcPipelineBuilder"/> の caps の既定と揃えてある。
+    /// </summary>
+    public const int AssumedFps = 30;
+
+    /// <summary>
+    /// 既定のフレームレートでの GOP 長（＝60）。文書と
+    /// <c>tools/Verify-GpuEncoders.ps1</c> の手動指定行がこの値を基準にしている。
+    /// </summary>
+    public const int GopSize = AssumedFps * TargetKeyframeIntervalSeconds;
+
+    /// <summary>
+    /// caps の framerate 文字列（<c>30/1</c> など）から GOP 長（フレーム数）を決める。
+    /// 読めなければ <see cref="GopSize"/>。解析は
+    /// <see cref="ContinuousFirstSampleBudget.TryParseFramerate"/> と同じ規則を使う
+    /// （フレームレートの読み方を 2 か所に書かない）。
+    /// </summary>
+    public static int GopForFramerate(string? framerate)
+    {
+        if (!ContinuousFirstSampleBudget.TryParseFramerate(framerate, out int numerator, out int denominator))
+            return GopSize;
+
+        double fps = (double)numerator / denominator;
+        int gop = (int)Math.Round(fps * TargetKeyframeIntervalSeconds, MidpointRounding.AwayFromZero);
+        return Math.Max(1, gop);
+    }
 
     /// <summary>Intel QSV。</summary>
-    private static readonly H264EncoderDef Qsv =
-        new("qsvh264enc", $"qsvh264enc rate-control=icq icq-quality=30 gop-size={GopSize}", NeedsSystemMemory: false);
+    private static H264EncoderDef Qsv(int gop) =>
+        new("qsvh264enc", $"qsvh264enc rate-control=icq icq-quality=30 gop-size={gop}", NeedsSystemMemory: false);
 
     /// <summary>x264（bitrate は kbit/sec。GOP は key-int-max）。</summary>
-    private static readonly H264EncoderDef X264 =
-        new("x264enc", $"x264enc tune=zerolatency bitrate=2000 speed-preset=ultrafast key-int-max={GopSize}", NeedsSystemMemory: true);
+    private static H264EncoderDef X264(int gop) =>
+        new("x264enc", $"x264enc tune=zerolatency bitrate=2000 speed-preset=ultrafast key-int-max={gop}", NeedsSystemMemory: true);
 
     /// <summary>OpenH264。**bitrate は bit/sec** なので x264 の数値をそのまま使ってはいけない。</summary>
-    private static readonly H264EncoderDef OpenH264 =
-        new("openh264enc", $"openh264enc bitrate=2000000 gop-size={GopSize}", NeedsSystemMemory: true);
+    private static H264EncoderDef OpenH264(int gop) =>
+        new("openh264enc", $"openh264enc bitrate=2000000 gop-size={gop}", NeedsSystemMemory: true);
 
     /// <summary>Media Foundation（bitrate は kbit/sec）。</summary>
-    private static readonly H264EncoderDef MediaFoundation =
-        new("mfh264enc", $"mfh264enc bitrate=2000 gop-size={GopSize} low-latency=true", NeedsSystemMemory: true);
+    private static H264EncoderDef MediaFoundation(int gop) =>
+        new("mfh264enc", $"mfh264enc bitrate=2000 gop-size={gop} low-latency=true", NeedsSystemMemory: true);
 
     // 以下はプロパティ未確認のため GOP 長のみ指定する（既定の GOP は長すぎることが多く、
     // 上記のとおり事前バッファを壊すため、ここだけは既定値に任せられない）。
-    private static readonly H264EncoderDef D3d12 = new("d3d12h264enc", $"d3d12h264enc gop-size={GopSize}", NeedsSystemMemory: false);
+    private static H264EncoderDef D3d12(int gop) => new("d3d12h264enc", $"d3d12h264enc gop-size={gop}", NeedsSystemMemory: false);
     /// <summary>
     /// NVENC の Direct3D11 モード。
     ///
@@ -163,8 +191,8 @@ public static class EncoderCatalog
     /// NVENC の 3 経路とも <c>retries</c> 0 で有効な MP4）。
     /// </para>
     /// </summary>
-    private static readonly H264EncoderDef NvD3d11 = new("nvd3d11h264enc", $"nvd3d11h264enc gop-size={GopSize}", NeedsSystemMemory: true);
-    private static readonly H264EncoderDef Nvidia = new("nvh264enc", $"nvh264enc gop-size={GopSize}", NeedsSystemMemory: true);
+    private static H264EncoderDef NvD3d11(int gop) => new("nvd3d11h264enc", $"nvd3d11h264enc gop-size={gop}", NeedsSystemMemory: true);
+    private static H264EncoderDef Nvidia(int gop) => new("nvh264enc", $"nvh264enc gop-size={gop}", NeedsSystemMemory: true);
 
     /// <summary>
     /// NVENC の自動 GPU 選択モード。
@@ -186,25 +214,36 @@ public static class EncoderCatalog
     /// 真にして間違っていても余分な変換が入るだけで録画は成立する。
     /// </para>
     /// </summary>
-    private static readonly H264EncoderDef NvAutoGpu =
-        new("nvautogpuh264enc", $"nvautogpuh264enc gop-size={GopSize}", NeedsSystemMemory: true);
+    private static H264EncoderDef NvAutoGpu(int gop) =>
+        new("nvautogpuh264enc", $"nvautogpuh264enc gop-size={gop}", NeedsSystemMemory: true);
 
-    private static readonly H264EncoderDef Amd = new("amfh264enc", $"amfh264enc gop-size={GopSize}", NeedsSystemMemory: true);
+    private static H264EncoderDef Amd(int gop) => new("amfh264enc", $"amfh264enc gop-size={gop}", NeedsSystemMemory: true);
 
     /// <summary>
     /// <c>Type=D3d12</c> の優先順位。GPU ネイティブ（ダウンロード不要）を上位に置き、
     /// 最後にソフトウェアエンコーダーへ落ちる。
     /// </summary>
-    public static readonly IReadOnlyList<H264EncoderDef> D3d12Candidates =
-        (H264EncoderDef[])[D3d12, Qsv, NvD3d11, Nvidia, NvAutoGpu, Amd, MediaFoundation, OpenH264, X264];
+    public static readonly IReadOnlyList<H264EncoderDef> D3d12Candidates = D3d12CandidatesFor(GopSize);
+
+    /// <summary>指定の GOP 長で <c>Type=D3d12</c> の候補列を作る。</summary>
+    public static IReadOnlyList<H264EncoderDef> D3d12CandidatesFor(int gop) =>
+        (H264EncoderDef[])[D3d12(gop), Qsv(gop), NvD3d11(gop), Nvidia(gop), NvAutoGpu(gop), Amd(gop),
+                           MediaFoundation(gop), OpenH264(gop), X264(gop)];
 
     /// <summary><c>Type=System</c> の優先順位（入力は元からシステムメモリ）。</summary>
-    public static readonly IReadOnlyList<H264EncoderDef> SystemCandidates =
-        (H264EncoderDef[])[X264, OpenH264, MediaFoundation];
+    public static readonly IReadOnlyList<H264EncoderDef> SystemCandidates = SystemCandidatesFor(GopSize);
+
+    /// <summary>指定の GOP 長で <c>Type=System</c> の候補列を作る。</summary>
+    public static IReadOnlyList<H264EncoderDef> SystemCandidatesFor(int gop) =>
+        (H264EncoderDef[])[X264(gop), OpenH264(gop), MediaFoundation(gop)];
 
     /// <summary>録画種別に対応する候補列を返す。</summary>
     public static IReadOnlyList<H264EncoderDef> CandidatesFor(EventRecordingType type)
-        => type == EventRecordingType.D3d12 ? D3d12Candidates : SystemCandidates;
+        => CandidatesFor(type, GopSize);
+
+    /// <summary>録画種別と GOP 長に対応する候補列を返す。</summary>
+    public static IReadOnlyList<H264EncoderDef> CandidatesFor(EventRecordingType type, int gop)
+        => type == EventRecordingType.D3d12 ? D3d12CandidatesFor(gop) : SystemCandidatesFor(gop);
 
     /// <summary>カタログに定義済みのファクトリ名かどうかを調べる。</summary>
     public static bool TryGetKnown(string factoryName, out H264EncoderDef definition)
@@ -373,12 +412,18 @@ public static class EncoderCatalog
     /// <param name="type">録画種別。</param>
     /// <param name="preferred">優先するファクトリ名。<see langword="null"/> または空なら自動選択。</param>
     /// <param name="probe">存在確認。テストから差し替えられるよう引数で受ける。</param>
+    /// <param name="gop">
+    /// 候補に付ける GOP 長（フレーム数）。省略すると既定フレームレートの値。
+    /// <b>実際に流れるフレームレートから <see cref="GopForFramerate"/> で決めること</b> ──
+    /// 常時録画の枝は本線より低いレートで走るのが普通で、フレーム数を共有すると
+    /// そちらだけ GOP が伸びてセグメント分割が遅れる。
+    /// </param>
     public static IReadOnlyList<H264EncoderDef> Resolve(
-        EventRecordingType type, string? preferred, Func<string, bool> probe)
+        EventRecordingType type, string? preferred, Func<string, bool> probe, int gop = GopSize)
     {
         ArgumentNullException.ThrowIfNull(probe);
 
-        var ordered = CandidatesFor(type).Where(c => probe(c.FactoryName)).ToList();
+        var ordered = CandidatesFor(type, gop).Where(c => probe(c.FactoryName)).ToList();
 
         if (string.IsNullOrWhiteSpace(preferred))
             return ordered;

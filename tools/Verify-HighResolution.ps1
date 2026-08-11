@@ -388,6 +388,13 @@ $reportedSrc = "d3d12screencapturesrc monitor-index=$MonitorIndex show-cursor=tr
 # that test and forces a decision here rather than drifting silently.
 $reportedEnc = 'qsvh264enc rate-control=icq icq-quality=30 gop-size=60'
 
+# 常時録画の枝を 5fps で回す行用。**手動指定はそのまま使われる**ので、
+# 製品側の「フレームレートから 2 秒で逆算」は効かない。$reportedEnc（既定 30fps 基準の
+# gop-size=60）をそのまま渡すと 5fps では 12 秒間隔になり、セグメントの分割は
+# キーフレームでしか行えないので 5 秒の設定が 10 秒へ伸びる（実測。continuous.overshoot）。
+# 枝のレートに合わせてここで固定する。
+$reportedContinuousEnc = 'qsvh264enc rate-control=icq icq-quality=30 gop-size=10'
+
 $cases = New-Object System.Collections.Generic.List[object]
 
 # -SmokeTest exercises every part of this script (settings.json, the CLI round trip, the
@@ -509,7 +516,7 @@ $cases.Add([pscustomobject]@{
     Name = 'fps2: D3D12 src, continuous 5fps, continuous encoder = qsvh264enc'
     Type = 'D3d12'; Src = $fpsSrcD3d12; Enc = $reportedEnc; Buffer = 3000; Seconds = $fpsSeconds
     Continuous = $true; ContinuousFramerate = '5/1'; ContinuousResolution = '960x540'
-    ContinuousEnc = $reportedEnc
+    ContinuousEnc = $reportedContinuousEnc
     Note = 'only change from round 1 row 3: the continuous branch is on Quick Sync too (two QSV sessions)'
 })
 $cases.Add([pscustomobject]@{
@@ -527,7 +534,7 @@ $cases.Add([pscustomobject]@{
     Name = 'fps2: SYSTEM-memory src, continuous 5fps, continuous encoder = qsvh264enc'
     Type = 'D3d12'; Src = $fpsSrcSystem; Enc = $reportedEnc; Buffer = 3000; Seconds = $fpsSeconds
     Continuous = $true; ContinuousFramerate = '5/1'; ContinuousResolution = '960x540'
-    ContinuousEnc = $reportedEnc
+    ContinuousEnc = $reportedContinuousEnc
     Note = 'closest to the reported configuration: upload path + videorate + two QSV sessions'
 })
 $cases.Add([pscustomobject]@{
@@ -563,7 +570,7 @@ if (-not [string]::IsNullOrEmpty($CameraName)) {
         Name = "fps3: camera, continuous 5fps, continuous encoder = qsvh264enc"
         Type = 'D3d12'; Src = $camSrc; Enc = $reportedEnc; Buffer = 3000; Seconds = $camSeconds
         Continuous = $true; ContinuousFramerate = '5/1'; ContinuousResolution = '960x540'
-        ContinuousEnc = $reportedEnc
+        ContinuousEnc = $reportedContinuousEnc
         Note = 'the reported FAILING case -- one recorder only'
     })
     # **この行だけ ContinuousResolution を付けない。** 常時録画の設定は全レコーダー共通で、
@@ -576,7 +583,7 @@ if (-not [string]::IsNullOrEmpty($CameraName)) {
         Name = "fps3: camera + screen capture (TWO recorders), both continuous 5fps"
         Type = 'D3d12'; Src = $camSrc; Enc = $reportedEnc; Buffer = 3000; Seconds = $camSeconds
         Continuous = $true; ContinuousFramerate = '5/1'
-        ContinuousEnc = $reportedEnc
+        ContinuousEnc = $reportedContinuousEnc
         SecondSrc = $reportedSrc; SecondType = 'D3d12'
         Note = 'the full reported setup -- four encoder sessions at once (event x2 + continuous x2). event fps is R1 (the camera)'
     })
@@ -602,14 +609,14 @@ if (-not [string]::IsNullOrEmpty($CameraName)) {
         Name = 'fps4: camera, continuous 5fps, NO resolution override'
         Type = 'D3d12'; Src = $camSrc; Enc = $reportedEnc; Buffer = 3000; Seconds = $camSeconds4
         Continuous = $true; ContinuousFramerate = '5/1'
-        ContinuousEnc = $reportedEnc
+        ContinuousEnc = $reportedContinuousEnc
         Note = 'videorate only, no scaler in the branch'
     })
     $cases.Add([pscustomobject]@{
         Name = 'fps4: camera, continuous 5fps, with GStreamer logging'
         Type = 'D3d12'; Src = $camSrc; Enc = $reportedEnc; Buffer = 3000; Seconds = $camSeconds4
         Continuous = $true; ContinuousFramerate = '5/1'; ContinuousResolution = '960x540'
-        ContinuousEnc = $reportedEnc
+        ContinuousEnc = $reportedContinuousEnc
         GstDebug = 'videorate:5,queue:4,mfvideosrc:4'
         Note = 'same as the failing row but with GST_DEBUG -- read debug.log for videorate drops and queue-full messages'
     })
