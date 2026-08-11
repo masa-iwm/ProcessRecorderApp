@@ -630,20 +630,20 @@ public partial class EventRecorder : ObservableObject, IDisposable
                     // 試す全エンコーダーが I420 を受けるため、この失敗は再現しない。**
                     EventRecordingType.System => $""""
                                 dwriteclockoverlay time-format="%Y-%m-%d %H:%M:%S" auto-resize=false font-family=Arial font-size=36 !
-                                tee name=t ! {PreviewQueue} ! appsink max-buffers=1 drop=true name=preview t. ! queue !
+                                tee name=t ! {PreviewQueue} ! appsink max-buffers=1 drop=true sync=false name=preview t. ! queue !
                                 videoconvert ! {encoder}
                                 """",
                     EventRecordingType.D3d12 => $""""
                                 d3d12upload ! d3d12convert ! video/x-raw(memory:D3D12Memory), format=NV12{pinned} !
                                 dwriteclockoverlay time-format="%Y-%m-%d %H:%M:%S" auto-resize=false font-family=Arial font-size=36 !
-                                tee name=t ! {PreviewQueue} ! d3d12download ! video/x-raw(memory:SystemMemory) ! appsink max-buffers=1 drop=true name=preview t. ! queue !
+                                tee name=t ! {PreviewQueue} ! d3d12download ! video/x-raw(memory:SystemMemory) ! appsink max-buffers=1 drop=true sync=false name=preview t. ! queue !
                                 {download}{encoder}
                                 """",
                     _ => "",
                 })} !
                 h264parse config-interval=-1 !
                 video/x-h264, stream-format=byte-stream, alignment=au, profile=main !
-                appsink name=sink
+                appsink name=sink sync=false
                 """
             + (continuousBranch.Length == 0 ? "" : "\n" + continuousBranch);
     }

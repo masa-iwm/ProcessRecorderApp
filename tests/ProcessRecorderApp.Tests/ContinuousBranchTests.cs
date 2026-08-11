@@ -217,7 +217,7 @@ public class ContinuousBranchTests
         string branch = Build(EventRecordingType.System, Encoder, false, "", "");
 
         Assert.StartsWith("t. ! ", branch);
-        Assert.EndsWith($"appsink name={ContinuousBranch.AppSinkName} async=false", branch);
+        Assert.EndsWith($"appsink name={ContinuousBranch.AppSinkName} async=false sync=false", branch);
     }
 
     /// <summary>
@@ -380,6 +380,33 @@ public class ContinuousBranchTests
     {
         Assert.Contains("mp4mux", ContinuousBranch.SegmentWriterPipeline);
         Assert.DoesNotContain("faststart", ContinuousBranch.SegmentWriterPipeline);
+    }
+
+    /// <summary>
+    /// <b>取り出す側の <c>appsink</c> はすべて <c>sync=false</c> であること。</b>
+    /// 録画も常時録画も、取り出した AU に自分で PTS を付け直して mux するので、
+    /// <c>appsink</c> がクロックを待つ理由が無い。既定の <c>sync=true</c> に戻ると、
+    /// <b>枝のどれか1本が申告した latency でパイプライン全体のシンクが待たされる</b> ──
+    /// 実測で、常時枝を 5fps にするとプレビューのフレームレートが目に見えて落ち、
+    /// ソースによっては本線の録画も 30fps から 12fps まで落ちた（15fps では出ない）。
+    /// </summary>
+    [Fact]
+    public void EveryAppsinkWePullOurselves_DoesNotSyncToTheClock()
+    {
+        string pipeline = EventRecorder.BuildSinkPipeline(
+            EventRecordingType.D3d12, "d3d12testsrc", Encoder, false,
+            ContinuousBranch.Plan(EventRecordingType.D3d12, Encoder, false, "5/1", "960x540", true, true).Branch);
+
+        foreach (string name in new[] { "sink", "preview", ContinuousBranch.AppSinkName })
+        {
+            int at = pipeline.IndexOf($"name={name}", StringComparison.Ordinal);
+            Assert.True(0 <= at, $"appsink '{name}' が見つからない");
+            // 要素の切れ目（次の " ! " か行末）までに sync=false が在ること
+            int from = pipeline.LastIndexOf("appsink", at, StringComparison.Ordinal);
+            int to = pipeline.IndexOf('!', at);
+            string element = 0 <= to ? pipeline[from..to] : pipeline[from..];
+            Assert.Contains("sync=false", element);
+        }
     }
 
     /// <summary>常時録画を切っている構成のパイプライン文字列は 1 文字も変わらない。</summary>

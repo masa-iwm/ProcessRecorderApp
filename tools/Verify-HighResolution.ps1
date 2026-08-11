@@ -71,6 +71,9 @@ param(
     [int]$ContinuousWaitSeconds = 45,
     # 実物のカメラで測る行を足す（例: 'HD Pro Webcam C920'）。空なら飛ばす。
     [string]$CameraName = '',
+    # 一部の行だけ流す正規表現（例: -CaseFilter '^fps4'）。往復のたびに全行を
+    # 流すと 15 分かかるので、切り分けの続きだけを回すために使う。
+    [string]$CaseFilter = '',
     [switch]$SmokeTest,
     [switch]$KeepWorkDir
 )
@@ -146,8 +149,11 @@ $env:PROCESSRECORDERAPP_KEY_PREFIX = 'PraHiRes_' + [guid]::NewGuid().ToString('N
 
 $recDir = Join-Path $WorkDir 'rec'
 $dotDir = Join-Path $WorkDir 'dot'
+# ケースごとのログの退避先。**最後のケースのぶんだけ残る**のを避けるため。
+$logDir = Join-Path $WorkDir 'logs'
 $null = New-Item -ItemType Directory -Force $recDir
 $null = New-Item -ItemType Directory -Force $dotDir
+$null = New-Item -ItemType Directory -Force $logDir
 
 # ---------------------------------------------------------------- helpers
 
@@ -691,6 +697,20 @@ function Invoke-Case {
 
     Stop-AllWorkers
     Get-ChildItem $recDir -Filter *.mp4 -ErrorAction SilentlyContinue | Remove-Item -Force
+
+    # **前のケースのログを消す前に退避する。** ケースごとに activity.log / debug.log を
+    # 消して回るので、退避しないと**最後のケースのぶんしか残らない** ── GST_DEBUG を
+    # 採ったケースのログが後続のケースに上書きされて、往復が1回無駄になる。
+    if ($script:lastCaseName) {
+        $safe = ($script:lastCaseName -replace '[^A-Za-z0-9]+', '-').Trim('-')
+        if ($safe.Length -gt 60) { $safe = $safe.Substring(0, 60) }
+        foreach ($log in 'activity.log', 'debug.log') {
+            $src = Join-Path $WorkDir $log
+            if (Test-Path $src) { Copy-Item $src (Join-Path $logDir "$safe.$log") -Force }
+        }
+    }
+    $script:lastCaseName = $Case.Name
+
     Remove-Item (Join-Path $WorkDir 'activity.log') -Force -ErrorAction SilentlyContinue
     Remove-Item (Join-Path $WorkDir 'debug.log')    -Force -ErrorAction SilentlyContinue
 
@@ -834,6 +854,17 @@ function Invoke-Case {
     }
 }
 
+if ($CaseFilter) {
+    $before = $cases.Count
+    $kept = @($cases | Where-Object { $_.Name -match $CaseFilter })
+    $cases = New-Object System.Collections.Generic.List[object]
+    $kept | ForEach-Object { $cases.Add($_) }
+    # **選んだ件数を必ず出す。** 0 件でも走り切って緑に見えるのが一番危ない。
+    Write-Host "CaseFilter '$CaseFilter' selected $($cases.Count) of $before case(s)."
+    if ($cases.Count -eq 0) { Write-Host 'Nothing to run.'; exit 1 }
+    Write-Host ''
+}
+
 foreach ($case in $cases) {
     Write-Host "== $($case.Name)"
     $r = Invoke-Case -Case $case
@@ -942,6 +973,14 @@ Set-Content -Path $reportPath -Value $sb.ToString() -Encoding utf8
 
 Write-Host '---------------------------------------------------------------'
 $results | Format-Table Case, StartExit, StopExit, InitOk, InitFail, Stalled, DurationSec, Ok -AutoSize
+if ($script:lastCaseName) {
+    $safe = ($script:lastCaseName -replace '[^A-Za-z0-9]+', '-').Trim('-')
+    if ($safe.Length -gt 60) { $safe = $safe.Substring(0, 60) }
+    foreach ($log in 'activity.log', 'debug.log') {
+        $src = Join-Path $WorkDir $log
+        if (Test-Path $src) { Copy-Item $src (Join-Path $logDir "$safe.$log") -Force }
+    }
+}
 Write-Host "Report written to: $reportPath"
 
 $failed = @($results | Where-Object { -not $_.Ok })

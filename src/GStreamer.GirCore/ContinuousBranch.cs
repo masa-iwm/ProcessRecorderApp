@@ -305,7 +305,7 @@ public static class ContinuousBranch
         sb.Append(encoder)
           .Append(" ! h264parse config-interval=-1 ! ")
           .Append("video/x-h264, stream-format=byte-stream, alignment=au, profile=main ! ")
-          .Append("appsink name=").Append(AppSinkName).Append(" async=false");
+          .Append("appsink name=").Append(AppSinkName).Append(" async=false sync=false");
 
         return new ContinuousBranchPlan(
             sb.ToString(), dropped.Count == 0 ? null : string.Join(" / ", dropped), hasSize);
