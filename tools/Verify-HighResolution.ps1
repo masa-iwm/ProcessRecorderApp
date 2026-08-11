@@ -69,6 +69,8 @@ param(
     # the case: a soak that quietly stopped short would otherwise look identical to one
     # that succeeded.
     [int]$ContinuousWaitSeconds = 45,
+    # 実物のカメラで測る行を足す（例: 'HD Pro Webcam C920'）。空なら飛ばす。
+    [string]$CameraName = '',
     [switch]$SmokeTest,
     [switch]$KeepWorkDir
 )
@@ -221,7 +223,9 @@ function Write-Settings {
         [string]$ContinuousFramerate = '',
         [string]$ContinuousResolution = '',
         [string]$ContinuousEnc = '',   # 空なら自動選択（EncoderCatalog の先頭）
-        [int]$ContinuousSegmentSeconds = 5
+        [int]$ContinuousSegmentSeconds = 5,
+        [string]$SecondSrc = '',        # 空でなければ2台目のレコーダーを足す
+        [string]$SecondType = ''
     )
 
     $encProp   = if ([string]::IsNullOrEmpty($EncodingProperties)) { 'null' } else { '"' + $EncodingProperties + '"' }
@@ -237,20 +241,21 @@ function Write-Settings {
     # qsvh264enc でも常時側は d3d12h264enc になり、**別のエンジンなので競合を試験できない**。
     $contEnc   = if ([string]::IsNullOrEmpty($ContinuousEnc)) { 'null' } else { '"' + $ContinuousEnc + '"' }
 
-    $json = @"
-{
-  "DataVersion": 1,
-  "DebugLogFile": "$logPath",
-  "GstDebugDumpDotDir": "$dotPath",
-  "GstDebug": "",
-  "PreferredH264Encoder": "",
-  "Recorders": [
+    # settings.json は文字列連結で組み立てているので、SrcPipeline に " が入る場合
+    # （mfvideosrc device-name="..." など）は JSON として壊れないよう自分で逃がす。
+    function ConvertTo-JsonString([string]$value) { return ($value -replace '\\', '\\' -replace '"', '\"') }
+
+    # 1台ぶんのレコーダー定義。**2台同時**を試験できるようにここだけ関数にしてある
+    # ── 報告された構成はカメラと画面キャプチャの2台が同時に常時録画しており、
+    # 1台での測定はその条件を再現していない。
+    function New-RecorderJson([string]$name, [string]$type, [string]$src) {
+        return @"
     {
-      "Name": "R1",
+      "Name": "$name",
       "BufferDuration": $BufferDuration,
       "FilenameTemplate": "$tmpl",
-      "Type": "$RecorderType",
-      "SrcPipeline": "$SrcPipeline",
+      "Type": "$type",
+      "SrcPipeline": "$(ConvertTo-JsonString $src)",
       "EncodingProperties": $encProp,
       "ContinuousRecording": $contFlag,
       "ContinuousFramerate": "$ContinuousFramerate",
@@ -259,6 +264,24 @@ function Write-Settings {
       "ContinuousFilenameTemplate": "$contTmpl",
       "ContinuousSegmentSeconds": $ContinuousSegmentSeconds
     }
+"@
+    }
+
+    $recorders = New-RecorderJson 'R1' $RecorderType $SrcPipeline
+    if (-not [string]::IsNullOrEmpty($SecondSrc)) {
+        $secondType = if ([string]::IsNullOrEmpty($SecondType)) { $RecorderType } else { $SecondType }
+        $recorders = $recorders + ",`r`n" + (New-RecorderJson 'R2' $secondType $SecondSrc)
+    }
+
+    $json = @"
+{
+  "DataVersion": 1,
+  "DebugLogFile": "$logPath",
+  "GstDebugDumpDotDir": "$dotPath",
+  "GstDebug": "",
+  "PreferredH264Encoder": "",
+  "Recorders": [
+$recorders
   ]
 }
 "@
@@ -404,6 +427,19 @@ if ($SmokeTest) {
         Note = 'harness self-check of the continuous half -- segment checks, named continuous encoder, per-case duration'
         ExpectStall = $false
     })
+    # 2台目のレコーダーと、SrcPipeline に " が入る場合の JSON 逃がしも自己検証する
+    # ── どちらも実機のカメラ構成でしか使わないので、ここで通しておかないと
+    # 実機で初めて壊れているのが分かる（往復が1回無駄になる）。
+    $cases.Add([pscustomobject]@{
+        Name = 'smoke: TWO recorders and a quoted SrcPipeline'
+        Type = 'System'
+        Src  = 'videotestsrc is-live=true do-timestamp=true ! videoconvert ! capsfilter caps="video/x-raw,format=I420,width=320,height=240,framerate=15/1"'
+        Enc  = $null; Buffer = 3000
+        SecondSrc = 'videotestsrc is-live=true do-timestamp=true ! videoconvert ! video/x-raw,format=I420,width=320,height=240,framerate=15/1'
+        SecondType = 'System'
+        Note = 'harness self-check: the JSON escaping and the second recorder'
+        ExpectStall = $false
+    })
 }
 else {
 
@@ -492,6 +528,44 @@ $cases.Add([pscustomobject]@{
     ContinuousEnc = $reportedEnc
     Note = 'the same but with the framerate limit off -- the reported working case'
 })
+
+# 3 巡目。2 巡目までで **合成ソースでは何をやっても 30fps のまま**だった
+# （アップロード経路・QSV 2 セッション・videorate・20 秒窓のどれも再現しない）。
+# 報告された構成に残る差は 2 つ:
+#   (a) ソースが実物のカメラ（mfvideosrc。MJPEG を MF が展開している）
+#   (b) **レコーダーが 2 台同時**で、どちらも常時録画が有効（＝ 4 セッション）
+# -CameraName を渡したときだけ走る（そのカメラが無い機械では飛ばす）。
+if (-not [string]::IsNullOrEmpty($CameraName)) {
+    $camSrc = "mfvideosrc device-name=`"$CameraName`" ! video/x-raw, format=NV12, width=1920, height=1080, framerate=30/1"
+    $camSeconds = 20
+
+    $cases.Add([pscustomobject]@{
+        Name = "fps3: camera '$CameraName' 1080p30, continuous OFF"
+        Type = 'D3d12'; Src = $camSrc; Enc = $reportedEnc; Buffer = 3000; Seconds = $camSeconds
+        Note = 'the real camera on its own -- if this is already below 30 the camera is the ceiling'
+    })
+    $cases.Add([pscustomobject]@{
+        Name = "fps3: camera, continuous WITHOUT framerate, continuous encoder = qsvh264enc"
+        Type = 'D3d12'; Src = $camSrc; Enc = $reportedEnc; Buffer = 3000; Seconds = $camSeconds
+        Continuous = $true; ContinuousResolution = '960x540'; ContinuousEnc = $reportedEnc
+        Note = 'the reported WORKING case'
+    })
+    $cases.Add([pscustomobject]@{
+        Name = "fps3: camera, continuous 5fps, continuous encoder = qsvh264enc"
+        Type = 'D3d12'; Src = $camSrc; Enc = $reportedEnc; Buffer = 3000; Seconds = $camSeconds
+        Continuous = $true; ContinuousFramerate = '5/1'; ContinuousResolution = '960x540'
+        ContinuousEnc = $reportedEnc
+        Note = 'the reported FAILING case -- one recorder only'
+    })
+    $cases.Add([pscustomobject]@{
+        Name = "fps3: camera + screen capture (TWO recorders), both continuous 5fps"
+        Type = 'D3d12'; Src = $camSrc; Enc = $reportedEnc; Buffer = 3000; Seconds = $camSeconds
+        Continuous = $true; ContinuousFramerate = '5/1'; ContinuousResolution = '960x540'
+        ContinuousEnc = $reportedEnc
+        SecondSrc = $reportedSrc; SecondType = 'D3d12'
+        Note = 'the full reported setup -- four encoder sessions at once (event x2 + continuous x2). event fps is R1 (the camera)'
+    })
+}
 
 # Automatic selection at 4K exercises the candidate fallback with the new PLAYING wait in
 # the loop: if a candidate stalls it must be rejected and the next one tried.
@@ -584,13 +658,16 @@ function Invoke-Case {
     Remove-Item (Join-Path $WorkDir 'debug.log')    -Force -ErrorAction SilentlyContinue
 
     $isContinuous = [bool]$Case.Continuous
+    # 2台目を足したケースでは init の署名も2件出る。1件固定で判定すると必ず赤になる。
+    $expectedRecorders = if ([string]::IsNullOrEmpty([string]$Case.SecondSrc)) { 1 } else { 2 }
     Write-Settings -RecorderType $Case.Type -SrcPipeline $Case.Src `
                    -EncodingProperties $Case.Enc -BufferDuration $Case.Buffer `
                    -Continuous $isContinuous `
                    -ContinuousFramerate ([string]$Case.ContinuousFramerate) `
                    -ContinuousResolution ([string]$Case.ContinuousResolution) `
                    -ContinuousEnc ([string]$Case.ContinuousEnc) `
-                   -ContinuousSegmentSeconds $ContinuousSegmentSeconds
+                   -ContinuousSegmentSeconds $ContinuousSegmentSeconds `
+                   -SecondSrc ([string]$Case.SecondSrc) -SecondType ([string]$Case.SecondType)
 
     # The very first launch on a machine builds the GStreamer plugin registry, which can
     # take longer than the launcher's wait. Retry once.
@@ -649,7 +726,8 @@ function Invoke-Case {
     # apart by name (the continuous template ends in _c<segment>.mp4).
     $contFiles = @(Get-ChildItem $recDir -Filter 'R1_c*.mp4' -ErrorAction SilentlyContinue |
                    Sort-Object CreationTimeUtc)
-    $mp4   = Get-ChildItem $recDir -Filter *.mp4 -ErrorAction SilentlyContinue |
+    # **R1 に限定する** ── 2台目のレコーダーが居ると R2_*.mp4 を掴んで fps を取り違える。
+    $mp4   = Get-ChildItem $recDir -Filter 'R1_*.mp4' -ErrorAction SilentlyContinue |
              Where-Object { $_.Name -notlike 'R1_c*' } | Select-Object -First 1
     $probe = if ($mp4) { Test-Mp4 $mp4.FullName } else { $null }
 
@@ -670,7 +748,7 @@ function Invoke-Case {
         $ok = ($stalled.Count -gt 0) -and ($initFail.Count -eq 1) -and ($initOk.Count -eq 0)
     } else {
         $ok = ($start.ExitCode -eq 0) -and ($stop.ExitCode -eq 0) -and
-              ($initOk.Count -eq 1) -and ($initFail.Count -eq 0) -and ($stalled.Count -eq 0) -and
+              ($initOk.Count -eq $expectedRecorders) -and ($initFail.Count -eq 0) -and ($stalled.Count -eq 0) -and
               ($null -ne $probe) -and $probe.HasFtyp -and $probe.HasMoov -and $probe.HasMdat -and
               $probe.HasAvc1 -and ($probe.DurationSec -gt 0)
 
@@ -681,7 +759,7 @@ function Invoke-Case {
             # when the workers are killed. With the default (2) this is the original
             # "at least one closed segment"; with -ContinuousMinSegments 20 it makes a soak
             # that stopped short fail instead of passing quietly.
-            $ok = $ok -and ($contInitOk.Count -eq 1) -and ($contInitFail.Count -eq 0) -and
+            $ok = $ok -and ($contInitOk.Count -eq $expectedRecorders) -and ($contInitFail.Count -eq 0) -and
                   ($contClosed.Count -ge ($ContinuousMinSegments - 1)) -and
                   ($contBad.Count -eq 0) -and ($contErrors.Count -eq 0) -and (-not $contWaitedOut)
         }
