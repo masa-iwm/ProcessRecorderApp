@@ -7,17 +7,39 @@
 
 ## 命名規約
 
-- タグ: `gstreamer-runtime-v<GStreamer の版>`（例: `gstreamer-runtime-v1.28.4`）。
+- タグ: `gstreamer-runtime-v<GStreamer の版>`（例: `gstreamer-runtime-v1.28.6`）。
   同じ版のまま中身を差し替える場合は `-r2` のような枝番を付ける。
   **`v` 単独で始まる名前にしないこと** ── `v*` は `release.yml` のタグトリガーに一致する。
 - アセット: `gstreamer-runtime-win-x64-v<版>.zip`
 
 ## 手順
 
-1. 新しいインストーラでフルインストールし、`tools/Get-GStreamerImportClosure.ps1` で
-   閉包を再計算する。種（プラグイン一覧と名前で読むライブラリ）は製品コードと同期して
+1. 新しいインストーラ（Inno Setup 6）を **Runtime / LGPL-only 構成**で無人導入し、
+   `tools/Get-GStreamerImportClosure.ps1` で閉包を再計算する。
+   種（プラグイン一覧と名前で読むライブラリ）は製品コードと同期して
    おり、ずれると `RuntimeClosureSeedSyncTests`（L1）が落ちる。`objdump -p` が必要
    （公式 MinGW 版には付属しない。MSYS2 のものを使う）。
+
+   ```powershell
+   $parts = 'base_system_1_0','gstreamer_1_0_capture','gstreamer_1_0_codecs',
+            'gstreamer_1_0_core','gstreamer_1_0_encoding','gstreamer_1_0_system'
+   $components = (($parts | ForEach-Object { $_; $_ + '\runtime' }) -join ',')
+   Start-Process .\gstreamer-1.0-mingw-x86_64-<版>.exe -ArgumentList '/VERYSILENT','/NORESTART',
+       '/SUPPRESSMSGBOXES','/CURRENTUSER',"/DIR=$env:LOCALAPPDATA\Programs\gstreamer\1.0\mingw_x86_64",
+       "/COMPONENTS=$components",'/TASKS=environment_variables,registry_install_dir'
+   ```
+
+   この選択で展開されるのは 349 ファイル・254MB（1.28.6 実測。`unins000.*` を除く）。
+   `*_gpl` / `*_restricted` / `libav` / `base_crypto` を入れないのが LGPL-only の実体で、
+   入っている構成は `HKCU:\...\Uninstall\*_is1` の `Inno Setup: Selected Components` で読める。
+   アンインストーラも `unins000.exe /VERYSILENT` で無人化できるが、**どちらも途中で
+   プロセスが入れ替わる**ので、終了コードではなく `unins000.exe` の有無で完了を見ること。
+
+   > **この構成には `x264enc` が無い。** E2E ハーネスは
+   > `SettingsFile.DefaultEncoder = "x264enc"` を固定しているので、作業が終わったら
+   > 開発機は GPL を含む全構成へ戻すこと（同じ `/COMPONENTS` に `*_gpl` /
+   > `*_restricted` / `libav` / `base_crypto` などを足す）。戻さないと L2 E2E の大半が落ちる。
+
 2. ファイルを削る前の確認 4 点を通す ── `THIRD-PARTY-NOTICES.md`「6.」。
 3. `licenses/third-party/COMPONENTS.tsv` を新しい一覧で差し替える。版が変わった場合は
    `SOURCES.tsv`・ライセンス全文・`THIRD-PARTY-NOTICES.md` の版表記も更新する
