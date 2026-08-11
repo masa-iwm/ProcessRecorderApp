@@ -359,8 +359,13 @@ I フレームゲートが次の I まで捨てる ── そのぶんの映像�
 - **`NeedsSystemMemory`**。`parse_launch` は変換要素を自動挿入しないため、`D3d12` 経路で
   `EncoderCatalog` の `NeedsSystemMemory: true` の候補（`x264enc` / `openh264enc` /
   `mfh264enc` / `nvh264enc` / `nvd3d11h264enc` / `nvautogpuh264enc` / `amfh264enc`）を
-  使う場合は、その手前に
-  `d3d12download ! video/x-raw(memory:SystemMemory) ! videoconvert !` を挿入する。
+  使う場合は、その手前に `d3d12download ! videoconvert !` を挿入する。
+  **行き先を `video/x-raw(memory:SystemMemory)` で固定してはいけない** ── 明示の
+  フィーチャは `memory:D3D11Memory` と一致せず、**D3D11 を受けられるエンコーダー相手でも
+  毎フレーム GPU→CPU の往復を強制する**（NVIDIA 実機で実測。固定を外すと
+  `nvd3d11h264enc` 相手では `memory:D3D11Memory` で折り合う）。`videoconvert` の caps は
+  `video/x-raw(ANY)` なので交渉を妨げず、形式変換が要るときだけ働く
+  （実測: `openh264enc` 相手だと NV12 → I420 になる）。
   これが無いと `ParseLaunch` が「リンクできない」で失敗する ── **まさに直したかった
   AMD / NVIDIA 機で壊れる経路**。
 - **「存在する」≠「動く」**。候補は上から順に `ParseLaunch` → `SetState(Playing)` まで実際に試し、

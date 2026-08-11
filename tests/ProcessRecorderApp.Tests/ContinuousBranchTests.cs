@@ -347,7 +347,7 @@ public class ContinuousBranchTests
     {
         string branch = Build(EventRecordingType.D3d12, Encoder, true, "", "");
 
-        Assert.Contains("d3d12download ! video/x-raw(memory:SystemMemory) ! videoconvert ! " + Encoder, branch);
+        Assert.Contains("d3d12download ! videoconvert ! " + Encoder, branch);
     }
 
     [Fact]

@@ -477,8 +477,15 @@ public partial class EventRecorder : ObservableObject, IDisposable
     /// <param name="encoder">エンコーダーの起動文字列（ファクトリ名＋プロパティ）。</param>
     /// <param name="needsSystemMemory">
     /// エンコーダーがシステムメモリ入力を要求するか。<c>D3d12</c> 経路で真の場合、
-    /// エンコーダーの手前に <c>d3d12download ! video/x-raw(memory:SystemMemory) ! videoconvert !</c>
-    /// を挿入する（<c>parse_launch</c> は変換要素を自動挿入しないため、これが無いとリンクに失敗する）。
+    /// エンコーダーの手前へ <c>d3d12download ! videoconvert !</c> を挿入する
+    /// （<c>parse_launch</c> は変換要素を自動挿入しないため、これが無いとリンクに失敗する）。
+    /// <b><c>video/x-raw(memory:SystemMemory)</c> を書いてはいけない</b> ── 明示のフィーチャなので
+    /// <c>memory:D3D11Memory</c> と一致せず、<b>毎フレームの GPU→CPU 往復を強制する</b>。外すと
+    /// <c>d3d12download</c> は下流に合わせて折り合う（NVIDIA 実機の実測: <c>nvd3d11h264enc</c> 相手だと
+    /// 両パッドとも <c>video/x-raw(memory:D3D11Memory)</c> で決まり、CPU へは降りない）。
+    /// システムメモリしか受けないエンコーダー（<c>mfh264enc</c> 等）なら、同じ形のまま
+    /// 交渉がシステムメモリへ落ちる。<c>videoconvert</c> は caps が <c>video/x-raw(ANY)</c> なので
+    /// この交渉を妨げない（必要なときだけ形式を合わせる）。
     /// <c>System</c> 経路では入力が元からシステムメモリなので無視される。
     /// </param>
     /// <remarks>
@@ -563,7 +570,7 @@ public partial class EventRecorder : ObservableObject, IDisposable
     {
         // D3d12 経路でのみ、システムメモリを要求するエンコーダーの手前にダウンロードを挟む
         string download = type == EventRecordingType.D3d12 && needsSystemMemory
-            ? "d3d12download ! video/x-raw(memory:SystemMemory) ! videoconvert ! "
+            ? "d3d12download ! videoconvert ! "
             : "";
 
         // **tee の手前の幅・高さの固定。** 常時録画の枝で拡縮するときだけ効かせる。

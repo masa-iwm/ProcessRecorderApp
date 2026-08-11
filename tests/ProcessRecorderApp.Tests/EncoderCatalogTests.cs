@@ -347,7 +347,7 @@ public class BuildSinkPipelineTests
             EventRecordingType.D3d12, Src, "x264enc bitrate=2000", needsSystemMemory: true);
 
         string encoderBranch = p[p.IndexOf("t. !", StringComparison.Ordinal)..];
-        Assert.Contains("d3d12download ! video/x-raw(memory:SystemMemory) ! videoconvert ! x264enc bitrate=2000", encoderBranch);
+        Assert.Contains("d3d12download ! videoconvert ! x264enc bitrate=2000", encoderBranch);
     }
 
     /// <summary>
@@ -514,7 +514,7 @@ public class EncoderCatalogToPipelineTests
         string p = BuildFor(EventRecordingType.D3d12, encoder);
         string encoderBranch = p[p.IndexOf("t. !", StringComparison.Ordinal)..];
 
-        Assert.Contains("d3d12download ! video/x-raw(memory:SystemMemory) ! videoconvert !", encoderBranch);
+        Assert.Contains("d3d12download ! videoconvert !", encoderBranch);
         Assert.Contains(encoder, encoderBranch);
     }
 
@@ -581,7 +581,7 @@ public class EncoderCatalogToPipelineTests
             EncoderCatalog.NeedsSystemMemoryFor(factory, EventRecordingType.D3d12));
 
         string encoderBranch = p[p.IndexOf("t. !", StringComparison.Ordinal)..];
-        Assert.Contains("d3d12download ! video/x-raw(memory:SystemMemory) ! videoconvert ! " + manual, encoderBranch);
+        Assert.Contains("d3d12download ! videoconvert ! " + manual, encoderBranch);
     }
 
     [Fact]
@@ -613,6 +613,6 @@ public class EncoderCatalogToPipelineTests
         string p = BuildFor(EventRecordingType.D3d12, "x264enc");
         string encoderBranch = p[p.IndexOf("t. !", StringComparison.Ordinal)..];
 
-        Assert.Contains("d3d12download ! video/x-raw(memory:SystemMemory) ! videoconvert ! x264enc", encoderBranch);
+        Assert.Contains("d3d12download ! videoconvert ! x264enc", encoderBranch);
     }
 }

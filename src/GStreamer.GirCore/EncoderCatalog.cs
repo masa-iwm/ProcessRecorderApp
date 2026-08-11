@@ -19,7 +19,9 @@ namespace ProcessRecorderApp.GStreamer;
 /// 入力にシステムメモリを要求するか。<c>Type=D3d12</c> の経路では <c>tee</c> から
 /// <c>video/x-raw(memory:D3D12Memory)</c> がそのまま流れてくるが、
 /// <c>parse_launch</c> は変換要素を自動挿入しないため、真のエンコーダーの手前には
-/// <c>d3d12download ! video/x-raw(memory:SystemMemory) ! videoconvert !</c> が必要になる。
+/// <c>d3d12download ! videoconvert !</c> が必要になる。
+/// <b>このフラグの意味は「システムメモリが要る」ではなく「ダウンロードを挿す」</b>であり、
+/// 行き先のメモリは固定せず交渉に任せる。
 /// これを入れないと「リンクできない」で <c>ParseLaunch</c> が失敗する
 /// （＝まさに直したい AMD/NVIDIA 機で壊れる）。
 /// </param>
@@ -144,19 +146,15 @@ public static class EncoderCatalog
     /// 「<c>d3d12download</c> を挿す」</b>である。
     /// </para>
     /// <para>
-    /// <b>⚠ メモリ交渉について未解決の食い違いが1件ある。</b>
-    /// 「<c>d3d12download</c> は下流に合わせて出力を変えるので、D3D11 を受ける要素が
-    /// 下流に居れば <c>video/x-raw(memory:D3D11Memory)</c> で折り合う
-    /// ＝ CPU への往復にはならない」という説がある一方、
-    /// <b><see cref="EventRecorder.BuildSinkPipeline"/> は
-    /// <c>d3d12download ! video/x-raw(memory:SystemMemory) ! videoconvert !</c> と
-    /// システムメモリを capsfilter で明示的に固定している。</b>
-    /// <c>memory:SystemMemory</c> は明示のフィーチャなので <c>memory:D3D11Memory</c> とは
-    /// 一致せず、<b>この経路では交渉の余地が無い</b>（＝毎フレーム GPU→CPU の往復が入る）。
-    /// <b>判定には NVIDIA 実機が要るので未解決。</b>
-    /// <b>性能の話であって正しさの話ではない</b>（録画自体は実機で成立している）が、
-    /// <b>「最適である」とは書けない。</b>
-    /// 決着させる手順は docs/gpu-verification.md「未検証の項目」。
+    /// <b>メモリ交渉は NVIDIA 実機で決着済み</b>（<c>tools/Verify-NvD3d11Memory.ps1</c>）。
+    /// この要素の sink caps は <c>video/x-raw(memory:D3D11Memory)</c> と素の <c>video/x-raw</c> だけで、
+    /// <b>D3D12Memory は受けない</b> ── だから <c>d3d12download</c> は必須で、
+    /// <c>NeedsSystemMemory: true</c>（＝ダウンロードを挿す）は正しい。
+    /// <b>ただし行き先を <c>video/x-raw(memory:SystemMemory)</c> で固定してはいけない</b> ──
+    /// 固定すると明示のフィーチャ同士の一致にならず、毎フレーム GPU→CPU の往復が入る。
+    /// 固定を外すと <c>d3d12download</c> の src もこの要素の sink も
+    /// <c>video/x-raw(memory:D3D11Memory)</c> で折り合う（実測）ので、現行の形は
+    /// <c>d3d12download ! videoconvert !</c> である。
     /// </para>
     /// </summary>
     private static readonly H264EncoderDef NvD3d11 = new("nvd3d11h264enc", $"nvd3d11h264enc gop-size={GopSize}", NeedsSystemMemory: true);

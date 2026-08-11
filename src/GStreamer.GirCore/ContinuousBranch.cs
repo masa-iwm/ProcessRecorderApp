@@ -286,8 +286,11 @@ public static class ContinuousBranch
                 sb.Append("d3d12convert ! ").Append(memory).Append(", format=NV12")
                   .Append(", width=").Append(width.ToString(CultureInfo.InvariantCulture))
                   .Append(", height=").Append(height.ToString(CultureInfo.InvariantCulture)).Append(" ! ");
+            // ダウンロードの先を <c>memory:SystemMemory</c> で固定しない ── 明示のフィーチャは
+            // memory:D3D11Memory と一致せず、受けられるエンコーダー相手でも CPU 往復を強制する
+            // （EventRecorder.BuildSinkPipeline の needsSystemMemory の doc に実測）。
             if (needsSystemMemory)
-                sb.Append("d3d12download ! video/x-raw(memory:SystemMemory) ! videoconvert ! ");
+                sb.Append("d3d12download ! videoconvert ! ");
         }
         else
         {
