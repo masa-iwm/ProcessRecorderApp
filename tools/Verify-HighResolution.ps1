@@ -225,7 +225,8 @@ function Write-Settings {
         [string]$ContinuousEnc = '',   # 空なら自動選択（EncoderCatalog の先頭）
         [int]$ContinuousSegmentSeconds = 5,
         [string]$SecondSrc = '',        # 空でなければ2台目のレコーダーを足す
-        [string]$SecondType = ''
+        [string]$SecondType = '',
+        [string]$GstDebug = ''        # GStreamer 側のログ（例: videorate:5）
     )
 
     $encProp   = if ([string]::IsNullOrEmpty($EncodingProperties)) { 'null' } else { '"' + $EncodingProperties + '"' }
@@ -278,7 +279,7 @@ function Write-Settings {
   "DataVersion": 1,
   "DebugLogFile": "$logPath",
   "GstDebugDumpDotDir": "$dotPath",
-  "GstDebug": "",
+  "GstDebug": "$GstDebug",
   "PreferredH264Encoder": "",
   "Recorders": [
 $recorders
@@ -437,6 +438,8 @@ if ($SmokeTest) {
         Enc  = $null; Buffer = 3000
         SecondSrc = 'videotestsrc is-live=true do-timestamp=true ! videoconvert ! video/x-raw,format=I420,width=320,height=240,framerate=15/1'
         SecondType = 'System'
+        # GstDebug のケース上書きもここで通しておく（実機でしか使わない経路のため）。
+        GstDebug = 'videotestsrc:5'
         Note = 'harness self-check: the JSON escaping and the second recorder'
         ExpectStall = $false
     })
@@ -565,6 +568,40 @@ if (-not [string]::IsNullOrEmpty($CameraName)) {
         SecondSrc = $reportedSrc; SecondType = 'D3d12'
         Note = 'the full reported setup -- four encoder sessions at once (event x2 + continuous x2). event fps is R1 (the camera)'
     })
+
+    # 4 巡目。drop-only=true でも直らなかった（11.9 -> 12.4fps）ので、
+    # 「videorate が前のバッファを保持してプールを掴む」という仮説は外れ。
+    # 次に切り分けるのは **videorate の存在そのものか、レートを下げることか**。
+    #   30/1 = ソースと同じ  -> videorate は入るが変換しない
+    #   15/1 = 半分          -> 落ち幅がレート比に追随するか
+    #   5/1 かつ縮小なし      -> スケーラーが噛んでいないか
+    # 最後の 1 行は GStreamer 側のログを採る（videorate の drop と queue の詰まり）。
+    $camSeconds4 = 20
+    foreach ($r in @('30/1', '15/1')) {
+        $cases.Add([pscustomobject]@{
+            Name = "fps4: camera, continuous $r (videorate present)"
+            Type = 'D3d12'; Src = $camSrc; Enc = $reportedEnc; Buffer = 3000; Seconds = $camSeconds4
+            Continuous = $true; ContinuousFramerate = $r; ContinuousResolution = '960x540'
+            ContinuousEnc = $reportedEnc
+            Note = if ($r -eq '30/1') { 'videorate is present but changes nothing -- if this drops, the element itself is the trigger' } else { 'half rate -- does the loss track the ratio?' }
+        })
+    }
+    $cases.Add([pscustomobject]@{
+        Name = 'fps4: camera, continuous 5fps, NO resolution override'
+        Type = 'D3d12'; Src = $camSrc; Enc = $reportedEnc; Buffer = 3000; Seconds = $camSeconds4
+        Continuous = $true; ContinuousFramerate = '5/1'
+        ContinuousEnc = $reportedEnc
+        Note = 'videorate only, no scaler in the branch'
+    })
+    $cases.Add([pscustomobject]@{
+        Name = 'fps4: camera, continuous 5fps, with GStreamer logging'
+        Type = 'D3d12'; Src = $camSrc; Enc = $reportedEnc; Buffer = 3000; Seconds = $camSeconds4
+        Continuous = $true; ContinuousFramerate = '5/1'; ContinuousResolution = '960x540'
+        ContinuousEnc = $reportedEnc
+        GstDebug = 'videorate:5,queue:4,mfvideosrc:4'
+        Note = 'same as the failing row but with GST_DEBUG -- read debug.log for videorate drops and queue-full messages'
+    })
+
 }
 
 # Automatic selection at 4K exercises the candidate fallback with the new PLAYING wait in
@@ -667,7 +704,8 @@ function Invoke-Case {
                    -ContinuousResolution ([string]$Case.ContinuousResolution) `
                    -ContinuousEnc ([string]$Case.ContinuousEnc) `
                    -ContinuousSegmentSeconds $ContinuousSegmentSeconds `
-                   -SecondSrc ([string]$Case.SecondSrc) -SecondType ([string]$Case.SecondType)
+                   -SecondSrc ([string]$Case.SecondSrc) -SecondType ([string]$Case.SecondType) `
+                   -GstDebug ([string]$Case.GstDebug)
 
     # The very first launch on a machine builds the GStreamer plugin registry, which can
     # take longer than the launcher's wait. Retry once.

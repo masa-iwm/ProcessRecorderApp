@@ -51,9 +51,9 @@ public static class ContinuousBranch
     public const string VideorateFactory = "videorate";
 
     /// <summary>
-    /// 常時枝へ出すフレームレート変換。<b><c>drop-only=true</c> は外せない</b> ──
-    /// 既定の <c>videorate</c> は次のフレームが来るまで前のバッファを持ち続けるので、
-    /// tee の手前のプールのバッファを掴みっぱなしにして<b>本線の録画を落とす</b>。
+    /// 常時枝へ出すフレームレート変換。<c>drop-only=true</c> は<b>複製をさせない</b>ため
+    /// （常時録画は下げる方向にしか使わず、ソースが止まったとき複製フレームを書庫へ
+    /// 入れる方が困る）。<b>本線のフレームレート低下は これでは直らない</b>（実測）。
     /// </summary>
     public const string VideorateElement = VideorateFactory + " drop-only=true";
 
@@ -256,22 +256,23 @@ public static class ContinuousBranch
         // D3d12 経路で video/x-raw と書くとシステムメモリを要求してしまい、
         // 上流に d3d12download が無いのでリンクに失敗する。
         //
-        // **drop-only=true は外せない。** 既定（false）の videorate は「次のフレームが来るまで
-        // 前のバッファを持ち続ける」ので、常時枝が tee の手前のプールのバッファを 1 枚
-        // 掴みっぱなしになり、**本線の録画のフレームレートが落ちる**。
+        // **drop-only=true は本線のフレームレート低下を直さない**（実測。下記）。
+        // それでも付けているのは、この用途では素の videorate の挙動が要らないからである
+        // ── 常時録画は必ず「下げる」方向にしか使わないので複製は不要で、ソースが止まった
+        // ときに複製フレームを書庫へ入れる方が困る。既定の videorate は次のフレームが
+        // 来るまで前のバッファを持ち続けるが、drop-only ではすぐ手放す
+        // （上流の `gst_buffer_replace (&videorate->prevbuf, NULL)`）。
+        //
+        // **未解決**: 常時枝に videorate が入ると本線の実 fps が落ちる。
         // 実測（実機・カメラ 1920x1080@30、20 秒窓の実効 fps）:
         //
-        //   常時録画なし                        29.9fps
-        //   常時録画あり・フレームレート上書き無し 29.9fps
-        //   常時録画あり・5fps（drop-only 無し）  11.9fps  ← 本線が落ちる
+        //   常時録画なし                          29.9fps
+        //   常時録画あり・フレームレート上書き無し   29.9fps（縮小はする＝下流の仕事は多い）
+        //   常時録画あり・5fps（drop-only 無し）    11.9fps
+        //   常時録画あり・5fps（drop-only 付き）    12.4fps  ← 変わらない
         //
-        // 上流の実装がそのまま根拠で、drop-only のときだけ
-        // `gst_buffer_replace (&videorate->prevbuf, NULL)`（"No need to keep the buffer
-        // around for longer"）を通る。**合成ソース（videotestsrc / d3d12testsrc）では
-        // 再現しない** ── 実カメラでのみ出るので、この機械の測定では捕まえられない。
-        //
-        // 落として困らない: 常時録画は必ず「下げる」方向にしか使わず、
-        // ソースが止まったときに複製フレームを書庫へ入れる方が困る。
+        // **合成ソース（d3d12testsrc / videotestsrc）では再現しない** ── 実カメラと
+        // 画面キャプチャでだけ出る。切り分けの続きは docs/gpu-verification.md。
         if (rate is not null)
             sb.Append(VideorateElement).Append(" ! ").Append(memory)
               .Append(", framerate=").Append(rate).Append(" ! ");
