@@ -258,7 +258,7 @@ function Write-Settings {
   "Recorders": [
     {
       "Name": "R1",
-      "BufferDuration": 2000,
+      "BufferDuration": 10000,
       "FilenameTemplate": "$tmpl",
       "Type": "$RecorderType",
       "SrcPipeline": "$src",
@@ -585,9 +585,9 @@ $cases.Add([pscustomobject]@{
 # that candidate exists (a skip is not a failure), and a stale property string makes the
 # case fail on real hardware and look like a product defect.
 $manualCandidates = @(
-    [pscustomobject]@{ Name = 'x264enc';     Props = 'x264enc tune=zerolatency bitrate=2000 speed-preset=ultrafast key-int-max=15' }
-    [pscustomobject]@{ Name = 'openh264enc'; Props = 'openh264enc bitrate=2000000 gop-size=15' }
-    [pscustomobject]@{ Name = 'mfh264enc';   Props = 'mfh264enc bitrate=2000 gop-size=15 low-latency=true' }
+    [pscustomobject]@{ Name = 'x264enc';     Props = 'x264enc tune=zerolatency bitrate=2000 speed-preset=ultrafast key-int-max=60' }
+    [pscustomobject]@{ Name = 'openh264enc'; Props = 'openh264enc bitrate=2000000 gop-size=60' }
+    [pscustomobject]@{ Name = 'mfh264enc';   Props = 'mfh264enc bitrate=2000 gop-size=60 low-latency=true' }
 )
 $manual = @($manualCandidates | Where-Object { $_.Name -in $present })[0]
 if ($manual) {
@@ -786,7 +786,7 @@ if ($unknown.Count -gt 0) {
     $null = $sb.AppendLine('They get no case here, and the app will never try them. Add them to EncoderCatalog.')
 }
 $null = $sb.AppendLine()
-$null = $sb.AppendLine("- Recording window per case: ${RecordSeconds}s (BufferDuration=2000ms, 4s pre-roll)")
+$null = $sb.AppendLine("- Recording window per case: ${RecordSeconds}s (BufferDuration=10000ms, 4s pre-roll)")
 $null = $sb.AppendLine()
 $null = $sb.AppendLine('| Case | start/stop | selected encoder | retries | MP4 | duration | result |')
 $null = $sb.AppendLine('|---|---|---|---|---|---|---|')

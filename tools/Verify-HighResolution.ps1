@@ -386,7 +386,7 @@ $reportedSrc = "d3d12screencapturesrc monitor-index=$MonitorIndex show-cursor=tr
 # starts verifying a configuration the product no longer produces, and still reports green.
 # EncoderCatalogScriptSyncTests pins the two together, so a deliberate catalog change fails
 # that test and forces a decision here rather than drifting silently.
-$reportedEnc = 'qsvh264enc rate-control=icq icq-quality=30 gop-size=15'
+$reportedEnc = 'qsvh264enc rate-control=icq icq-quality=30 gop-size=60'
 
 $cases = New-Object System.Collections.Generic.List[object]
 

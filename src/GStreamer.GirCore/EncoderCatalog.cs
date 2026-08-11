@@ -101,11 +101,15 @@ public static class EncoderCatalog
     ///         → 3.2秒 と 5.067秒。GOP の位相次第で当たり外れが出る</item>
     /// </list>
     ///
-    /// フレームレートは利用者の <c>SrcPipeline</c> 側にあり、ここからは分からない。
-    /// そのため固定値とし、想定される最低フレームレート（15fps）でも
-    /// **GOP 間隔がバッファ長より十分に短くなる**値を選ぶ（15 フレーム＝15fps で 1 秒）。
+    /// フレームレートは利用者の <c>SrcPipeline</c> 側にあり、ここからは分からないので固定値にする。
+    /// <b>既定のソースは 30fps</b>（<see cref="SrcPipelineBuilder"/> の caps の既定）なので
+    /// <b>60 フレーム＝2 秒間隔</b>で、既定の <c>BufferDuration</c>（10 秒）に 5 本入る。
+    /// 低い方へ振れて 15fps でも 4 秒間隔で 2.5 本入る。
+    /// <b>この値だけを見てはいけない</b> ── 利用者が <c>BufferDuration</c> を小さくすると
+    /// 同じ事故が戻る（上の実測はバッファ 2 秒の例）。関係式は
+    /// <c>GopBudgetTests</c>（L1）が縛っている。
     /// </summary>
-    private const int GopSize = 15;
+    public const int GopSize = 60;
 
     /// <summary>Intel QSV。</summary>
     private static readonly H264EncoderDef Qsv =

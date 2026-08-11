@@ -193,10 +193,20 @@ public class EncoderCatalogResolveTests
 
             int gop = int.Parse(m.Groups[1].Value, CultureInfo.InvariantCulture);
 
-            // 想定される最低フレームレート 15fps で GOP 間隔が 1 秒以内に収まること
-            Assert.True(0 < gop && gop <= 15,
-                $"'{def.FactoryName}' uses GOP {gop}; at 15fps that is {gop / 15.0:0.##}s between keyframes, "
-                + "which must stay comfortably shorter than BufferDuration.");
+            // **判定は事前バッファ長との比で行う**（GOP の生のフレーム数ではなく）。
+            // フレーム数だけを見ていると、フレームレートの既定を上げたときに
+            // 「秒では短くなったのにテストが落ちる」という逆の事故になる。
+            // 見るのは 2 点 ── 既定のソース（30fps）と、実運用で下げうる下限（15fps）。
+            double bufferSeconds = new EventRecorderSettings().BufferDuration / 1000.0;
+            foreach (int fps in (int[])[30, 15])
+            {
+                double gopSeconds = gop / (double)fps;
+                Assert.True(0 < gop && gopSeconds * 2 <= bufferSeconds,
+                    $"'{def.FactoryName}' uses GOP {gop}; at {fps}fps that is {gopSeconds:0.##}s between "
+                    + $"keyframes, and the default BufferDuration is only {bufferSeconds:0.##}s. "
+                    + "Keep at least two GOPs inside the pre-buffer, or raise the default "
+                    + "BufferDuration together with the GOP.");
+            }
         }
     }
 

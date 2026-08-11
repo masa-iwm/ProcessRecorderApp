@@ -763,13 +763,13 @@ public partial class AppSettings : JsonSettingsBase<AppSettings>
             {
                 Name = "Recorder #1",
                 Type = GStreamer.EventRecordingType.D3d12,
-                SrcPipeline = "d3d12testsrc is-live=true ! video/x-raw(memory:D3D12Memory), width=1280, height=720, framerate=15/1",
+                SrcPipeline = "d3d12testsrc is-live=true ! video/x-raw(memory:D3D12Memory), width=1280, height=720, framerate=30/1",
             });
             Recorders.Add(new()
             {
                 Name = "Recorder #2",
                 Type = GStreamer.EventRecordingType.D3d12,
-                SrcPipeline = "d3d12testsrc is-live=true ! video/x-raw(memory:D3D12Memory), width=640, height=480, framerate=15/1",
+                SrcPipeline = "d3d12testsrc is-live=true ! video/x-raw(memory:D3D12Memory), width=640, height=480, framerate=30/1",
             });
         }
 #endif

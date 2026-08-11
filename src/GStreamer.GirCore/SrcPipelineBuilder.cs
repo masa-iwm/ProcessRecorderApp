@@ -144,7 +144,7 @@ public static partial class SrcPipelineBuilder
                 // 上流の固定が要る」）。選択肢はモニターが実際に出す大きさを
                 // GstIntrospect.GetScreenCaptureMonitors から動的に取る。
                 new CapsFieldDef("resolution", isResolution: true, defaultValue: "", dynamicKey: "monitor-resolution"),
-                new CapsFieldDef("framerate", defaultValue: "15/1"),
+                new CapsFieldDef("framerate", defaultValue: "30/1"),
             ],
             memoryFeature: "memory:D3D12Memory"),
 
@@ -178,7 +178,7 @@ public static partial class SrcPipelineBuilder
             capsFields:
             [
                 new CapsFieldDef("resolution", isResolution: true, defaultValue: "", dynamicKey: "monitor-resolution"),
-                new CapsFieldDef("framerate", defaultValue: "15/1"),
+                new CapsFieldDef("framerate", defaultValue: "30/1"),
             ],
             memoryFeature: "memory:D3D11Memory"),
 
@@ -197,7 +197,7 @@ public static partial class SrcPipelineBuilder
             [
                 new CapsFieldDef("format", defaultValue: "NV12", dynamicKey: "mf-format"),
                 new CapsFieldDef("resolution", isResolution: true, defaultValue: "1920x1080", dynamicKey: "mf-resolution"),
-                new CapsFieldDef("framerate", defaultValue: "15/1", dynamicKey: "mf-framerate"),
+                new CapsFieldDef("framerate", defaultValue: "30/1", dynamicKey: "mf-framerate"),
             ]),
 
         // テストパターン(D3D12)
@@ -214,7 +214,7 @@ public static partial class SrcPipelineBuilder
             [
                 new CapsFieldDef("format", defaultValue: "NV12", choices: FormatChoices),
                 new CapsFieldDef("resolution", isResolution: true, defaultValue: "1280x720"),
-                new CapsFieldDef("framerate", defaultValue: "15/1"),
+                new CapsFieldDef("framerate", defaultValue: "30/1"),
             ],
             memoryFeature: "memory:D3D12Memory"),
 
@@ -232,7 +232,7 @@ public static partial class SrcPipelineBuilder
             [
                 new CapsFieldDef("format", defaultValue: "I420", choices: FormatChoices),
                 new CapsFieldDef("resolution", isResolution: true, defaultValue: "1280x720"),
-                new CapsFieldDef("framerate", defaultValue: "15/1"),
+                new CapsFieldDef("framerate", defaultValue: "30/1"),
             ]),
     ]);
 

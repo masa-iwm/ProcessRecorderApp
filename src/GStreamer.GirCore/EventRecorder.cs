@@ -84,7 +84,7 @@ public partial class EventRecorderSettings : ObservableObject, Components.IPrope
     public partial string? SrcPipeline { get; set; } =
 #if true
         "d3d12testsrc is-live=true do-timestamp=true ! " +
-        "video/x-raw(memory:D3D12Memory), format=NV12, width=1280, height=720, framerate=15/1";
+        "video/x-raw(memory:D3D12Memory), format=NV12, width=1280, height=720, framerate=30/1";
 #else
         //"videotestsrc is-live=true do-timestamp=true ! videoconvert ! " +
         //"video/x-raw,format=I420,width=1280, height=720,framerate=15/1";
