@@ -220,6 +220,7 @@ function Write-Settings {
         [bool]$Continuous = $false,     # second, always-on recording on a third tee branch
         [string]$ContinuousFramerate = '',
         [string]$ContinuousResolution = '',
+        [string]$ContinuousEnc = '',   # 空なら自動選択（EncoderCatalog の先頭）
         [int]$ContinuousSegmentSeconds = 5
     )
 
@@ -232,6 +233,9 @@ function Write-Settings {
     # template keeps them apart by name so the two can be counted separately.
     $contTmpl  = ($recDir -replace '\\', '\\') + '\\{Name}_c{Segment}.mp4'
     $contFlag  = if ($Continuous) { 'true' } else { 'false' }
+    # 常時録画側のエンコーダーを名指しできるようにする ── 自動選択だと本線が
+    # qsvh264enc でも常時側は d3d12h264enc になり、**別のエンジンなので競合を試験できない**。
+    $contEnc   = if ([string]::IsNullOrEmpty($ContinuousEnc)) { 'null' } else { '"' + $ContinuousEnc + '"' }
 
     $json = @"
 {
@@ -251,7 +255,7 @@ function Write-Settings {
       "ContinuousRecording": $contFlag,
       "ContinuousFramerate": "$ContinuousFramerate",
       "ContinuousResolution": "$ContinuousResolution",
-      "ContinuousEncodingProperties": null,
+      "ContinuousEncodingProperties": $contEnc,
       "ContinuousFilenameTemplate": "$contTmpl",
       "ContinuousSegmentSeconds": $ContinuousSegmentSeconds
     }
@@ -393,7 +397,11 @@ if ($SmokeTest) {
         Src  = 'videotestsrc is-live=true do-timestamp=true ! videoconvert ! video/x-raw,format=I420,width=320,height=240,framerate=15/1'
         Enc  = $null; Buffer = 3000
         Continuous = $true; ContinuousFramerate = '5/1'
-        Note = 'harness self-check of the continuous half -- proves the segment checks actually run'
+        # 常時側エンコーダーの名指しとケースごとの録画秒数も、ここで一度通しておく
+        # （手書きするなら GOP を固定すること ── key-int-max がこれ）。
+        ContinuousEnc = 'x264enc tune=zerolatency bitrate=800 speed-preset=ultrafast key-int-max=15'
+        Seconds = 6
+        Note = 'harness self-check of the continuous half -- segment checks, named continuous encoder, per-case duration'
         ExpectStall = $false
     })
 }
@@ -440,6 +448,49 @@ $cases.Add([pscustomobject]@{
     Type = 'D3d12'; Src = $fpsSrc; Enc = $reportedEnc; Buffer = 3000
     Continuous = $true; ContinuousFramerate = '5/1'; ContinuousResolution = '960x540'
     Note = 'the reported configuration -- the event MP4 came out at about 12fps'
+})
+
+# 1 巡目（上の 3 行）は d3d12testsrc ＋ 常時側エンコーダー自動選択で、3 行とも 30fps だった
+# ── videorate だけでは本線は落ちない。報告された構成との差は 2 つしか残っていない:
+#   (a) ソースがシステムメモリ（mfvideosrc）で、製品が d3d12upload を挟む
+#   (b) 常時側も qsvh264enc（自動選択だと d3d12h264enc になり、**別のエンジンなので競合しない**）
+# 以下は **1 行ごとに 1 要因だけ**変える。落ちた行の直前との差が原因である。
+# 短い窓では出ない可能性があるので、この組だけ録画窓を伸ばす。
+$fpsSrcD3d12 = 'd3d12testsrc is-live=true do-timestamp=true ! video/x-raw(memory:D3D12Memory), format=NV12, width=1920, height=1080, framerate=30/1'
+$fpsSrcSystem = 'videotestsrc is-live=true do-timestamp=true ! videoconvert ! video/x-raw, format=NV12, width=1920, height=1080, framerate=30/1'
+$fpsSeconds = 20
+
+$cases.Add([pscustomobject]@{
+    Name = 'fps2: D3D12 src, continuous 5fps, continuous encoder = qsvh264enc'
+    Type = 'D3d12'; Src = $fpsSrcD3d12; Enc = $reportedEnc; Buffer = 3000; Seconds = $fpsSeconds
+    Continuous = $true; ContinuousFramerate = '5/1'; ContinuousResolution = '960x540'
+    ContinuousEnc = $reportedEnc
+    Note = 'only change from round 1 row 3: the continuous branch is on Quick Sync too (two QSV sessions)'
+})
+$cases.Add([pscustomobject]@{
+    Name = 'fps2: SYSTEM-memory src, continuous OFF (baseline for the rows below)'
+    Type = 'D3d12'; Src = $fpsSrcSystem; Enc = $reportedEnc; Buffer = 3000; Seconds = $fpsSeconds
+    Note = 'the product inserts d3d12upload for a system-memory source, as it does for mfvideosrc'
+})
+$cases.Add([pscustomobject]@{
+    Name = 'fps2: SYSTEM-memory src, continuous 5fps, continuous encoder = auto'
+    Type = 'D3d12'; Src = $fpsSrcSystem; Enc = $reportedEnc; Buffer = 3000; Seconds = $fpsSeconds
+    Continuous = $true; ContinuousFramerate = '5/1'; ContinuousResolution = '960x540'
+    Note = 'adds videorate on top of the upload path'
+})
+$cases.Add([pscustomobject]@{
+    Name = 'fps2: SYSTEM-memory src, continuous 5fps, continuous encoder = qsvh264enc'
+    Type = 'D3d12'; Src = $fpsSrcSystem; Enc = $reportedEnc; Buffer = 3000; Seconds = $fpsSeconds
+    Continuous = $true; ContinuousFramerate = '5/1'; ContinuousResolution = '960x540'
+    ContinuousEnc = $reportedEnc
+    Note = 'closest to the reported configuration: upload path + videorate + two QSV sessions'
+})
+$cases.Add([pscustomobject]@{
+    Name = 'fps2: SYSTEM-memory src, continuous WITHOUT framerate, continuous encoder = qsvh264enc'
+    Type = 'D3d12'; Src = $fpsSrcSystem; Enc = $reportedEnc; Buffer = 3000; Seconds = $fpsSeconds
+    Continuous = $true; ContinuousResolution = '960x540'
+    ContinuousEnc = $reportedEnc
+    Note = 'the same but with the framerate limit off -- the reported working case'
 })
 
 # Automatic selection at 4K exercises the candidate fallback with the new PLAYING wait in
@@ -538,6 +589,7 @@ function Invoke-Case {
                    -Continuous $isContinuous `
                    -ContinuousFramerate ([string]$Case.ContinuousFramerate) `
                    -ContinuousResolution ([string]$Case.ContinuousResolution) `
+                   -ContinuousEnc ([string]$Case.ContinuousEnc) `
                    -ContinuousSegmentSeconds $ContinuousSegmentSeconds
 
     # The very first launch on a machine builds the GStreamer plugin registry, which can
@@ -552,7 +604,9 @@ function Invoke-Case {
     Start-Sleep -Seconds 3
 
     $start = Invoke-Cli 'start-recording-all'
-    Start-Sleep -Seconds $RecordSeconds
+    # 短い窓では出ない現象があるので、ケース側で伸ばせるようにする。
+    $seconds = if ($Case.Seconds) { [int]$Case.Seconds } else { $RecordSeconds }
+    Start-Sleep -Seconds $seconds
     $stop = Invoke-Cli 'stop-recording-all'
     Start-Sleep -Seconds 2
 
