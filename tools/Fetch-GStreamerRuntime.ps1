@@ -9,8 +9,8 @@
     repository and fetched from there; how the asset is produced and updated is
     docs/runtime-update.md.
 
-    What the bundled release ships is the official GStreamer 1.28.4 MinGW runtime
-    (LGPL-only selection) trimmed to what this app can actually build: 45 files, 49.7 MB.
+    What the bundled release ships is the official GStreamer 1.28.6 MinGW runtime
+    (LGPL-only selection) trimmed to what this app can actually build: 46 files, 49.8 MB.
     It has no x264 and no libav, so a bundled build does not carry GPL plugins;
     Type=System falls through to mfh264enc. Hardware encoders (d3d11, d3d12, nvcodec,
     amfcodec, qsv, mediafoundation) are present.
@@ -46,8 +46,8 @@
     private repository (e.g. a private fork) need an authenticated request and return 404
     otherwise (verified). In that case fetch the asset yourself and pass -ArchivePath:
 
-        gh release download gstreamer-runtime-v1.28.4 -p gstreamer-runtime-win-x64-v1.28.4.zip
-        tools/Fetch-GStreamerRuntime.ps1 -ArchivePath .\gstreamer-runtime-win-x64-v1.28.4.zip
+        gh release download gstreamer-runtime-v1.28.6 -p gstreamer-runtime-win-x64-v1.28.6.zip
+        tools/Fetch-GStreamerRuntime.ps1 -ArchivePath .\gstreamer-runtime-win-x64-v1.28.6.zip
 
     That is exactly what .github/workflows/release.yml does, so the workflow works either way.
 
@@ -64,8 +64,8 @@
 [CmdletBinding()]
 param(
     [string] $ArchivePath,
-    [string] $Uri = 'https://github.com/masa-iwm/ProcessRecorderApp/releases/download/gstreamer-runtime-v1.28.4/gstreamer-runtime-win-x64-v1.28.4.zip',
-    [string] $Sha256 = '6EEA576748BD648DD63481DC7ACE69215EC4C7487B7D01F2CD4BD6349C4C5D38',
+    [string] $Uri = 'https://github.com/masa-iwm/ProcessRecorderApp/releases/download/gstreamer-runtime-v1.28.6/gstreamer-runtime-win-x64-v1.28.6.zip',
+    [string] $Sha256 = '1C939215602ECFA2FC0BCA73F327EE9938BF6480462F02AEB4081D3D2F00F2F8',
     [string] $Destination
 )
 

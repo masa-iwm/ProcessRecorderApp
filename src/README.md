@@ -69,7 +69,7 @@
 5. 同梱物 `<exe>\runtimes\{RID}\bin`
 
 3 が要るのは、**GStreamer(MinGW) をユーザー単位でインストールするとインストーラが
-環境変数も `PATH` も設定しない**ため（1.28.4 で実測）。2 だけに頼ると
+環境変数も `PATH` も設定しない**ため（1.28.6 で実測）。2 だけに頼ると
 「入れたのに見つからない」になる。
 
 **候補を全部 `PATH` に繋いではいけない。** 依存 DLL（`libglib-2.0-0.dll` 等）は
@@ -586,7 +586,7 @@ Windows App SDK 側の `Microsoft.Windows.Storage.Pickers` を使う** ── �
     `ApplyStartupEnvironmentVariables` が環境変数として渡すので、外部で `GST_DEBUG` が
     設定済みならそちらが勝つ。`GstDebugDumpDotDir` も「グラフを保存」に対しては
     即時反映されるが、**GStreamer 内部のダンプ先は `gst_init` で確定する**ので
-    そちらに効かせるには起動時の指定が要る（GStreamer 1.28.4 に変更する API は無い）。
+    そちらに効かせるには起動時の指定が要る（GStreamer 1.28.6 に変更する API は無い）。
 - **ViewModel**: `ViewModels/GstControllerViewModel.cs`（`static Current` を保持。全レコーダーの
   一括開始/終了、CLI コマンドからも参照される）、`GstEventRecorderViewModel.cs`
   （レコーダー単位、`CanStartRecording`/`CanStopRecording` などの実行可否ガード）、

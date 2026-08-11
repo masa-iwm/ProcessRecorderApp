@@ -39,8 +39,8 @@ env:
   # 同梱用ランタイムの置き場。Release アセット（prerelease）として上げてある。
   # tools/Fetch-GStreamerRuntime.ps1 の既定値と揃えること（更新手順は docs/runtime-update.md）。
   # 中身は licenses/third-party/COMPONENTS.tsv が正本で、下の検証がそれと突き合わせる。
-  GSTREAMER_RUNTIME_TAG: 'gstreamer-runtime-v1.28.4'
-  GSTREAMER_RUNTIME_ASSET: 'gstreamer-runtime-win-x64-v1.28.4.zip'
+  GSTREAMER_RUNTIME_TAG: 'gstreamer-runtime-v1.28.6'
+  GSTREAMER_RUNTIME_ASSET: 'gstreamer-runtime-win-x64-v1.28.6.zip'
 
 jobs:
   package:

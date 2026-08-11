@@ -27,20 +27,23 @@
   `license.txt` と本ファイルは**同梱・非同梱の両方**に入ります。
 
 > **公式インストーラにはライセンス文が1つも入っていません。**
-> `gstreamer-1.0-mingw-x86_64-1.28.4.exe` が展開する **712 ファイルを全走査して 0 件**でした
-> （同じ検索式をこのリポジトリに掛けると `license.txt` と本ファイルの 2 件が出ます）。
+> `gstreamer-1.0-mingw-x86_64-1.28.6.exe` の **Runtime / LGPL-only** 構成が展開する
+> **349 ファイルを、名前（`COPYING` / `LICENSE` / `LICENCE` / `NOTICE`）でも
+> 中身でも全走査して 0 件**でした（中身の走査で当たるのは
+> `libfribidi-0.dll` のようにバイナリへ文字列として埋まっているものだけで、
+> ライセンス文のファイルではありません）。
 > したがって全文は**上流から取得する**しかなく、上記の仕組みはそのためのものです。
 
 ## 由来（provenance）
 
-公式インストーラ **`gstreamer-1.0-mingw-x86_64-1.28.4.exe`** の
+公式インストーラ **`gstreamer-1.0-mingw-x86_64-1.28.6.exe`** の
 **Runtime / LGPL-only** 構成でインストールしたバイナリを、**改変せずに**、
 **このアプリが実際に構築しうる要素だけ**へ絞ったものです。
 
 | | ファイル数 | サイズ | zip |
 |---|---:|---:|---:|
-| インストール直後 | 349 | 256MB | 79.8MB |
-| **同梱物（現在）** | **45** | **49.7MB** | **16.0MB** |
+| インストール直後 | 349 | 254MB | 79.5MB |
+| **同梱物（現在）** | **46** | **49.8MB** | **16.0MB** |
 
 **一覧は、下記の種から辿った推移閉包そのものです**（それ以外は1件も入っていません）。
 このアプリが読み込まない `webrtc` / `rtsp` / `rtspserver` / `sctp` / `mse` / `play` /
@@ -70,12 +73,20 @@
 
 > **PE のインポートは「静的に import しているもの」しか映しません。**
 > 実行時に名前で開く（`g_module_open` / `LoadLibrary`）ものは映らないので、
-> 削除候補の名前が**残す 44 件のバイナリの中に文字列として現れないこと**も確認しています
-> （`libgst….dll` の形と、`lib` と `.dll` を落とした gmodule の形の両方で 0 件）。
+> 削除候補の名前が**残す 46 件のバイナリの中に文字列として現れないこと**も確認しています
+> （`libgst….dll` の形と、`lib` と `.dll` を落とした gmodule の形の両方で、
+> **DLL 名は 0 件**）。
+>
+> **実行ファイル名だけは 4 件出ます** ── `gst-plugin-scanner.exe`
+> （`libgstreamer-1.0-0.dll` が参照）、`gspawn-win64-helper.exe` /
+> `gspawn-win64-helper-console.exe`（`libglib-2.0-0.dll`）、`gdbus.exe`（`libgio-2.0-0.dll`）。
+> いずれも**同梱していません**が、無ければ GStreamer はプラグインの走査を
+> プロセス内で行うなどの退避経路を持ち、下記の要素一覧の照合（blacklist 0 件・
+> 要素 268 件が削減前と一致）で実際に影響が無いことを確かめています。
 
 ## GStreamer プラグイン（15）
 
-いずれも GStreamer 1.28.4 の一部で、**申告ライセンスはすべて LGPL** です
+いずれも GStreamer 1.28.6 の一部で、**申告ライセンスはすべて LGPL** です
 （`gst-inspect-1.0` の `License` 行の実測値）。
 
 | プラグイン | 由来（Source module） | 用途 |
@@ -101,7 +112,7 @@
 ## GStreamer ライブラリ（17）
 
 `libgstreamer-1.0-0.dll` を含む GStreamer 本体のライブラリ群で、
-いずれも **GStreamer 1.28.4（LGPL-2.1-or-later）** の一部です。内訳:
+いずれも **GStreamer 1.28.6（LGPL-2.1-or-later）** の一部です。内訳:
 
 | 由来 | 数 | ライセンス文 |
 |---|---:|---|
@@ -140,7 +151,7 @@
 > 「GNU *Library* General Public License, Version 2」**（本文は上流の `COPYING`、
 > ソースヘッダーは "either version 2 of the License, or (at your option) any later version"）。
 
-`libstdc++-6.dll` は 26.5MB で**同梱物の半分以上（53%）**を占めます。
+`libstdc++-6.dll` は 25.3MB で**同梱物の半分以上（51%）**を占めます。
 **削減で減らせるのはここではありません** ── 同梱物は改変しない方針なので、
 `strip` も部分リンクもしていません。
 
@@ -178,10 +189,10 @@ LGPL は「対応するソースの入手先を示すこと」を求めます。
 
 | プロジェクト | 版 | ソース（版を固定した実体） |
 |---|---|---|
-| GStreamer core | 1.28.4 | <https://gstreamer.freedesktop.org/src/gstreamer/gstreamer-1.28.4.tar.xz> |
-| gst-plugins-base | 1.28.4 | <https://gstreamer.freedesktop.org/src/gst-plugins-base/gst-plugins-base-1.28.4.tar.xz> |
-| gst-plugins-good | 1.28.4 | <https://gstreamer.freedesktop.org/src/gst-plugins-good/gst-plugins-good-1.28.4.tar.xz> |
-| gst-plugins-bad | 1.28.4 | <https://gstreamer.freedesktop.org/src/gst-plugins-bad/gst-plugins-bad-1.28.4.tar.xz> |
+| GStreamer core | 1.28.6 | <https://gstreamer.freedesktop.org/src/gstreamer/gstreamer-1.28.6.tar.xz> |
+| gst-plugins-base | 1.28.6 | <https://gstreamer.freedesktop.org/src/gst-plugins-base/gst-plugins-base-1.28.6.tar.xz> |
+| gst-plugins-good | 1.28.6 | <https://gstreamer.freedesktop.org/src/gst-plugins-good/gst-plugins-good-1.28.6.tar.xz> |
+| gst-plugins-bad | 1.28.6 | <https://gstreamer.freedesktop.org/src/gst-plugins-bad/gst-plugins-bad-1.28.6.tar.xz> |
 | GLib | 2.82.4 | <https://download.gnome.org/sources/glib/2.82/glib-2.82.4.tar.xz> |
 | proxy-libintl | 0.5 | <https://github.com/frida/proxy-libintl/archive/refs/tags/0.5.tar.gz> |
 | libffi（meson port） | meson-3.2.9999.5 | <https://gstreamer.freedesktop.org/src/mirror/libffi/libffi-meson-3.2.9999.5.tar.bz2> |
@@ -219,7 +230,7 @@ LGPL は「対応するソースの入手先を示すこと」を求めます。
 **GCC Runtime Library Exception** により、GCC でコンパイルしたプログラムと一緒に
 再配布しても、そのプログラムが GPL になることはありません。
 **grep して「GPL がある」と驚く類の項目なので、ここに明記しておきます。**
-`libstdc++-6.dll` は 26.5MB あり削減後の半分以上を占めますが、
+`libstdc++-6.dll` は 25.3MB あり削減後の半分以上を占めますが、
 C++ 実装のプラグイン（d3d12 / d3d11 / nvcodec / qsv / mediafoundation / dwrite）が
 必要とするため外せません。
 

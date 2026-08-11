@@ -32,7 +32,7 @@ public sealed record GStreamerRuntimeCandidate(string Source, string BinDirector
 /// </list>
 /// 3 が要るのは実測による ── GStreamer(MinGW) を**ユーザー単位で**
 /// インストールすると、インストーラは <c>GSTREAMER_1_0_ROOT_MINGW_X86_64</c> も
-/// <c>PATH</c> も設定しない（実測: 1.28.4 を
+/// <c>PATH</c> も設定しない（実測: 1.28.6 を
 /// <c>%LOCALAPPDATA%\Programs\gstreamer\1.0\mingw_x86_64</c> へ導入した状態で、
 /// <c>HKLM\...\Session Manager\Environment</c> と <c>HKCU\Environment</c> の
 /// どちらにも存在しなかった）。2 だけに頼ると「入れたのに見つからない」になる。

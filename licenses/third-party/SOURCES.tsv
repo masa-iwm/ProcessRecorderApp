@@ -19,10 +19,10 @@
 # mirror, and its ArchiveSha256 is the value cerbero pins in recipes/libffi.recipe --
 # i.e. the very archive the bundled libffi-7.dll was built from.
 Project	Version	File	Sha256	Uri	ArchiveSha256	ArchiveMember
-gstreamer	1.28.4	COPYING	AD2EEC519EBD4B5DF86EA84DFF24AE3BFA2EDEA846A703B58902DD221AE375DB	https://raw.githubusercontent.com/GStreamer/gstreamer/1.28.4/subprojects/gstreamer/COPYING
-gst-plugins-base	1.28.4	COPYING	AD2EEC519EBD4B5DF86EA84DFF24AE3BFA2EDEA846A703B58902DD221AE375DB	https://raw.githubusercontent.com/GStreamer/gstreamer/1.28.4/subprojects/gst-plugins-base/COPYING
-gst-plugins-good	1.28.4	COPYING	6095E9FFA777DD22839F7801AA845B31C9ED07F3D6BF8A26DC5D2DEC8CCC0EF3	https://raw.githubusercontent.com/GStreamer/gstreamer/1.28.4/subprojects/gst-plugins-good/COPYING
-gst-plugins-bad	1.28.4	COPYING	DC626520DCD53A22F727AF3EE42C770E56C97A64FE3ADB063799D8AB032FE551	https://raw.githubusercontent.com/GStreamer/gstreamer/1.28.4/subprojects/gst-plugins-bad/COPYING
+gstreamer	1.28.6	COPYING	AD2EEC519EBD4B5DF86EA84DFF24AE3BFA2EDEA846A703B58902DD221AE375DB	https://raw.githubusercontent.com/GStreamer/gstreamer/1.28.6/subprojects/gstreamer/COPYING
+gst-plugins-base	1.28.6	COPYING	AD2EEC519EBD4B5DF86EA84DFF24AE3BFA2EDEA846A703B58902DD221AE375DB	https://raw.githubusercontent.com/GStreamer/gstreamer/1.28.6/subprojects/gst-plugins-base/COPYING
+gst-plugins-good	1.28.6	COPYING	6095E9FFA777DD22839F7801AA845B31C9ED07F3D6BF8A26DC5D2DEC8CCC0EF3	https://raw.githubusercontent.com/GStreamer/gstreamer/1.28.6/subprojects/gst-plugins-good/COPYING
+gst-plugins-bad	1.28.6	COPYING	DC626520DCD53A22F727AF3EE42C770E56C97A64FE3ADB063799D8AB032FE551	https://raw.githubusercontent.com/GStreamer/gstreamer/1.28.6/subprojects/gst-plugins-bad/COPYING
 glib	2.82.4	LGPL-2.1-or-later.txt	FA6F36630BB1E0C571D34B2BBDF188D08495C9DBF58F28CAC112F303FC1F58FB	https://raw.githubusercontent.com/GNOME/glib/2.82.4/LICENSES/LGPL-2.1-or-later.txt
 proxy-libintl	0.5	COPYING	D245807F90032872D1438D741ED21E2490E1175DC8AA3AFA5DDB6C8E529B58E5	https://raw.githubusercontent.com/frida/proxy-libintl/0.5/COPYING
 libffi	meson-3.2.9999.5	LICENSE	0F4D7A0BFB83C37465D42DC305F124189196CC0CC2CC8D6F8461103682AEBBC5	https://gstreamer.freedesktop.org/src/mirror/libffi/libffi-meson-3.2.9999.5.tar.bz2	B4D403932A8860589E571300E807E40BB4F7D9D2630C8EC19C29FB9E7B0FD227	libffi-meson-3.2.9999.5/LICENSE
