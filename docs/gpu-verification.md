@@ -259,7 +259,10 @@ GPU 実機に**発行物一式**（`dotnet publish -p:PublishProfile=win-x64-aot
 ## 未検証の項目
 
 検証済みの範囲（対になる事実）: 同梱ランタイムを NVIDIA/Intel の実機で流した検証は
-全ケース OK（`retries` も全件 0）で、GPU 専用候補（`d3d12h264enc` / `qsvh264enc` / `nvd3d11h264enc` /
+全ケース OK（`retries` も全件 0）で、**GOP の逆算も実機で見ている**
+（15fps のソースで `gop-size=30`、5fps の常時枝で `gop-size=10`、
+手動指定は文字列のまま＝`gop-size=60`。`Verify-HighResolution.ps1` は 26 ケース全件 OK で
+`continuous.overshoot` 無し）、GPU 専用候補（`d3d12h264enc` / `qsvh264enc` / `nvd3d11h264enc` /
 `nvh264enc` / `nvautogpuh264enc`）が選ばれて有効な MP4 を出すこと、`System` の自動選択が
 `mfh264enc` を選んで有効な MP4 を出すことまで観測済み。残っているのは以下。
 

@@ -108,6 +108,8 @@ public static class EncoderCatalog
     /// （<c>continuous.overshoot</c>。分割はキーフレームでしか行えない）。
     /// 同じ理由で、イベント録画側も 15fps のソースでは 4 秒間隔になり、
     /// 事前バッファの短い構成では録画の立ち上がりがそのぶん遅れる。
+    /// <b>逆算にした後は実機でも確認済み</b> ── 15fps のソースは `gop-size=30`、
+    /// 5fps の常時枝は `gop-size=10` が選ばれ、<c>continuous.overshoot</c> は出なくなった。
     /// </summary>
     public const int TargetKeyframeIntervalSeconds = 2;
 
