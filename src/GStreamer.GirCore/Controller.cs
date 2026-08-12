@@ -138,8 +138,29 @@ namespace ProcessRecorderApp.GStreamer
                 Previewer.ResizeSwapChain(width, height);
         }
 
+        /// <summary>
+        /// プレビューの映像の表示サイズが変わったことを素通しする
+        /// （<see cref="Previewer.VideoSizeChanged"/>）。構図補助線の配置に使う。
+        /// <b>発火はプレビュー用スレッド</b>なので、UI 側が <c>DispatcherQueue</c> で移すこと。
+        /// </summary>
+        public event EventHandler<PreviewVideoSizeEventArgs>? PreviewVideoSizeChanged
+        {
+            add => Previewer.VideoSizeChanged += value;
+            remove => Previewer.VideoSizeChanged -= value;
+        }
+
         [ObservableProperty]
         public partial EventRecorder? SelectedRecorder { get; set; }
+
+        partial void OnSelectedRecorderChanged(EventRecorder? value)
+        {
+            // 切り替えた瞬間に表示サイズを「未知」へ戻す。戻さないと、新しいレコーダーの
+            // 最初のフレームが届くまでのあいだ**前のレコーダーのアスペクトで補助線が引かれる**
+            // （フレームを push するのは選択中のレコーダーだけなので、未初期化のレコーダーへ
+            // 切り替えた場合はそのまま残り続ける）。
+            lock (_previewGate)
+                Previewer.ResetVideoSize();
+        }
 
         private void GstEventRecorder_Preview(object? sender, PreviewEventArgs e)
         {

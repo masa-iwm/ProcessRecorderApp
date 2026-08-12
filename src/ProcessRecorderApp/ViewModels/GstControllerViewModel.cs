@@ -184,6 +184,16 @@ namespace ProcessRecorderApp.ViewModels
         public nint GetSwapChainHandle()
             => Model.GetSwapChainHandle();
 
+        /// <summary>
+        /// プレビューの映像の表示サイズが変わった（構図補助線の配置用）。
+        /// <b>発火はプレビュー用スレッド</b> ── 購読側が UI スレッドへ移すこと。
+        /// </summary>
+        public event EventHandler<GStreamer.PreviewVideoSizeEventArgs>? PreviewVideoSizeChanged
+        {
+            add => Model.PreviewVideoSizeChanged += value;
+            remove => Model.PreviewVideoSizeChanged -= value;
+        }
+
         /// <summary>プレビュー用スワップチェーンの解像度を更新する（SwapChainPanel のサイズ追従用）。</summary>
         public void ResizeSwapChain(int width, int height)
             => Model.ResizeSwapChain(width, height);

@@ -24,6 +24,15 @@
     "IsPropertyPaneCollapsed": {
       "type": "boolean"
     },
+    "FramingGrid": {
+      "enum": [
+        "None",
+        "Thirds",
+        "GoldenRatio",
+        "Crosshair",
+        "Square"
+      ]
+    },
     "PaneDisplayMode": {
       "enum": [
         "Auto",

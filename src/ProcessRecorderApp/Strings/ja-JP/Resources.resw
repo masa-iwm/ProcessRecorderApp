@@ -401,6 +401,9 @@
   <data name="PropDesc_ConfirmRecorderRemoval" xml:space="preserve">
     <value>レコーダー削除前に確認ダイアログを表示します。</value>
   </data>
+  <data name="PropDesc_FramingGrid" xml:space="preserve">
+    <value>プレビューへ重ねる構図補助線。None / Thirds（三分割）／GoldenRatio（黄金比）／Crosshair（十字）／Square（正方形）。線はパネル全体ではなく映像の範囲に合わせて引きます。</value>
+  </data>
   <data name="PropDesc_PaneDisplayMode" xml:space="preserve">
     <value>ナビゲーションペインの表示モード（Top / Left など）。</value>
   </data>

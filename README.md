@@ -71,6 +71,10 @@ Detailed video-source settings — which monitor to capture, the camera resoluti
 are configured from the property pane on the Preview screen by opening the pipeline editor
 dialog.
 
+**Framing guides** (rule of thirds, golden ratio, crosshair, square) can be drawn over the
+preview. Pick one with `FramingGrid` on the Settings screen. The lines follow the area the video
+actually occupies, not the whole panel.
+
 ### Recording driven by another application's UI
 
 Recording can start and stop by itself when the screen you are waiting for appears, changes, or

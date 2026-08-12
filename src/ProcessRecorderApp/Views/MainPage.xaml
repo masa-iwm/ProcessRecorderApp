@@ -145,7 +145,24 @@
                                 AutomationProperties.AccessibilityView="Control"
                                 Visibility="{x:Bind v:MainPage.PreviewSurfaceVisibility(ViewModel.GstController.SelectedRecorder.IsInitialized), Mode=OneWay}"
                                 HorizontalAlignment="Stretch"
-                                VerticalAlignment="Stretch"/>
+                                VerticalAlignment="Stretch"
+                                SizeChanged="SwapChainPanel_SizeChanged">
+                    <!-- 構図補助線。**兄弟ではなくパネルの子にする。**
+                         SwapChainPanel は Panel なので子を持て、子はスワップチェーンの上に合成される。
+                         子にすることでパネルの Visibility をそのまま継承する ── 兄弟に置くと
+                         「映像は畳んだのに線だけ残る」を防ぐために Visibility を二重管理することになり、
+                         PreviewPlaceholderTests が名指しで警戒している
+                         「半透明のオーバーレイ・z 順の誤りは全部緑になる」形に自分から入る。
+
+                         AccessibilityView="Raw" は必須。付けないと PreviewSurface の子として
+                         UIA ツリーに増え、E2E の要素列挙が汚れる。線は当たり判定も持たない。
+
+                         **座標は DIP。** NativeSwapChainPanel が高DPI対策で逆スケール行列を
+                         掛けているのはスワップチェーンだけで、この子は論理サイズのままである。 -->
+                    <Canvas x:Name="framingGrid"
+                            IsHitTestVisible="False"
+                            AutomationProperties.AccessibilityView="Raw" />
+                </lc:NativeSwapChainPanel>
                 <!-- 「表示するものが無い」ことを明示する。無言で黒くするだけだと、
                      初期化に失敗しているのか単に映像が暗いのか区別が付かない -->
                 <TextBlock x:Name="noPreviewText" x:Uid="MainPage_NoPreview" Grid.Column="2"

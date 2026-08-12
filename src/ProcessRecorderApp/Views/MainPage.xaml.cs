@@ -64,6 +64,12 @@ public sealed partial class MainPage : Page
         ViewModel.GstController.InitializePreview();
         swapChainPanel.SwapChainSizeRequested += SwapChainPanel_SwapChainSizeRequested;
 
+        // 構図補助線。映像の実サイズはプレビュー用スレッドから飛んでくるので UI へ移す。
+        // 設定の変更にも追随させる（PropertyGrid で切り替えたその場で反映される）。
+        ViewModel.GstController.PreviewVideoSizeChanged += Preview_VideoSizeChanged;
+        AppSettings.Default.PropertyChanged += FramingGrid_SettingsPropertyChanged;
+        UpdateFramingGrid();
+
         // Log 画面のターミナル。初期化も排出も IsActive（＝Log 画面の表示）が駆動するので、
         // ここでは「使えなかったとき」の受け口だけ張る
         logTerminal.FallbackActivated += LogTerminal_FallbackActivated;
@@ -74,6 +80,80 @@ public sealed partial class MainPage : Page
 
     private void SwapChainPanel_SwapChainSizeRequested(object? sender, Controls.SwapChainSizeRequestedEventArgs e)
         => ViewModel?.GstController.ResizeSwapChain(e.Width, e.Height);
+
+    // ---- 構図補助線（フレーミンググリッド） ----
+
+    /// <summary>
+    /// 補助線の色。<b>プレビューの内容は選べない</b>（暗い画面にも明るい画面にも重なる）ので、
+    /// テーマ色ではなく半透明の白で固定する。太さは 1（DIP）。
+    /// </summary>
+    private static readonly Microsoft.UI.Xaml.Media.Brush FramingGridBrush =
+        new Microsoft.UI.Xaml.Media.SolidColorBrush(
+            Windows.UI.Color.FromArgb(0x99, 0xFF, 0xFF, 0xFF));
+
+    /// <summary>
+    /// プレビューへ流れている映像の表示サイズ。0x0 は「未知」で、そのときは線を出さない
+    /// （<c>FramingGridGeometry.Fit</c> が空の矩形を返す）。
+    /// </summary>
+    private int _previewVideoWidth;
+    private int _previewVideoHeight;
+
+    /// <summary>
+    /// 映像サイズの変化。<b>プレビュー用スレッドから飛んでくる</b>ので UI スレッドへ移す
+    /// （<c>GstEventRecorderViewModel</c> が <c>LastError</c> でしていることと同じ）。
+    /// </summary>
+    private void Preview_VideoSizeChanged(object? sender, GStreamer.PreviewVideoSizeEventArgs e)
+        => DispatcherQueue.TryEnqueue(() =>
+        {
+            _previewVideoWidth = e.Width;
+            _previewVideoHeight = e.Height;
+            UpdateFramingGrid();
+        });
+
+    private void FramingGrid_SettingsPropertyChanged(
+        object? sender, System.ComponentModel.PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName is nameof(AppSettings.FramingGrid))
+            DispatcherQueue.TryEnqueue(UpdateFramingGrid);
+    }
+
+    private void SwapChainPanel_SizeChanged(object sender, SizeChangedEventArgs e)
+        => UpdateFramingGrid();
+
+    /// <summary>
+    /// 補助線を引き直す。契機は 3 つ（パネルのサイズ変更・映像サイズの変化・設定の変更）。
+    ///
+    /// <para>
+    /// <b>渡すのは <c>ActualWidth</c>/<c>ActualHeight</c>（DIP）であって物理ピクセルではない。</b>
+    /// <c>NativeSwapChainPanel</c> が高DPI対策の逆スケール行列を掛けているのは
+    /// スワップチェーンだけで、その上に載るこの <c>Canvas</c> は論理座標のままである
+    /// ── <c>SwapChainSizeRequested</c> が渡す値（＝物理ピクセル）を使うと高DPI環境でずれる。
+    /// </para>
+    /// <para>
+    /// 線は毎回作り直す。数は最大 4 本なので、差分更新に見合う量ではない。
+    /// </para>
+    /// </summary>
+    private void UpdateFramingGrid()
+    {
+        framingGrid.Children.Clear();
+
+        var rect = FramingGridGeometry.Fit(
+            swapChainPanel.ActualWidth, swapChainPanel.ActualHeight,
+            _previewVideoWidth, _previewVideoHeight);
+
+        foreach (var line in FramingGridGeometry.Lines(AppSettings.Default.FramingGrid, rect))
+        {
+            framingGrid.Children.Add(new Microsoft.UI.Xaml.Shapes.Line
+            {
+                X1 = line.X1,
+                Y1 = line.Y1,
+                X2 = line.X2,
+                Y2 = line.Y2,
+                Stroke = FramingGridBrush,
+                StrokeThickness = 1,
+            });
+        }
+    }
 
     /// <summary>
     /// スワップチェーン生成待ちの再試行回数。
@@ -138,6 +218,11 @@ public sealed partial class MainPage : Page
         logTerminal.Stop();
 
         swapChainPanel.SwapChainSizeRequested -= SwapChainPanel_SwapChainSizeRequested;
+        // プロセス寿命の Previewer / AppSettings にページ寿命のデリゲートを残さない
+        // （SwapChainHandle = 0 と同じ理由）。
+        if (ViewModel is not null)
+            ViewModel.GstController.PreviewVideoSizeChanged -= Preview_VideoSizeChanged;
+        AppSettings.Default.PropertyChanged -= FramingGrid_SettingsPropertyChanged;
         Microsoft.UI.Xaml.Media.CompositionTarget.Rendering -= OnRenderingBindSwapChain;
         // パイプライン破棄前にパネルのスワップチェーン参照を外す
         swapChainPanel.SwapChainHandle = 0;

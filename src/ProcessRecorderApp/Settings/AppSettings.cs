@@ -186,6 +186,27 @@ public partial class AppSettings : JsonSettingsBase<AppSettings>
     public partial bool IsPropertyPaneCollapsed { get; set; } = false;
 
     /// <summary>
+    /// プレビューへ重ねる構図補助線の種類（既定は出さない）。
+    ///
+    /// <para>
+    /// <b>アプリ全体の設定であってレコーダーごとではない</b> ── プレビュー面は
+    /// プロセス内に 1 面しか無く（<c>d3d12swapchainsink</c> のスワップチェーンを共有）、
+    /// 見えているのは常に選択中の 1 台だからである。
+    /// </para>
+    /// <para>
+    /// 線は<b>パネル全体ではなく映像の矩形</b>に引く（<c>FramingGridGeometry</c>）──
+    /// シンクが <c>force-aspect-ratio=true</c> でレターボックスを作るため。
+    /// </para>
+    /// <para>
+    /// <b>settings.json には名前で書く</b>（<c>PaneDisplayMode</c> と同じ理由）。
+    /// </para>
+    /// </summary>
+    [System.ComponentModel.Description("PropDesc_FramingGrid")]
+    [JsonConverter(typeof(JsonStringEnumConverter<FramingGridKind>))]
+    [ObservableProperty]
+    public partial FramingGridKind FramingGrid { get; set; } = FramingGridKind.None;
+
+    /// <summary>
     /// NavigationView のペイン表示モード。
     ///
     /// <para>
@@ -726,6 +747,7 @@ public partial class AppSettings : JsonSettingsBase<AppSettings>
         SettingsWidth = loaded.SettingsWidth;
         ConfirmRecorderRemoval = loaded.ConfirmRecorderRemoval;
         IsPropertyPaneCollapsed = loaded.IsPropertyPaneCollapsed;
+        FramingGrid = loaded.FramingGrid;
         PaneDisplayMode = loaded.PaneDisplayMode;
         GstDebug = loaded.GstDebug;
         GstDebugDumpDotDir = loaded.GstDebugDumpDotDir;

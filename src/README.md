@@ -569,6 +569,48 @@ Windows App SDK 側の `Microsoft.Windows.Storage.Pickers` を使う** ── �
 
 ---
 
+### 構図補助線（フレーミンググリッド）
+
+`AppSettings.FramingGrid`（`None` / `Thirds` / `GoldenRatio` / `Crosshair` / `Square`。既定は
+`None`）で、プレビューへ Windows 標準のカメラアプリと同じ補助線を重ねる。
+**アプリ全体の設定であってレコーダーごとではない** ── プレビュー面はプロセス内に1面しかなく、
+見えているのは常に選択中の1台だからである。
+
+**線はパネル全体ではなく「映像の矩形」に引く。** `d3d12swapchainsink` は
+`force-aspect-ratio` の既定が `true` で、スワップチェーンはパネル全面を占めるものの
+**映像はその中でアスペクトフィットされ、余った上下（左右）は `border-color` で塗られる**。
+パネル全体に引くとその帯の上にも線が乗り、構図の目安にならない。
+矩形と線の算出は純粋関数 `Components/FramingGridGeometry.cs`（`Fit` / `Lines`）にあり、
+**この機能で自動テストできるのはここだけ**（`FramingGridGeometryTests`。
+線が実際に描かれていることは UIA からは見えない ──
+[docs/coverage-gaps.md](../docs/coverage-gaps.md)）。
+
+映像の表示サイズは `Previewer.PushSample` が `sample.GetCaps()`（＝**実際にネゴシエートされた**
+キャップス。`_sink.GetCaps()` ではない）から読み、**変化したときだけ** `VideoSizeChanged` を
+発火する（毎フレーム通知するとディスパッチャを埋める）。`pixel-aspect-ratio` が 1:1 でなければ
+幅へ掛けて表示幅にする ── シンクが保つのは表示アスペクトなので、画素のままだと線が縁とずれる。
+**レコーダーを切り替えたら `Previewer.ResetVideoSize()` で「未知」へ戻す**
+（`Controller.OnSelectedRecorderChanged`）── 戻さないと、次のフレームが届くまで
+前のレコーダーのアスペクトで線が引かれたままになる（未初期化のレコーダーへ切り替えた場合は
+フレームが来ないので残り続ける）。
+
+描画は `MainPage.xaml` の `NativeSwapChainPanel` の**子**に置いた `Canvas`（`framingGrid`）。
+
+- **兄弟ではなく子にする。** `SwapChainPanel` は `Panel` なので子を持て、子はスワップチェーンの
+  上に合成される。子にすればパネルの `Visibility` をそのまま継承するので、
+  「映像は畳んだのに線だけ残る」が構造的に起こらない ── 兄弟にすると Visibility の
+  二重管理になり、`PreviewPlaceholderTests` が名指しで警戒している
+  「半透明のオーバーレイ・z 順の誤りは全部緑になる」形に自分から入る。
+- **`AutomationProperties.AccessibilityView="Raw"` は必須。** 付けないと `PreviewSurface` の
+  子として UIA ツリーに現れ、E2E の要素列挙が汚れる。`IsHitTestVisible="False"` で
+  当たり判定も持たせない。
+- **座標は DIP。** `NativeSwapChainPanel` が高DPI対策の逆スケール行列を掛けているのは
+  **スワップチェーンだけ**で、その上に載る XAML の子は論理座標のままである
+  ── `SwapChainSizeRequested` が渡す値（物理ピクセル）を使うと高DPI環境でずれる。
+  `MainPage.UpdateFramingGrid` は `ActualWidth` / `ActualHeight` を渡す。
+
+---
+
 ## UI 構成
 
 - **`Views/MainPage.xaml`(.cs)**: `NavigationView`（既定 `PaneDisplayMode=Top`）による画面切り替え。

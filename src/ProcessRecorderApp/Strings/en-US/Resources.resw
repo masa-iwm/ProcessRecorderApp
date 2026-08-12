@@ -401,6 +401,9 @@
   <data name="PropDesc_ConfirmRecorderRemoval" xml:space="preserve">
     <value>Show a confirmation dialog before removing a recorder.</value>
   </data>
+  <data name="PropDesc_FramingGrid" xml:space="preserve">
+    <value>Framing guides drawn over the preview: None, Thirds, GoldenRatio, Crosshair or Square. The lines follow the video area, not the whole panel.</value>
+  </data>
   <data name="PropDesc_PaneDisplayMode" xml:space="preserve">
     <value>Navigation pane display mode (Top, Left, etc.).</value>
   </data>

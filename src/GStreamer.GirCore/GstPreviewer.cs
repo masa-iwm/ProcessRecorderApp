@@ -18,6 +18,26 @@ namespace ProcessRecorderApp.GStreamer
         /// <summary>実行時障害を記録済みか（1パイプラインにつき1行に抑える）。</summary>
         private bool _busErrorLogged;
 
+        /// <summary>直近に通知した表示サイズ（変化したときだけ通知するための控え）。</summary>
+        private int _videoWidth;
+        private int _videoHeight;
+
+        /// <summary>
+        /// プレビューへ流れている映像の<b>表示サイズ</b>が変わったときに発火する
+        /// （0x0 は「未知」＝まだ 1 枚も来ていない／別のレコーダーへ切り替えた直後）。
+        ///
+        /// <para>
+        /// 用途は構図補助線の配置。<c>d3d12swapchainsink</c> は
+        /// <c>force-aspect-ratio=true</c> でレターボックスを作るので、
+        /// <b>パネルの大きさだけでは映像が実際に出ている範囲が分からない</b>。
+        /// </para>
+        /// <para>
+        /// <b>発火するのはプレビュー用スレッド</b>（<c>PushSample</c> の呼び出し元）。
+        /// UI へ反映する側が <c>DispatcherQueue</c> で移すこと。
+        /// </para>
+        /// </summary>
+        public event EventHandler<PreviewVideoSizeEventArgs>? VideoSizeChanged;
+
         public Previewer()
         {
         }
@@ -91,9 +111,82 @@ namespace ProcessRecorderApp.GStreamer
 
             DrainBusErrors();
 
+            // **毎フレームは読まない。** サイズが分かるまでの数フレームだけで足りる
+            // （解像度が変わるのはパイプラインを組み直したときで、そのとき Close→Initialize と
+            //  ResetVideoSize を通る）。毎フレーム読むと、その回数だけ下の借用参照を触ることになる。
+            if (_videoWidth <= 0)
+                UpdateVideoSize(sample);
+
             // appsrc に溜め込みすぎない（表示は最新フレームだけあればよい）
             if (_appSrc.CurrentLevelBuffers < 10)
                 _appSrc.PushSample(sample);
+        }
+
+        /// <summary>
+        /// サンプルのキャップスから表示サイズを読み、変わっていたら通知する。
+        ///
+        /// <para>
+        /// <b>読むのは <c>sample.GetCaps()</c>（＝実際にネゴシエートされた結果）。</b>
+        /// <c>_sink.GetCaps()</c> を使ってはいけない ── あちらは要素に設定された
+        /// （テンプレート由来でしばしば <c>ANY</c> な）キャップスであってネゴシエート結果ではない
+        /// （<c>EventRecorder</c> が <c>appsrc</c> のキャップスで踏んでいるのと同じ罠）。
+        /// </para>
+        /// <para>
+        /// <b>毎フレーム通知しない。</b> ここは 1 秒間に何十回も通る経路で、
+        /// 通知先は UI スレッドへの投函を行う ── 変化時だけに絞らないと
+        /// ディスパッチャを埋める。
+        /// </para>
+        /// <para>
+        /// 画素比（<c>pixel-aspect-ratio</c>）が 1:1 でない場合は<b>幅へ掛けて表示幅にする</b>。
+        /// シンクがアスペクトを保つのは表示アスペクト（DAR）に対してなので、
+        /// 画素のままの幅で計算すると補助線が映像の縁とずれる。
+        /// </para>
+        /// </summary>
+        private void UpdateVideoSize(Sample sample)
+        {
+            // **破棄しない。** gst_sample_get_caps() は transfer none で、caps を所有するのは
+            // サンプルの側である ── using を付けると借り物の参照を解放することになり、
+            // まだ使われている caps が落ちる。毎フレーム通る経路だったので影響が出やすく、
+            // **自動復帰のあとプレビューがカタつく**という形で実機に現れた
+            // （パイプラインを組み直すと直るのは、caps が作り直されるため）。
+            // 既存の 2 箇所（EventRecorder / ContinuousRecorder）も破棄していない。
+            var caps = sample.GetCaps();
+            var structure = caps?.GetStructure(0);
+            if (structure is null
+                || !structure.GetInt("width", out int width)
+                || !structure.GetInt("height", out int height)
+                || width <= 0 || height <= 0)
+            {
+                return;
+            }
+
+            if (structure.GetFraction("pixel-aspect-ratio", out int parNumerator, out int parDenominator)
+                && parNumerator > 0 && parDenominator > 0 && parNumerator != parDenominator)
+            {
+                width = (int)Math.Round((double)width * parNumerator / parDenominator);
+            }
+
+            if (width == _videoWidth && height == _videoHeight)
+                return;
+
+            _videoWidth = width;
+            _videoHeight = height;
+            VideoSizeChanged?.Invoke(this, new PreviewVideoSizeEventArgs(width, height));
+        }
+
+        /// <summary>
+        /// 表示サイズを「未知」（0x0）へ戻して通知する。レコーダーを切り替えたときに呼ぶ
+        /// ── 呼ばないと、次のフレームが来るまで<b>前のレコーダーのアスペクトで
+        /// 補助線が引かれたまま</b>になる。
+        /// </summary>
+        public void ResetVideoSize()
+        {
+            if (_videoWidth == 0 && _videoHeight == 0)
+                return;
+
+            _videoWidth = 0;
+            _videoHeight = 0;
+            VideoSizeChanged?.Invoke(this, new PreviewVideoSizeEventArgs(0, 0));
         }
 
         /// <summary>
@@ -183,6 +276,8 @@ namespace ProcessRecorderApp.GStreamer
         public void Close()
         {
             _isInitialized = false;
+            // 面が無くなるので表示サイズも未知へ戻す（補助線を消すため）。
+            ResetVideoSize();
             _pipeline?.SetState(State.Null);
             _appSrc?.Dispose();
             _appSrc = null;
@@ -200,5 +295,15 @@ namespace ProcessRecorderApp.GStreamer
             Dispose(disposing: true);
             GC.SuppressFinalize(this);
         }
+    }
+
+    /// <summary>プレビューの映像の表示サイズ。0x0 は「未知」。</summary>
+    public sealed class PreviewVideoSizeEventArgs(int width, int height) : EventArgs
+    {
+        /// <summary>表示幅（画素比を掛けたあと）。未知なら 0。</summary>
+        public int Width { get; } = width;
+
+        /// <summary>表示高さ。未知なら 0。</summary>
+        public int Height { get; } = height;
     }
 }
