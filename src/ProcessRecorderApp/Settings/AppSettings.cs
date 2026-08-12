@@ -29,6 +29,27 @@ public partial class AppSettings : JsonSettingsBase<AppSettings>
     private static readonly string FilePath = AppEnvironment.GetDataFilePath(SettingsFileName);
 
     /// <summary>
+    /// 既定設定の「種」── <see cref="FilePath"/> が<b>存在しないとき</b>にだけ読む、
+    /// 実行ファイルの隣の <c>settings.json</c>。配布物に初期設定を同梱して
+    /// 「展開して起動すれば構成済み」にするためのもので、読むだけ（複写も退避もしない）。
+    ///
+    /// <para>
+    /// 基準は <see cref="AppDirectories.BaseDirectory"/>（<c>Environment.ProcessPath</c> の
+    /// ディレクトリ）で、<c>AppContext.BaseDirectory</c> ではない ── 単一ファイル発行では
+    /// あちらは展開先の一時ディレクトリを指す。カレントディレクトリも使わない
+    /// （常駐ワーカーは起動したシェルの CWD をプロセス寿命ぶん引きずる。
+    /// <see cref="OutputDirectory"/> の解決規則と同じ理由）。
+    /// </para>
+    /// <para>
+    /// <b>探すのは <see cref="AppEnvironment.DataDirectory"/> 側の不在であって
+    /// <c>%LOCALAPPDATA%</c> の不在ではない。</b> こうしておくと E2E の
+    /// <c>PROCESSRECORDERAPP_DATA_DIR</c> による隔離がそのまま効く。
+    /// </para>
+    /// </summary>
+    private static readonly string SeedFilePath =
+        Path.Combine(AppDirectories.BaseDirectory, SettingsFileName);
+
+    /// <summary>
     /// settings.json の読み書きに使う型情報。<b>人が開いて読み・手で直すファイル</b>なので、
     /// 既定（1行・非 ASCII は <c>\uXXXX</c>）ではなくインデント付き・生の UTF-8 で書く。
     ///
@@ -55,7 +76,8 @@ public partial class AppSettings : JsonSettingsBase<AppSettings>
         }).AppSettings;
 
     private static readonly Lazy<AppSettings> _default = new(
-        () => LoadOrCreate(FilePath, SettingsTypeInfo, () => new(), ReportLoadFailure));
+        () => LoadOrCreate(FilePath, SettingsTypeInfo, () => new(), ReportLoadFailure,
+                           SeedFilePath, ReportSeedUsed));
 
     /// <summary>
     /// settings.json を読めなかったことを <c>activity.log</c> に残す。
@@ -70,6 +92,19 @@ public partial class AppSettings : JsonSettingsBase<AppSettings>
     /// </summary>
     private static void ReportLoadFailure(string detail)
         => Components.ActivityLog.Error("settings.load", detail + "; falling back to the defaults");
+
+    /// <summary>
+    /// 実行ファイルの隣の <c>settings.json</c> を既定設定として読んだことを
+    /// <c>activity.log</c> に残す（<see cref="SeedFilePath"/>）。
+    ///
+    /// <para>
+    /// <b>記録が無いと「設定した覚えのない初期値で始まった」ことを誰も追えない。</b>
+    /// 種を読むのは保存先に settings.json が無いときだけなので、この行が出るのは
+    /// 実質「初回起動」か「利用者が設定ファイルを消したあと」に限られる。
+    /// </para>
+    /// </summary>
+    private static void ReportSeedUsed(string path)
+        => Components.ActivityLog.Info("settings.seed", $"file='{path}'");
 
     /// <summary>
     /// settings.json を書けなかったことを <c>activity.log</c> に残す
@@ -675,7 +710,13 @@ public partial class AppSettings : JsonSettingsBase<AppSettings>
     /// </summary>
     public void Reload()
     {
-        AppSettings loaded = LoadOrCreate(FilePath, SettingsTypeInfo, () => new(), ReportLoadFailure);
+        // 種（SeedFilePath）は起動時と同じ規則で渡す。**本体が在れば効かない**ので、
+        // ここが種を読むのは「手で settings.json を消してから再読み込みした」場合だけ
+        // ── 起動と再読み込みで挙動が食い違わないようにするためであって、
+        // 通常の再読み込みで同梱物へ倒れるという意味ではない。
+        // AppSettingsReloadTests はソース照合なので、この意図はここに書くしかない。
+        AppSettings loaded = LoadOrCreate(FilePath, SettingsTypeInfo, () => new(), ReportLoadFailure,
+                                          SeedFilePath, ReportSeedUsed);
         IsFirstRun = loaded.IsFirstRun;
 
         SchemaReference = loaded.SchemaReference;

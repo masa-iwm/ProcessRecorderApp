@@ -410,6 +410,115 @@ public class JsonSettingsBaseTests : IDisposable
         Assert.Contains(schemaPath, reported);
     }
 
+    // ---- 既定設定の「種」（実行ファイルの隣の settings.json） ----
+    //
+    // 種は「保存先に設定が無いときだけ読む初期値」であって、利用者の設定を置き換える手段ではない。
+    // 4 つの分岐（本体あり／本体なし＋種あり／本体なし＋種が壊れている／どちらも無い）を
+    // 全部縛る ── この機能は L2 では検証しない（発行物は全 E2E で共有するフィクスチャなので、
+    // 実行ファイルの隣に置いたファイルを消し忘れると release.yml が作る zip にまで混入する）。
+
+    private string SeedPath => Path.Combine(_dir, "seed", "settings.json");
+
+    private void WriteSeed(string json)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(SeedPath)!);
+        File.WriteAllText(SeedPath, json);
+    }
+
+    [Fact]
+    public void Load_WithNoFileButASeed_ReadsTheSeedAndReportsIt()
+    {
+        WriteSeed("""{"Text":"from seed","Number":7}""");
+
+        string? seedUsed = null;
+        var loaded = SampleSettings.LoadWithSeed(FilePath, SeedPath, onSeedUsed: p => seedUsed = p);
+
+        Assert.Equal("from seed", loaded.Text);
+        Assert.Equal(7, loaded.Number);
+        Assert.Equal(SeedPath, seedUsed);
+
+        // 種は「初回の既定値」であって「初回そのもの」ではない ── これを true のまま
+        // 返すと、初回だけ働く OnLoaded の処理が種の内容の上に重ねて走る。
+        Assert.False(loaded.IsFirstRun);
+
+        // 読むだけ。複写しない（本体は最初の保存で生まれる）。
+        Assert.False(File.Exists(FilePath));
+    }
+
+    [Fact]
+    public void Load_WithAnExistingFile_IgnoresTheSeedEntirely()
+    {
+        var saved = SampleSettings.CreateDefault();
+        saved.Text = "from the user";
+        saved.Save(FilePath, SampleSettingsJsonContext.Default.SampleSettings);
+        WriteSeed("""{"Text":"from seed"}""");
+
+        string? seedUsed = null;
+        var loaded = SampleSettings.LoadWithSeed(FilePath, SeedPath, onSeedUsed: p => seedUsed = p);
+
+        // 利用者が育てた設定を同梱物で黙って置き換えないこと。
+        Assert.Equal("from the user", loaded.Text);
+        Assert.Null(seedUsed);
+    }
+
+    [Fact]
+    public void Load_WithABrokenFileAndASeed_FallsBackToTheDefaults_NotToTheSeed()
+    {
+        // **本体が「壊れている」は「本体が無い」ではない。** ここで種へ倒すと、
+        // 一時的に読めなかっただけの利用者の設定が同梱物で置き換わる。
+        Directory.CreateDirectory(_dir);
+        File.WriteAllText(FilePath, "{ this is not json");
+        WriteSeed("""{"Text":"from seed"}""");
+
+        string? seedUsed = null;
+        var loaded = SampleSettings.LoadWithSeed(FilePath, SeedPath, onSeedUsed: p => seedUsed = p);
+
+        Assert.Equal("default", loaded.Text);
+        Assert.Null(seedUsed);
+        // 本体は壊れていたので退避される（従来どおり）。
+        Assert.True(File.Exists(FilePath + JsonSettingsBase<SampleSettings>.UnreadableFileSuffix));
+    }
+
+    [Fact]
+    public void Load_WithABrokenSeed_ReportsItAndNeverQuarantinesTheSeed()
+    {
+        WriteSeed("{ this is not json");
+
+        var failures = new List<string>();
+        string? seedUsed = null;
+        var loaded = SampleSettings.LoadWithSeed(
+            FilePath, SeedPath, onLoadFailure: failures.Add, onSeedUsed: p => seedUsed = p);
+
+        Assert.Equal("default", loaded.Text);
+        Assert.Null(seedUsed);
+        Assert.Contains(failures, f => f.Contains(SeedPath, StringComparison.Ordinal));
+
+        // **種は退避しない。** 退避は File.Move であり、実行ファイルの隣は読み取り専用で
+        // ありうるし複数の利用者で共有されうる ── 本体（利用者ごとの書き込み先）とは性質が違う。
+        Assert.False(File.Exists(SeedPath + JsonSettingsBase<SampleSettings>.UnreadableFileSuffix));
+        Assert.True(File.Exists(SeedPath));
+    }
+
+    [Fact]
+    public void Load_WithNeitherFileNorSeed_ReturnsTheDefaults()
+    {
+        var loaded = SampleSettings.LoadWithSeed(FilePath, SeedPath);
+
+        Assert.True(loaded.IsFirstRun);
+        Assert.Equal("default", loaded.Text);
+        Assert.True(loaded.OnLoadedWasCalled);
+    }
+
+    [Fact]
+    public void Load_WithNoSeedPath_BehavesLikeBefore()
+    {
+        // 省略可能引数なので、既存の呼び出し（種を渡さない）は挙動が変わらないこと。
+        var loaded = SampleSettings.LoadWithSeed(FilePath, seedFilePath: null);
+
+        Assert.True(loaded.IsFirstRun);
+        Assert.Equal("default", loaded.Text);
+    }
+
     // ---- 変更通知 ----
 
     [Fact]
@@ -458,6 +567,14 @@ public partial class SampleSettings : JsonSettingsBase<SampleSettings>
 
     public static SampleSettings Load(string filePath, Action<string>? onLoadFailure = null)
         => LoadOrCreate(filePath, SampleSettingsJsonContext.Default.SampleSettings, () => new(), onLoadFailure);
+
+    public static SampleSettings LoadWithSeed(
+        string filePath,
+        string? seedFilePath,
+        Action<string>? onLoadFailure = null,
+        Action<string>? onSeedUsed = null)
+        => LoadOrCreate(filePath, SampleSettingsJsonContext.Default.SampleSettings, () => new(),
+                        onLoadFailure, seedFilePath, onSeedUsed);
 }
 
 [JsonSerializable(typeof(SampleSettings))]

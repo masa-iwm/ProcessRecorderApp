@@ -1452,6 +1452,29 @@ GPU テクスチャになるため**アクセシブルテキストが 1 つも�
   `RecordingCleanupIntervalHours`）、テンプレート変数（`TemplateVariables`）、
   UIA トリガ（`UiaTriggers` / `UiaTriggerAssignments` / `UiaTriggersEnabled`）等）。
 
+  **この場所に `settings.json` が無いときだけ、実行ファイルの隣の `settings.json` を
+  「種」として読む**（`AppSettings.SeedFilePath` → `JsonSettingsBase.LoadOrCreate` の
+  `seedFilePath`）。配布物へ初期設定を同梱して「展開して起動すれば構成済み」にするための口で、
+  読んだことは `activity.log` の `settings.seed` に 1 行残る。
+
+  規則は 3 つ:
+
+  - **条件は「本体が無い」であって「本体が壊れている」ではない。** 壊れていたら
+    従来どおり退避して既定値へ倒す ── ここで種へ倒すと、一時的に読めなかっただけの
+    利用者の設定が同梱物で黙って置き換わる。
+  - **種は読むだけ**（複写も退避もしない）。本体は最初の保存で生まれる。
+    種が壊れていても `.bad` へ退避しない ── 退避は `File.Move` であり、
+    実行ファイルの隣は読み取り専用でありうるし複数の利用者で共有されうる。
+  - **見るのは `AppEnvironment.DataDirectory` の不在**であって `%LOCALAPPDATA%` の不在ではない。
+    こうしてあるので `PROCESSRECORDERAPP_DATA_DIR` による E2E の隔離がそのまま効く。
+    種の在り処は `AppDirectories.BaseDirectory`（`Environment.ProcessPath` のディレクトリ。
+    単一ファイル発行で展開先を指す `AppContext.BaseDirectory` は使わない）。
+
+  読めた種には `IsFirstRun=false` を与える ── 種は「初回の既定値」であって
+  「初回そのもの」ではないので、初回だけ働く `OnLoaded()` の処理を種の内容へ重ねない。
+  `Reload()` にも同じ種を渡してあるが、**本体が在れば効かない**ので、
+  再読み込みで種が読まれるのは「手で `settings.json` を消した」場合だけである。
+
   **書式は「人が開いて手で直せること」を優先している** ── インデント付き・非 ASCII を
   `\uXXXX` へ逃がさない・UTF-8（BOM 無し）。指定は `AppSettings.SettingsTypeInfo` の
   1 か所（`Encoder` は属性では書けないのでコンテキストをインスタンス生成している）。

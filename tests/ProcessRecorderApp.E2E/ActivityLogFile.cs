@@ -72,6 +72,8 @@ public static class ActivityLogFile
         // settings.json を読めず既定値へ倒れた／書けなかった。
         "settings.load",
         "settings.save",
+        // 保存先に settings.json が無く、実行ファイルの隣の「種」を既定設定として読んだ。
+        "settings.seed",
         // プレビューパイプラインの実行時障害（録画は止めない。1パイプラインにつき1行）。
         "preview.error",
         // 古い mp4 の自動削除（何もしなかった周回は出さない）。

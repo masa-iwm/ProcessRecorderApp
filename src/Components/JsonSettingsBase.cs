@@ -70,16 +70,50 @@ public abstract partial class JsonSettingsBase<
     /// 戻ったことがどこにも残らない。</b>
     /// </para>
     /// </param>
+    /// <param name="seedFilePath">
+    /// <paramref name="filePath"/> が<b>存在しないとき</b>にだけ既定値の代わりに読む「種」。
+    ///
+    /// <para>
+    /// 用途は「実行ファイルの隣に初期設定を同梱して配る」こと。<b>パスは呼び出し側が決める</b>
+    /// ── この基底は汎用なので、実行ファイルの在り処のような製品固有の規則を持たない。
+    /// </para>
+    /// <para>
+    /// <b>種は読むだけで、コピーもしないし退避もしない。</b> 最初の保存で
+    /// <paramref name="filePath"/> 側に本体が生まれるので複写は要らない。
+    /// 壊れていても <see cref="QuarantineUnreadableFile"/> を呼ばないのは、退避が
+    /// <c>File.Move</c> であり、<b>実行ファイルの隣は読み取り専用でありうるし
+    /// 複数の利用者で共有されうる</b>ため ── 本体（利用者ごとの書き込み先）とは性質が違う。
+    /// 壊れていた事実は <paramref name="onLoadFailure"/> に流して既定値へ倒す。
+    /// </para>
+    /// <para>
+    /// <b>読めた種には <see cref="IsFirstRun"/> を <c>false</c> として与える。</b>
+    /// 種は「初回の既定値」であって「初回そのもの」ではない ── true のままだと、
+    /// 初回だけ働く <see cref="OnLoaded"/> の処理が種の内容の上に重ねて走る。
+    /// </para>
+    /// </param>
+    /// <param name="onSeedUsed">
+    /// 種を実際に読んだときに、そのパスを受け取るコールバック。
+    /// <paramref name="onLoadFailure"/> と同じ理由でここから <c>ActivityLog</c> へ書かない。
+    /// <b>記録しないと「設定した覚えのない初期値で始まった」ことを誰も追えない。</b>
+    /// </param>
     protected static TSelf LoadOrCreate(
         string filePath,
         JsonTypeInfo<TSelf> jsonTypeInfo,
         Func<TSelf> createDefault,
-        Action<string>? onLoadFailure = null)
+        Action<string>? onLoadFailure = null,
+        string? seedFilePath = null,
+        Action<string>? onSeedUsed = null)
     {
         TSelf? settings = null;
+
+        // 種を読む条件は「本体が壊れている」ではなく「本体が無い」。本体が在って読めなかった
+        // 場合に種へ倒すと、**利用者が育てた設定を同梱物で黙って置き換える**ことになる
+        // （上の QuarantineUnreadableFile が「正しいファイルを退けない」としているのと同じ判断）。
+        bool mainFileExists = File.Exists(filePath);
+
         try
         {
-            if (File.Exists(filePath))
+            if (mainFileExists)
             {
                 string json = File.ReadAllText(filePath);
                 settings = JsonSerializer.Deserialize(json, jsonTypeInfo);
@@ -105,6 +139,31 @@ public abstract partial class JsonSettingsBase<
             // ── 次回の Save がその場に新しい既定値を書き、復旧が難しくなる。
             if (ex is JsonException)
                 QuarantineUnreadableFile(filePath, onLoadFailure);
+        }
+
+        if (!mainFileExists && !string.IsNullOrEmpty(seedFilePath) && File.Exists(seedFilePath))
+        {
+            try
+            {
+                string json = File.ReadAllText(seedFilePath);
+                settings = JsonSerializer.Deserialize(json, jsonTypeInfo);
+                if (settings is null)
+                {
+                    onLoadFailure?.Invoke($"seed='{seedFilePath}' the file contains JSON null");
+                }
+                else
+                {
+                    // 種は「初回の既定値」であって「前回の続き」ではない。
+                    settings.IsFirstRun = false;
+                    onSeedUsed?.Invoke(seedFilePath);
+                }
+            }
+            catch (Exception ex)
+            {
+                // 退避はしない（種は共有物・読み取り専用でありうる）。記録して既定値へ倒す。
+                onLoadFailure?.Invoke($"seed='{seedFilePath}' {ex.GetType().Name}: {ex.Message}");
+                settings = null;
+            }
         }
 
         settings ??= createDefault();
