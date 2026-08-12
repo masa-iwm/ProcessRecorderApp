@@ -199,6 +199,19 @@ public partial class EventRecorder : ObservableObject, IDisposable
     private GstApp.AppSink? _appSink;
     private Pipeline? _srcPipeline;
     private GstBase.BaseSrc? _errorSinkSrc;
+
+    /// <summary>
+    /// sink パイプラインが EOS を受けたか（<c>Initialize</c> のたびに畳む）。
+    ///
+    /// <para>
+    /// <b>EOS のあとは要素単位の復帰では戻らない。</b> EOS は下流へ流れて残るので、
+    /// ソース要素を <c>Ready</c>→<c>Playing</c> しても <c>tee</c> から先
+    /// （プレビュー枝・エンコーダー枝）は元に戻らない。
+    /// 実機ではカメラの抜き差しで<b>「復帰は result=ok なのにプレビューがカタつき、
+    /// Initialize を押すと直る」</b>という形で現れた。
+    /// </para>
+    /// </summary>
+    private volatile bool _sinkSawEos;
     private Bus? _srcBus;
     private GstApp.AppSrc? _appSrc;
     private Element? _mux;
@@ -1046,6 +1059,9 @@ public partial class EventRecorder : ObservableObject, IDisposable
                 }
             }
 
+            // 新しいパイプラインなので EOS の記憶も畳む（次の障害は要素単位から試せる）。
+            _sinkSawEos = false;
+
             IsInitialized = true;
 
             // カメラ制御は PLAYING 到達後に 1 回だけ当てる。**ここに置くのは、UI からの
@@ -1830,6 +1846,10 @@ public partial class EventRecorder : ObservableObject, IDisposable
                 }
 
             case MessageType.Eos:
+                // sink 側の EOS は「このパイプラインはもう戻せない」という印
+                // （<see cref="_sinkSawEos"/>）。次の復帰は要素単位を飛ばして作り直す。
+                if (string.Equals(busName, "sink", StringComparison.Ordinal))
+                    _sinkSawEos = true;
                 Components.ActivityLog.Info("recorder.eos", $"recorder='{Name}' bus={busName} element='{elementName}'");
                 break;
         }
@@ -1955,7 +1975,12 @@ public partial class EventRecorder : ObservableObject, IDisposable
                 string suppressed = 0 < refused ? $" suppressedErrors={refused}" : "";
                 _restartRefusals = 0;
 
-                if (RestartSinkSrc())
+                // **EOS を受けていたら要素単位では戻らない。** 試行を重ねても同じなので、
+                // 最初からパイプラインごと作り直す ── ここを飛ばすと、復帰は result=ok と
+                // 報告されるのに映像だけが崩れたままになる（実機のカメラ抜き差しで観測）。
+                bool mustRebuild = _sinkSawEos;
+
+                if (!mustRebuild && RestartSinkSrc())
                 {
                     _restartAttempt = 0;
                     Components.ActivityLog.Info("recorder.restart",
@@ -1963,12 +1988,15 @@ public partial class EventRecorder : ObservableObject, IDisposable
                     return;
                 }
 
-                _restartAttempt = attempt;
-                Components.ActivityLog.Warn("recorder.restart",
-                    $"recorder='{Name}' element='{elementName}' attempt={attempt} result=failed{suppressed}");
+                if (!mustRebuild)
+                {
+                    _restartAttempt = attempt;
+                    Components.ActivityLog.Warn("recorder.restart",
+                        $"recorder='{Name}' element='{elementName}' attempt={attempt} result=failed{suppressed}");
 
-                if (!RestartPolicy.ShouldEscalate(attempt))
-                    continue;   // まだ諦めない。次の間隔で再試行する
+                    if (!RestartPolicy.ShouldEscalate(attempt))
+                        continue;   // まだ諦めない。次の間隔で再試行する
+                }
 
                 // 要素単位では戻せない状態（デバイスが別のキャップスで戻った・
                 // エンコーダーが壊れた）とみなし、パイプラインごと作り直す。
@@ -1976,7 +2004,9 @@ public partial class EventRecorder : ObservableObject, IDisposable
                     return;
 
                 Components.ActivityLog.Warn("recorder.restart",
-                    $"recorder='{Name}' escalating to a full pipeline rebuild after {attempt} failed attempts");
+                    mustRebuild
+                        ? $"recorder='{Name}' escalating to a full pipeline rebuild reason=eos"
+                        : $"recorder='{Name}' escalating to a full pipeline rebuild after {attempt} failed attempts");
                 _restartAttempt = 0;
 
                 // 再生成へ進む前に、連鎖の所有権を自分で畳む。Initialize() は Close() 経由で
