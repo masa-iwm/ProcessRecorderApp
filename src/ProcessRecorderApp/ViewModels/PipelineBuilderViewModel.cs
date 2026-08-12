@@ -390,6 +390,10 @@ public sealed partial class PipelineBuilderViewModel : ObservableObject
                         : null;
                 case "mf-device-name":
                     return NonEmpty(VideoDevices.Select(d => d.Name));
+                case "mf-device-path":
+                    // 読めなければ選択肢を出さず自由入力へ倒す（カメラ設定が使えないだけで、
+                    // 録画そのものは device-name / device-index で成立する）。
+                    return NonEmpty(VideoDevices.Select(d => d.Path));
                 case "mf-format":
                     return NonEmpty(VideoDevices.SelectMany(d => d.Formats));
                 case "mf-resolution":

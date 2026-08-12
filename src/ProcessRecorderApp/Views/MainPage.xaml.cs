@@ -679,6 +679,52 @@ public sealed partial class MainPage : Page
     }
 
     /// <summary>
+    /// カメラ設定ダイアログ（<c>[ValueBuilder("GstCameraControls")]</c> の「…」から呼ばれる）。
+    ///
+    /// <para>
+    /// デバイスは <c>SrcPipeline</c> の <c>device-path</c> で開く
+    /// ── <c>device-name</c> / <c>device-index</c> からの逆引きには頼らない
+    /// （<c>mfdeviceprovider</c> の並びと MF の列挙順が一致する保証は無い）。
+    /// 取れなくてもダイアログは開く（理由を出す ── 空のダイアログにしない）。
+    /// </para>
+    /// <para>
+    /// <b><c>SrcPipeline</c> と違って初期化はやり直さない。</b> あちらは文字列が
+    /// パイプラインそのものなので組み直しが要るが、カメラ設定は<b>ダイアログが操作のたびに
+    /// 直接カメラへ当てている</b>ので、確定した時点で既に効いている。
+    /// ここで <c>OnInitialize()</c> を呼ぶと <c>Initialize()</c> → <c>Close()</c> の順に
+    /// sink パイプラインが作り直され、<b>録画中なら録画と事前バッファが飛ぶ</b>
+    /// ── <c>ApplyCameraControls</c> に書いた「カメラ制御の失敗で録画を止めない」という
+    /// 規則を、UI の側から破ることになる。
+    /// 保存した文字列は次の初期化（起動・レコーダー追加・自動復帰）で当て直される。
+    /// </para>
+    /// </summary>
+    private async System.Threading.Tasks.Task<string?> BuildCameraControlsAsync(string current)
+    {
+        // **エディタは非モーダルの別ウィンドウなので、2 枚目を開かせないガードが要る**
+        // （トリガ一覧エディタと同じ理由）。
+        if (_cameraEditorOpen)
+            return null;
+        _cameraEditorOpen = true;
+        try
+        {
+            var recorder = ViewModel?.GstController.SelectedRecorder;
+
+            // **デバイスの解決は渡さずに任せる。** 適用側とまったく同じ規則
+            // （`CameraControl.ResolveDevicePath`）を専用スレッドの上で通す ──
+            // 別々に書くと、編集画面で触るカメラと初期化時に設定が当たるカメラがずれる。
+            // 入力も適用側と揃える（実際に動いている構成を優先）。
+            // 開くのも解決も await の向こう側なので、カメラが占有されていても画面は固まらない。
+            // 戻り値が null（取り消し・1 行も出せなかった）なら PropertyGrid は何も書かない。
+            return await CameraControlWindow.EditAsync(
+                recorder?.ActualSrcPipeline ?? recorder?.SrcPipeline, current);
+        }
+        finally
+        {
+            _cameraEditorOpen = false;
+        }
+    }
+
+    /// <summary>
     /// 「レコーダーを追加」で、空から新規にするか既存の設定をコピーするかを尋ねる
     /// （<c>AddRecorderCommand</c> から呼ばれる）。取り消しなら <c>null</c> を返して追加そのものを止める。
     ///
@@ -777,6 +823,9 @@ public sealed partial class MainPage : Page
     /// </summary>
     private async System.Threading.Tasks.Task<string?> BuildValueAsync(string key, string current)
     {
+        if (key == "GstCameraControls")
+            return await BuildCameraControlsAsync(current);
+
         if (key != "GstSrcPipeline")
             return null;
 
@@ -813,6 +862,13 @@ public sealed partial class MainPage : Page
     /// 開いたまま「…」をもう一度押せてしまう ── 2 枚目を開かせないためのガード。
     /// </summary>
     private bool _uiaTriggerEditorOpen;
+
+    /// <summary>
+    /// カメラ設定の編集ウィンドウが開いているあいだ true。
+    /// <b>非モーダル</b>（プレビューを見ながら合わせるため）なので、
+    /// 開いたまま「…」をもう一度押せてしまう ── 2 枚目を開かせないためのガード。
+    /// </summary>
+    private bool _cameraEditorOpen;
 
     /// <summary>
     /// 設定画面の値ビルダー(「…」ボタン)から呼ばれる。key=UiaTriggerBuilderKey のとき

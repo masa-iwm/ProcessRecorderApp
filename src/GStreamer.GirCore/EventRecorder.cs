@@ -93,6 +93,25 @@ public partial class EventRecorderSettings : ObservableObject, Components.IPrope
     [ObservableProperty]
     public partial string? EncodingProperties { get; set; }
 
+    /// <summary>
+    /// カメラ（<c>mfvideosrc</c>）のフォーカス・明るさ等。
+    /// 形は <c>brightness=128;focus=30;focus-auto=false</c>（<see cref="CameraControlSettings"/>）。
+    ///
+    /// <para>
+    /// <b>17 項目を個別のプロパティにしない。</b> レコーダー設定を 1 つ増やすたびに
+    /// 手書きのミラーが 4 箇所（<c>RecorderSettingsMirrorTests</c> が縛る）＋ E2E の
+    /// <c>RecorderSpec</c> に要るので、17 個なら 85 箇所になる。
+    /// <see cref="SrcPipeline"/> と同じ「そのまま持つ文字列」にして、編集はダイアログに任せる。
+    /// </para>
+    /// <para>
+    /// <b>反映は <c>Initialize</c> の成功後に 1 回。</b> ソースが <c>mfvideosrc</c> でなければ
+    /// 何もしない。適用に失敗しても初期化は落とさない。
+    /// </para>
+    /// </summary>
+    [Description("PropDesc_Rec_CameraControls")]
+    [ObservableProperty]
+    public partial string? CameraControls { get; set; }
+
     /// <summary>常時録画のセグメント長(秒)の下限。</summary>
     public const int MinContinuousSegmentSeconds = 5;
 
@@ -327,6 +346,27 @@ public partial class EventRecorder : ObservableObject, IDisposable
         if (_currentSettings?.EncodingProperties != value)
             _currentSettings?.EncodingProperties = value;
     }
+
+
+    /// <summary>
+    /// カメラ制御の設定（設定側 <c>EventRecorderSettings.CameraControls</c> のミラー）。
+    /// 反映は <c>Initialize</c> の成功後に 1 回。
+    /// </summary>
+    [Description("PropDesc_Rec_CameraControls")]
+    [ObservableProperty]
+    public partial string? CameraControls { get; set; }
+    partial void OnCameraControlsChanged(string? value)
+    {
+        if (_currentSettings?.CameraControls != value)
+            _currentSettings?.CameraControls = value;
+    }
+
+    /// <summary>カメラ制御の適用に失敗した理由（成功なら空）。読み取り専用。</summary>
+    [ReadOnly(true)]
+    [Description("PropDesc_Rec_CameraControlsLastError")]
+    [ObservableProperty]
+    public partial string? CameraControlsLastError { get; private set; }
+
     [ObservableProperty]
     public partial string? ActualEncodingProperties { get; private set; }
 
@@ -425,6 +465,7 @@ public partial class EventRecorder : ObservableObject, IDisposable
             case nameof(Type): if (Type != settings.Type) Type = settings.Type; break;
             case nameof(SrcPipeline): if (SrcPipeline != settings.SrcPipeline) SrcPipeline = settings.SrcPipeline; break;
             case nameof(EncodingProperties): if (EncodingProperties != settings.EncodingProperties) EncodingProperties = settings.EncodingProperties; break;
+            case nameof(CameraControls): if (CameraControls != settings.CameraControls) CameraControls = settings.CameraControls; break;
             case nameof(ContinuousRecording): if (ContinuousRecording != settings.ContinuousRecording) ContinuousRecording = settings.ContinuousRecording; break;
             case nameof(ContinuousFramerate): if (ContinuousFramerate != settings.ContinuousFramerate) ContinuousFramerate = settings.ContinuousFramerate; break;
             case nameof(ContinuousResolution): if (ContinuousResolution != settings.ContinuousResolution) ContinuousResolution = settings.ContinuousResolution; break;
@@ -451,6 +492,7 @@ public partial class EventRecorder : ObservableObject, IDisposable
         this.Type = settings.Type;
         this.SrcPipeline = settings.SrcPipeline;
         this.EncodingProperties = settings.EncodingProperties ?? string.Empty;
+        this.CameraControls = settings.CameraControls ?? string.Empty;
 
         this.ContinuousRecording = settings.ContinuousRecording;
         this.ContinuousFramerate = settings.ContinuousFramerate;
@@ -688,6 +730,79 @@ public partial class EventRecorder : ObservableObject, IDisposable
             EncoderCatalog.GopForFramerate(SourceFramerate()));
         return EncoderCatalog.ExpandAttempts(resolved).ToArray();
     }
+
+    /// <summary>
+    /// カメラ（<c>mfvideosrc</c>）の設定を当てる。<c>InitializeCore</c> の末尾から呼ばれる。
+    ///
+    /// <para>
+    /// <b>録画を巻き添えにしない。</b> 例外は投げず、駄目だった理由を
+    /// <see cref="CameraControlsLastError"/> と <c>camera.control</c> に残すだけにする
+    /// （常時録画の隔離契約と同じ判断）── カメラ設定の不備で「録画できない」に
+    /// してはならない。
+    /// </para>
+    /// <para>
+    /// <b>指定が無いときとソースがカメラでないときは、デバイスを開きもせずに戻る。</b>
+    /// ここは <c>_stateLock</c> を握ったまま走るので、無条件にデバイスを開くと
+    /// 画面キャプチャのレコーダーまで初期化が遅くなる。
+    /// </para>
+    /// </summary>
+    private void ApplyCameraControls()
+    {
+        CameraControlsLastError = null;
+
+        if (string.IsNullOrWhiteSpace(CameraControls))
+            return;
+
+        // 解決規則は CameraControl.ResolveDevicePath に 1 本化してある
+        // （編集ダイアログと同じ入力・同じ判定を使う）。
+        switch (CameraControl.ResolveDevicePath(CameraSourcePipeline, out string? devicePath))
+        {
+            case CameraDeviceResolution.NotACamera:
+                CameraControlsLastError =
+                    $"the source is not {CameraControl.SourceElement}; camera controls do not apply";
+                return;
+
+            case CameraDeviceResolution.NoDevicePath:
+                CameraControlsLastError =
+                    "the pipeline does not say which camera to use"
+                    + " (set device-path, device-name or device-index on mfvideosrc)";
+                Components.ActivityLog.Warn("camera.control", $"recorder='{Name}' {CameraControlsLastError}");
+                return;
+
+            case CameraDeviceResolution.DeviceNotFound:
+                CameraControlsLastError =
+                    "the camera named by the pipeline was not found on this PC (unplugged or renamed)";
+                Components.ActivityLog.Warn("camera.control", $"recorder='{Name}' {CameraControlsLastError}");
+                return;
+        }
+
+        try
+        {
+            string? failure = CameraControl.Apply(devicePath, CameraControls);
+            if (failure is null)
+            {
+                Components.ActivityLog.Info("camera.control", $"recorder='{Name}' applied='{CameraControls}'");
+                return;
+            }
+            CameraControlsLastError = failure;
+            Components.ActivityLog.Warn("camera.control", $"recorder='{Name}' {failure}");
+        }
+        catch (Exception ex)
+        {
+            // ここまで来る想定は無い（CameraControl 側で握っている）が、
+            // 万一漏れても録画を止めないための最後の砦。
+            CameraControlsLastError = $"{ex.GetType().Name}: {ex.Message}";
+            Components.ActivityLog.Error("camera.control", $"recorder='{Name}' {CameraControlsLastError}");
+        }
+    }
+
+    /// <summary>
+    /// カメラ設定の解決に使うパイプライン文字列。
+    /// <b>実際に動いている構成（<see cref="ActualSrcPipeline"/>）を優先する</b> ──
+    /// 編集しただけでまだ初期化していない値で開くと、<b>いま映っているカメラとは
+    /// 別のデバイス</b>を触ることになる。編集ダイアログも同じものを使う。
+    /// </summary>
+    public string? CameraSourcePipeline => ActualSrcPipeline ?? SrcPipeline;
 
     /// <summary>
     /// パイプラインを構築して常時バッファリングを開始する。
@@ -932,6 +1047,12 @@ public partial class EventRecorder : ObservableObject, IDisposable
             }
 
             IsInitialized = true;
+
+            // カメラ制御は PLAYING 到達後に 1 回だけ当てる。**ここに置くのは、UI からの
+            // Initialize() だけでなく自動復帰のエスカレーション（RestartLoopAsync →
+            // Initialize()）でも設定が戻るようにするため** ── 呼び出し側それぞれに
+            // 書くと必ずどれかが漏れる。失敗しても IsInitialized は下げない。
+            ApplyCameraControls();
         }
         catch
         {

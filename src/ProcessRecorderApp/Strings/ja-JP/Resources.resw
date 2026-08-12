@@ -147,18 +147,6 @@
   </data>
 
   <!-- MainPage.xaml.cs: recorder removal confirmation dialog -->
-  <data name="Dialog_AddRecorder_Title" xml:space="preserve">
-    <value>レコーダーの追加</value>
-  </data>
-  <data name="Dialog_AddRecorder_Blank" xml:space="preserve">
-    <value>既定値から新規に作る</value>
-  </data>
-  <data name="Dialog_AddRecorder_CopyFrom" xml:space="preserve">
-    <value>設定をコピーする</value>
-  </data>
-  <data name="Common_Add" xml:space="preserve">
-    <value>追加</value>
-  </data>
   <data name="MainPage_ToggleFullScreen.[using:Microsoft.UI.Xaml.Controls]ToolTipService.ToolTip" xml:space="preserve">
     <value>プレビューを全画面で表示します（F11／プレビューのダブルクリック。Esc で解除）</value>
   </data>
@@ -170,6 +158,18 @@
   </data>
   <data name="Menu_ExitFullScreen" xml:space="preserve">
     <value>全画面を終了</value>
+  </data>
+  <data name="Dialog_AddRecorder_Title" xml:space="preserve">
+    <value>レコーダーの追加</value>
+  </data>
+  <data name="Dialog_AddRecorder_Blank" xml:space="preserve">
+    <value>既定値から新規に作る</value>
+  </data>
+  <data name="Dialog_AddRecorder_CopyFrom" xml:space="preserve">
+    <value>設定をコピーする</value>
+  </data>
+  <data name="Common_Add" xml:space="preserve">
+    <value>追加</value>
   </data>
   <data name="Dialog_RemoveRecorder_Title" xml:space="preserve">
     <value>レコーダーの削除</value>
@@ -353,6 +353,96 @@
   <data name="PropDesc_Rec_SrcPipeline" xml:space="preserve">
     <value>キャプチャに使う GStreamer ソースパイプライン記述。</value>
   </data>
+  <data name="CameraDialog_Hint.Text" xml:space="preserve">
+    <value>このカメラが申告した項目だけを表示しています。スライダーを動かすと即座にカメラへ反映されるので、プレビューを見ながら合わせられます。</value>
+  </data>
+  <data name="CameraDialog_Error.Title" xml:space="preserve">
+    <value>カメラ設定を開けません</value>
+  </data>
+  <data name="CameraDialog_Auto" xml:space="preserve">
+    <value>自動</value>
+  </data>
+  <data name="CameraDialog_WindowTitle" xml:space="preserve">
+    <value>カメラ設定</value>
+  </data>
+  <data name="CameraDialog_Ok.Content" xml:space="preserve">
+    <value>OK</value>
+  </data>
+  <data name="CameraDialog_Cancel.Content" xml:space="preserve">
+    <value>キャンセル</value>
+  </data>
+  <data name="CameraDialog_NotACamera" xml:space="preserve">
+    <value>このレコーダーはカメラ（mfvideosrc）を使っていないため、カメラ設定は適用されません。</value>
+  </data>
+  <data name="CameraDialog_DeviceNotFound" xml:space="preserve">
+    <value>このレコーダーが指しているカメラが、この PC で見つかりません。取り外されているか、名前が変わった可能性があります。</value>
+  </data>
+  <data name="CameraDialog_NoDevicePath" xml:space="preserve">
+    <value>どのカメラを使うかがパイプラインに書かれていません。パイプライン編集ダイアログでカメラを選んでください。</value>
+  </data>
+  <data name="CameraDialog_CannotOpen" xml:space="preserve">
+    <value>カメラ設定を開けませんでした。カメラが無い・他のアプリが使用中・ドライバが未対応のいずれかです。</value>
+  </data>
+  <data name="CameraDialog_NoControls" xml:space="preserve">
+    <value>このカメラは調整できる項目を申告していません。</value>
+  </data>
+  <data name="CameraItem_brightness" xml:space="preserve">
+    <value>明るさ</value>
+  </data>
+  <data name="CameraItem_contrast" xml:space="preserve">
+    <value>コントラスト</value>
+  </data>
+  <data name="CameraItem_hue" xml:space="preserve">
+    <value>色相</value>
+  </data>
+  <data name="CameraItem_saturation" xml:space="preserve">
+    <value>彩度</value>
+  </data>
+  <data name="CameraItem_sharpness" xml:space="preserve">
+    <value>シャープネス</value>
+  </data>
+  <data name="CameraItem_gamma" xml:space="preserve">
+    <value>ガンマ</value>
+  </data>
+  <data name="CameraItem_color-enable" xml:space="preserve">
+    <value>カラー有効</value>
+  </data>
+  <data name="CameraItem_white-balance" xml:space="preserve">
+    <value>ホワイトバランス</value>
+  </data>
+  <data name="CameraItem_backlight-compensation" xml:space="preserve">
+    <value>逆光補正</value>
+  </data>
+  <data name="CameraItem_gain" xml:space="preserve">
+    <value>ゲイン</value>
+  </data>
+  <data name="CameraItem_pan" xml:space="preserve">
+    <value>パン</value>
+  </data>
+  <data name="CameraItem_tilt" xml:space="preserve">
+    <value>チルト</value>
+  </data>
+  <data name="CameraItem_roll" xml:space="preserve">
+    <value>ロール</value>
+  </data>
+  <data name="CameraItem_zoom" xml:space="preserve">
+    <value>ズーム</value>
+  </data>
+  <data name="CameraItem_exposure" xml:space="preserve">
+    <value>露出</value>
+  </data>
+  <data name="CameraItem_iris" xml:space="preserve">
+    <value>絞り</value>
+  </data>
+  <data name="CameraItem_focus" xml:space="preserve">
+    <value>フォーカス</value>
+  </data>
+  <data name="PropDesc_Rec_CameraControls" xml:space="preserve">
+    <value>mfvideosrc のカメラ設定。書式は「brightness=128;focus=30;focus-auto=false」。「…」ボタンでこのカメラが対応する項目を確認できます。レコーダーの初期化のたびに 1 回適用されます。</value>
+  </data>
+  <data name="PropDesc_Rec_CameraControlsLastError" xml:space="preserve">
+    <value>カメラ設定を適用できなかった理由（適用できていれば空欄）。</value>
+  </data>
   <data name="PropDesc_Rec_EncodingProperties" xml:space="preserve">
     <value>録画パイプラインに適用するエンコード設定。</value>
   </data>
@@ -501,6 +591,9 @@
   </data>
   <data name="Src_DeviceIndex_Desc" xml:space="preserve">
     <value>キャプチャデバイスのインデックス</value>
+  </data>
+  <data name="Src_DevicePath_Desc" xml:space="preserve">
+    <value>デバイスパス（シンボリックリンク）。通常は device-name に任せて構いません。カメラ設定はこの値でデバイスを開きます。</value>
   </data>
   <data name="Src_DeviceName_Desc" xml:space="preserve">
     <value>キャプチャデバイスのフレンドリ名</value>

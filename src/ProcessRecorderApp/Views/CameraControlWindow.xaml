@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Window
+    x:Class="ProcessRecorderApp.Views.CameraControlWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:vm="using:ProcessRecorderApp.ViewModels"
+    xmlns:au="using:Microsoft.UI.Xaml.Automation"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d">
+
+    <Window.SystemBackdrop>
+        <MicaBackdrop />
+    </Window.SystemBackdrop>
+
+    <Grid x:Name="RootGrid" RowDefinitions="Auto,Auto,*,Auto" Padding="16" RowSpacing="8">
+        <!-- 開けなかった／対応する項目が無かった理由。**空の画面にしない** ──
+             空だと「このカメラには何も無い」と「開けなかった」の区別が付かない。 -->
+        <InfoBar Grid.Row="0"
+                 x:Uid="CameraDialog_Error"
+                 IsOpen="{x:Bind Vm.HasError, Mode=OneWay}"
+                 IsClosable="False"
+                 Severity="Warning"
+                 Message="{x:Bind Vm.ErrorMessage, Mode=OneWay}"
+                 au:AutomationProperties.AutomationId="CameraControlError" />
+
+        <TextBlock Grid.Row="1" x:Uid="CameraDialog_Hint" TextWrapping="Wrap" />
+
+        <!-- 行はドライバが対応している項目だけ（GetRange が通ったもの）。
+             カタログの 17 項目を機械的に並べると「動かせないつまみ」が並ぶ。 -->
+        <!-- Padding は縦スクロールバーのぶん。取らないとバーが右端の「自動」に重なる。 -->
+        <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto" Padding="0,0,14,0">
+            <ItemsControl ItemsSource="{x:Bind Vm.Items}"
+                          au:AutomationProperties.AutomationId="CameraControlList">
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate x:DataType="vm:CameraControlItemViewModel">
+                        <!-- 値と「自動」の列は固定幅にする。Auto にすると内容次第で
+                             右端がウィンドウ外へ押し出され、値が切れて読めなくなる（実機で発生）。 -->
+                        <Grid ColumnSpacing="8" Margin="0,4">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="140" />
+                                <ColumnDefinition Width="*" MinWidth="120" />
+                                <ColumnDefinition Width="64" />
+                                <ColumnDefinition Width="Auto" MinWidth="76" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="{x:Bind DisplayName}"
+                                       VerticalAlignment="Center" TextTrimming="CharacterEllipsis"
+                                       ToolTipService.ToolTip="{x:Bind DisplayName}" />
+                            <Slider Grid.Column="1"
+                                    Minimum="{x:Bind Range.Minimum}"
+                                    Maximum="{x:Bind Range.Maximum}"
+                                    StepFrequency="{x:Bind StepFrequency}"
+                                    IsEnabled="{x:Bind IsManual, Mode=OneWay}"
+                                    Value="{x:Bind Value, Mode=TwoWay}"
+                                    au:AutomationProperties.Name="{x:Bind DisplayName}" />
+                            <TextBlock Grid.Column="2" Text="{x:Bind ValueText, Mode=OneWay}"
+                                       TextAlignment="Right" VerticalAlignment="Center"
+                                       TextTrimming="None" />
+                            <!-- DataTemplate の中では x:Uid が自動解決されないので、
+                                 文言も Visibility も変換済みの値をビューモデルから受け取る -->
+                            <!-- **MinWidth="0" が要る。** CheckBox の既定スタイルは
+                                 MinWidth=120 なので、列に収めても中身（「自動」の文字）が
+                                 右へはみ出して切れる（実機で発生。PipelineBuilderDialog の
+                                 チェック行も同じ理由で 0 にしてある）。 -->
+                            <CheckBox Grid.Column="3" MinWidth="0"
+                                      Content="{x:Bind AutoLabel}"
+                                      Visibility="{x:Bind AutoVisibility}"
+                                      IsChecked="{x:Bind IsAuto, Mode=TwoWay}" />
+                        </Grid>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+        </ScrollViewer>
+
+        <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
+            <Button x:Uid="CameraDialog_Ok" MinWidth="96"
+                    Style="{StaticResource AccentButtonStyle}"
+                    AutomationProperties.AutomationId="CameraControlOk"
+                    Click="OnOk" />
+            <Button x:Uid="CameraDialog_Cancel" MinWidth="96"
+                    AutomationProperties.AutomationId="CameraControlCancel"
+                    Click="OnCancel" />
+        </StackPanel>
+    </Grid>
+</Window>

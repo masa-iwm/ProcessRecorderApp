@@ -147,18 +147,6 @@
   </data>
 
   <!-- MainPage.xaml.cs: recorder removal confirmation dialog -->
-  <data name="Dialog_AddRecorder_Title" xml:space="preserve">
-    <value>Add recorder</value>
-  </data>
-  <data name="Dialog_AddRecorder_Blank" xml:space="preserve">
-    <value>Start from the defaults</value>
-  </data>
-  <data name="Dialog_AddRecorder_CopyFrom" xml:space="preserve">
-    <value>Copy the settings of</value>
-  </data>
-  <data name="Common_Add" xml:space="preserve">
-    <value>Add</value>
-  </data>
   <data name="MainPage_ToggleFullScreen.[using:Microsoft.UI.Xaml.Controls]ToolTipService.ToolTip" xml:space="preserve">
     <value>Show the preview full screen (F11; double-click the preview; Esc to leave)</value>
   </data>
@@ -170,6 +158,18 @@
   </data>
   <data name="Menu_ExitFullScreen" xml:space="preserve">
     <value>Leave full screen</value>
+  </data>
+  <data name="Dialog_AddRecorder_Title" xml:space="preserve">
+    <value>Add recorder</value>
+  </data>
+  <data name="Dialog_AddRecorder_Blank" xml:space="preserve">
+    <value>Start from the defaults</value>
+  </data>
+  <data name="Dialog_AddRecorder_CopyFrom" xml:space="preserve">
+    <value>Copy the settings of</value>
+  </data>
+  <data name="Common_Add" xml:space="preserve">
+    <value>Add</value>
   </data>
   <data name="Dialog_RemoveRecorder_Title" xml:space="preserve">
     <value>Remove recorder</value>
@@ -353,6 +353,96 @@
   <data name="PropDesc_Rec_SrcPipeline" xml:space="preserve">
     <value>GStreamer source pipeline description used for capture.</value>
   </data>
+  <data name="CameraDialog_Hint.Text" xml:space="preserve">
+    <value>Only the controls this camera reports are listed. Moving a slider changes the camera right away, so you can match it against the preview.</value>
+  </data>
+  <data name="CameraDialog_Error.Title" xml:space="preserve">
+    <value>Camera settings unavailable</value>
+  </data>
+  <data name="CameraDialog_Auto" xml:space="preserve">
+    <value>Auto</value>
+  </data>
+  <data name="CameraDialog_WindowTitle" xml:space="preserve">
+    <value>Camera settings</value>
+  </data>
+  <data name="CameraDialog_Ok.Content" xml:space="preserve">
+    <value>OK</value>
+  </data>
+  <data name="CameraDialog_Cancel.Content" xml:space="preserve">
+    <value>Cancel</value>
+  </data>
+  <data name="CameraDialog_NotACamera" xml:space="preserve">
+    <value>This recorder does not use a camera (mfvideosrc), so camera controls do not apply.</value>
+  </data>
+  <data name="CameraDialog_DeviceNotFound" xml:space="preserve">
+    <value>The camera this recorder points at was not found on this PC. It may be unplugged, or its name may have changed.</value>
+  </data>
+  <data name="CameraDialog_NoDevicePath" xml:space="preserve">
+    <value>The pipeline does not say which camera to use. Open the pipeline editor and pick the camera.</value>
+  </data>
+  <data name="CameraDialog_CannotOpen" xml:space="preserve">
+    <value>Could not open the camera controls. The camera may be missing, in use, or the driver may not support them.</value>
+  </data>
+  <data name="CameraDialog_NoControls" xml:space="preserve">
+    <value>This camera does not report any adjustable controls.</value>
+  </data>
+  <data name="CameraItem_brightness" xml:space="preserve">
+    <value>Brightness</value>
+  </data>
+  <data name="CameraItem_contrast" xml:space="preserve">
+    <value>Contrast</value>
+  </data>
+  <data name="CameraItem_hue" xml:space="preserve">
+    <value>Hue</value>
+  </data>
+  <data name="CameraItem_saturation" xml:space="preserve">
+    <value>Saturation</value>
+  </data>
+  <data name="CameraItem_sharpness" xml:space="preserve">
+    <value>Sharpness</value>
+  </data>
+  <data name="CameraItem_gamma" xml:space="preserve">
+    <value>Gamma</value>
+  </data>
+  <data name="CameraItem_color-enable" xml:space="preserve">
+    <value>Colour enable</value>
+  </data>
+  <data name="CameraItem_white-balance" xml:space="preserve">
+    <value>White balance</value>
+  </data>
+  <data name="CameraItem_backlight-compensation" xml:space="preserve">
+    <value>Backlight compensation</value>
+  </data>
+  <data name="CameraItem_gain" xml:space="preserve">
+    <value>Gain</value>
+  </data>
+  <data name="CameraItem_pan" xml:space="preserve">
+    <value>Pan</value>
+  </data>
+  <data name="CameraItem_tilt" xml:space="preserve">
+    <value>Tilt</value>
+  </data>
+  <data name="CameraItem_roll" xml:space="preserve">
+    <value>Roll</value>
+  </data>
+  <data name="CameraItem_zoom" xml:space="preserve">
+    <value>Zoom</value>
+  </data>
+  <data name="CameraItem_exposure" xml:space="preserve">
+    <value>Exposure</value>
+  </data>
+  <data name="CameraItem_iris" xml:space="preserve">
+    <value>Iris</value>
+  </data>
+  <data name="CameraItem_focus" xml:space="preserve">
+    <value>Focus</value>
+  </data>
+  <data name="PropDesc_Rec_CameraControls" xml:space="preserve">
+    <value>Camera controls for mfvideosrc, as "brightness=128;focus=30;focus-auto=false". Use the "..." button to see what this camera supports. Applied once each time the recorder initializes.</value>
+  </data>
+  <data name="PropDesc_Rec_CameraControlsLastError" xml:space="preserve">
+    <value>Why the camera controls could not be applied (empty when they were).</value>
+  </data>
   <data name="PropDesc_Rec_EncodingProperties" xml:space="preserve">
     <value>Encoding properties applied to the recording pipeline.</value>
   </data>
@@ -501,6 +591,9 @@
   </data>
   <data name="Src_DeviceIndex_Desc" xml:space="preserve">
     <value>Index of the capture device</value>
+  </data>
+  <data name="Src_DevicePath_Desc" xml:space="preserve">
+    <value>Device path (symbolic link). Usually left to device-name; it is what the camera-control settings use to open the device.</value>
   </data>
   <data name="Src_DeviceName_Desc" xml:space="preserve">
     <value>Friendly name of the capture device</value>

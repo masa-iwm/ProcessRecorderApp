@@ -450,6 +450,108 @@ I フレームゲートが次の I まで捨てる ── そのぶんの映像�
 `ProcessRecorderApp/Views/PipelineBuilderDialog.xaml` 経由。ソースの候補・プロパティ定義は
 `GStreamer.GirCore/SrcPipelineBuilder.cs`、カメラ/モニタの実機列挙は `GstIntrospect.cs`）。
 
+### カメラ設定（`mfvideosrc` のフォーカス・明るさ等）
+
+レコーダー設定 `CameraControls`（例 `brightness=128;focus=30;focus-auto=false`）で、
+カメラのフォーカス・明るさ・ホワイトバランス等を指定する。編集は PropertyGrid の
+「…」ボタン（`[ValueBuilder("GstCameraControls")]`）から開く専用ダイアログ
+（`Views/CameraControlDialog.xaml`）。
+
+> **GStreamer 側に手段が無い。** 実機の 1.28.6 で `gst-inspect-1.0 mfvideosrc` を確認したところ、
+> 公開プロパティは `device-index` / `device-name` / `device-path` / `blocksize` / `num-buffers`
+> などだけで、**カメラ制御のプロパティは 1 つも無く、`Implemented Interfaces:` の節そのものが
+> 出ない**（＝ `GstColorBalance` も `GstPhotography` も未実装。対照として `videobalance` は
+> `GstColorBalance` を出す）。`ksvideosrc` も同じで、しかも `libgstwinks.dll` は
+> 同梱ランタイム（`licenses/third-party/COMPONENTS.tsv`）に無い。
+> したがって **Windows のカメラ制御 COM（`IAMVideoProcAmp` / `IAMCameraControl`）を
+> 自前で叩くのが唯一の道**である。
+
+構成は 3 層:
+
+| 層 | ファイル | 役割 |
+|---|---|---|
+| 書式（純粋） | `GStreamer.GirCore/CameraControlSettings.cs` | `Parse` / `Format` / **`Merge`**、候補 17 項目のカタログ。**COM に触れない** |
+| COM | `GStreamer.GirCore/CameraControl.cs` | MF のデバイスソースから制御インターフェイスを取り出して `GetRange` / `Get` / `Set`。デバイスパスの解決（`ResolveDevicePath`）もここ |
+| スレッド | `GStreamer.GirCore/CameraControlWorker.cs` | セッションを**専用スレッド 1 本の上だけ**で開き・使い・畳む |
+| UI | `ProcessRecorderApp/Views/CameraControlDialog.xaml`(.cs) + `ViewModels/CameraControlViewModel.cs` | 対応項目だけをスライダーで出す |
+
+**自動テストできるのは書式の層だけ**（`CameraControlSettingsTests`）── 開発機にカメラが無いので
+COM 経路は動かせない（[docs/coverage-gaps.md](../docs/coverage-gaps.md)）。
+
+決定と根拠:
+
+- **17 項目を個別のレコーダー設定にしない。** レコーダー設定を 1 つ増やすたびに手書きのミラーが
+  4 箇所（`RecorderSettingsMirrorTests`）＋ E2E の `RecorderSpec` に要るので、
+  17 個なら 85 箇所になる。`SrcPipeline` と同じ「そのまま持つ文字列」にする。
+  **`[ReadOnly(true)]` は付けない** ── 手で書ける道を残す。
+- **COM は CsWin32 に生成させる**（`NativeMethods.txt` へ追記。`NativeMethods.json` の
+  `allowMarshaling: false` により `lpVtbl` を持つ構造体として生成される ＝ AOT 安全）。
+  手書き vtable にしない理由は 2 つとも実際に踏みうる形である:
+  `GetRange` / `Set` / `Get` の C の `long` は **4 バイト（C# の `int`）**で、
+  `nint` や `long` にするとスタックの隣を書き潰して後から無関係な場所で落ちる。
+  IID も `IAMVideoProcAmp` が `C6E13360-…`、`IAMCameraControl` が `C6E13370-…` と 1 文字違い。
+- **`QueryInterface` と `IMFGetService` の両方を試す。** 直接の QI が通らない実装があり、
+  Windows の作法は `IMFGetService::GetService(MF_MEDIASOURCE_SERVICE, …)`（KSPROXY 経由）。
+  片方だけにすると、通るカメラと通らないカメラで挙動が割れる。
+- **メディアソースは解放の前に `Shutdown` する。** MF がそう求めており、省くと
+  ワーカーキューと Frame Server のハンドルがプロセス終了まで残る ── 適用は初期化のたびに
+  走るので、自動復帰が繰り返される環境では積み上がり、カメラが「使用中」のままになりうる。
+  ただし取り出した制御インターフェイスはソースが生きている前提なので、
+  **`TryOpen` の場では畳めない** ── 所有権を `CameraControlSession` へ渡し、
+  `Dispose` で「制御 IF を解放 → ソースを `Shutdown` → `Release`」の順に畳む。
+- **COM は UI スレッドで触らない。** `MFCreateDeviceSource` はデバイスを実際に起動するので、
+  占有中・低速ドライバでは数秒返らない ── ダイアログのコンストラクターで同期に呼ぶと、
+  「…」を押してから画面が出るまでウィンドウ全体（プレビュー描画・録画ボタンを含む）が固まる。
+  `CameraControlWorker` が**専用スレッド 1 本**を持ち、開く・読む・設定する・畳むのすべてを
+  その上で行う（スレッドプールにしないのは、開いたスレッドと `Set` するスレッドが
+  別になりうるため ── ポインタを 1 スレッドに閉じる制約が崩れる）。
+  ビューモデルの生成は `CameraControlViewModel.CreateAsync` だけを使い、
+  行の読み出しは `ReadAll()` で**1 往復にまとめる**。
+- **デバイスは `device-path`（MF のシンボリックリンク）で開く。**
+  `device-name` / `device-index` からの逆引きには頼らない ── `mfdeviceprovider` の並びと
+  MF の列挙順が一致する保証はどこにも無い。
+  **解決規則は `CameraControl.ResolveDevicePath` の 1 箇所**にあり、適用側
+  （`EventRecorder.ApplyCameraControls`）と編集ダイアログ側（`MainPage.BuildCameraControlsAsync`）が
+  同じものを使う ── 分けて書くと**ダイアログで触るカメラと初期化時に設定が当たるカメラがずれる**
+  （入力に `ActualSrcPipeline` を見るか否かで実際に食い違っていた）。
+  入力は**実際に動いている構成を優先**する（`EventRecorder.CameraSourcePipeline`）。
+  そのため **`device-path` を `SrcPipelineBuilder` の `mfvideosrc` カタログに載せてある**
+  ── 載せないと、`Parse` は読めても `CarryOver` とダイアログの行が
+  カタログ定義のプロパティしか通さないので、**パイプライン編集ダイアログを一度開いて OK した
+  時点で黙って落ちる**（そしてカメラ設定が効かなくなる）。
+  値の選択肢は `GstIntrospect.GetVideoSourceDevices()` の `Path`。
+  `gst_device_get_properties` が返す `GstStructure*` は transfer full で、
+  **解放は `gst_structure_free`**（`gst_mini_object_unref` ではない ── `GstStructure` は
+  MiniObject ではないので、取り違えるとカメラのある機械でだけヒープが壊れる）。
+- **適用は `InitializeCore` の末尾（PLAYING 到達後）に 1 回。** ここに置くのは、UI からの
+  `Initialize()` だけでなく**自動復帰のエスカレーションでも設定が戻る**ようにするため。
+  ソースが `mfvideosrc` でない／設定が空なら**デバイスを開きもせずに戻る**
+  （`_stateLock` を握ったまま走るため）。
+  **失敗しても初期化は落とさない** ── 理由を `CameraControlsLastError` と
+  `activity.log` の `camera.control` に残すだけにする（常時録画の隔離契約と同じ判断）。
+- **ダイアログのスライダーはその場でカメラへ届く。** プレビューを見ながら合わせられることが
+  この機能の価値なので、OK まで反映しない作りにはしない。行は `GetRange` が通った項目だけ
+  （カタログの 17 項目を機械的に並べると「動かせないつまみ」が並ぶ）。
+  **開けなかったときは黙って空にせず理由を出す** ── 空のダイアログでは
+  「このカメラには何も無い」と「開けなかった」の区別が付かない。
+  1 行も出せなかったときは **OK でも何も確定しない**（空文字を返すとそれまでの設定を消す。
+  「開けなかった」と「空にしたい」は別物である）。
+  **確定は `CameraControlSettings.Merge` を通す** ── ダイアログはそのカメラが申告した項目しか
+  行に持たないので、ゼロから組み立てると**未知キー**と**そのカメラには無いが設定には
+  書いてある項目**が黙って消える。`Parse`/`Format` しか通らない L1 の表明では捕まらないので、
+  合成そのものを純粋層へ置いて `Merge_*` のテストで縛ってある。
+
+> **`mfvideosrc` が開いている最中でも、別ハンドルからの制御は効く（実測）。**
+> 録画・プレビューが動いている最中にスライダーを動かすと、その場でプレビューの画が変わる
+> ── Windows の Frame Server がカメラの共有オープンを許すため。
+> 実測環境: Logitech のカメラ 1 台（`camera.open … opened=True controls=12`）。
+>
+> ただし**成否はドライバ次第**で、これは 1 機種での測定にすぎない。効かないカメラに
+> 当たった場合、**代替は無い**（`ksvideosrc` も制御を実装しておらず、`videobalance` も
+> 同梱ランタイムに無い ── いずれも実測）ので、そのときは
+> 「録画停止中のみ開ける」へ縮退させるしかない。
+> 確認手順は [docs/coverage-gaps.md](../docs/coverage-gaps.md)。
+
 ### エラー時の自動リスタート
 
 `PullSampleProc` は sink パイプラインの Bus を監視し、`MessageType.Error` を検知すると
@@ -1716,6 +1818,10 @@ GPU テクスチャになるため**アクセシブルテキストが 1 つも�
 | `preview.error` | ERROR | `Previewer.DrainBusErrors`／`NativeSwapChainPanel.SetPanelSwapChain` | プレビューパイプラインの実行時障害（D3D デバイスロスト等。1 パイプラインにつき 1 行）と、スワップチェーンのパネルへのバインド失敗。録画は止めない方針のため復帰は試みない ── ここが「プレビューだけ黙って固まった／黒いまま」の唯一の観測点になる |
 | `variables.duplicate-key` | WARN | `TemplateVariableViewModel.OnKeyChanged` | Variables 画面で既存の行と重複するキーを入力したため、元のキーへ差し戻した（重複を許すと既存の値を空文字で潰し、片方の削除で実体まで消える） |
 | `settings.load` | ERROR | `AppSettings.ReportLoadFailure` | settings.json を読めず既定値へ倒れた（読めなかったファイルは `.bad` へ退避） |
+| `settings.seed` | INFO | `AppSettings.ReportSeedUsed` | 保存先に settings.json が無く、**実行ファイルの隣の settings.json を既定設定（種）として読んだ**。無記録だと「設定した覚えのない初期値で始まった」ことを追えない |
+| `camera.open` | INFO | `CameraControlWorker.OpenAsync` | カメラ設定を開いたときの解決結果（`resolution=` / `device=` / `opened=` / `controls=`）。**開くたびに必ず 1 行出る** ── `camera.devices` は `device-path` が既に書かれていれば走らないので、そちらだけでは通常の構成で何も分からない。「カメラ設定が効かない」ときに最初に見る行 |
+| `camera.devices` | INFO | `GstIntrospect.GetVideoSourceDevices` | カメラのデバイス列挙の結果（`count=` と、`device-path` を読めた数 `withPath=`）。**`DebugLogEx` では見えない**（`gst_debug_log` 経由なので `GST_DEBUG` 未設定では 1 行も出ない）ため activity.log へ出す ── カメラが 1 台も見えないのか、見えているがパスが読めないのかを切り分ける唯一の手掛かり |
+| `camera.control` | INFO / WARN / ERROR | `EventRecorder.ApplyCameraControls` | カメラ設定（`CameraControls`）を当てた／当てられなかった（`device-path` が無い・デバイスを開けない・ドライバが弾いた）。**録画は止めない**ので、ここが唯一の観測点になる |
 | `settings.save` | ERROR | `AppSettings.ReportSaveFailure` | settings.json を書けなかった（ディスク満杯・一時ロック・権限）。書けなかった変更は次の保存契機で改めて書かれる |
 | `cli` | INFO | `ActivationCommands.Parse` | コマンドラインと終了コード。**例外で抜けた場合も必ず出る**（そのときの終了コードは 99） |
 | `ping` | INFO | `ping` コマンド | 生存確認 |

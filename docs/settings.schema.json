@@ -444,6 +444,12 @@
               "null"
             ]
           },
+          "CameraControls": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "ContinuousRecording": {
             "type": "boolean"
           },

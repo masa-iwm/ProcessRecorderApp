@@ -3,3 +3,26 @@
 // 参照: https://microsoft.github.io/CsWin32/docs/getting-started.html
 
 MessageBox
+
+// カメラ制御（IAMVideoProcAmp / IAMCameraControl）。mfvideosrc はこれらのプロパティを
+// 1つも持たないので、Media Foundation のデバイスソースから取り出して直接叩く。
+// NativeMethods.json の allowMarshaling:false により、COM は lpVtbl を持つ構造体として
+// 生成される（AOT 安全で、スロット番号も引数幅もメタデータから正しく決まる）。
+MFStartup
+MFCreateAttributes
+MFCreateDeviceSource
+IMFAttributes
+IMFMediaSource
+IMFGetService
+IAMVideoProcAmp
+IAMCameraControl
+MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE
+MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID
+MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_SYMBOLIC_LINK
+MF_MEDIASOURCE_SERVICE
+VideoProcAmpProperty
+VideoProcAmpFlags
+CameraControlProperty
+CameraControlFlags
+MF_VERSION
+MFSTARTUP_LITE

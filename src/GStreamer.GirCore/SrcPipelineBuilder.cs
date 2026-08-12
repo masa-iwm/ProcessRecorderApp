@@ -192,6 +192,13 @@ public static partial class SrcPipelineBuilder
                     description: Localization.GetString("Resources/Src_DeviceIndex_Desc"), dynamicKey: "mf-device-index"),
                 new SrcPropertyDef("device-name", SrcPropertyKind.String, null,
                     description: Localization.GetString("Resources/Src_DeviceName_Desc"), dynamicKey: "mf-device-name"),
+                // **カタログに載せないと編集で消える。** Parse は要素セグメント上の全 key=value を
+                // 読むが、CarryOver とダイアログの行は**カタログ定義のプロパティしか通さない**ので、
+                // 載せずにいるとパイプライン編集ダイアログを一度開いて OK した時点で
+                // device-path が黙って落ちる ── そしてカメラ設定（CameraControl）は
+                // このシンボリックリンクでデバイスを開くので、落ちると設定が効かなくなる。
+                new SrcPropertyDef("device-path", SrcPropertyKind.String, null,
+                    description: Localization.GetString("Resources/Src_DevicePath_Desc"), dynamicKey: "mf-device-path"),
             ],
             capsFields:
             [

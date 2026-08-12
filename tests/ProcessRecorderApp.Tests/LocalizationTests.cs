@@ -27,6 +27,7 @@ public class LocalizationTests
     {
         // ContentDialog の主ボタン。日本語 UI でも "OK" が慣例。
         "Resources.resw/PipelineDialog.PrimaryButtonText",
+        "Resources.resw/CameraDialog_Ok.Content",
     };
 
     private static readonly Regex FormatPlaceholderRegex = new(@"\{(\d+)\}", RegexOptions.Compiled);

@@ -9,6 +9,19 @@ namespace ProcessRecorderApp.GStreamer;
 public sealed class VideoDeviceInfo
 {
     public required string Name { get; init; }
+
+    /// <summary>
+    /// デバイスパス（<c>mfvideosrc</c> の <c>device-path</c> ＝ Media Foundation の
+    /// シンボリックリンク）。読めなければ空。
+    ///
+    /// <para>
+    /// <b>カメラ設定（<c>CameraControl</c>）はこの値でデバイスを開く。</b>
+    /// 表示名や <c>device-index</c> からの逆引きには頼れない ── <c>mfdeviceprovider</c> の
+    /// 並びと MF の列挙順が一致する保証はどこにも無い。
+    /// </para>
+    /// </summary>
+    public string Path { get; init; } = "";
+
     /// <summary>デバイスが提供する format 値(例: NV12)。</summary>
     public IReadOnlyList<string> Formats { get; init; } = Array.Empty<string>();
     /// <summary>デバイスが提供する解像度(例: 1920x1080)。</summary>
@@ -337,7 +350,18 @@ public static partial class GstIntrospect
             gst_object_unref(provider);
         }
 
-        DebugLogEx.Log(DebugLevel.Info, $"video devices: count={result.Count}");
+        // **DebugLogEx では見えない。** あちらは gst_debug_log 経由なので
+        // GST_DEBUG が未設定だと 1 行も出ない ── カメラの確認手順が
+        // 「debug.log に count= が出る」を前提にしていたのに、既定の起動では
+        // どこにも出ていなかった（実機で指摘された）。
+        // activity.log なら Log 画面へも複写されるので、押したその場で見える。
+        int withPath = 0;
+        foreach (var device in result)
+        {
+            if (!string.IsNullOrWhiteSpace(device.Path))
+                withPath++;
+        }
+        Components.ActivityLog.Info("camera.devices", $"count={result.Count} withPath={withPath}");
         return result;
     }
 
@@ -388,10 +412,42 @@ public static partial class GstIntrospect
         return new VideoDeviceInfo
         {
             Name = name,
+            Path = ReadDevicePath(device),
             Formats = formats,
             Resolutions = resolutions,
             Framerates = framerates,
         };
+    }
+
+    /// <summary>
+    /// デバイスパス（MF のシンボリックリンク）を読む。読めなければ空文字。
+    ///
+    /// <para>
+    /// <b><c>gst_device_get_properties</c> が返す <c>GstStructure*</c> は transfer full で、
+    /// 解放は <c>gst_structure_free</c>。</b> <c>gst_mini_object_unref</c> ではない ──
+    /// <c>GstStructure</c> は <c>GstMiniObject</c> ではないので、取り違えると
+    /// <b>カメラのある機械でだけヒープが壊れる</b>（この周辺は既に 2 回やられている。
+    /// <c>docs/coverage-gaps.md</c>）。
+    /// </para>
+    /// <para>
+    /// キー名は <c>mfdeviceprovider</c> が付ける <c>device.path</c>。
+    /// 読めなくても致命的ではない（カメラ設定が使えないだけ）ので、静かに空を返す。
+    /// </para>
+    /// </summary>
+    private static string ReadDevicePath(IntPtr device)
+    {
+        IntPtr properties = gst_device_get_properties(device);
+        if (properties == IntPtr.Zero)
+            return "";
+
+        try
+        {
+            return Marshal.PtrToStringUTF8(gst_structure_get_string(properties, "device.path")) ?? "";
+        }
+        finally
+        {
+            gst_structure_free(properties);
+        }
     }
 
     /// <summary>transfer full の <c>gchar*</c> を文字列にして解放する。</summary>
@@ -424,6 +480,14 @@ public static partial class GstIntrospect
 
     [LibraryImport(ImportResolver.Library)]
     private static partial IntPtr gst_device_get_display_name(IntPtr device);
+
+    /// <summary>transfer full の <c>GstStructure*</c>（解放は gst_structure_free）。</summary>
+    [LibraryImport(ImportResolver.Library)]
+    private static partial IntPtr gst_device_get_properties(IntPtr device);
+
+    /// <summary><c>GstStructure</c> は MiniObject ではないので専用の解放関数を使う。</summary>
+    [LibraryImport(ImportResolver.Library)]
+    private static partial void gst_structure_free(IntPtr structure);
 
     [LibraryImport(ImportResolver.Library)]
     private static partial IntPtr gst_device_get_caps(IntPtr device);

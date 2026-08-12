@@ -74,6 +74,12 @@ public static class ActivityLogFile
         "settings.save",
         // 保存先に settings.json が無く、実行ファイルの隣の「種」を既定設定として読んだ。
         "settings.seed",
+        // カメラ設定（CameraControls）を当てた／当てられなかった。録画は止めない。
+        "camera.control",
+        // カメラのデバイス列挙の結果（件数と device-path が読めた数）。
+        "camera.devices",
+        // カメラ設定を開いたときの解決結果（開くたびに 1 行）。
+        "camera.open",
         // プレビューパイプラインの実行時障害（録画は止めない。1パイプラインにつき1行）。
         "preview.error",
         // 古い mp4 の自動削除（何もしなかった周回は出さない）。

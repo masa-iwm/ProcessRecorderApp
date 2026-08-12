@@ -36,6 +36,8 @@ namespace ProcessRecorderApp.ViewModels
             Type = model.Type;
             SrcPipeline = model.SrcPipeline;
             EncodingProperties = model.EncodingProperties;
+            CameraControls = model.CameraControls;
+            CameraControlsLastError = model.CameraControlsLastError;
             ActualType = model.ActualType;
             ActualSrcPipeline = model.ActualSrcPipeline;
             ActualEncodingProperties = model.ActualEncodingProperties;
@@ -93,6 +95,8 @@ namespace ProcessRecorderApp.ViewModels
                 case nameof(Model.Type): if (Type != Model.Type) Type = Model.Type; break;
                 case nameof(Model.SrcPipeline): if (SrcPipeline != Model.SrcPipeline) SrcPipeline = Model.SrcPipeline; break;
                 case nameof(Model.EncodingProperties): if (EncodingProperties != Model.EncodingProperties) EncodingProperties = Model.EncodingProperties; break;
+                case nameof(Model.CameraControls): if (CameraControls != Model.CameraControls) CameraControls = Model.CameraControls; break;
+                case nameof(Model.CameraControlsLastError): if (CameraControlsLastError != Model.CameraControlsLastError) CameraControlsLastError = Model.CameraControlsLastError; break;
                 case nameof(Model.ActualType): if (ActualType != Model.ActualType) ActualType = Model.ActualType; break;
                 case nameof(Model.ActualSrcPipeline): if (ActualSrcPipeline != Model.ActualSrcPipeline) ActualSrcPipeline = Model.ActualSrcPipeline; break;
                 case nameof(Model.ActualEncodingProperties): if (ActualEncodingProperties != Model.ActualEncodingProperties) ActualEncodingProperties = Model.ActualEncodingProperties; break;
@@ -268,6 +272,27 @@ namespace ProcessRecorderApp.ViewModels
             if (Model.EncodingProperties != value)
                 Model.EncodingProperties = value;
         }
+
+        /// <summary>
+        /// カメラ（<c>mfvideosrc</c>）のフォーカス・明るさ等。
+        /// 「…」ボタンから専用ダイアログを開く（<c>MainPage.BuildValueAsync</c>）。
+        /// <b>読み取り専用にはしない</b> ── 手で <c>brightness=128</c> と書ける道を残す
+        /// （<c>SrcPipeline</c> / <c>OutputDirectory</c> と同じ判断）。
+        /// </summary>
+        [Description("PropDesc_Rec_CameraControls")]
+        [ValueBuilder("GstCameraControls")]
+        [ObservableProperty]
+        public partial string? CameraControls { get; set; }
+        partial void OnCameraControlsChanged(string? value)
+        {
+            if (Model.CameraControls != value)
+                Model.CameraControls = value;
+        }
+
+        [ReadOnly(true)]
+        [Description("PropDesc_Rec_CameraControlsLastError")]
+        [ObservableProperty]
+        public partial string? CameraControlsLastError { get; private set; }
 
         [ReadOnly(true)]
         [Description("PropDesc_Rec_ActualType")]

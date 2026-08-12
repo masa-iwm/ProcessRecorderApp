@@ -21,6 +21,63 @@
 device-name / 解像度 / フレームレートの選択肢が実際に出ることを目で確かめる**こと。
 `debug.log` の `video devices: count=` が件数を出すので、空なら 0 と分かる。
 
+### カメラ設定（`CameraControls`）の COM 経路
+
+`IAMVideoProcAmp` / `IAMCameraControl` を叩く経路は**開発機では 1 行も走らない**（カメラが無い）。
+**自動で守られているのは書式だけ**（`CameraControlSettingsTests`（L1）── 解析・生成・往復・
+未知キーの持ち越し・カタログの番号）。**E2E には `CameraControls` を触るテストが1件も無い。**
+「…」ボタン（`[ValueBuilder("GstCameraControls")]`）は**ソースの種類に関わらず常に出る**ので、
+画面キャプチャのレコーダーで押すと「このソースでは使えない」旨のエラーが出るだけになる
+── これは意図した挙動（開けない理由を黙らせない）だが、**それを確かめるテストも無い**。
+
+**カメラのある機械で 1 セッション、次を目で確かめること**（`docs/gpu-verification.md` と同じ
+「実行＋レポート往復」でよい）。
+**下の 10 項目は Logitech のカメラ 1 台で一度通してある**が、
+`GetRange` が返す項目も自動の可否もドライバごとに違うので、
+**この節に触れる変更をしたら機種を問わず流し直すこと**:
+
+1. カメラ設定を開いて、`activity.log`（＝アプリ内 Log 画面にも出る）に
+   `camera.open resolution=Ok … opened=True controls=<1 以上>` が出ること。
+   **`camera.devices` は出ないことがある** ── `SrcPipeline` に `device-path` が
+   書かれていれば逆引きの列挙自体が走らないため（それが正常）。
+   名前・番号だけで書いている構成なら `camera.devices count= withPath=` も併せて出る
+   （実測: `count=1 withPath=1`）
+2. SrcPipeline 編集画面で device-name / 解像度 / フレームレートの選択肢が出る（既存の回帰）
+3. **`device-path` が読めている** ── `gst-device-monitor-1.0 Video/Source` の出力と
+   アプリが出す選択肢を突き合わせる。**ここは `gst_device_get_properties` /
+   `gst_structure_free` を追加した箇所**で、解放関数を取り違えるとこの機械でだけヒープが壊れる
+4. パイプライン編集ダイアログで OK したあとも `device-path` が残っていること
+   （カタログに載せた理由そのもの。落ちるとカメラ設定が黙って効かなくなる）
+5. **録画中に**カメラ設定ダイアログを開く → `GetRange` が実値を返す
+   （Min/Max/Step/Default が全部 0 なら QI も `IMFGetService` も失敗している）
+6. **スライダーを動かすとプレビューが実際に変わる** ←
+   **`mfvideosrc` が開いている最中に別ハンドルからの制御が効くか**の唯一の判定。
+   **1 機種で成立を確認済み**（Logitech のカメラ。`camera.open … opened=True controls=12`）だが、
+   **成否はドライバ次第**なので機種を変えるたびに見ること。
+   × なら代替は無い（`ksvideosrc` も制御を実装しておらず・`videobalance` も同梱に無い）ので、
+   「録画停止中のみ開ける」へ縮退させること
+7. 「自動」を入れると数値欄が無効になり、外すと手動値へ戻る
+8. OK → settings.json に `CameraControls` が入る → **再起動しても再適用される**
+   （`activity.log` の `camera.control`）
+9. **カメラを抜いた状態**でカメラ設定を開く → **可視のエラーが出る**（アプリは落ちない）。
+   ここで「録画は止まらない」は見ない ── カメラが無ければレコーダーはそもそも
+   初期化できないので、止まるべき録画が存在しない（**両立しない条件だった**）。
+   録画側を見たいなら別の筋道で確かめること: **録画中にカメラを抜く**と
+   `recorder.error` と自動復帰（`recorder.restart`）が出て、
+   カメラを挿し直すと復帰する
+10. 別アプリ（Windows カメラ）が占有した状態で開く → 落ちない（UI も固まらない）
+
+開発機で確かめられるのはここまで ── `MFCreateDeviceSource` が失敗して**可視のエラーになる**こと、
+そして**録画が止まらない**こと。
+
+**この経路は AOT 発行物でも一度も走っていない。** E2E は `videotestsrc` を使うので
+`ApplyCameraControls` が早期 return し、COM には 1 バイトも触れない
+（`SrcPipeline` が `mfvideosrc` でなければ何もしない、という設計そのものによる）。
+CsWin32 が生成する COM 構造体・`MFStartup` / `MFCreateDeviceSource` の P/Invoke・
+GUID 定数はいずれも**トリミングと AOT でこそ壊れる**種類のものなので、
+**カメラのある機械での最初の 1 回は AOT 発行物（`win-x64-aot`。配布と同じ構成）で行うこと**
+── selfcontained で通っても、配布物で通る保証にはならない。
+
 ### 録画エンジンの寿命（App 所有）
 
 録画エンジン（`Controller`＋全 `EventRecorder`＋常時稼働 sink パイプライン）はプロセス寿命で `App` が所有し、ページはそれを受け取ってバインドするだけ、という構造の退行。2 件の注入をいずれもどの層も検出できない ── 現在のアーキテクチャではプロセス生存中にページ破棄が起きないため、所有関係を壊しても外から観測できる差が出ない。この構造（`App.xaml.cs` の起動時初期化、`MainPageViewModel` が破棄しないこと）を変えるときは、発行物に対する手動確認で録画の開始・停止が通ることを確かめること。

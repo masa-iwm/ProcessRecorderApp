@@ -314,6 +314,13 @@ public sealed class RecorderSpec(string name)
     /// <summary>null なら自動選択（<c>PreferredH264Encoder</c> が効く）。</summary>
     public string? EncodingProperties { get; set; }
 
+    /// <summary>
+    /// カメラ設定（<c>brightness=128;focus=30</c>）。
+    /// <b>ここはミラーテストの対象外</b>（5 箇所目の手書き）なので、
+    /// <c>EventRecorderSettings</c> にプロパティを増やしたら手で足すこと。
+    /// </summary>
+    public string? CameraControls { get; set; }
+
     /// <summary>1280x720/30fps・約20Mbit（排出コストを可視化できる大きさ）にする。</summary>
     public RecorderSpec AsLarge()
     {
@@ -423,6 +430,7 @@ public sealed class RecorderSpec(string name)
         ["Type"] = Type.ToString(),
         ["SrcPipeline"] = SrcPipeline,
         ["EncodingProperties"] = EncodingProperties,
+        ["CameraControls"] = CameraControls,
         ["ContinuousRecording"] = ContinuousRecording,
         ["ContinuousFramerate"] = ContinuousFramerate,
         ["ContinuousResolution"] = ContinuousResolution,
