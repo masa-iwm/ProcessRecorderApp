@@ -86,11 +86,4 @@ public class FramingGridChoicesTests
 
         Assert.Equal(FramingGridChoices.All[1].Kind, FramingGridChoices.Next(unknown, 1));
     }
-
-    [Fact]
-    public void ResourceKeyForReturnsNullForAnUnknownKind()
-    {
-        Assert.Equal("Resources/FramingGrid_Square", FramingGridChoices.ResourceKeyFor(FramingGridKind.Square));
-        Assert.Null(FramingGridChoices.ResourceKeyFor((FramingGridKind)999));
-    }
 }

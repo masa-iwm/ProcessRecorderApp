@@ -65,17 +65,4 @@ public static class FramingGridChoices
         int next = (((current + offset) % count) + count) % count;
         return All[next].Kind;
     }
-
-    /// <summary>
-    /// <paramref name="kind"/> の表示名の資源キー。一覧に無ければ <see langword="null"/>。
-    /// </summary>
-    public static string? ResourceKeyFor(FramingGridKind kind)
-    {
-        foreach (var choice in All)
-        {
-            if (choice.Kind == kind)
-                return choice.ResourceKey;
-        }
-        return null;
-    }
 }
