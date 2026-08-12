@@ -38,7 +38,7 @@
                                  IsEnabled="{x:Bind ViewModel.CanEnterPreviewFullScreen, Mode=OneWay}"
                                  Invoked="FullScreenAccelerator_Invoked" />
             <KeyboardAccelerator Key="Escape"
-                                 IsEnabled="{x:Bind ViewModel.IsPreviewFullScreen, Mode=OneWay}"
+                                 IsEnabled="{x:Bind ViewModel.CanExitPreviewFullScreen, Mode=OneWay}"
                                  Invoked="ExitFullScreenAccelerator_Invoked" />
             <KeyboardAccelerator Key="Left"
                                  IsEnabled="{x:Bind ViewModel.CanNavigateRecorders, Mode=OneWay}"
@@ -188,7 +188,9 @@
                          **フライアウトは別のトップレベル UIA ウィンドウ**なので E2E からは辿れない
                          ── 中身の確認は docs/coverage-gaps.md の手動項目にしてある。 -->
                     <lc:NativeSwapChainPanel.ContextFlyout>
-                        <MenuFlyout x:Name="previewFlyout" Opening="PreviewFlyout_Opening" />
+                        <MenuFlyout x:Name="previewFlyout"
+                                                    Opening="PreviewFlyout_Opening"
+                                                    Closed="PreviewFlyout_Closed" />
                     </lc:NativeSwapChainPanel.ContextFlyout>
                     <!-- 構図補助線。**兄弟ではなくパネルの子にする。**
                          SwapChainPanel は Panel なので子を持て、子はスワップチェーンの上に合成される。

@@ -310,6 +310,9 @@ public sealed partial class MainPage : Page
 
         // sender をキャストしない ── WinRT のランタイムクラスへのキャストは
         // トリミング安全でない（CsWinRT1034）。x:Name で持っている実体を直接使う。
+        // 開いているあいだは全画面のキー操作を止める（アクセラレータがメニューのキー操作を先に取る）。
+        ViewModel.IsPreviewMenuOpen = true;
+
         var flyout = previewFlyout;
         flyout.Items.Clear();
 
@@ -364,6 +367,20 @@ public sealed partial class MainPage : Page
         };
         toggle.Click += (_, _) => TogglePreviewFullScreen();
         flyout.Items.Add(toggle);
+    }
+
+    /// <summary>
+    /// 右クリックメニューが閉じたら全画面のキー操作を戻す。
+    ///
+    /// <para>
+    /// <c>Closed</c> は<b>どの閉じ方でも</b>上がる（項目の選択・領域外の押下・<c>Esc</c>）ので、
+    /// ここだけで戻せる。上げ忘れると全画面中のキーが二度と効かなくなる。
+    /// </para>
+    /// </summary>
+    private void PreviewFlyout_Closed(object? sender, object e)
+    {
+        if (ViewModel is not null)
+            ViewModel.IsPreviewMenuOpen = false;
     }
 
     /// <summary>

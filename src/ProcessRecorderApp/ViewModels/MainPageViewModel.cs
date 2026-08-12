@@ -98,9 +98,33 @@ public partial class MainPageViewModel : ObservableObject, IDisposable
     /// </para>
     /// </summary>
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(CanExitPreviewFullScreen))]
     [NotifyPropertyChangedFor(nameof(CanNavigateRecorders))]
     [NotifyPropertyChangedFor(nameof(CanCycleFramingGrid))]
     public partial bool IsPreviewFullScreen { get; set; }
+
+    /// <summary>
+    /// プレビューの右クリックメニューが開いているか（<c>MainPage</c> が
+    /// <c>Opening</c> / <c>Closed</c> から書く）。
+    ///
+    /// <para>
+    /// <b>全画面のキー操作を止めるためだけに在る。</b> <c>KeyboardAccelerator</c> は
+    /// ウィンドウ全域に効き、<b>ポップアップの既定のキー操作より先に取る</b>
+    /// （<c>Esc</c> が <c>ContentDialog</c> の閉じる操作を奪ったのが実測例）。
+    /// 全画面中は上下左右と <c>Esc</c> を取っているので、そのままだと
+    /// <b>開いたメニューを上下で辿れず、左右でサブメニューを開けず、<c>Esc</c> で閉じられない</b>
+    /// ── 押すと背後の補助線やレコーダーが動き、しかもメニューの印は組み直されないので
+    /// 表示と実際がずれる。<b>メニューはサブメニューを持つのでキーで辿れることに意味がある。</b>
+    /// </para>
+    /// </summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(CanExitPreviewFullScreen))]
+    [NotifyPropertyChangedFor(nameof(CanNavigateRecorders))]
+    [NotifyPropertyChangedFor(nameof(CanCycleFramingGrid))]
+    public partial bool IsPreviewMenuOpen { get; set; }
+
+    /// <summary><c>Esc</c> で全画面を抜けてよいか。メニューが開いているあいだは <c>Esc</c> をメニューへ譲る。</summary>
+    public bool CanExitPreviewFullScreen => IsPreviewFullScreen && !IsPreviewMenuOpen;
 
     /// <summary>
     /// 左右キーでレコーダーを切り替えてよいか（＝全画面中か）。
@@ -111,8 +135,12 @@ public partial class MainPageViewModel : ObservableObject, IDisposable
     /// テキスト入力やコンボボックスのキー操作を奪う。全画面中はそれらが隠れているので、
     /// この条件なら衝突しない。
     /// </para>
+    /// <para>
+    /// <b>右クリックメニューが開いているあいだは除く</b>（<see cref="IsPreviewMenuOpen"/>）──
+    /// 左右はサブメニューの開閉に要る。
+    /// </para>
     /// </summary>
-    public bool CanNavigateRecorders => IsPreviewFullScreen;
+    public bool CanNavigateRecorders => IsPreviewFullScreen && !IsPreviewMenuOpen;
 
     /// <summary>選択中のレコーダーを 1 つ前／後ろへ動かす（全画面中の左右キー・右クリックメニュー）。</summary>
     public void SelectAdjacentRecorder(int offset)
@@ -138,8 +166,12 @@ public partial class MainPageViewModel : ObservableObject, IDisposable
     /// レコーダー一覧・PropertyGrid・コンボボックスの<b>選択移動</b>そのものなので、
     /// 全画面以外で取ると一覧をキーボードで辿れなくなる。
     /// </para>
+    /// <para>
+    /// <b>右クリックメニューが開いているあいだは除く</b>（<see cref="IsPreviewMenuOpen"/>）──
+    /// 上下はメニューの項目移動そのもの。
+    /// </para>
     /// </summary>
-    public bool CanCycleFramingGrid => IsPreviewFullScreen;
+    public bool CanCycleFramingGrid => IsPreviewFullScreen && !IsPreviewMenuOpen;
 
     /// <summary>
     /// 構図補助線を 1 つ前／後ろへ動かす（全画面中の上下キー）。
