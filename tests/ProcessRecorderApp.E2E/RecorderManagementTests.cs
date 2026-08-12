@@ -152,6 +152,104 @@ public sealed class RecorderManagementTests(PublishedApp app)
         Assert.Equal(saved.Length, saved.Distinct(StringComparer.Ordinal).Count());
     }
 
+    /// <summary>
+    /// <b>コピーして追加すると、元のレコーダーの設定がそのまま写ること。</b>
+    ///
+    /// <para>
+    /// 複製はソース生成 JSON の往復（<c>AppSettings.CloneRecorder</c>）で行う。
+    /// 手書きのプロパティコピーにしなかったのは、レコーダー設定が既に手書きミラーを
+    /// 4 箇所持っており（<c>RecorderSettingsMirrorTests</c>）、<b>検出器の無い5つ目</b>を
+    /// 作らないため ── したがってここで見るべきは「往復が実際に使われていること」であり、
+    /// <b>既定値と異なる値</b>を写して確かめる（既定のままだと、空から作っても同じ結果になる）。
+    /// </para>
+    /// <para>
+    /// 名前だけは一意化される。これが無いと CLI の「完全一致・先勝ち」で
+    /// 2 台目へ永久に到達できない ── だから CLI から実際に引けることまで見る。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void AddingARecorderByCopying_CarriesTheSettingsAndUniquifiesTheName()
+    {
+        var settings = new SettingsFile();
+        var source = settings.AddRecorder("Origin");
+        // 製品の既定値（10000）ともハーネスの既定（3000）とも違う値にする
+        // ── 空から作った場合と必ず区別が付くようにするため。
+        source.BufferDuration = 4321;
+
+        using var instance = AppInstance.Create(app, settings);
+        using var ui = AppUi.Activate(instance);
+
+        ui.AddRecorderCopyingFrom("Origin");
+
+        var names = ui.WaitForRecorderNavItemCount(2);
+        Assert.Contains("Origin", names);
+        // コピー元の名前を起点に一意化される（`EventRecorder` の ctor が上書きするのは
+        // 名前がちょうど既定値 "Recorder" のときだけなので、ここには当たらない）。
+        Assert.Contains("Origin (2)", names);
+
+        // 設定まで届いていること（UI の見かけで終わっていない）。
+        var saved = WaitForSettingsRecorders(instance, 2);
+        Assert.Contains("Origin (2)", saved);
+        Assert.Equal(saved.Length, saved.Distinct(StringComparer.Ordinal).Count());
+
+        // **中身が写っていること。** ここがこのテストの本体。
+        Assert.Equal(4321, ReadRecorderBufferDuration(instance, "Origin (2)"));
+
+        // 一意化した名前で CLI から到達できること（名前を分けた目的そのもの）。
+        instance.RunExpecting(0, "start-recording", "Origin (2)");
+        instance.Run("stop-recording", "Origin (2)");
+
+        Assert.Empty(ActivityLogFile.Events(instance.ReadActivityLog(), "app.error"));
+    }
+
+    /// <summary>
+    /// 追加ダイアログを取り消したら 1 台も増えないこと
+    /// （「取り消し」と「既定値から新規」を同じ値で表すと、取り消したのに増える）。
+    /// </summary>
+    [Fact]
+    public void CancellingTheAddDialog_AddsNothing()
+    {
+        var settings = new SettingsFile();
+        settings.AddRecorder("Only");
+
+        using var instance = AppInstance.Create(app, settings);
+        using var ui = AppUi.Activate(instance);
+
+        ui.OpenAddRecorderDialog();
+        ui.CancelDialog();
+
+        // 増えていないことを一定時間見てから確定させる（「まだ増えていないだけ」と区別する）。
+        Thread.Sleep(1500);
+        Assert.Equal(["Only"], ui.RecorderNavItemNames());
+        Assert.Equal(["Only"], ReadSettingsRecorders(instance));
+
+        Assert.Empty(ActivityLogFile.Events(instance.ReadActivityLog(), "app.error"));
+    }
+
+    private static int? ReadRecorderBufferDuration(AppInstance instance, string recorderName)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(File.ReadAllText(instance.SettingsPath));
+            if (!document.RootElement.TryGetProperty("Recorders", out var recorders))
+                return null;
+            foreach (var recorder in recorders.EnumerateArray())
+            {
+                if (recorder.TryGetProperty("Name", out var name)
+                    && name.GetString() == recorderName
+                    && recorder.TryGetProperty("BufferDuration", out var buffer))
+                {
+                    return buffer.GetInt32();
+                }
+            }
+            return null;
+        }
+        catch (IOException)
+        {
+            return null; // 保存中に読んだ
+        }
+    }
+
     private static string[] WaitForSettingsRecorders(AppInstance instance, int expectedCount)
     {
         // デバウンス自動保存（約1秒）を待つ。

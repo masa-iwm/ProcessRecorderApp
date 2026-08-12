@@ -293,11 +293,61 @@ namespace ProcessRecorderApp.ViewModels
         /// <summary>Remove ボタンの有効状態（Recorder 選択中のみ有効）。</summary>
         public bool CanRemoveRecorder => SelectedRecorder is not null;
 
-        /// <summary>Recorder を新規追加して選択する。</summary>
-        [RelayCommand]
-        public void AddRecorder()
+        /// <summary>
+        /// 追加するレコーダーの元を尋ねるためのコールバック（選択 UI は View の責務）。
+        /// 引数は既存レコーダーの名前（表示順）。<c>null</c> を返すと<b>追加そのものを取り消す</b>。
+        /// コールバックが未設定のときは尋ねずに空から新規で追加する。
+        ///
+        /// <para>
+        /// <see cref="ConfirmRecorderRemovalAsync"/> と同じ「View が居なくても壊れない」形にしてある
+        /// ── 追加は CLI 経路やテストからも到達しうるので、ダイアログの有無で挙動が変わってはならない。
+        /// </para>
+        /// </summary>
+        public Func<IReadOnlyList<string>, Task<AddRecorderChoice?>>? ChooseRecorderTemplateAsync { get; set; }
+
+        /// <summary>
+        /// Recorder を新規追加して選択する。
+        /// <see cref="ChooseRecorderTemplateAsync"/> がコピー元を返した場合はその設定を複製する。
+        ///
+        /// <para>
+        /// <b><c>AllowConcurrentExecutions = false</c> は必須。</b> <c>AsyncRelayCommand</c> は
+        /// 既定で再入を許すので、ナビの「レコーダーを追加」を連打すると
+        /// ダイアログが2枚開く（1枚目の <c>await</c> 中にもメッセージループは回っている）。
+        /// </para>
+        /// </summary>
+        [RelayCommand(AllowConcurrentExecutions = false)]
+        public async Task AddRecorderAsync()
         {
-            var added = new EventRecorderSettings();
+            var existing = AppSettings.Default.Recorders.ToArray();
+
+            // レコーダーが1台も無ければ尋ねない（コピー元が無いのだから選びようがない）。
+            // 新規インストール直後の Release ビルドはこの経路を通る。
+            AddRecorderChoice choice;
+            if (ChooseRecorderTemplateAsync is null || existing.Length == 0)
+            {
+                choice = new AddRecorderChoice(null);
+            }
+            else
+            {
+                // 具象型へ明示的にする（AOT/トリミングのため。CsWinRT1032）
+                var answer = await ChooseRecorderTemplateAsync((string[])[.. existing.Select(r => r.Name)]);
+                if (answer is null)
+                    return;   // 取り消し ── 何も足さない
+                choice = answer;
+            }
+
+            EventRecorderSettings added;
+            if (choice.TemplateName is not { } template)
+            {
+                added = new EventRecorderSettings();
+            }
+            else
+            {
+                // 名前で引くのは CLI と同じ規則（完全一致・先勝ち）。見つからなければ空から
+                // （尋ねているあいだに消された場合。取り消しではないので追加は続ける）。
+                var source = existing.FirstOrDefault(r => string.Equals(r.Name, template, StringComparison.Ordinal));
+                added = source is null ? new EventRecorderSettings() : AppSettings.CloneRecorder(source);
+            }
 
             // AppSettings.Recorders への追加が CollectionChanged 経由で Model.Recorders / Recorders に反映される
             AppSettings.Default.Recorders.Add(added);
@@ -318,6 +368,10 @@ namespace ProcessRecorderApp.ViewModels
                 // ── 例: settings.json に "Recorder #2" が1件ある状態で UI から追加すると、
                 // 連番も 2 になり同名が2つ並んでいた（L3 の
                 // AddingARecorder_NeverProducesADuplicateName が赤で再現）。
+                //
+                // **コピーで追加した場合も同じ経路を通す。** 「コピー元の名前は既定値ではないから
+                // ctor の上書きには当たらない」は成り立たない ── 名前がちょうど "Recorder" の
+                // レコーダーをコピーすれば当たる。
                 added.Name = RecorderNaming.MakeUnique(
                     added.Name,
                     AppSettings.Default.Recorders.Where(r => r != added).Select(r => r.Name));
@@ -518,4 +572,12 @@ namespace ProcessRecorderApp.ViewModels
             GC.SuppressFinalize(this);
         }
     }
+
+    /// <summary>
+    /// 「レコーダーを追加」で選ばれた内容。
+    /// <b>取り消しはこの型の <c>null</c> で表す</b>（＝コールバックの戻り値が null）──
+    /// 「空から新規」と「取り消し」を同じ値にすると、取り消したのに1台増える。
+    /// </summary>
+    /// <param name="TemplateName">コピー元のレコーダー名。<c>null</c> なら空から新規。</param>
+    public sealed record AddRecorderChoice(string? TemplateName);
 }

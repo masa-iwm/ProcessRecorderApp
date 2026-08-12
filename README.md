@@ -75,6 +75,10 @@ dialog.
 preview. Pick one with `FramingGrid` on the Settings screen. The lines follow the area the video
 actually occupies, not the whole panel.
 
+When you **add** a recorder you can either start from the defaults or **copy the settings of an
+existing recorder**. A copy keeps every setting and only its name is adjusted so that it stays
+unique.
+
 ### Recording driven by another application's UI
 
 Recording can start and stop by itself when the screen you are waiting for appears, changes, or

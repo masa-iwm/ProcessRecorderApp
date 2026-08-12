@@ -617,6 +617,18 @@ Windows App SDK 側の `Microsoft.Windows.Storage.Pickers` を使う** ── �
   セクションは `Preview` / `Log` / `Variables` / `Settings`（`ViewModels/MainSection.cs`）。
   - `Behaviors/RecorderNavViewBehavior.cs` が `Preview` メニュー配下にレコーダーごとの
     サブ項目＋「レコーダー追加」項目を動的生成・同期する。
+  - **「レコーダー追加」は「既定値から新規」か「既存の1台をコピー」かを尋ねる**
+    （`MainPage.ChooseRecorderTemplateAsync`。取り消すと1台も増えない）。
+    レコーダーが0台のときは尋ねずに既定値で追加する。
+    複製は **`AppSettings.CloneRecorder`（ソース生成 JSON の往復）**で行う ──
+    **プロパティを1つずつ書き写す `Clone()` を書いてはいけない**。レコーダー設定は既に
+    手書きのミラーを4箇所持っており（`RecorderSettingsMirrorTests`）、手書きの複製は
+    **検出器の無い5つ目のミラー**になって静かに腐る（増やしたプロパティが写らない、
+    という形で。例外もテストの赤も出ない）。
+    名前は写したまま追加し、**一意化は既存の流れ（`TryEnqueue` の中の
+    `RecorderNaming.MakeUnique`）に任せる** ── 「コピー元の名前は既定値ではないから
+    ctor の上書きには当たらない」は成り立たない（ちょうど `Recorder` という名前の
+    レコーダーをコピーすれば当たる）。
   - Preview 画面: `Controls/PropertyGridView`（選択レコーダーのプロパティ編集、`Actual*` 系は
     読み取り専用で実行中の実値を表示）＋ `NativeSwapChainPanel`。`SrcPipeline` の値ビルダー
     ボタンから `Views/PipelineBuilderDialog.xaml`（`ViewModels/PipelineBuilderViewModel.cs`）を開く。

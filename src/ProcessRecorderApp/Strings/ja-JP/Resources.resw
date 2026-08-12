@@ -147,6 +147,18 @@
   </data>
 
   <!-- MainPage.xaml.cs: recorder removal confirmation dialog -->
+  <data name="Dialog_AddRecorder_Title" xml:space="preserve">
+    <value>レコーダーの追加</value>
+  </data>
+  <data name="Dialog_AddRecorder_Blank" xml:space="preserve">
+    <value>既定値から新規に作る</value>
+  </data>
+  <data name="Dialog_AddRecorder_CopyFrom" xml:space="preserve">
+    <value>設定をコピーする</value>
+  </data>
+  <data name="Common_Add" xml:space="preserve">
+    <value>追加</value>
+  </data>
   <data name="Dialog_RemoveRecorder_Title" xml:space="preserve">
     <value>レコーダーの削除</value>
   </data>

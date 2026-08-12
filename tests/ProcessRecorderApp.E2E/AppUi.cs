@@ -869,10 +869,62 @@ public sealed class AppUi : IDisposable
     private static readonly TimeSpan ChoiceSettleBudget = TimeSpan.FromSeconds(5);
 
     /// <summary>
+    /// レコーダーを<b>既定値から</b>1台追加する
+    /// （ナビの「レコーダーを追加」→ 追加ダイアログで「既定値から新規」→ 追加）。
+    ///
+    /// <para>
+    /// <b>ナビ項目を押すだけでは終わらない。</b> 追加はダイアログを1枚挟むので、
+    /// 押しっぱなしにするとモーダルが立ったままテストが進まなくなる。
+    /// </para>
+    /// </summary>
+    public void AddRecorder()
+    {
+        InvokeAddRecorderNavItem();
+
+        // レコーダーが 0 台のときは尋ねる相手が居ないのでダイアログが出ない（製品の仕様）。
+        // その場合はここで待たずに抜ける。
+        // **短く切らない。** 負荷の高いランナーでダイアログが遅れただけのときに
+        // 「0 台だった」と誤認すると、モーダルを開いたまま先へ進んで
+        // **まったく無関係な場所で落ちる**（原因が追いにくい形になる）。
+        if (TryFindElement("AddRecorderBlankOption", TimeSpan.FromSeconds(15)) is not { } blank)
+            return;
+
+        Invoke(blank);
+        ConfirmDialog();
+    }
+
+    /// <summary>
+    /// レコーダーを<b>既存の1台の設定をコピーして</b>追加する
+    /// （ナビの「レコーダーを追加」→ コピー元を選ぶ → 追加）。
+    /// </summary>
+    /// <param name="sourceRecorderName">コピー元のレコーダー名（一覧の表示名）。</param>
+    public void AddRecorderCopyingFrom(string sourceRecorderName)
+    {
+        InvokeAddRecorderNavItem();
+
+        // 一覧から選ぶと製品側が「コピー」へ倒すが、**それに依存しない**
+        // ── 依存すると、その連動が壊れたときに「既定値から追加された」という
+        // 分かりにくい失敗になる（コピーしたつもりの設定が写っていない）。
+        SelectChoice("AddRecorderSourceCombo", sourceRecorderName);
+        Click("AddRecorderCopyOption");
+        ConfirmDialog();
+    }
+
+    /// <summary>
+    /// 追加ダイアログを開くところまでで止める（取り消しの確認用）。
+    /// 開いたことは「既定値から新規」の選択肢が現れることで確かめる。
+    /// </summary>
+    public void OpenAddRecorderDialog()
+    {
+        InvokeAddRecorderNavItem();
+        WaitForElement("AddRecorderBlankOption");
+    }
+
+    /// <summary>
     /// ナビゲーションの「レコーダーを追加」を押す（Preview サブメニューの末尾）。
     /// 表示文言はローカライズされるので AutomationId で特定する。
     /// </summary>
-    public void AddRecorder()
+    private void InvokeAddRecorderNavItem()
     {
         // 「見えていないときだけ開く」「開けるまで繰り返す」のは
         // <see cref="RecorderNavItems"/> と同じ理由。**単純な Click に落とさないこと**

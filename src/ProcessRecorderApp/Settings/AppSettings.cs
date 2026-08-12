@@ -66,14 +66,17 @@ public partial class AppSettings : JsonSettingsBase<AppSettings>
     /// なり、既存の settings.json（PascalCase）が丸ごと読めなくなる。
     /// </para>
     /// </summary>
-    private static readonly JsonTypeInfo<AppSettings> SettingsTypeInfo =
-        new AppSettingsJsonContext(new JsonSerializerOptions
+    private static readonly AppSettingsJsonContext SettingsContext =
+        new(new JsonSerializerOptions
         {
             WriteIndented = true,
             // 書き出し先は HTML ではなく設定ファイルなので、< > & ' を \uXXXX へ
             // 逃がす必要が無い（「Unsafe」はその HTML 文脈での意味）。
             Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
-        }).AppSettings;
+        });
+
+    /// <inheritdoc cref="SettingsContext"/>
+    private static readonly JsonTypeInfo<AppSettings> SettingsTypeInfo = SettingsContext.AppSettings;
 
     private static readonly Lazy<AppSettings> _default = new(
         () => LoadOrCreate(FilePath, SettingsTypeInfo, () => new(), ReportLoadFailure,
@@ -522,6 +525,32 @@ public partial class AppSettings : JsonSettingsBase<AppSettings>
     [JsonInclude]
     [ObservableProperty]
     public partial ObservableCollection<GStreamer.EventRecorderSettings> Recorders { get; internal set; } = [];
+
+    /// <summary>
+    /// レコーダー設定を複製する（「追加時に既存の設定をコピーする」ための唯一の口）。
+    ///
+    /// <para>
+    /// <b>プロパティを1つずつ書き写す <c>Clone()</c> を書いてはいけない。</b>
+    /// レコーダー設定は既に手書きのミラーを4箇所持っており（<c>EventRecorder</c> の
+    /// <c>Settings_PropertyChanged</c> と ctor、<c>GstEventRecorderViewModel</c> の
+    /// <c>ApplyModelChange</c> と ctor。<c>RecorderSettingsMirrorTests</c> が縛る）、
+    /// 手書きの複製は<b>検出器の無い5つ目のミラー</b>になって静かに腐る
+    /// ── 増やしたプロパティがコピーされないという形で、例外もテストの赤も出さずに。
+    /// ソース生成 JSON の往復なら、プロパティが増えても自動で追随する。
+    /// </para>
+    /// <para>
+    /// 名前は写したままにする ── 一意化は追加の流れ（<c>GstControllerViewModel.AddRecorder</c>）が
+    /// <c>RecorderNaming.MakeUnique</c> で行う。ここで変えると、その規則が2箇所に分かれる。
+    /// </para>
+    /// </summary>
+    public static GStreamer.EventRecorderSettings CloneRecorder(GStreamer.EventRecorderSettings source)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+
+        string json = JsonSerializer.Serialize(source, SettingsContext.EventRecorderSettings);
+        return JsonSerializer.Deserialize(json, SettingsContext.EventRecorderSettings)
+               ?? new GStreamer.EventRecorderSettings();
+    }
 
     partial void OnRecordersChanging(ObservableCollection<GStreamer.EventRecorderSettings> oldValue, ObservableCollection<GStreamer.EventRecorderSettings> newValue)
     {
@@ -972,6 +1001,11 @@ public partial class AppSettings : JsonSettingsBase<AppSettings>
 }
 
 [JsonSerializable(typeof(AppSettings))]
+// レコーダー設定を単体で直列化できるようにする（<see cref="AppSettings.CloneRecorder"/>）。
+// **スキーマには影響しない** ── BuildSchema / Save / LoadOrCreate はいずれも
+// `.AppSettings` の JsonTypeInfo だけを使う。AppSettings 経由で到達可能な型なので
+// 生成物も実質増えないが、生成器の実装詳細に依存しないよう入口を明示的に開けておく。
+[JsonSerializable(typeof(GStreamer.EventRecorderSettings))]
 internal partial class AppSettingsJsonContext : JsonSerializerContext
 {
 }

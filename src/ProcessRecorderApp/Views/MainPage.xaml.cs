@@ -39,6 +39,8 @@ public sealed partial class MainPage : Page
         ViewModel = new(DispatcherQueue, GstControllerViewModel.Start(DispatcherQueue));
         // 削除確認ダイアログ（View の責務）を VM のコマンドから呼び出せるように登録する
         ViewModel.GstController.ConfirmRecorderRemovalAsync = ConfirmRecorderRemovalAsync;
+        // 追加時に「空から新規／既存をコピー」を尋ねるダイアログ（View の責務）
+        ViewModel.GstController.ChooseRecorderTemplateAsync = ChooseRecorderTemplateAsync;
         // SrcPipeline の編集支援ダイアログ（View の責務）を PropertyGridView の「…」ボタンへ接続する
         recorderPropertyGrid.ValueBuilder = BuildValueAsync;
         // 設定画面の選択肢（実行時の状況で決まるもの）を供給する。
@@ -233,6 +235,7 @@ public sealed partial class MainPage : Page
         if (ViewModel is not null)
         {
             ViewModel.GstController.ConfirmRecorderRemovalAsync = null;
+            ViewModel.GstController.ChooseRecorderTemplateAsync = null;
             ViewModel.ConfirmSettingsReloadAsync = null;
             ViewModel.SettingsReloaded = null;
         }
@@ -477,6 +480,65 @@ public sealed partial class MainPage : Page
         // （折りたたみ中の列幅を SettingsWidth に保存しないため、TwoWay バインドではなく手動で永続化する）
         if (ViewModel?.IsPropertyPaneCollapsed == false && settingsColumn.ActualWidth > 0)
             AppSettings.Default.SettingsWidth = settingsColumn.ActualWidth;
+    }
+
+    /// <summary>
+    /// 「レコーダーを追加」で、空から新規にするか既存の設定をコピーするかを尋ねる
+    /// （<c>AddRecorderCommand</c> から呼ばれる）。取り消しなら <c>null</c> を返して追加そのものを止める。
+    ///
+    /// <para>
+    /// 表示文言はローカライズされるので、E2E から押せるよう<b>要素には AutomationId を付ける</b>
+    /// （<c>AppUi.AddRecorder</c> / <c>AppUi.AddRecorderCopyingFrom</c> がこれを使う）。
+    /// </para>
+    /// </summary>
+    private async Task<AddRecorderChoice?> ChooseRecorderTemplateAsync(IReadOnlyList<string> existingNames)
+    {
+        var blank = new RadioButton
+        {
+            Content = Localization.GetString("Resources/Dialog_AddRecorder_Blank"),
+            IsChecked = true,
+        };
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetAutomationId(blank, "AddRecorderBlankOption");
+
+        var copy = new RadioButton
+        {
+            Content = Localization.GetString("Resources/Dialog_AddRecorder_CopyFrom"),
+        };
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetAutomationId(copy, "AddRecorderCopyOption");
+
+        var sources = new ComboBox
+        {
+            ItemsSource = existingNames,
+            SelectedIndex = 0,
+            Margin = new Thickness(28, 4, 0, 0),
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+        };
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetAutomationId(sources, "AddRecorderSourceCombo");
+        // コピー元を選んだら自動的に「コピー」へ倒す（先に一覧へ触る操作の方が自然なため）。
+        sources.SelectionChanged += (_, _) => copy.IsChecked = true;
+
+        var panel = new StackPanel { Spacing = 4 };
+        panel.Children.Add(blank);
+        panel.Children.Add(copy);
+        panel.Children.Add(sources);
+
+        ContentDialog dialog = new()
+        {
+            XamlRoot = this.XamlRoot,
+            Title = Localization.GetString("Resources/Dialog_AddRecorder_Title"),
+            Content = panel,
+            PrimaryButtonText = Localization.GetString("Resources/Common_Add"),
+            CloseButtonText = Localization.GetString("Resources/Common_Cancel"),
+            DefaultButton = ContentDialogButton.Primary,
+        };
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetAutomationId(dialog, "AddRecorderDialog");
+
+        if (await dialog.ShowAsync() != ContentDialogResult.Primary)
+            return null;   // 取り消し ── 1台も増やさない
+
+        return copy.IsChecked == true && sources.SelectedItem is string name
+            ? new AddRecorderChoice(name)
+            : new AddRecorderChoice(null);
     }
 
     /// <summary>Recorder 削除前の確認ダイアログを表示する（RemoveSelectedRecorderCommand から呼ばれる）。</summary>
