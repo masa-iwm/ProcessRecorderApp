@@ -72,6 +72,12 @@ public sealed partial class MainPage : Page
         AppSettings.Default.PropertyChanged += FramingGrid_SettingsPropertyChanged;
         UpdateFramingGrid();
 
+        // 全画面の正本は AppWindow.Presenter。ここは VM へ写すだけ
+        // （トレイ格納など View を通らない解除にも追随させるため）。
+        if (TryGetAppWindow() is { } appWindow)
+            appWindow.Changed += AppWindow_Changed;
+        ViewModel.PropertyChanged += FullScreen_SectionChanged;
+
         // Log 画面のターミナル。初期化も排出も IsActive（＝Log 画面の表示）が駆動するので、
         // ここでは「使えなかったとき」の受け口だけ張る
         logTerminal.FallbackActivated += LogTerminal_FallbackActivated;
@@ -157,6 +163,172 @@ public sealed partial class MainPage : Page
         }
     }
 
+    // ---- プレビューの全画面表示 ----
+
+    /// <summary>
+    /// このページが載っている <c>AppWindow</c>。
+    /// <b>ページに <c>Window</c> を参照させない</b> ── プロセス寿命のウィンドウと
+    /// ページの寿命が絡む（<see cref="PickDirectoryAsync"/> と同じ判断）。
+    /// まだ表示されていなければ null。
+    /// </summary>
+    private Microsoft.UI.Windowing.AppWindow? TryGetAppWindow()
+        => XamlRoot?.ContentIslandEnvironment is { } island
+            ? Microsoft.UI.Windowing.AppWindow.GetFromWindowId(island.AppWindowId)
+            : null;
+
+    /// <summary>
+    /// プレゼンターの変化を <see cref="MainPageViewModel.IsPreviewFullScreen"/> へ写す。
+    /// <b>正本はプレゼンターの側</b>なので、View を経由しない解除
+    /// （トレイ格納で <c>App</c> が戻す）でも表示が追随する。
+    /// </summary>
+    private void AppWindow_Changed(
+        Microsoft.UI.Windowing.AppWindow sender,
+        Microsoft.UI.Windowing.AppWindowChangedEventArgs args)
+    {
+        if (!args.DidPresenterChange || ViewModel is null)
+            return;
+
+        ViewModel.IsPreviewFullScreen =
+            sender.Presenter.Kind == Microsoft.UI.Windowing.AppWindowPresenterKind.FullScreen;
+    }
+
+    /// <summary>
+    /// Preview 以外のセクションへ移ったら全画面を解除する。
+    /// 全画面のまま Log 画面などへ切り替えられると、タイトルバーもナビも無い状態で
+    /// プレビュー以外が全画面に出ることになり、戻す手段が分かりにくい。
+    /// </summary>
+    private void FullScreen_SectionChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName != nameof(MainPageViewModel.SelectedSection) || ViewModel is null)
+            return;
+        if (ViewModel.CanEnterPreviewFullScreen)
+            return;
+        if (TryGetAppWindow() is { } appWindow
+            && appWindow.Presenter.Kind == Microsoft.UI.Windowing.AppWindowPresenterKind.FullScreen)
+        {
+            ExitPreviewFullScreen(appWindow);
+        }
+    }
+
+    /// <summary>全画面の出入りを切り替える（F11・ダブルタップ・ツールバーのボタン）。</summary>
+    private void TogglePreviewFullScreen()
+    {
+        if (ViewModel is null || TryGetAppWindow() is not { } appWindow)
+            return;
+
+        if (appWindow.Presenter.Kind == Microsoft.UI.Windowing.AppWindowPresenterKind.FullScreen)
+        {
+            ExitPreviewFullScreen(appWindow);
+            return;
+        }
+
+        // Preview 画面のときだけ。他のセクションで入ると、映像が出ていないのに
+        // タイトルバーごと消えて戻し方が分からなくなる。
+        if (!ViewModel.CanEnterPreviewFullScreen)
+            return;
+
+        PreviewFullScreen.Enter(appWindow);
+    }
+
+    private static void ExitPreviewFullScreen(Microsoft.UI.Windowing.AppWindow appWindow)
+        => PreviewFullScreen.Exit(appWindow);
+
+    private void FullScreenAccelerator_Invoked(
+        Microsoft.UI.Xaml.Input.KeyboardAccelerator sender,
+        Microsoft.UI.Xaml.Input.KeyboardAcceleratorInvokedEventArgs args)
+    {
+        args.Handled = true;
+        TogglePreviewFullScreen();
+    }
+
+    private void ExitFullScreenAccelerator_Invoked(
+        Microsoft.UI.Xaml.Input.KeyboardAccelerator sender,
+        Microsoft.UI.Xaml.Input.KeyboardAcceleratorInvokedEventArgs args)
+    {
+        // アクセラレータ自体が IsEnabled で全画面中に限定されているので、ここへ来た時点で全画面。
+        // **Handled を立てないと ContentDialog の既定の閉じる操作まで奪う**（そちらは
+        // 全画面中には出ないが、状態の食い違いで両方生きる瞬間を作らないため常に立てる）。
+        args.Handled = true;
+        if (TryGetAppWindow() is { } appWindow)
+            ExitPreviewFullScreen(appWindow);
+    }
+
+    private void PreviousRecorderAccelerator_Invoked(
+        Microsoft.UI.Xaml.Input.KeyboardAccelerator sender,
+        Microsoft.UI.Xaml.Input.KeyboardAcceleratorInvokedEventArgs args)
+    {
+        args.Handled = true;
+        ViewModel?.SelectAdjacentRecorder(-1);
+    }
+
+    private void NextRecorderAccelerator_Invoked(
+        Microsoft.UI.Xaml.Input.KeyboardAccelerator sender,
+        Microsoft.UI.Xaml.Input.KeyboardAcceleratorInvokedEventArgs args)
+    {
+        args.Handled = true;
+        ViewModel?.SelectAdjacentRecorder(1);
+    }
+
+    private void SwapChainPanel_DoubleTapped(object sender, Microsoft.UI.Xaml.Input.DoubleTappedRoutedEventArgs e)
+    {
+        e.Handled = true;
+        TogglePreviewFullScreen();
+    }
+
+    private void ToggleFullScreenButton_Click(object sender, RoutedEventArgs e)
+        => TogglePreviewFullScreen();
+
+    /// <summary>
+    /// プレビュー面の右クリックメニューを開くたびに組み直す。
+    ///
+    /// <para>
+    /// <b>項目を保持して購読を張らない。</b> レコーダーは追加・削除・改名されるので、
+    /// 作り置きすると解除対象を取り違える（<c>RecorderNavViewBehavior</c> が実際に踏んだ形）。
+    /// 開くのは人の操作なので、毎回作り直す費用は問題にならない。
+    /// </para>
+    /// </summary>
+    private void PreviewFlyout_Opening(object? sender, object e)
+    {
+        if (ViewModel is null)
+            return;
+
+        // sender をキャストしない ── WinRT のランタイムクラスへのキャストは
+        // トリミング安全でない（CsWinRT1034）。x:Name で持っている実体を直接使う。
+        var flyout = previewFlyout;
+        flyout.Items.Clear();
+
+        foreach (var recorder in ViewModel.GstController.Recorders)
+        {
+            var item = new ToggleMenuFlyoutItem
+            {
+                Text = recorder.Name,
+                IsChecked = ReferenceEquals(recorder, ViewModel.GstController.SelectedRecorder),
+            };
+            var captured = recorder;
+            item.Click += (_, _) => ViewModel.GstController.SelectedRecorder = captured;
+            flyout.Items.Add(item);
+        }
+
+        // **全画面の出入りを切り替える 1 項目にする。** このフライアウトは通常表示でも
+        // 開けるので、「全画面を終了」を無条件に置くと押しても何も起きない死に項目になる
+        // （Exit は Kind が FullScreen でなければ早期 return する）。しかもフライアウトは
+        // 別のトップレベル UIA ウィンドウなので、E2E では死んでいることを検出できない。
+        // 全画面でないときは「全画面表示」にして、どちらの状態でも意味のある項目にする。
+        if (flyout.Items.Count > 0)
+            flyout.Items.Add(new MenuFlyoutSeparator());
+
+        bool fullScreen = ViewModel.IsPreviewFullScreen;
+        var toggle = new MenuFlyoutItem
+        {
+            Text = Localization.GetString(
+                fullScreen ? "Resources/Menu_ExitFullScreen" : "Resources/Menu_EnterFullScreen"),
+            // 入る方は Preview 画面かつ初期化済みのときだけ（F11 と同じ条件）。
+            IsEnabled = fullScreen || ViewModel.CanEnterPreviewFullScreen,
+        };
+        toggle.Click += (_, _) => TogglePreviewFullScreen();
+        flyout.Items.Add(toggle);
+    }
+
     /// <summary>
     /// スワップチェーン生成待ちの再試行回数。
     /// <c>InitializePreview()</c> は失敗を握りつぶす（<c>Controller.InitializePreview</c> の設計）ため、プレビューが
@@ -225,6 +397,10 @@ public sealed partial class MainPage : Page
         if (ViewModel is not null)
             ViewModel.GstController.PreviewVideoSizeChanged -= Preview_VideoSizeChanged;
         AppSettings.Default.PropertyChanged -= FramingGrid_SettingsPropertyChanged;
+        if (TryGetAppWindow() is { } appWindow)
+            appWindow.Changed -= AppWindow_Changed;
+        if (ViewModel is not null)
+            ViewModel.PropertyChanged -= FullScreen_SectionChanged;
         Microsoft.UI.Xaml.Media.CompositionTarget.Rendering -= OnRenderingBindSwapChain;
         // パイプライン破棄前にパネルのスワップチェーン参照を外す
         swapChainPanel.SwapChainHandle = 0;
@@ -293,11 +469,31 @@ public sealed partial class MainPage : Page
 
     // ---- ペイン折りたたみ状態 (ViewModel.IsPropertyPaneCollapsed) をレイアウトへ変換する x:Bind 関数群 ----
 
-    internal static Orientation PaneHeaderOrientation(bool collapsed) => collapsed ? Orientation.Vertical : Orientation.Horizontal;
+    // 全画面（IsPreviewFullScreen）は「折りたたみ」の上に重ねる**表示の上書き**であって、
+    // 折りたたみ状態そのものではない ── IsPropertyPaneCollapsed を書き換えて隠すと
+    // AppSettings へ永続化され（MainPageViewModel の OnIsPropertyPaneCollapsedChanged）、
+    // 全画面を抜けても畳んだままになり settings.json にも残る。
+    // したがって各関数は 2 つ目の引数として全画面状態を受け取る。
+
+    internal static Orientation PaneHeaderOrientation(bool collapsed, bool fullScreen)
+        => collapsed || fullScreen ? Orientation.Vertical : Orientation.Horizontal;
+
+    /// <summary>全画面中はプロパティペインそのもの（ヘッダーのボタン列を含む）を畳む。</summary>
+    internal static Visibility PaneVisibility(bool fullScreen)
+        => fullScreen ? Visibility.Collapsed : Visibility.Visible;
+
+    /// <summary>全画面中はナビゲーションのペイン（既定では上部のバー）を隠す。</summary>
+    internal static bool NavPaneVisible(bool fullScreen) => !fullScreen;
 
     internal static string PaneToggleGlyph(bool collapsed) => collapsed ? "\uE76C" : "\uE76B"; // ChevronRight / ChevronLeft
 
-    internal static Visibility PaneContentVisibility(bool collapsed) => collapsed ? Visibility.Collapsed : Visibility.Visible;
+    /// <summary>全画面のトグルボタンのアイコン（全画面中は「ウィンドウへ戻る」）。</summary>
+    // **生の私用領域文字を埋めない。** diff でもレビュー画面でも両分岐が同じ空白に見えて
+    // 判別できなくなる（PaneToggleGlyph と同じくエスケープで書く）。
+    internal static string FullScreenGlyph(bool fullScreen) => fullScreen ? "" : ""; // BackToWindow / FullScreen
+
+    internal static Visibility PaneContentVisibility(bool collapsed, bool fullScreen)
+        => collapsed || fullScreen ? Visibility.Collapsed : Visibility.Visible;
 
     // ---- PropertyGridView へ供給する選択肢（実行時の状況で決まるもの） ----
 
@@ -464,15 +660,15 @@ public sealed partial class MainPage : Page
             : (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextFillColorPrimaryBrush"];
 
     /// <summary>展開時は SettingsWidth（SizeChanged で常時永続化済み）、折りたたみ時は縦ヘッダー幅にフィットさせる。</summary>
-    internal static GridLength PaneColumnWidth(bool collapsed)
+    internal static GridLength PaneColumnWidth(bool collapsed, bool fullScreen)
     {
-        if (collapsed)
+        if (collapsed || fullScreen)
             return GridLength.Auto;
         double width = AppSettings.Default.SettingsWidth;
         return new GridLength(width >= 150 ? width : 300);
     }
 
-    internal static double PaneColumnMinWidth(bool collapsed) => collapsed ? 0 : 150;
+    internal static double PaneColumnMinWidth(bool collapsed, bool fullScreen) => collapsed || fullScreen ? 0 : 150;
 
     private void RecorderPropertyGrid_SizeChanged(object sender, SizeChangedEventArgs e)
     {

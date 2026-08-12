@@ -159,6 +159,18 @@
   <data name="Common_Add" xml:space="preserve">
     <value>Add</value>
   </data>
+  <data name="MainPage_ToggleFullScreen.[using:Microsoft.UI.Xaml.Controls]ToolTipService.ToolTip" xml:space="preserve">
+    <value>Show the preview full screen (F11; double-click the preview; Esc to leave)</value>
+  </data>
+  <data name="MainPage_ToggleFullScreen.[using:Microsoft.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve">
+    <value>Full screen</value>
+  </data>
+  <data name="Menu_EnterFullScreen" xml:space="preserve">
+    <value>Show full screen</value>
+  </data>
+  <data name="Menu_ExitFullScreen" xml:space="preserve">
+    <value>Leave full screen</value>
+  </data>
   <data name="Dialog_RemoveRecorder_Title" xml:space="preserve">
     <value>Remove recorder</value>
   </data>

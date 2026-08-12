@@ -79,6 +79,29 @@ public sealed partial class SingleInstanceManager
     /// <summary>トレイ格納（最小化または閉じるボタン）によりウィンドウが非表示になった直後に発火する。</summary>
     public event EventHandler? WindowHiddenToTray;
 
+    /// <summary>
+    /// トレイへ格納する<b>直前</b>（ウィンドウを隠す前）に呼ばれる。
+    ///
+    /// <para>
+    /// <see cref="WindowHiddenToTray"/> は<b>隠した後</b>に飛ぶので、
+    /// 「隠す前に戻しておかないと復帰できなくなる」種類の後始末には間に合わない。
+    /// 実際に踏んだのがプレビューの全画面表示で、<b>全画面のまま Alt+F4 で格納すると
+    /// トレイから戻してもウィンドウが出てこなくなった</b>。
+    /// </para>
+    /// <para>
+    /// このプロジェクトはアプリ側を参照しないので、何をするかは呼び出し側が決める
+    /// （依存の向きを保つための穴）。例外は握る ── 後始末の失敗で
+    /// トレイ格納そのものを壊さない。
+    /// </para>
+    /// </summary>
+    public Action? BeforeHideToTray { get; set; }
+
+    private void RaiseBeforeHideToTray()
+    {
+        try { BeforeHideToTray?.Invoke(); }
+        catch (Exception) { }
+    }
+
     /// <param name="keyPrefix">単一インスタンス判定キーや各種名前付きカーネルオブジェクトの共通プレフィックス。</param>
     /// <param name="handleCommand">
     /// トークン化された起動引数を受け取り、実行結果（<see cref="CommandOutcome"/>）を非同期に返すコールバック。
@@ -153,6 +176,7 @@ public sealed partial class SingleInstanceManager
         if (state == WindowState.Minimized)
         {
             // 最小化ボタン押下時も、タスクバーに残さずトレイへ完全に格納する。
+            RaiseBeforeHideToTray();
             _windowManager.AppWindow.Hide();
             WindowHiddenToTray?.Invoke(this, EventArgs.Empty);
         }
@@ -192,6 +216,10 @@ public sealed partial class SingleInstanceManager
         else
         {
             args.Cancel = true;
+            // **隠す前に後始末を通す。** 下の WindowState = Minimized は
+            // OnWindowStateChanged 経由でも同じ穴を通るが、そこに至らない形
+            // （プレゼンターが差し替わっている等）でも確実に通しておく。
+            RaiseBeforeHideToTray();
             _windowManager?.WindowState = WindowState.Minimized;
             sender.Hide();
         }

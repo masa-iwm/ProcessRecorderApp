@@ -132,6 +132,16 @@ public partial class App : Application
         };
 
         _singleInstanceManager.AttachWindow(_mainWindow);
+
+        // **トレイへ格納する「前」に全画面を解除する。** 隠してからでは間に合わない ──
+        // 全画面のまま隠すと、トレイアイコンから戻しても**ウィンドウが出てこなくなる**
+        // （実機で Alt+F4 で確認）。入る前のプレゼンターは PreviewFullScreen が
+        // 持っているので、この経路でも最大化状態などは失われない。
+        _singleInstanceManager.BeforeHideToTray = () =>
+        {
+            if (_mainWindow?.AppWindow is { } appWindow)
+                Views.PreviewFullScreen.Exit(appWindow);
+        };
         _singleInstanceManager.WindowHiddenToTray += (_, __) => Settings.AppSettings.Default.Save();
 
         // プレビューは SwapChainPanel 描画へ移行したため、ネイティブ子HWND 生成のための

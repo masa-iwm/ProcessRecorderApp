@@ -71,6 +71,11 @@ Detailed video-source settings — which monitor to capture, the camera resoluti
 are configured from the property pane on the Preview screen by opening the pipeline editor
 dialog.
 
+The preview can be shown **full screen**: use the full-screen button in the property pane,
+**F11**, or **double-click** the preview, and press **Esc** to leave. While full screen, the
+**left and right arrow keys** switch recorders, and **right-clicking** offers both switching
+recorders and leaving full screen.
+
 **Framing guides** (rule of thirds, golden ratio, crosshair, square) can be drawn over the
 preview. Pick one with `FramingGrid` on the Settings screen. The lines follow the area the video
 actually occupies, not the whole panel.

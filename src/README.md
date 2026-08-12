@@ -567,7 +567,69 @@ Windows App SDK 側の `Microsoft.Windows.Storage.Pickers` を使う** ── �
   プレビュー面はページ寿命で、`MainPage_Unloaded` → `MainPageViewModel.Dispose()` →
   `ShutdownPreview()` で閉じる（録画エンジンは破棄しない。「録画エンジンとプレビュー面の寿命」節を参照）。
 
----
+### 全画面表示
+
+プレビューだけを画面いっぱいに出す（F11 ／ プレビューのダブルクリック ／
+プロパティペインのヘッダーの全画面ボタン。`Esc` で解除）。
+入ると **タイトルバー・`NavigationView` のペイン・プロパティペイン・`GridSplitter`** が消える。
+全画面中は**左右キーでレコーダーを切り替え**、**右クリックでレコーダー切替と解除のメニュー**が出る。
+右クリックのメニューは通常表示でも開けるので、**「全画面を終了」は全画面のときだけ足す**
+── 無条件に足すと押しても何も起きない死に項目になり、しかもフライアウトは
+別のトップレベル UIA ウィンドウなので**死んでいることを E2E では検出できない**。
+
+- **正本は `AppWindow.Presenter`。** `MainPageViewModel.IsPreviewFullScreen` は
+  `AppWindow.Changed`（`DidPresenterChange`）から写すだけの読み取り専用の値で、
+  永続化もしない。VM を正本にすると、View を通らない解除（トレイ格納）と真偽がずれる。
+- **戻すときは入る前のプレゼンターの実体を使う。**
+  `SetPresenter(AppWindowPresenterKind.Overlapped)` は元の実体を返さず
+  **既定の新しい `OverlappedPresenter` を当てる**ので、それで戻すと最大化状態や
+  リサイズ可否といった元の設定が失われる。
+  **その実体は `PreviewFullScreen` が持つ（呼び出し側に引き回させない）** ──
+  解除の経路は複数ある（Esc・ボタン・ダブルクリック・セクション切替・トレイ格納）ので、
+  引数で渡す形にすると**渡し忘れた経路だけ元の状態を失う**。
+  実際にトレイ格納の経路だけが既定プレゼンターで戻していた。
+- **プロパティペインの折りたたみ状態（`IsPropertyPaneCollapsed`）は書き換えない。**
+  あれは `AppSettings` へ永続化されるので、全画面のために畳むと抜けた後も畳んだままになり
+  settings.json にも残る。代わりに既存の `x:Bind` 関数
+  （`PaneColumnWidth` / `PaneColumnMinWidth` / `PaneContentVisibility` /
+  `PaneHeaderOrientation`）が第2引数として全画面状態を受け取る ──
+  全画面は折りたたみの上に重ねる**表示の上書き**である。
+- **`KeyboardAccelerator` は `ScopeOwner` を持たずウィンドウ全域に効く**
+  （`ListViewCopyBehavior` の doc）。したがって F11 / `Esc` / 左右は
+  `Invoked` の中で弾くのではなく **`IsEnabled` 自体をゲート**にする
+  ── そうしないと `Esc` が `ContentDialog` の閉じる操作を、左右キーが PropertyGrid や
+  ComboBox のキー操作を奪う。
+- **トレイ格納時に解除する**（`App.OnLaunched` の `WindowHiddenToTray`）。
+  解除しないと、トレイから戻したときに**タイトルバーもナビも無い全画面**で現れて
+  閉じる手段が消える。
+
+#### ウィンドウサイズを全画面の大きさで上書きしないこと（重要）
+
+`MainWindow_SizeChanged` は通常サイズを `WindowWidth` / `WindowHeight` へ保存するが、
+**全画面へ入るときの `SizeChanged` は「プレゼンターが差し替わる前に、しかし画面いっぱいの
+大きさで」発火する**。実測（一時的に `diag.size` を仕込んで確認）:
+
+```
+state=Normal presenter=Overlapped size=1280x720   ← 起動時
+state=Normal presenter=Overlapped size=1600x900   ← 全画面へ入った直後（まだ Overlapped）
+state=Normal presenter=Overlapped size=1600x900
+```
+
+つまり **`SizeChanged` の中で `AppWindow.Presenter.Kind` を見ても全画面だと分からない**
+（WinUIEx の `WindowState` も `Normal` のまま）。素直に書くと画面いっぱいの大きさが
+settings.json へ焼き込まれ、**次回起動が全画面サイズで開く** ── 戻す手段は
+設定ファイルの手編集だけになる。
+
+そこで `Views/PreviewFullScreen.cs`（静的）が **入る直前に旗を立て、
+プレゼンターの変化を観測してから降ろす**。`MainWindow_SizeChanged` はその旗を見る。
+**旗が立ったまま戻れない経路を作らないこと** ── `SetPresenter` が失敗したら `Enter` が
+旗を降ろし、`Exit` は既に全画面でなければ旗を実態に合わせ直す。立ったままにすると、
+以後このプロセスのあいだ**ウィンドウサイズが一切保存されなくなる**
+（無音で、次回起動まで気付けない）。
+降ろすのを遅らせるのは復帰の途中に来る `SizeChanged` を巻き込まないためで、
+そのとき保存を飛ばしても値は入る前と同じなので失うものは無い。
+全画面の出入りは**必ずこのクラスを通す**こと（`MainPage` と `App` の両方が使う）。
+L3 の `PreviewFullScreenTests.FullScreen_DoesNotOverwriteTheSavedWindowSize` が縛る。
 
 ### 構図補助線（フレーミンググリッド）
 

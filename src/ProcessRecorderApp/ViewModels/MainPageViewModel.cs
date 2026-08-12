@@ -52,7 +52,15 @@ public partial class MainPageViewModel : ObservableObject, IDisposable
     [NotifyPropertyChangedFor(nameof(IsLogSelected))]
     [NotifyPropertyChangedFor(nameof(IsVariablesSelected))]
     [NotifyPropertyChangedFor(nameof(IsSettingsSelected))]
+    [NotifyPropertyChangedFor(nameof(CanEnterPreviewFullScreen))]
     public partial MainSection SelectedSection { get; set; } = MainSection.Preview;
+
+    /// <summary>
+    /// 全画面へ入ってよいか。<b>Preview 画面のときだけ。</b>
+    /// 他のセクションで F11 を効かせると、映像が出ていないのにタイトルバーごと消えて
+    /// 「戻し方が分からない」状態になる。
+    /// </summary>
+    public bool CanEnterPreviewFullScreen => IsPreviewSelected;
 
     public bool IsPreviewSelected => SelectedSection == MainSection.Preview;
     public bool IsLogSelected => SelectedSection == MainSection.Log;
@@ -74,6 +82,52 @@ public partial class MainPageViewModel : ObservableObject, IDisposable
 
     [RelayCommand]
     private void TogglePropertyPane() => IsPropertyPaneCollapsed = !IsPropertyPaneCollapsed;
+
+    /// <summary>
+    /// プレビューを全画面で出しているか。
+    ///
+    /// <para>
+    /// <b>正本はここではなく <c>AppWindow.Presenter</c> である。</b> この値は
+    /// <c>AppWindow.Changed</c>（<c>DidPresenterChange</c>）から View が写すだけ
+    /// ── VM を正本にすると、View を経由しない解除（トレイ格納）と真偽がずれる。
+    /// 書き込みは <see cref="Views.MainPage"/> だけが行う。
+    /// </para>
+    /// <para>
+    /// <b>永続化しない。</b> 全画面のまま終了して次回も全画面で開くと、
+    /// タイトルバーが無い状態で始まって面食らう。
+    /// </para>
+    /// </summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(CanNavigateRecorders))]
+    public partial bool IsPreviewFullScreen { get; set; }
+
+    /// <summary>
+    /// 左右キーでレコーダーを切り替えてよいか（＝全画面中か）。
+    ///
+    /// <para>
+    /// <b>ゲートが要る。</b> <c>KeyboardAccelerator</c> は <c>ScopeOwner</c> を持たず
+    /// <b>ウィンドウ全域に効く</b>ので、無条件に左右を取ると PropertyGrid の
+    /// テキスト入力やコンボボックスのキー操作を奪う。全画面中はそれらが隠れているので、
+    /// この条件なら衝突しない。
+    /// </para>
+    /// </summary>
+    public bool CanNavigateRecorders => IsPreviewFullScreen;
+
+    /// <summary>選択中のレコーダーを 1 つ前／後ろへ動かす（全画面中の左右キー・右クリックメニュー）。</summary>
+    public void SelectAdjacentRecorder(int offset)
+    {
+        var recorders = GstController.Recorders;
+        if (recorders.Count == 0)
+            return;
+
+        int current = GstController.SelectedRecorder is { } selected ? recorders.IndexOf(selected) : -1;
+        // 未選択なら端から始める。剰余は負にならないよう足してから取る。
+        int next = current < 0
+            ? (offset >= 0 ? 0 : recorders.Count - 1)
+            : (((current + offset) % recorders.Count) + recorders.Count) % recorders.Count;
+
+        GstController.SelectedRecorder = recorders[next];
+    }
 
     /// <summary>
     /// Log 画面の最下部追従。<b>表示経路が 2 つある（端末とリスト）ので、状態はここが持つ</b>

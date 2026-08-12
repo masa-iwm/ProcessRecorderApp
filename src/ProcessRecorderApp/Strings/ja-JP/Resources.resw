@@ -159,6 +159,18 @@
   <data name="Common_Add" xml:space="preserve">
     <value>追加</value>
   </data>
+  <data name="MainPage_ToggleFullScreen.[using:Microsoft.UI.Xaml.Controls]ToolTipService.ToolTip" xml:space="preserve">
+    <value>プレビューを全画面で表示します（F11／プレビューのダブルクリック。Esc で解除）</value>
+  </data>
+  <data name="MainPage_ToggleFullScreen.[using:Microsoft.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve">
+    <value>全画面</value>
+  </data>
+  <data name="Menu_EnterFullScreen" xml:space="preserve">
+    <value>全画面表示</value>
+  </data>
+  <data name="Menu_ExitFullScreen" xml:space="preserve">
+    <value>全画面を終了</value>
+  </data>
   <data name="Dialog_RemoveRecorder_Title" xml:space="preserve">
     <value>レコーダーの削除</value>
   </data>

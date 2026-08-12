@@ -26,7 +26,27 @@
     <NavigationView x:Name="navView"
                          PaneDisplayMode="{x:Bind vm:MainPageViewModel.Settings.PaneDisplayMode, Mode=OneWay}"
                          IsBackButtonVisible="Collapsed"
+                         IsPaneVisible="{x:Bind v:MainPage.NavPaneVisible(ViewModel.IsPreviewFullScreen), Mode=OneWay}"
                          IsSettingsVisible="True">
+        <!-- 全画面の出入りとレコーダー切替。**KeyboardAccelerator は ScopeOwner を持たず
+             ウィンドウ全域に効く**（ListViewCopyBehavior の doc）ので、Invoked の中で
+             早期 return するのではなく IsEnabled 自体をゲートにする ── そうしないと
+             Esc が ContentDialog の閉じる操作を、左右キーが PropertyGrid や ComboBox の
+             キー操作を奪う（RecorderManagementTests / PipelineDialogTests が赤になる）。 -->
+        <NavigationView.KeyboardAccelerators>
+            <KeyboardAccelerator Key="F11"
+                                 IsEnabled="{x:Bind ViewModel.CanEnterPreviewFullScreen, Mode=OneWay}"
+                                 Invoked="FullScreenAccelerator_Invoked" />
+            <KeyboardAccelerator Key="Escape"
+                                 IsEnabled="{x:Bind ViewModel.IsPreviewFullScreen, Mode=OneWay}"
+                                 Invoked="ExitFullScreenAccelerator_Invoked" />
+            <KeyboardAccelerator Key="Left"
+                                 IsEnabled="{x:Bind ViewModel.CanNavigateRecorders, Mode=OneWay}"
+                                 Invoked="PreviousRecorderAccelerator_Invoked" />
+            <KeyboardAccelerator Key="Right"
+                                 IsEnabled="{x:Bind ViewModel.CanNavigateRecorders, Mode=OneWay}"
+                                 Invoked="NextRecorderAccelerator_Invoked" />
+        </NavigationView.KeyboardAccelerators>
         <i:Interaction.Behaviors>
             <!-- Recorder サブメニューの生成/同期と選択連携（メニュー構築ロジックは Behavior 側に集約） -->
             <lb:RecorderNavViewBehavior Recorders="{x:Bind ViewModel.GstController.Recorders, Mode=OneWay}"
@@ -83,19 +103,28 @@
                     <!-- 幅の永続化は TwoWay ではなくコードビハインドで行う（折りたたみ時の値を SettingsWidth に保存しないため）。
                          列幅/最小幅は折りたたみ状態に応じて x:Bind 関数で切り替える -->
                     <ColumnDefinition x:Name="settingsColumn"
-                                      Width="{x:Bind v:MainPage.PaneColumnWidth(ViewModel.IsPropertyPaneCollapsed), Mode=OneWay}"
-                                      MinWidth="{x:Bind v:MainPage.PaneColumnMinWidth(ViewModel.IsPropertyPaneCollapsed), Mode=OneWay}"
+                                      Width="{x:Bind v:MainPage.PaneColumnWidth(ViewModel.IsPropertyPaneCollapsed, ViewModel.IsPreviewFullScreen), Mode=OneWay}"
+                                      MinWidth="{x:Bind v:MainPage.PaneColumnMinWidth(ViewModel.IsPropertyPaneCollapsed, ViewModel.IsPreviewFullScreen), Mode=OneWay}"
                                       MaxWidth="600" />
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="*" />
                 </Grid.ColumnDefinitions>
-                <Grid RowDefinitions="Auto,*" Margin="5">
+                <Grid RowDefinitions="Auto,*" Margin="5"
+                      Visibility="{x:Bind v:MainPage.PaneVisibility(ViewModel.IsPreviewFullScreen), Mode=OneWay}">
                     <!-- ヘッダー行: 展開時は横並び、折りたたみ時は縦並び -->
-                    <StackPanel Orientation="{x:Bind v:MainPage.PaneHeaderOrientation(ViewModel.IsPropertyPaneCollapsed), Mode=OneWay}" Spacing="5">
+                    <StackPanel Orientation="{x:Bind v:MainPage.PaneHeaderOrientation(ViewModel.IsPropertyPaneCollapsed, ViewModel.IsPreviewFullScreen), Mode=OneWay}" Spacing="5">
                         <Button x:Uid="MainPage_TogglePane"
                                 AutomationProperties.AutomationId="TogglePaneButton"
                                 Command="{x:Bind ViewModel.TogglePropertyPaneCommand}">
                             <FontIcon Glyph="{x:Bind v:MainPage.PaneToggleGlyph(ViewModel.IsPropertyPaneCollapsed), Mode=OneWay}" FontSize="14" />
+                        </Button>
+                        <!-- 全画面の入口。F11 だけだと見つけられないうえ、
+                             L3 が押せる入口がキー送出しか無くなる -->
+                        <Button x:Uid="MainPage_ToggleFullScreen"
+                                AutomationProperties.AutomationId="ToggleFullScreenButton"
+                                IsEnabled="{x:Bind ViewModel.CanEnterPreviewFullScreen, Mode=OneWay}"
+                                Click="ToggleFullScreenButton_Click">
+                            <FontIcon Glyph="{x:Bind v:MainPage.FullScreenGlyph(ViewModel.IsPreviewFullScreen), Mode=OneWay}" FontSize="14" />
                         </Button>
                         <Button x:Uid="MainPage_RemoveRecorder"
                                 AutomationProperties.AutomationId="RemoveRecorderButton"
@@ -113,12 +142,12 @@
                     </StackPanel>
                     <lc:PropertyGridView x:Name="recorderPropertyGrid"
                                          Grid.Row="1"
-                                         Visibility="{x:Bind v:MainPage.PaneContentVisibility(ViewModel.IsPropertyPaneCollapsed), Mode=OneWay}"
+                                         Visibility="{x:Bind v:MainPage.PaneContentVisibility(ViewModel.IsPropertyPaneCollapsed, ViewModel.IsPreviewFullScreen), Mode=OneWay}"
                                          SizeChanged="RecorderPropertyGrid_SizeChanged"
                                          SelectedObject="{x:Bind ViewModel.GstController.SelectedRecorder, Mode=OneWay}"/>
                 </Grid>
                 <ctwc:GridSplitter Grid.Column="1"
-                              Visibility="{x:Bind v:MainPage.PaneContentVisibility(ViewModel.IsPropertyPaneCollapsed), Mode=OneWay}"
+                              Visibility="{x:Bind v:MainPage.PaneContentVisibility(ViewModel.IsPropertyPaneCollapsed, ViewModel.IsPreviewFullScreen), Mode=OneWay}"
                               Width="5"
                               HorizontalAlignment="Center"
                               VerticalAlignment="Stretch"
@@ -146,7 +175,15 @@
                                 Visibility="{x:Bind v:MainPage.PreviewSurfaceVisibility(ViewModel.GstController.SelectedRecorder.IsInitialized), Mode=OneWay}"
                                 HorizontalAlignment="Stretch"
                                 VerticalAlignment="Stretch"
-                                SizeChanged="SwapChainPanel_SizeChanged">
+                                SizeChanged="SwapChainPanel_SizeChanged"
+                                DoubleTapped="SwapChainPanel_DoubleTapped">
+                    <!-- 右クリックメニュー。項目は開くたびに組み直す（レコーダーは追加・削除・
+                         改名されるので、作り置きすると解除対象を取り違える）。
+                         **フライアウトは別のトップレベル UIA ウィンドウ**なので E2E からは辿れない
+                         ── 中身の確認は docs/coverage-gaps.md の手動項目にしてある。 -->
+                    <lc:NativeSwapChainPanel.ContextFlyout>
+                        <MenuFlyout x:Name="previewFlyout" Opening="PreviewFlyout_Opening" />
+                    </lc:NativeSwapChainPanel.ContextFlyout>
                     <!-- 構図補助線。**兄弟ではなくパネルの子にする。**
                          SwapChainPanel は Panel なので子を持て、子はスワップチェーンの上に合成される。
                          子にすることでパネルの Visibility をそのまま継承する ── 兄弟に置くと
