@@ -522,6 +522,18 @@ public sealed partial class MainPage : Page
                 .ToArray();
         }
 
+        if (string.Equals(key, AppSettings.FramingGridChoiceListKey, StringComparison.Ordinal))
+        {
+            // 保存値は列挙型の名前のまま（settings.json の形を変えないため）。訳すのは表示だけ。
+            return Components.FramingGridChoices.All
+                .Select(c => new Controls.PropertyGridChoice
+                {
+                    Value = c.Kind.ToString(),
+                    Display = Localization.GetString(c.ResourceKey),
+                })
+                .ToArray();
+        }
+
         if (string.Equals(key, UiaTriggerAssignment.ActionChoiceListKey, StringComparison.Ordinal))
             return TriggerActionChoices(currentValue, owner as UiaTriggerAssignment);
 

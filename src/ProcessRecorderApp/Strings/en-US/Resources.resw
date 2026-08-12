@@ -153,6 +153,21 @@
   <data name="MainPage_ToggleFullScreen.[using:Microsoft.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve">
     <value>Full screen</value>
   </data>
+  <data name="FramingGrid_None" xml:space="preserve">
+    <value>Off</value>
+  </data>
+  <data name="FramingGrid_Thirds" xml:space="preserve">
+    <value>Rule of thirds</value>
+  </data>
+  <data name="FramingGrid_GoldenRatio" xml:space="preserve">
+    <value>Golden ratio</value>
+  </data>
+  <data name="FramingGrid_Crosshair" xml:space="preserve">
+    <value>Crosshair</value>
+  </data>
+  <data name="FramingGrid_Square" xml:space="preserve">
+    <value>Square</value>
+  </data>
   <data name="Menu_EnterFullScreen" xml:space="preserve">
     <value>Show full screen</value>
   </data>

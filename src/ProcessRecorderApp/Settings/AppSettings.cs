@@ -202,12 +202,23 @@ public partial class AppSettings : JsonSettingsBase<AppSettings>
     /// </para>
     /// <para>
     /// <b>settings.json には名前で書く</b>（<c>PaneDisplayMode</c> と同じ理由）。
+    /// 画面に出す文言だけを訳すために <c>ChoiceList</c> を付けてある
+    /// ── <b>保存値は列挙型の名前のまま</b>なので、設定ファイルの形も
+    /// <c>docs/settings.schema.json</c> も変わらない。
     /// </para>
     /// </summary>
     [System.ComponentModel.Description("PropDesc_FramingGrid")]
+    [Components.ChoiceList(FramingGridChoiceListKey)]
     [JsonConverter(typeof(JsonStringEnumConverter<FramingGridKind>))]
     [ObservableProperty]
     public partial FramingGridKind FramingGrid { get; set; } = FramingGridKind.None;
+
+    /// <summary>
+    /// <see cref="FramingGrid"/> の選択肢一覧の識別キー。
+    /// <b><c>PropCat_</c> / <c>PropDesc_</c> で始めてはいけない</b>（<see cref="EncoderChoiceListKey"/> と同じ理由）。
+    /// 一覧の正本は <c>Components.FramingGridChoices</c>。
+    /// </summary>
+    public const string FramingGridChoiceListKey = "FramingGrid";
 
     /// <summary>
     /// NavigationView のペイン表示モード。

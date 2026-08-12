@@ -153,6 +153,21 @@
   <data name="MainPage_ToggleFullScreen.[using:Microsoft.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve">
     <value>全画面</value>
   </data>
+  <data name="FramingGrid_None" xml:space="preserve">
+    <value>なし</value>
+  </data>
+  <data name="FramingGrid_Thirds" xml:space="preserve">
+    <value>三分割</value>
+  </data>
+  <data name="FramingGrid_GoldenRatio" xml:space="preserve">
+    <value>黄金比</value>
+  </data>
+  <data name="FramingGrid_Crosshair" xml:space="preserve">
+    <value>十字</value>
+  </data>
+  <data name="FramingGrid_Square" xml:space="preserve">
+    <value>正方形</value>
+  </data>
   <data name="Menu_EnterFullScreen" xml:space="preserve">
     <value>全画面表示</value>
   </data>

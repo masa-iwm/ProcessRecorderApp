@@ -77,8 +77,9 @@ The preview can be shown **full screen**: use the full-screen button in the prop
 recorders and leaving full screen.
 
 **Framing guides** (rule of thirds, golden ratio, crosshair, square) can be drawn over the
-preview. Pick one with `FramingGrid` on the Settings screen. The lines follow the area the video
-actually occupies, not the whole panel.
+preview. Pick one with `FramingGrid` on the Settings screen, from the preview's right-click menu,
+or with the up and down arrow keys while full screen. The lines follow the area the video actually
+occupies, not the whole panel.
 
 When you **add** a recorder you can either start from the defaults or **copy the settings of an
 existing recorder**. A copy keeps every setting and only its name is adjusted so that it stays

@@ -410,13 +410,11 @@ public sealed partial class PropertyGridView : UserControl
             {
                 editKind = PropertyEditKind.Bool;
             }
-            else if (propType.IsEnum)
-            {
-                editKind = PropertyEditKind.Enum;
-                enumValues = Enum.GetNames(propType);
-            }
             else if (prop.GetCustomAttribute<ChoiceListAttribute>() is { } choiceAttr && choiceProvider is not null)
             {
+                // **列挙型より先に見る。** 列挙型に付けると「値の名前をそのまま出す」代わりに
+                // ホストが訳した表示名を出せる（保存されるのは名前のままなので設定ファイルの形は変わらない）。
+                // 供給が空だったときの受け皿は下の 2 分岐（列挙型なら Enum・それ以外は Text）。
                 // 選択肢はプロパティの型からは決まらない（その PC に何が在るか等の実行時の状況で
                 // 決まる）ので、ホストのプロバイダーに現在値ごと訊く。
                 // **対象オブジェクトも渡す** ── コレクションの要素では「どの行の選択肢か」で
@@ -429,10 +427,23 @@ public sealed partial class PropertyGridView : UserControl
                     editKind = PropertyEditKind.Choice;
                     choices = provided;
                 }
+                else if (propType.IsEnum)
+                {
+                    // **列挙型はテキストへ倒さない。** 供給が無いのは「訳が用意できなかった」だけで、
+                    // 選択肢そのものは型から決まっている ── 自由入力にすると打ち間違いで
+                    // 値を落とす道を新しく作ることになる。
+                    editKind = PropertyEditKind.Enum;
+                    enumValues = Enum.GetNames(propType);
+                }
                 else
                 {
                     editKind = PropertyEditKind.Text;
                 }
+            }
+            else if (propType.IsEnum)
+            {
+                editKind = PropertyEditKind.Enum;
+                enumValues = Enum.GetNames(propType);
             }
             else if (prop.GetCustomAttribute<ValueBuilderAttribute>() is { } builderAttr)
             {

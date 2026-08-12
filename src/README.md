@@ -740,6 +740,14 @@ L3 の `PreviewFullScreenTests.FullScreen_DoesNotOverwriteTheSavedWindowSize` �
 **アプリ全体の設定であってレコーダーごとではない** ── プレビュー面はプロセス内に1面しかなく、
 見えているのは常に選択中の1台だからである。
 
+選択肢の正本は `Components/FramingGridChoices.cs`。設定画面のコンボボックス・プレビューの
+右クリックメニュー・全画面中の上下キーが**同じ一覧と同じ並び**を使う（並びがそのまま巡回順）。
+**表示は訳すが保存値は列挙型の名前のまま**にするため、列挙型のプロパティに
+`ChoiceListAttribute` を付けている ── `PropertyGridView` はこの属性を列挙型の判定より先に見る。
+保存値が名前であることは変わらないので `docs/settings.schema.json` は動かない。
+**訳した文言が settings.json に入ってしまう**種類の壊れ方は L1 では見えないので、
+発行物を操作して保存結果を読む `FramingGridChoiceUiTests`（L3）で押さえる。
+
 **線はパネル全体ではなく「映像の矩形」に引く。** `d3d12swapchainsink` は
 `force-aspect-ratio` の既定が `true` で、スワップチェーンはパネル全面を占めるものの
 **映像はその中でアスペクトフィットされ、余った上下（左右）は `border-color` で塗られる**。
