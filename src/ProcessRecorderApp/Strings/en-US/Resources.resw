@@ -168,6 +168,12 @@
   <data name="FramingGrid_Square" xml:space="preserve">
     <value>Square</value>
   </data>
+  <data name="Menu_Preview" xml:space="preserve">
+    <value>Preview</value>
+  </data>
+  <data name="Menu_FramingGrid" xml:space="preserve">
+    <value>Framing grid</value>
+  </data>
   <data name="Menu_EnterFullScreen" xml:space="preserve">
     <value>Show full screen</value>
   </data>

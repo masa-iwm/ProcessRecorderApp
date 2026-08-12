@@ -73,8 +73,8 @@ dialog.
 
 The preview can be shown **full screen**: use the full-screen button in the property pane,
 **F11**, or **double-click** the preview, and press **Esc** to leave. While full screen, the
-**left and right arrow keys** switch recorders, and **right-clicking** offers both switching
-recorders and leaving full screen.
+**left and right arrow keys** switch recorders and the **up and down arrow keys** switch the
+framing guide. Right-clicking offers all three: the recorder, the guide, and full screen.
 
 **Framing guides** (rule of thirds, golden ratio, crosshair, square) can be drawn over the
 preview. Pick one with `FramingGrid` on the Settings screen, from the preview's right-click menu,

@@ -99,6 +99,7 @@ public partial class MainPageViewModel : ObservableObject, IDisposable
     /// </summary>
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(CanNavigateRecorders))]
+    [NotifyPropertyChangedFor(nameof(CanCycleFramingGrid))]
     public partial bool IsPreviewFullScreen { get; set; }
 
     /// <summary>
@@ -128,6 +129,29 @@ public partial class MainPageViewModel : ObservableObject, IDisposable
 
         GstController.SelectedRecorder = recorders[next];
     }
+
+    /// <summary>
+    /// 上下キーで構図補助線を切り替えてよいか（＝全画面中か）。
+    ///
+    /// <para>
+    /// <b>左右キーとは別に持つ。</b> 条件は同じだが奪う相手が違う ── 上下は
+    /// レコーダー一覧・PropertyGrid・コンボボックスの<b>選択移動</b>そのものなので、
+    /// 全画面以外で取ると一覧をキーボードで辿れなくなる。
+    /// </para>
+    /// </summary>
+    public bool CanCycleFramingGrid => IsPreviewFullScreen;
+
+    /// <summary>
+    /// 構図補助線を 1 つ前／後ろへ動かす（全画面中の上下キー）。
+    ///
+    /// <para>
+    /// 設定へ書くだけでよい ── 描き直しは <c>MainPage</c> の設定購読が拾い、
+    /// 保存は <c>AppSettings</c> のデバウンス保存が引き受ける。
+    /// </para>
+    /// </summary>
+    public void CycleFramingGrid(int offset)
+        => AppSettings.Default.FramingGrid =
+            Components.FramingGridChoices.Next(AppSettings.Default.FramingGrid, offset);
 
     /// <summary>
     /// Log 画面の最下部追従。<b>表示経路が 2 つある（端末とリスト）ので、状態はここが持つ</b>

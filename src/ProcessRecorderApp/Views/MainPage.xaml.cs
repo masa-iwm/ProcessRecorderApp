@@ -269,6 +269,22 @@ public sealed partial class MainPage : Page
         ViewModel?.SelectAdjacentRecorder(1);
     }
 
+    private void PreviousFramingGridAccelerator_Invoked(
+        Microsoft.UI.Xaml.Input.KeyboardAccelerator sender,
+        Microsoft.UI.Xaml.Input.KeyboardAcceleratorInvokedEventArgs args)
+    {
+        args.Handled = true;
+        ViewModel?.CycleFramingGrid(-1);
+    }
+
+    private void NextFramingGridAccelerator_Invoked(
+        Microsoft.UI.Xaml.Input.KeyboardAccelerator sender,
+        Microsoft.UI.Xaml.Input.KeyboardAcceleratorInvokedEventArgs args)
+    {
+        args.Handled = true;
+        ViewModel?.CycleFramingGrid(1);
+    }
+
     private void SwapChainPanel_DoubleTapped(object sender, Microsoft.UI.Xaml.Input.DoubleTappedRoutedEventArgs e)
     {
         e.Handled = true;
@@ -297,6 +313,8 @@ public sealed partial class MainPage : Page
         var flyout = previewFlyout;
         flyout.Items.Clear();
 
+        // 「プレビュー」＝ 表示するレコーダーの選択。
+        var recorders = new MenuFlyoutSubItem { Text = Localization.GetString("Resources/Menu_Preview") };
         foreach (var recorder in ViewModel.GstController.Recorders)
         {
             var item = new ToggleMenuFlyoutItem
@@ -306,17 +324,36 @@ public sealed partial class MainPage : Page
             };
             var captured = recorder;
             item.Click += (_, _) => ViewModel.GstController.SelectedRecorder = captured;
-            flyout.Items.Add(item);
+            recorders.Items.Add(item);
         }
+        // 空のサブメニューは開いても何も無い袋小路になるので、そのときは押させない。
+        recorders.IsEnabled = 0 < recorders.Items.Count;
+        flyout.Items.Add(recorders);
 
-        // **全画面の出入りを切り替える 1 項目にする。** このフライアウトは通常表示でも
-        // 開けるので、「全画面を終了」を無条件に置くと押しても何も起きない死に項目になる
-        // （Exit は Kind が FullScreen でなければ早期 return する）。しかもフライアウトは
-        // 別のトップレベル UIA ウィンドウなので、E2E では死んでいることを検出できない。
+        // 「フレーミンググリッド」＝ 構図の補助線。設定画面の項目と同じ一覧・同じ並びを使う
+        // （正本は Components.FramingGridChoices）。
+        var grid = new MenuFlyoutSubItem { Text = Localization.GetString("Resources/Menu_FramingGrid") };
+        var currentGrid = AppSettings.Default.FramingGrid;
+        foreach (var choice in Components.FramingGridChoices.All)
+        {
+            var item = new ToggleMenuFlyoutItem
+            {
+                Text = Localization.GetString(choice.ResourceKey),
+                IsChecked = choice.Kind == currentGrid,
+            };
+            var captured = choice.Kind;
+            // 設定へ書くだけでよい ── 描き直しは FramingGrid_SettingsPropertyChanged が拾う。
+            item.Click += (_, _) => AppSettings.Default.FramingGrid = captured;
+            grid.Items.Add(item);
+        }
+        flyout.Items.Add(grid);
+
+        // **全画面の出入りを切り替える 1 項目にする（サブメニューは持たない）。**
+        // このフライアウトは通常表示でも開けるので、「全画面を終了」を無条件に置くと
+        // 押しても何も起きない死に項目になる（Exit は Kind が FullScreen でなければ
+        // 早期 return する）。しかもフライアウトは別のトップレベル UIA ウィンドウなので、
+        // E2E では死んでいることを検出できない。
         // 全画面でないときは「全画面表示」にして、どちらの状態でも意味のある項目にする。
-        if (flyout.Items.Count > 0)
-            flyout.Items.Add(new MenuFlyoutSeparator());
-
         bool fullScreen = ViewModel.IsPreviewFullScreen;
         var toggle = new MenuFlyoutItem
         {

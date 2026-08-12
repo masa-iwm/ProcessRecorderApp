@@ -46,6 +46,12 @@
             <KeyboardAccelerator Key="Right"
                                  IsEnabled="{x:Bind ViewModel.CanNavigateRecorders, Mode=OneWay}"
                                  Invoked="NextRecorderAccelerator_Invoked" />
+            <KeyboardAccelerator Key="Up"
+                                 IsEnabled="{x:Bind ViewModel.CanCycleFramingGrid, Mode=OneWay}"
+                                 Invoked="PreviousFramingGridAccelerator_Invoked" />
+            <KeyboardAccelerator Key="Down"
+                                 IsEnabled="{x:Bind ViewModel.CanCycleFramingGrid, Mode=OneWay}"
+                                 Invoked="NextFramingGridAccelerator_Invoked" />
         </NavigationView.KeyboardAccelerators>
         <i:Interaction.Behaviors>
             <!-- Recorder サブメニューの生成/同期と選択連携（メニュー構築ロジックは Behavior 側に集約） -->
