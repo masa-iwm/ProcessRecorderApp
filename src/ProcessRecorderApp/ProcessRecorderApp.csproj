@@ -38,6 +38,19 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!--
+      GstSharpBundle（glib-sharp 層）は GObject → マネージド型のラップに
+      Activator.CreateInstance(type, new object[]{ IntPtr }) と属性走査を使う。
+      トリミング（TrimMode=full の AOT 発行）でこのメタデータが削られると、
+      **ネイティブは正常にロードされたまま ElementFactory.Find の結果を包めず**、
+      エンコーダーのプローブが全滅する（実測: AOT 発行物だけ
+      gst.encoders available=[] になり E2E が 43 件赤）。
+      アセンブリ全体を root して全メンバのメタデータを保持する。
+    -->
+    <TrimmerRootAssembly Include="GstSharpBundle" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="Microsoft.Windows.SDK.BuildTools" />
     <PackageReference Include="Microsoft.WindowsAppSDK" />
     <PackageReference Include="Microsoft.WindowsAppSDK.AI">
