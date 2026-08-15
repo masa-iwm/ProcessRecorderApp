@@ -87,9 +87,9 @@ if (-not (Test-Path $exe)) {
 # GStreamer is not assumed to sit next to the exe: a published app may be using an
 # installed GStreamer (MSVC) or the bundled copy under the publish directory. Approximate
 # the order the app itself uses (GStreamerRuntimeLocator: PATH -> MSVC env var ->
-# bundled gstreamer\win-x64\bin); any mismatch is detected at run time by
-# Verify-BinMatchesTheAppsChoice. The DllImports are MSVC-named (gstreamer-1.0-0.dll),
-# so MinGW installs can never satisfy them and are not probed here.
+# registry (MSVC install) -> bundled gstreamer\win-x64\bin); any mismatch is detected at
+# run time by Verify-BinMatchesTheAppsChoice. The DllImports are MSVC-named
+# (gstreamer-1.0-0.dll), so MinGW installs can never satisfy them and are not probed here.
 function Find-GStreamerBin {
     param([string] $PublishDir)
 
@@ -110,6 +110,21 @@ function Find-GStreamerBin {
 
     $envRoot = $env:GSTREAMER_1_0_ROOT_MSVC_X86_64
     if ($envRoot) { $candidates += (Join-Path $envRoot 'bin') }
+
+    # A per-user MSVC install may set neither the environment variable nor PATH,
+    # so look the install up in the uninstall registry the way the app does.
+    $uninstall = @(
+        'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
+        'HKCU:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*',
+        'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
+        'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*')
+    foreach ($pattern in $uninstall) {
+        $entries = @(Get-ItemProperty $pattern -ErrorAction SilentlyContinue |
+                     Where-Object { $_.PSObject.Properties['DisplayName'] -and
+                                    $_.DisplayName -like 'GStreamer*' -and $_.DisplayName -like '*MSVC*' -and
+                                    $_.PSObject.Properties['InstallLocation'] -and $_.InstallLocation })
+        foreach ($e in $entries) { $candidates += (Join-Path $e.InstallLocation.TrimEnd('\', '/') 'bin') }
+    }
 
     $candidates += (Join-Path $PublishDir 'gstreamer\win-x64\bin')
 

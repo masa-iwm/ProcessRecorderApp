@@ -26,13 +26,13 @@ public sealed record GStreamerRuntimeCandidate(string Source, string BinDirector
 /// <list type="number">
 ///   <item>元の <c>PATH</c> に既に入っているディレクトリ</item>
 ///   <item><c>%GSTREAMER_1_0_ROOT_MSVC_X86_64%\bin</c>（環境変数がある場合）</item>
-///   <item>レジストリから見つけた GStreamer(MinGW) のインストール先の <c>bin</c></item>
+///   <item>レジストリから見つけた GStreamer(MSVC) のインストール先の <c>bin</c></item>
 ///   <item>同梱物 <c>&lt;exe&gt;\gstreamer\&lt;RID&gt;\bin</c>
 ///     （GstSharpBundle.Windows.X64 の contentFiles が出力ディレクトリへ複製する）</item>
 /// </list>
-/// 3 の MinGW インストールは MSVC 命名の <see cref="CoreLibraryFileName"/> を持たないため
-/// <see cref="Select"/> では選ばれない。候補として残すのは、<c>gst.runtime</c> のログに
-/// 「MinGW 版しか無い環境で同梱物へ落ちた」ことを痕跡として出すため。
+/// 3 が要るのは、GStreamer を**ユーザー単位で**インストールするとインストーラが
+/// 環境変数も <c>PATH</c> も設定しないことがあるため（MinGW 版での実測に同じ）。
+/// 2 だけに頼ると「入れたのに見つからない」になる。
 /// </para>
 ///
 /// <para>
@@ -66,7 +66,7 @@ public static class GStreamerRuntimeLocator
     // --- Source の識別子。ログとテストが照合するのでリテラルを変えないこと ---
     public const string SourcePath = "PATH";
     public const string SourceEnvironment = "env:" + MsvcRootVariable;
-    public const string SourceRegistry = "registry:GStreamer-MinGW";
+    public const string SourceRegistry = "registry:GStreamer-MSVC";
     public const string SourceBundled = "bundled";
 
     /// <summary>
@@ -194,15 +194,15 @@ public static class GStreamerRuntimeLocator
     }
 
     /// <summary>
-    /// レジストリのアンインストール情報から GStreamer(MinGW) のインストール先を探す。
-    /// MinGW インストールは MSVC 命名のセンチネルを満たさないため選ばれることは無いが、
-    /// 候補として <c>gst.runtime</c> のログに痕跡を残す（クラスの doc コメント参照）。
+    /// レジストリのアンインストール情報から GStreamer(MSVC) のインストール先を探す。
+    /// <b>MinGW 版は拾わない</b>（DLL 名が違うのでセンチネルを満たせず、
+    /// 拾っても使えないため）。
     /// </summary>
     [SupportedOSPlatform("windows")]
     public static string? FindInstalledGStreamerRoot()
         => FindInstallLocation(name =>
             name.StartsWith("GStreamer", StringComparison.OrdinalIgnoreCase)
-            && name.Contains("MinGW", StringComparison.OrdinalIgnoreCase));
+            && name.Contains("MSVC", StringComparison.OrdinalIgnoreCase));
 
     private static readonly string[] UninstallKeyPaths =
     [

@@ -73,7 +73,7 @@ public class GStreamerRuntimeLocatorTests
     [Fact]
     public void Candidates_TolerateATrailingSeparatorOnTheRoot()
     {
-        // GStreamer のインストーラはレジストリの InstallLocation を `\` 付きで書く。
+        // GStreamer(MSVC) のインストーラはレジストリの InstallLocation を `\` 付きで書きうる。
         var candidates = GStreamerRuntimeLocator.BuildCandidates(
             msvcRoot: null, installedGStreamerRoot: @"C:\gst-reg\",
             appDirectory: null, runtimeIdentifier: Rid);

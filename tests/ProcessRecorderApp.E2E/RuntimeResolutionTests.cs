@@ -8,10 +8,10 @@ namespace ProcessRecorderApp.E2E;
 ///
 /// <para>
 /// 本体は「元の PATH → <c>GSTREAMER_1_0_ROOT_MSVC_X86_64</c> → レジストリの
-/// GStreamer(MinGW) → 同梱物（発行物の <c>gstreamer\win-x64\bin</c>）」の
+/// GStreamer(MSVC) → 同梱物（発行物の <c>gstreamer\win-x64\bin</c>）」の
 /// いずれかから来る。**正解は環境ごとに違う** ── MSVC 版のインストールがあれば
-/// それが勝ち、無ければ同梱物へ落ちる（MinGW インストールは MSVC 命名の本体を
-/// 持たないので選ばれない）。そのため<b>特定のディレクトリを焼き込まない</b>。
+/// それが勝ち、無ければ同梱物へ落ちる（MinGW 版は MSVC 命名の本体を持たないため
+/// 候補にしない）。そのため<b>特定のディレクトリを焼き込まない</b>。
 /// 焼き込むとどこかで必ず偽の赤になるか、逆に何も検証しない緑になる。
 /// </para>
 ///
@@ -40,7 +40,7 @@ public sealed class RuntimeResolutionTests(PublishedApp app)
     [
         "PATH",
         "env:GSTREAMER_1_0_ROOT_MSVC_X86_64",
-        "registry:GStreamer-MinGW",
+        "registry:GStreamer-MSVC",
         "bundled",
     ];
 

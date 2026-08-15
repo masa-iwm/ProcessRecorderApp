@@ -66,9 +66,9 @@
 
 1. 元の `PATH` に既に入っているディレクトリ
 2. `%GSTREAMER_1_0_ROOT_MSVC_X86_64%\bin`
-3. レジストリのアンインストール情報から見つけた GStreamer(MinGW) の `bin`
-   （MSVC 命名の本体を持たないため選ばれることは無く、`gst.runtime` のログに
-   痕跡を残すための候補）
+3. レジストリのアンインストール情報から見つけた GStreamer(MSVC) の `bin`
+   （ユーザー単位のインストールでは環境変数が設定されないことがあるため。
+   MinGW 版は DLL 名が違い使えないので拾わない）
 4. 同梱物 `<exe>\gstreamer\{RID}\bin`（`GstSharpBundle.Windows.X64` 由来）
 
 **候補を全部 `PATH` に繋いではいけない。** 依存 DLL（`glib-2.0-0.dll` 等）は

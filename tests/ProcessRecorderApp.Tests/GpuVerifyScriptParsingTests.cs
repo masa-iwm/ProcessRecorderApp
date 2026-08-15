@@ -39,7 +39,7 @@ public class GpuVerifyScriptParsingTests
         + @"dir=C:\src\_scratch\n3\gst with space\bin "
         + @"core=C:\src\_scratch\n3\gst with space\bin\libgstreamer-1.0-0.dll "
         + @"glib=C:\src\_scratch\n3\gst with space\bin\libglib-2.0-0.dll "
-        + @"mixed=False candidates=[registry:GStreamer-MinGW=C:\Users\x\bin, bundled=C:\y\bin]";
+        + @"mixed=False candidates=[registry:GStreamer-MSVC=C:\Users\x\bin, bundled=C:\y\bin]";
 
     /// <summary><c>$script:GstRuntimeFieldPattern = '...'</c> を取り出す。</summary>
     private static Regex PatternFromScript()
