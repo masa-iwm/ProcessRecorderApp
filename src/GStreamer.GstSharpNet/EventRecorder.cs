@@ -519,7 +519,7 @@ public partial class EventRecorder : ObservableObject, IDisposable
     /// アプリ層から設定される、優先する H.264 エンコーダーのファクトリ名
     /// （<c>AppSettings.PreferredH264Encoder</c>。空なら自動選択）。
     ///
-    /// <c>GStreamer.GirCore</c> は <c>AppSettings</c> を知らない設計なので、
+    /// <c>GStreamer.GstSharpNet</c> は <c>AppSettings</c> を知らない設計なので、
     /// <c>EventRecorder.TemplateVariables</c> と同じく static のミラーとして受け取る。
     /// </summary>
     public static string? PreferredH264Encoder { get; set; }
@@ -1123,7 +1123,7 @@ public partial class EventRecorder : ObservableObject, IDisposable
 
     /// <summary>
     /// <c>.dot</c> の保存先（<c>AppSettings.GstDebugDumpDotDir</c> の static ミラー）。
-    /// 空なら書かない。<c>GStreamer.GirCore</c> は <c>AppSettings</c> を知らない設計なので、
+    /// 空なら書かない。<c>GStreamer.GstSharpNet</c> は <c>AppSettings</c> を知らない設計なので、
     /// <see cref="OutputDirectory"/> と同じく static のミラーとして受け取る。
     /// </summary>
     public static string DebugDumpDotDirectory { get; set; } = "";
@@ -2478,7 +2478,7 @@ public partial class EventRecorder : ObservableObject, IDisposable
 
     /// <summary>
     /// 排出待ちの上限(ms)。アプリ層（<c>AppSettings.StopFinalizeTimeoutMs</c>）から設定する
-    /// static ミラー（<c>GStreamer.GirCore</c> は <c>AppSettings</c> を知らない設計のため、
+    /// static ミラー（<c>GStreamer.GstSharpNet</c> は <c>AppSettings</c> を知らない設計のため、
     /// <see cref="PreferredH264Encoder"/> と同じ方式）。
     /// </summary>
     public static int StopFinalizeTimeoutMs { get; set; } = DefaultStopFinalizeTimeoutMs;

@@ -4,7 +4,7 @@
 #   L4（ローカライズ・ドキュメント齟齬）を**最初**に置く。翻訳漏れやキーの綴り誤りは
 #   「壊れても静かに壊れる」種類の退行で、しかもこの検査は数秒で終わる。
 #   ソリューション全体（XAML コンパイルを含む WinUI アプリ）のビルドを待たずに弾ける。
-#   L4 が使うテストプロジェクトは Components / GStreamer.GirCore / SingleInstance しか
+#   L4 が使うテストプロジェクトは Components / GStreamer.GstSharpNet / SingleInstance しか
 #   参照していないので、ここまでのビルドはアプリ本体より桁違いに軽い。
 #
 #   L2（E2E）は publish の後に実行する。発行済みの exe を外から叩くので、
@@ -57,11 +57,19 @@ concurrency:
 # 未記載のスコープは none になる）。
 permissions:
   contents: read
+  packages: read
 
 env:
   DOTNET_NOLOGO: 'true'
   DOTNET_CLI_TELEMETRY_OPTOUT: 'true'
   DOTNET_SKIP_FIRST_TIME_EXPERIENCE: 'true'
+  # GstSharp.Net* は GitHub Packages（masa-iwm、private）から復元する。
+  # nuget.config のソース key `github` と対で解決される（NuGet の規約）。
+  # 値の形式は Username=...;Password=...（Password に GITHUB_TOKEN）。
+  # GITHUB_TOKEN で読めるのは、パッケージ側（GstSharp.Net リポジトリの各パッケージ）が
+  # このリポジトリへ Actions アクセスを許可している場合だけ ── 401 (NU1301) になったら
+  # まずそちらの設定を確認する。
+  NuGetPackageSourceCredentials_github: Username=masa-iwm;Password=${{ secrets.GITHUB_TOKEN }}
 
 jobs:
   build-and-test:
@@ -95,7 +103,7 @@ jobs:
       # README とコード（終了コード表 / コマンド表）の齟齬。
       #
       # TreatWarningsAsErrors をここにも付けているのは、このステップが
-      # Components / GStreamer.GirCore / SingleInstance / テストの4つを Release でビルドしてしまい、
+      # Components / GStreamer.GstSharpNet / SingleInstance / テストの4つを Release でビルドしてしまい、
       # 後続の `-warnaserror` ビルドではそれらが「最新」と判定されてコンパイラが走らず、
       # **警告が再出力されない**ため。付けないとこの4プロジェクトだけ 0 警告の保証が抜ける。
       - name: Verify localization and documentation (L4)

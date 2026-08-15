@@ -229,7 +229,7 @@ public class ThirdPartyLicenseTests
         string appProj = File.ReadAllText(
             RepositoryFiles.At("src", "ProcessRecorderApp", "ProcessRecorderApp.csproj"));
         string gstProj = File.ReadAllText(
-            RepositoryFiles.At("src", "GStreamer.GirCore", "GStreamer.GirCore.csproj"));
+            RepositoryFiles.At("src", "GStreamer.GstSharpNet", "GStreamer.GstSharpNet.csproj"));
         string release = File.ReadAllText(
             RepositoryFiles.At(".github", "workflows", "release.yml"));
 
@@ -248,11 +248,11 @@ public class ThirdPartyLicenseTests
         int bundleGroupEnd = bundleGroup < 0 ? -1 : gstProj.IndexOf("</ItemGroup>", bundleGroup, StringComparison.Ordinal);
         if (bundleGroup < 0 || bundleGroupEnd < 0)
         {
-            missing.Add("GStreamer.GirCore.csproj に BundleGStreamerRuntime 条件の ItemGroup が無い");
+            missing.Add("GStreamer.GstSharpNet.csproj に BundleGStreamerRuntime 条件の ItemGroup が無い");
         }
         else if (!gstProj[bundleGroup..bundleGroupEnd].Contains(@"licenses\third-party", StringComparison.Ordinal))
         {
-            missing.Add(@"GStreamer.GirCore.csproj の同梱 ItemGroup が licenses\third-party を含めていない");
+            missing.Add(@"GStreamer.GstSharpNet.csproj の同梱 ItemGroup が licenses\third-party を含めていない");
         }
 
         // 発行物と台帳の突き合わせ（「300 ファイル以上」の当て推量に戻さない）。

@@ -65,9 +65,9 @@ public class RuntimeClosureSeedSyncTests
     private static string[] FileNamesNamedByProduct()
     {
         string resolver = File.ReadAllText(
-            RepositoryFiles.At("src", "GStreamer.GirCore", "ImportResolver.cs"));
+            RepositoryFiles.At("src", "GStreamer.GstSharpNet", "ImportResolver.cs"));
         string locator = File.ReadAllText(
-            RepositoryFiles.At("src", "GStreamer.GirCore", "GStreamerRuntimeLocator.cs"));
+            RepositoryFiles.At("src", "GStreamer.GstSharpNet", "GStreamerRuntimeLocator.cs"));
 
         string[] names =
         [

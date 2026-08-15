@@ -50,7 +50,7 @@
     Write closure.txt / removable.txt / external.txt / edges.csv here.
 
 .EXAMPLE
-    tools\Get-GStreamerImportClosure.ps1 -RuntimeRoot src\GStreamer.GirCore\runtimes\win-x64
+    tools\Get-GStreamerImportClosure.ps1 -RuntimeRoot src\GStreamer.GstSharpNet\runtimes\win-x64
 
 .OUTPUTS
     A summary on stdout. Exit code is 0 even when files are removable -- this reports, it

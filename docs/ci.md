@@ -8,8 +8,8 @@ CI は2つのワークフローに分かれる。`build.yml` は push のたび�
 
 `build-and-test` の段の順序と理由:
 
-1. **L4（ローカライズ・ドキュメント齟齬）を最初に置く。** 翻訳漏れやキーの綴り誤りは静かに壊れる種類の退行で、しかも検査は数秒で終わる。L4 のテストプロジェクトは Components / GStreamer.GirCore / SingleInstance しか参照しないので、XAML コンパイルを含む WinUI アプリ全体のビルドを待たずに弾ける。
-   **このステップにも `TreatWarningsAsErrors=true` が要る。** このステップが Components / GStreamer.GirCore / SingleInstance / テストの4プロジェクトを Release でビルドしてしまい、後続の `-warnaserror` ビルドではそれらが「最新」と判定されてコンパイラが走らず、警告が再出力されない。付けないとこの4プロジェクトだけ 0 警告の保証が抜ける。
+1. **L4（ローカライズ・ドキュメント齟齬）を最初に置く。** 翻訳漏れやキーの綴り誤りは静かに壊れる種類の退行で、しかも検査は数秒で終わる。L4 のテストプロジェクトは Components / GStreamer.GstSharpNet / SingleInstance しか参照しないので、XAML コンパイルを含む WinUI アプリ全体のビルドを待たずに弾ける。
+   **このステップにも `TreatWarningsAsErrors=true` が要る。** このステップが Components / GStreamer.GstSharpNet / SingleInstance / テストの4プロジェクトを Release でビルドしてしまい、後続の `-warnaserror` ビルドではそれらが「最新」と判定されてコンパイラが走らず、警告が再出力されない。付けないとこの4プロジェクトだけ 0 警告の保証が抜ける。
 2. **`dotnet build -c Release -warnaserror`。** リポジトリの規約は 0 警告。トリミング／AOT 解析（`IsAotCompatible` / `EnableTrimAnalyzer`）は `src/Directory.Build.props` の条件無し PropertyGroup にあり、構成によらず常時有効 ── 「Release だから解析される」のではない。このステップの価値は `-warnaserror` で解析警告をエラーに昇格させる側にあり、AOT 非互換の混入はこれで落ちる。
 3. **L1（単体テスト）。**
 4. **`publish`（selfcontained）＋ 発行物に exe が実在することの確認。** 発行ステップに `--no-restore` を使ってはいけない ── `PublishReadyToRun` は `.pubxml` にしか書いていないので、プロファイル抜きの restore では ReadyToRun のランタイムパック（crossgen2）が復元されず `NETSDK1094` になる。

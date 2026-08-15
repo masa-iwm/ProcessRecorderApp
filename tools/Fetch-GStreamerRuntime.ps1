@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
     Fetch the GStreamer runtime that the "bundled" distribution ships with, and unpack it
-    into src/GStreamer.GirCore/runtimes/win-x64.
+    into src/GStreamer.GstSharpNet/runtimes/win-x64.
 
 .DESCRIPTION
     The runtime tree is NOT in this repository -- keeping hundreds of megabytes of
@@ -61,7 +61,7 @@
     Expected SHA256 of the archive. Pass an empty string to skip the check (not advised).
 
 .PARAMETER Destination
-    Where to unpack. Defaults to src/GStreamer.GirCore/runtimes/win-x64 next to this script.
+    Where to unpack. Defaults to src/GStreamer.GstSharpNet/runtimes/win-x64 next to this script.
 
 .EXAMPLE
     pwsh tools/Fetch-GStreamerRuntime.ps1
@@ -80,12 +80,12 @@ Set-StrictMode -Version Latest
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 if (-not $Destination) {
-    $Destination = Join-Path $repoRoot 'src\GStreamer.GirCore\runtimes\win-x64'
+    $Destination = Join-Path $repoRoot 'src\GStreamer.GstSharpNet\runtimes\win-x64'
 }
 $Destination = [System.IO.Path]::GetFullPath($Destination)
 
 # The file the build uses to decide whether the tree is really there (see
-# GStreamer.GirCore.csproj: GStreamerRuntimeSentinel). Keep the two in sync.
+# GStreamer.GstSharpNet.csproj: GStreamerRuntimeSentinel). Keep the two in sync.
 $sentinel = Join-Path $Destination 'bin\libgstreamer-1.0-0.dll'
 
 $temp = $null

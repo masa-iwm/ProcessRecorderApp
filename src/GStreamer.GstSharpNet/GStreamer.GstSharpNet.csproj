@@ -71,8 +71,12 @@
     <PackageReference Include="Microsoft.Windows.SDK.BuildTools" />
     <PackageReference Include="Microsoft.WindowsAppSDK" />
     <PackageReference Include="CommunityToolkit.Mvvm" />
-    <PackageReference Include="GirCore.GstApp-1.0" />
-    <PackageReference Include="GirCore.GstVideo-1.0" />
+    <!-- GstSharp.Net 本体は**直接参照**にする ── 所有権アナライザー（GST0001/GST0002）は
+         NuGet の標準どおり直接参照からしか流れない。.App / .Base を足しても
+         本体の直接参照を外さないこと。 -->
+    <PackageReference Include="GstSharp.Net" />
+    <PackageReference Include="GstSharp.Net.App" />
+    <PackageReference Include="GstSharp.Net.Base" />
     <PackageReference Include="Microsoft.Windows.CsWin32">
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
