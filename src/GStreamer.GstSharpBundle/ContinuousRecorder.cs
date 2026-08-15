@@ -1,4 +1,4 @@
-﻿using Gst;
+using Gst;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -401,7 +401,7 @@ internal sealed partial class ContinuousRecorder : IDisposable
             {
                 result = "error";
                 // GException のコンストラクタが g_error_free まで面倒を見る（Dispose 不要）。
-                msg.ParseError(out GLib.GException gerror, out string debug);
+                msg.ParseErrorEx(out GLib.GException gerror, out string? debug);
                 string detail = $"recorder='{_host.Name}' file='{path}' {gerror.Message} debug={debug}";
                 Components.ActivityLog.Error("continuous.error", detail);
                 _host.OnContinuousError(detail);

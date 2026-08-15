@@ -1806,7 +1806,7 @@ GPU テクスチャになるため**アクセシブルテキストが 1 つも�
 | `app.start` | INFO | `Program.Main`（ワーカー分岐） | pid とデータディレクトリ |
 | `app.exit` | INFO | `Program.Main`（`StartResidentWorker` から復帰後） | pid と終了コード |
 | `app.error` | ERROR | `App.LogException`（未処理例外の3ハンドラ）／`SingleInstanceManager.HandleActivation`（コマンド処理の予期しない例外。終了コード 99 と対で残る） | 発生源と例外の全文 |
-| `gst.runtime` | INFO / **ERROR** | `Controller.StaticInitialize` | 実際にロードされた `libgstreamer-1.0-0.dll` / `libglib-2.0-0.dll` のパス、採用した候補、混成の有無。1回のみ。初期化に失敗した場合は ERROR で、探した候補と例外の全文が付く |
+| `gst.runtime` | INFO / **ERROR** | `Controller.StaticInitialize` | 実際にロードされた `gstreamer-1.0-0.dll` / `glib-2.0-0.dll` のパス、採用した候補、混成の有無。1回のみ。初期化に失敗した場合は ERROR で、探した候補と例外の全文が付く |
 | `cleanup.run` | INFO | `RecordingCleanupScheduler` | 古い mp4 の自動削除の結果（保存先・削除数・解放バイト数・削除したフォルダー数・失敗数）。**何もしなかった周回は出さない** |
 | `cleanup.error` | WARN | 同上 | 削除できなかった理由（1件1行・上限あり）。ロック中のファイルなど |
 | `gst.encoders` | INFO | `Controller.StaticInitialize` | プローブ結果（存在/欠落と候補順）。1回のみ |
@@ -2115,6 +2115,8 @@ CI と手元で別の中身をビルドしうるため。
 $env:NuGetPackageSourceCredentials_github = "Username=masa-iwm;Password=$(gh auth token)"
 ```
 
+トークンには `read:packages` スコープが要る（gh login の既定スコープには含まれない。
+401 / NU1301 になったら `gh auth refresh -s read:packages` を先に実行する）。
 CI では `build.yml` が同じ環境変数を GITHUB_TOKEN で組み立てる（詳細は docs/ci.md）。
 
 ### パッケージ版の集中管理

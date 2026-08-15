@@ -1785,7 +1785,7 @@ public partial class EventRecorder : ObservableObject, IDisposable
             case MessageType.Error:
                 {
                     // GException のコンストラクタが g_error_free まで面倒を見る（Dispose 不要）。
-                    msg.ParseError(out GLib.GException gerror, out string debug);
+                    msg.ParseErrorEx(out GLib.GException gerror, out string? debug);
                     string? message = gerror.Message;
                     string detail = $"recorder='{Name}' bus={busName} element='{elementName}' {message} debug={debug}";
 
@@ -2543,7 +2543,7 @@ public partial class EventRecorder : ObservableObject, IDisposable
             else if (signal == StopDrainSignal.Error)
             {
                 // GException のコンストラクタが g_error_free まで面倒を見る（Dispose 不要）。
-                msg!.ParseError(out GLib.GException gerror, out string debug);
+                msg!.ParseErrorEx(out GLib.GException gerror, out string? debug);
                 string detail = $"recorder='{Name}' file='{LastFilename}' {gerror.Message} debug={debug}";
                 Components.ActivityLog.Error("recording.stop error", detail);
                 LastError = detail;

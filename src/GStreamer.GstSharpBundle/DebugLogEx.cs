@@ -19,7 +19,16 @@ public static partial class DebugLogEx
     public static DebugCategory DebugCategoryNew(string name, uint color, string description)
         => Gst.DebugCategory.New(_gst_debug_category_new(name, color, description));
 
-    private static DebugCategory? _debugCategory;
+    // **Gst.Debug.LogLiteral（バインディング）は使わない。** Gst.DebugCategory は値 struct で、
+    // ラップした時点の threshold のスナップショットになる ── バインディング経由で渡すと
+    // gst_debug_log_literal がそのスナップショットでフィルタするため、実行中の
+    // TrySetThreshold（AppSettings.GstDebug のミラー）が myapp カテゴリに永久に効かない。
+    // ネイティブのカテゴリポインタをそのまま渡せば、しきい値は常に現在値で判定される。
+    [LibraryImport(ImportResolver.Library, StringMarshalling = StringMarshalling.Utf8)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    private static partial void gst_debug_log_literal(IntPtr category, DebugLevel level, string file, string function, int line, IntPtr @object, string message);
+
+    private static IntPtr _debugCategoryPtr;
     public static void Log(DebugLevel level, string? message,
         GLib.Object? @object = null,
         [CallerFilePath] string file = "",
@@ -32,8 +41,12 @@ public static partial class DebugLogEx
         if (!IsGstInitialized)
             return;
 
-        _debugCategory ??= DebugCategoryNew("myapp", 0, "My application");
-        Gst.Debug.LogLiteral(_debugCategory.Value, level, file, function, line, @object, message ?? "");
+        // 競合しても実害なし ── _gst_debug_category_new は同名カテゴリを名前で解決するので、
+        // どちらのスレッドが勝っても同じカテゴリを指す。
+        if (_debugCategoryPtr == IntPtr.Zero)
+            _debugCategoryPtr = _gst_debug_category_new("myapp", 0, "My application");
+        gst_debug_log_literal(_debugCategoryPtr, level, file, function, line,
+            @object?.Handle ?? IntPtr.Zero, message ?? "");
     }
 
     /// <summary>

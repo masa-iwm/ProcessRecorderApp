@@ -7,13 +7,18 @@ namespace ProcessRecorderApp.Tests;
 /// <b>常時録画が使う GStreamer 要素と、同梱ランタイムの内容を突き合わせる。</b>
 ///
 /// <para>
-/// 開発機も CI もフル構成の GStreamer を使うので、<c>videorate</c> のように
-/// 同梱ランタイムに入っていない要素をパイプライン文字列へ書いても<b>両方とも緑になる</b>
-/// ── 壊れるのは同梱配布の実行時だけ。<see cref="RuntimeClosureSeedSyncTests"/> や
+/// パイプライン文字列に書いた要素が同梱ランタイムから消えても、初期化を実行しない
+/// 検査は緑のまま ── 壊れるのは同梱配布の実行時だけ。
 /// <see cref="EncoderCatalogScriptSyncTests"/> と同じ性格の検査で、狙う事故も同じである。
 /// </para>
 /// <para>
-/// <c>videorate</c> は同梱に入れてある（別 fps の常時録画がそれに依存する）。
+/// 検査対象は<b>実物の同梱ツリー</b> ── GstSharpBundle.Windows.X64 由来の
+/// <c>gstreamer\win-x64\lib\gstreamer-1.0</c> は、参照経由でこのテストの出力
+/// ディレクトリにも複製される。台帳ではなく実ファイルを見るので、パッケージの
+/// 版を替えて中身が変わればここが追従して落ちる。
+/// </para>
+/// <para>
+/// <c>videorate</c> は同梱に入っている（別 fps の常時録画がそれに依存する）。
 /// 同時に「<c>ContinuousFramerate</c> が空なら <c>videorate</c> を出さない」ガードも固定する
 /// ── 利用者が別途入れた GStreamer にその要素が無いことがあるため。
 /// </para>
@@ -22,21 +27,20 @@ public class ContinuousRuntimeDependencyTests
 {
     private static string[] BundledPlugins()
     {
-        string[] lines = File.ReadAllLines(
-            RepositoryFiles.At("licenses", "third-party", "COMPONENTS.tsv"));
+        string dir = Path.Combine(
+            AppContext.BaseDirectory, "gstreamer", "win-x64", "lib", "gstreamer-1.0");
 
-        string[] paths = [.. lines
-            .Where(l => !l.StartsWith('#') && 0 < l.Trim().Length)
-            .Skip(1)
-            .Select(l => l.Split('\t')[0])
-            .Where(p => p.StartsWith("lib/gstreamer-1.0/", StringComparison.Ordinal))];
+        Assert.True(Directory.Exists(dir),
+            $"同梱プラグインのディレクトリが無い: {dir}（GstSharpBundle.Windows.X64 の複製が"
+            + "テスト出力へ流れていない）");
 
+        string[] paths = [.. Directory.EnumerateFiles(dir, "*.dll").Select(Path.GetFileName)!];
         Assert.NotEmpty(paths);
         return paths;
     }
 
     private static bool IsBundled(string pluginFileName)
-        => BundledPlugins().Any(p => p.EndsWith("/" + pluginFileName, StringComparison.OrdinalIgnoreCase));
+        => BundledPlugins().Any(p => string.Equals(p, pluginFileName, StringComparison.OrdinalIgnoreCase));
 
     private static string Build(
         EventRecordingType type, string encoder, bool needsSystemMemory,
@@ -48,32 +52,29 @@ public class ContinuousRuntimeDependencyTests
     /// ここが崩れると、常時録画は同梱配布で一切動かない。
     /// </summary>
     [Theory]
-    [InlineData("libgstcoreelements.dll")]   // queue / tee / filesink
-    [InlineData("libgstapp.dll")]            // appsink / appsrc
-    [InlineData("libgstisomp4.dll")]         // mp4mux
-    [InlineData("libgstvideoparsersbad.dll")]// h264parse
-    [InlineData("libgstvideoconvertscale.dll")] // videoconvert / videoscale（解像度の上書き）
-    [InlineData("libgstd3d12.dll")]          // d3d12convert / d3d12download
+    [InlineData("gstcoreelements.dll")]   // queue / tee / filesink
+    [InlineData("gstapp.dll")]            // appsink / appsrc
+    [InlineData("gstisomp4.dll")]         // mp4mux
+    [InlineData("gstvideoparsersbad.dll")]// h264parse
+    [InlineData("gstvideoconvertscale.dll")] // videoconvert / videoscale（解像度の上書き）
+    [InlineData("gstd3d12.dll")]          // d3d12convert / d3d12download
     public void EveryElementTheContinuousBranchAlwaysUses_IsBundled(string plugin)
     {
         Assert.True(IsBundled(plugin),
-            $"{plugin} が COMPONENTS.tsv に無い。常時録画は同梱配布で動かなくなる。");
+            $"{plugin} が同梱ランタイムに無い。常時録画は同梱配布で動かなくなる。");
     }
 
     /// <summary>
     /// <b><c>videorate</c> が同梱に在ること。</b> 常時録画を別のフレームレートで回す機能は
-    /// この 1 ファイル（<c>libgstvideorate.dll</c>）に依存している。
-    ///
-    /// <para>
-    /// 閉包の刈り込みでこれを落としても、<b>開発機も CI もフル構成の GStreamer を使うので
-    /// 両方緑のまま</b>、同梱配布でだけ機能が消える。落とすなら製品側の機能も一緒に畳むこと。
-    /// </para>
+    /// この 1 ファイル（<c>gstvideorate.dll</c>）に依存している。
+    /// 同梱ランタイムの供給元（GstSharpBundle.Windows.X64）を絞った構成へ替えるときに
+    /// これを落とすと、同梱配布でだけ機能が消える。落とすなら製品側の機能も一緒に畳むこと。
     /// </summary>
     [Fact]
     public void Videorate_IsBundled_SoADifferentFramerateWorksInTheShippedRuntime()
     {
-        Assert.True(IsBundled("libgstvideorate.dll"),
-            "libgstvideorate.dll が COMPONENTS.tsv に無い。"
+        Assert.True(IsBundled("gstvideorate.dll"),
+            "gstvideorate.dll が同梱ランタイムに無い。"
             + "ContinuousFramerate（別 fps の常時録画）が同梱配布でだけ使えなくなる。");
     }
 

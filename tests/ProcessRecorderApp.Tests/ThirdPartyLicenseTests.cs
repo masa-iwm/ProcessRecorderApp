@@ -242,13 +242,18 @@ public class ThirdPartyLicenseTests
                 missing.Add($"ProcessRecorderApp.csproj が {file} をコピーしていない");
         }
 
-        // 同梱物の分。GStreamer ランタイムは GstSharpBundle.Windows.X64 の contentFiles が
+        // 同梱物の分。GStreamer ランタイムは GstSharpBundle.Windows.X64 由来の複製が
         // 常に同梱するため、ライセンス文の複製も無条件の ItemGroup に居ること。
-        if (!gstProj.Contains(@"licenses\third-party", StringComparison.Ordinal))
+        // CopyToPublishDirectory は**ライセンス文の None ブロックの中**で見る ──
+        // ファイル全体の Contains だと gstreamer\** 側のブロックが満たしてしまい、
+        // ライセンス文だけ publish に載らない退行を検出できない。
+        int licensesInclude = gstProj.IndexOf(@"licenses\third-party", StringComparison.Ordinal);
+        int licensesBlockEnd = licensesInclude < 0 ? -1 : gstProj.IndexOf("</None>", licensesInclude, StringComparison.Ordinal);
+        if (licensesInclude < 0 || licensesBlockEnd < 0)
         {
-            missing.Add(@"GStreamer.GstSharpBundle.csproj が licenses\third-party を複製していない");
+            missing.Add(@"GStreamer.GstSharpBundle.csproj が licenses\third-party を None で複製していない");
         }
-        else if (!gstProj.Contains("CopyToPublishDirectory", StringComparison.Ordinal))
+        else if (!gstProj[licensesInclude..licensesBlockEnd].Contains("CopyToPublishDirectory", StringComparison.Ordinal))
         {
             missing.Add("GStreamer.GstSharpBundle.csproj のライセンス文複製が publish へ届かない（CopyToPublishDirectory が無い）");
         }

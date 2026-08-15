@@ -14,9 +14,29 @@ internal static partial class ExtendMethods
     internal const BufferCopyFlags BufferCopyAll =
         BufferCopyFlags.Flags | BufferCopyFlags.Timestamps | BufferCopyFlags.Meta | BufferCopyFlags.Memory;
 
-    // ParseError はバインディング標準の Message.ParseError(out GLib.GException, out string) を
-    // 使う（ここには置かない）。Warning は生成側が out IntPtr を返す形なので、
-    // GException（コンストラクタが g_error_free まで面倒を見る）へ包み直す。
+    // **バインディング標準の Message.ParseError(out GException, out string) は使わない。**
+    // フォークの custom 実装（Gst/custom/Message.cs）は out debug（transfer full）を
+    // Utf8PtrToString で写すだけで g_free しないため、Error メッセージ 1 件ごとに
+    // ネイティブ文字列が漏れる（ラッパーが無く回収不能。GError 側は GException が解放する）。
+    // ここで parse から解放までを自前で行う。
+    public static void ParseErrorEx(this Message message, out GLib.GException gerror, out string? debug)
+    {
+        gst_message_parse_error(message.Handle, out IntPtr gerrorHandle, out IntPtr debugNative);
+        gerror = new GLib.GException(gerrorHandle);
+        debug = Marshal.PtrToStringUTF8(debugNative);
+        g_free(debugNative);
+    }
+    [LibraryImport(ImportResolver.Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    private static partial void gst_message_parse_error(IntPtr message, out IntPtr gerror, out IntPtr debug);
+
+    [LibraryImport(ImportResolver.LibraryGLib)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    private static partial void g_free(IntPtr mem);
+
+    // Warning は生成側（generated/Gst/Message.cs）が out debug を PtrToStringGFree で
+    // 解放するため無リーク。out IntPtr の GError だけを GException
+    // （コンストラクタが g_error_free まで面倒を見る）へ包み直す。
     public static void ParseWarningEx(this Message message, out GLib.GException gerror, out string? debug)
     {
         message.ParseWarning(out IntPtr gerrorHandle, out debug);

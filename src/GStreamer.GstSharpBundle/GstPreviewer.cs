@@ -1,4 +1,4 @@
-﻿using Gst;
+using Gst;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -212,7 +212,7 @@ namespace ProcessRecorderApp.GStreamer
                         continue;
 
                     // GException のコンストラクタが g_error_free まで面倒を見る（Dispose 不要）。
-                    msg.ParseError(out GLib.GException gerror, out string debug);
+                    msg.ParseErrorEx(out GLib.GException gerror, out string? debug);
                     Components.ActivityLog.Error("preview.error", $"{gerror.Message} debug={debug}");
                     _busErrorLogged = true;
                 }
