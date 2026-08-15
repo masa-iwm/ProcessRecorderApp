@@ -144,13 +144,11 @@ namespace ProcessRecorderApp.GStreamer
         /// </summary>
         private void UpdateVideoSize(Sample sample)
         {
-            // **破棄しない。** gst_sample_get_caps() は transfer none で、caps を所有するのは
-            // サンプルの側である ── Dispose を呼ぶと借り物の参照を解放することになり、
-            // まだ使われている caps が落ちる。毎フレーム通る経路だったので影響が出やすく、
-            // **自動復帰のあとプレビューがカタつく**という形で実機に現れた
-            // （パイプラインを組み直すと直るのは、caps が作り直されるため）。
-            // 既存の 2 箇所（EventRecorder / ContinuousRecorder）も破棄していない。
-            var caps = sample.Caps;
+            // sample.Caps は transfer none の C API を包む際に**所有権付きの複製**を返す
+            // （GetOpaque(owned:false) → MiniObject.Copy）。using で解放する ──
+            // 複製なのでサンプル側の caps には触れず、GirCore 時代の
+            // 「借り物を解放するとプレビューがカタつく」事故はこの形では起きない。
+            using var caps = sample.Caps;
             var structure = caps?.GetStructure(0);
             if (structure is null
                 || !structure.GetInt("width", out int width)

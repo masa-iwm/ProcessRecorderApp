@@ -187,8 +187,9 @@ internal sealed partial class ContinuousRecorder : IDisposable
                 }
                 _firstSampleReported = true;
 
-                // 借用参照（transfer none）── Dispose しない（csproj 冒頭の規律）。
-                var buffer = sample.Buffer;
+                // sample.Buffer は**所有権付きの複製**を返す（csproj 冒頭の規律）
+                // ── using で解放しないと毎サンプル漏れる。
+                using var buffer = sample.Buffer;
                 if (buffer is null)
                     continue;
 
@@ -301,10 +302,12 @@ internal sealed partial class ContinuousRecorder : IDisposable
             // **ネゴシエート済みの caps をそのまま渡す。** 渡さないと h264parse が
             // stream-format / alignment を typefind で推測することになり、外れると
             // 全 NAL が黙って捨てられて中身の無い MP4 が残る（EventRecorder と同じ罠）。
-            // caps は借用参照（transfer none）── Dispose しない。
-            var negotiated = sample.Caps;
-            if (negotiated is not null)
-                src.Caps = negotiated;
+            // sample.Caps は所有権付きの複製 ── using で解放する（csproj 冒頭の規律）。
+            using (var negotiated = sample.Caps)
+            {
+                if (negotiated is not null)
+                    src.Caps = negotiated;
+            }
 
             if (pipeline.SetState(State.Playing) == StateChangeReturn.Failure)
             {

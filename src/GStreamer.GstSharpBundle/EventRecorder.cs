@@ -1613,21 +1613,26 @@ public partial class EventRecorder : ObservableObject, IDisposable
                 // 途中で SetCaps すると下流の再ネゴシエーションが起きるので一度だけ。
                 if (!appSrcCapsSet)
                 {
-                    // caps は借用参照（transfer none）── Dispose しない。
-                    var negotiated = sample.Caps;
+                    // sample.Caps は transfer none の C API を包む際に**所有権付きの複製**を
+                    // 返す（GetOpaque(owned:false) → MiniObject.Copy）。Dispose しないと
+                    // 複製がそのまま漏れる（csproj 冒頭の規律）。
+                    using var negotiated = sample.Caps;
                     if (negotiated is not null && _appSrc is not null)
                     {
                         _appSrc.Caps = negotiated;
                         appSrcCapsSet = true;
                         // ログには構造体名だけを出す
                         // （実際のキャップス全体は GST_DEBUG のネゴシエーションログに出る）。
+                        // Structure は MiniObject ではなく caps 複製の借用 ── Dispose 前に読む。
                         Log(DebugLevel.Info,
                             $"appsrc caps set from the negotiated sink caps ({negotiated.GetStructure(0)?.Name ?? "?"})");
                     }
                 }
 
-                // 借用参照（transfer none）── Dispose しない（csproj 冒頭の規律）。
-                var buffer = sample.Buffer;
+                // sample.Buffer も所有権付きの複製（データ本体は共有）── using で解放する。
+                // 解放しないと**エンコード済みフレーム1枚ぶんが毎サンプル漏れる**
+                // （実測: 20Mbit 設定で毎分約 150MB、全フェーズで単調増加）。
+                using var buffer = sample.Buffer;
                 if (buffer is null)
                     continue;
 

@@ -5,11 +5,17 @@
     GStreamer 1.28.4 参照）。ネイティブランタイムは GstSharpBundle.Windows.X64 の
     contentFiles が出力ディレクトリの gstreamer\win-x64\ へ供給する（MSVC 命名）。
 
-    所有権の規律（フォークの MiniObject 修正はこの規律の上で成立する）:
-    - 所有権を得る呼び出し（TryPullSample / Bus.Pop 系 / Copy 生成）は必ず using/Dispose と
-      ペアにする。Dispose 漏れのファイナライザ経路は GLib メインループ前提で、
+    所有権の規律（フォークの MiniObject 修正 b71bf1ac はこの規律の上で成立する）:
+    - **バインディングから受け取った MiniObject 系ラッパー（Buffer / Caps / Sample /
+      Message）は、取得の仕方によらず必ず using/Dispose とペアにする。**
+      owned な返り値（TryPullSample / Bus.Pop 系 / CopyRegion）だけでなく、
+      transfer none のゲッター（sample.Buffer / sample.Caps）も対象 ──
+      後者は GetOpaque(owned:false) → MiniObject.Copy 経由で**所有権付きの複製**を
+      返すため、Dispose しないと複製が毎回漏れる（実測: 録画中フレームごと）。
+      Dispose 漏れのファイナライザ経路は GLib メインループ前提で、
       このアプリでは永久に実行されない。
-    - 借用参照（sample.Caps / sample.Buffer / msg.Src）は Dispose しない。
+    - MiniObject でないもの（caps.GetStructure の Structure = caps 複製の借用、
+      msg.Src = GLib.Object）は Dispose しない。Structure は caps の Dispose より前に読む。
 
     GtkSharp.GstreamerSharp.ObjectManager.Initialize() は Gst.Application.Init が呼ばない
     ため Controller.StaticInitialize が必ず呼ぶ。未初期化だとキャストが無音で失敗する。
