@@ -1,4 +1,4 @@
-﻿using CommunityToolkit.Mvvm.ComponentModel;
+using CommunityToolkit.Mvvm.ComponentModel;
 using Gst;
 using System;
 using System.Collections.Concurrent;
@@ -195,10 +195,10 @@ public partial class EventRecorder : ObservableObject, IDisposable
 {
     private Pipeline? _sinkPipeline;
     private Bus? _sinkBus;
-    private GstApp.AppSink? _previewSink;
-    private GstApp.AppSink? _appSink;
+    private Gst.App.AppSink? _previewSink;
+    private Gst.App.AppSink? _appSink;
     private Pipeline? _srcPipeline;
-    private GstBase.BaseSrc? _errorSinkSrc;
+    private Gst.Base.BaseSrc? _errorSinkSrc;
 
     /// <summary>
     /// sink パイプラインが EOS を受けたか（<c>Initialize</c> のたびに畳む）。
@@ -213,12 +213,12 @@ public partial class EventRecorder : ObservableObject, IDisposable
     /// </summary>
     private volatile bool _sinkSawEos;
     private Bus? _srcBus;
-    private GstApp.AppSrc? _appSrc;
+    private Gst.App.AppSrc? _appSrc;
     private Element? _mux;
     private Element? _file;
 
     /// <summary>常時録画の枝の終端 appsink（sink パイプラインの一部）。</summary>
-    private GstApp.AppSink? _continuousSink;
+    private Gst.App.AppSink? _continuousSink;
 
     /// <summary>常時録画エンジン。常時録画が無効か、枝を組めなかった場合は null。</summary>
     private ContinuousRecorder? _continuous;
@@ -519,7 +519,7 @@ public partial class EventRecorder : ObservableObject, IDisposable
     /// アプリ層から設定される、優先する H.264 エンコーダーのファクトリ名
     /// （<c>AppSettings.PreferredH264Encoder</c>。空なら自動選択）。
     ///
-    /// <c>GStreamer.GirCore</c> は <c>AppSettings</c> を知らない設計なので、
+    /// <c>GStreamer.GstSharpBundle</c> は <c>AppSettings</c> を知らない設計なので、
     /// <c>EventRecorder.TemplateVariables</c> と同じく static のミラーとして受け取る。
     /// </summary>
     public static string? PreferredH264Encoder { get; set; }
@@ -994,33 +994,31 @@ public partial class EventRecorder : ObservableObject, IDisposable
             const string SrcPipelineStr =
                 "appsrc format=time name=src ! h264parse ! mp4mux faststart=true name=mux ! filesink name=file";
 
-            _sinkPipeline = (Pipeline)Functions.ParseLaunch(SinkPipelineStr);
+            _sinkPipeline = (Pipeline)Parse.Launch(SinkPipelineStr);
             _sinkPipeline.Name = "event-recorder-sink-pipeline";
-            _sinkBus = _sinkPipeline.GetBus();
-            _appSink = (GstApp.AppSink)_sinkPipeline.GetByName("sink")!;
-            _previewSink = (GstApp.AppSink)_sinkPipeline.GetByName("preview")!;
-            _srcPipeline = (Pipeline)Functions.ParseLaunch(SrcPipelineStr);
+            _sinkBus = _sinkPipeline.Bus;
+            _appSink = (Gst.App.AppSink)_sinkPipeline.GetByName("sink")!;
+            _previewSink = (Gst.App.AppSink)_sinkPipeline.GetByName("preview")!;
+            _srcPipeline = (Pipeline)Parse.Launch(SrcPipelineStr);
             _srcPipeline.Name = "event-recorder-src-pipeline";
-            _srcBus = _srcPipeline.GetBus();
-            _appSrc = (GstApp.AppSrc)_srcPipeline.GetByName("src")!;
+            _srcBus = _srcPipeline.Bus;
+            _appSrc = (Gst.App.AppSrc)_srcPipeline.GetByName("src")!;
             _mux = _srcPipeline.GetByName("mux")!;
             _file = _srcPipeline.GetByName("file")!;
-#if false
-        _sinkBus.OnSyncMessage += OnBusSyncMessage;
-        _sinkBus.OnMessage += OnBusMessage;
-        _srcBus.OnSyncMessage += OnBusSyncMessage;
-        _srcBus.OnMessage += OnBusMessage;
-#endif
+
+            // bus のシグナル購読（Bus.Message / AddSignalWatch）は使わない ──
+            // 実行中の GMainLoop が無いこのアプリでは発火しない。
+            // 観測は DrainBuses のポーリングで行う（HandleBusMessage を参照）。
 
             if (_sinkPipeline.SetState(State.Playing) == StateChangeReturn.Failure)
                 throw new InvalidOperationException("ERROR: pipeline doesn't want to play.");
 
             WaitUntilPlaying(_sinkPipeline);
 
-            // appsrc のキャップスはここでは設定しない。_appSink.GetCaps() は appsink に
+            // appsrc のキャップスはここでは設定しない。appsink 側の caps は appsink に
             // 設定された（テンプレート由来の、しばしば ANY な）キャップスであって、
             // 実際にネゴシエートされた結果ではないため。
-            // PullSampleProc が最初のサンプルの sample.GetCaps() から設定する。
+            // PullSampleProc が最初のサンプルの sample.Caps から設定する。
 
             _isAlive = true;
 
@@ -1123,7 +1121,7 @@ public partial class EventRecorder : ObservableObject, IDisposable
 
     /// <summary>
     /// <c>.dot</c> の保存先（<c>AppSettings.GstDebugDumpDotDir</c> の static ミラー）。
-    /// 空なら書かない。<c>GStreamer.GirCore</c> は <c>AppSettings</c> を知らない設計なので、
+    /// 空なら書かない。<c>GStreamer.GstSharpBundle</c> は <c>AppSettings</c> を知らない設計なので、
     /// <see cref="OutputDirectory"/> と同じく static のミラーとして受け取る。
     /// </summary>
     public static string DebugDumpDotDirectory { get; set; } = "";
@@ -1191,7 +1189,7 @@ public partial class EventRecorder : ObservableObject, IDisposable
     /// <summary>常時枝の <c>appsink</c> を掴んでエンジンを起こす。</summary>
     private void StartContinuous(H264EncoderDef encoder)
     {
-        _continuousSink = _sinkPipeline?.GetByName(ContinuousBranch.AppSinkName) as GstApp.AppSink
+        _continuousSink = _sinkPipeline?.GetByName(ContinuousBranch.AppSinkName) as Gst.App.AppSink
             ?? throw new InvalidOperationException(
                 $"the continuous branch did not expose an appsink named '{ContinuousBranch.AppSinkName}'.");
 
@@ -1575,20 +1573,28 @@ public partial class EventRecorder : ObservableObject, IDisposable
                 isIframeFound = false;
                 return;
             }
-            using MiniObject miniObject = new(Gst.Internal.MiniObjectOwnedHandle.FromUnowned(((GLib.BoxedRecord)buffer).GetHandle()));
-            using MiniObject writableMiniObject = miniObject.MakeWritable()!;
-            Gst.Buffer buf = new(Gst.Internal.BufferOwnedHandle.FromUnowned(((GLib.BoxedRecord)writableMiniObject)!.GetHandle()));
-            buf.Handle.SetPts(bufferPts - startPts);
-            buf.Handle.SetDts(Constants.CLOCK_TIME_NONE);
+            // 押し込み用の複製（メタデータのコピー・データ本体は共有）を作り、
+            // 録画基準へ PTS を張り替える。リングバッファ側の元バッファには触らない。
+            // PushBuffer は所有権ごと appsrc へ渡す（戻り値によらず）ので Dispose も不要。
+            // appsrc が無いときは複製を作る前に抜ける（作ってから捨てるとその分が漏れる）。
+            var appSrc = _appSrc;
+            if (appSrc is null)
+            {
+                Log(DebugLevel.Warning, "appsrc rejected a buffer: (no appsrc)");
+                return;
+            }
+            var buf = buffer.CopyRegion(ExtendMethods.BufferCopyAll, 0, ulong.MaxValue);
+            buf.Pts = bufferPts - startPts;
+            buf.Dts = Constants.CLOCK_TIME_NONE;
             // **数えるのは appsrc が受理した押し込みだけ。** PushBuffer は EOS 後は Eos、
             // 未始動なら Flushing を返してバッファを受け取らない。拒否も数えると
             // 「pushed が 0 でないのに MP4 は空」が成立し、停止時の空検出
             // （pushed==0 → result=empty → 終了コード 16）を素通りする。
-            var flow = _appSrc?.PushBuffer(buf);
+            var flow = appSrc.PushBuffer(buf);
             if (flow == FlowReturn.Ok)
                 System.Threading.Interlocked.Increment(ref _samplesPushed);
             else
-                Log(DebugLevel.Warning, $"appsrc rejected a buffer: {flow?.ToString() ?? "(no appsrc)"}");
+                Log(DebugLevel.Warning, $"appsrc rejected a buffer: {flow}");
         }
         while (_isAlive)
         {
@@ -1607,28 +1613,32 @@ public partial class EventRecorder : ObservableObject, IDisposable
                 // 途中で SetCaps すると下流の再ネゴシエーションが起きるので一度だけ。
                 if (!appSrcCapsSet)
                 {
-                    var negotiated = sample.GetCaps();
-                    if (negotiated is not null)
+                    // caps は借用参照（transfer none）── Dispose しない。
+                    var negotiated = sample.Caps;
+                    if (negotiated is not null && _appSrc is not null)
                     {
-                        _appSrc?.SetCaps(negotiated);
+                        _appSrc.Caps = negotiated;
                         appSrcCapsSet = true;
-                        // GirCore の Gst.Caps は文字列化 API を公開していないため、構造体名だけを出す
+                        // ログには構造体名だけを出す
                         // （実際のキャップス全体は GST_DEBUG のネゴシエーションログに出る）。
                         Log(DebugLevel.Info,
-                            $"appsrc caps set from the negotiated sink caps ({negotiated.GetStructure(0)?.GetName() ?? "?"})");
+                            $"appsrc caps set from the negotiated sink caps ({negotiated.GetStructure(0)?.Name ?? "?"})");
                     }
                 }
 
-                using var buffer = sample.GetBuffer();
+                // 借用参照（transfer none）── Dispose しない（csproj 冒頭の規律）。
+                var buffer = sample.Buffer;
                 if (buffer is null)
                     continue;
 
-                var pts = buffer.Handle.GetPts();
+                var pts = buffer.Pts;
                 if (pts == Constants.CLOCK_TIME_NONE)
                     pts = (ulong)(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() * 1_000_000);
 
-                var copy = buffer.Copy()!;
-                _ringBuffer.Enqueue(pts, copy, copy.GetSize());
+                // リングバッファが所有する複製（メタデータのコピー・データ本体は共有）。
+                // 解放は Evict / DrainAll の Dispose が行う。
+                var copy = buffer.CopyRegion(ExtendMethods.BufferCopyAll, 0, ulong.MaxValue);
+                _ringBuffer.Enqueue(pts, copy, copy.Size);
 
                 // 退避条件（時間・サイズの2本立て）と「直近の1件は必ず残す」ガードは
                 // RecordingRingBuffer.Evict にあり、L1 が守っている。
@@ -1759,21 +1769,19 @@ public partial class EventRecorder : ObservableObject, IDisposable
     /// <summary>バスメッセージ1件を分類して記録し、必要なら復帰・停止へつなぐ。</summary>
     private void HandleBusMessage(Message msg, string busName, BusThrottles throttles)
     {
-        // メッセージの発信元。所有しない（owned: false）ラッパーで、実体は
+        // メッセージの発信元。借用参照（Dispose しない）で、実体は
         // パイプライン（Bin）が参照を持っているのでメッセージの解放後も有効。
-        var srcObject = msg.Handle.GetSrc() == 0
-            ? null
-            : Gst.Object.NewFromPointer(msg.Handle.GetSrc(), false);
+        // msg の unref（using）より前に読むこと。
+        var srcObject = msg.Src;
         string elementName = srcObject?.Name ?? "?";
 
         switch (msg.Type)
         {
             case MessageType.Error:
                 {
-                    msg.ParseError(out var gerror, out var debug);
-                    string? message;
-                    using (gerror)
-                        message = gerror.Message;
+                    // GException のコンストラクタが g_error_free まで面倒を見る（Dispose 不要）。
+                    msg.ParseError(out GLib.GException gerror, out string debug);
+                    string? message = gerror.Message;
                     string detail = $"recorder='{Name}' bus={busName} element='{elementName}' {message} debug={debug}";
 
                     // Error も洪水になる ── 「Error は1件ごとに意味があるので抑制しない」は
@@ -1810,7 +1818,7 @@ public partial class EventRecorder : ObservableObject, IDisposable
                         // エンコーダーが壊れた場合に何も起きず毎フレームのエラーが出続ける
                         // （実測: ソース復帰後に x264enc が 60 秒で 41 件）。
                         // 要素単位で戻せない障害は、エスカレーションでパイプラインごと作り直す。
-                        if (srcObject is GstBase.BaseSrc erroredSource)
+                        if (srcObject is Gst.Base.BaseSrc erroredSource)
                         {
                             _errorSinkSrc = erroredSource;
                             _errorSinkSrc.SetState(State.Ready);
@@ -1822,10 +1830,8 @@ public partial class EventRecorder : ObservableObject, IDisposable
 
             case MessageType.Warning:
                 {
-                    msg.ParseWarning(out var gerror, out var debug);
-                    string? message;
-                    using (gerror)
-                        message = gerror.Message;
+                    msg.ParseWarningEx(out GLib.GException gerror, out string? debug);
+                    string? message = gerror.Message;
 
                     // Warning は洪水になる。同一内容の連続は畳む（BusMessageThrottle 参照）。
                     var (emit, repeatedBefore) = throttles.Warning.Observe($"{elementName} {message}");
@@ -2248,8 +2254,8 @@ public partial class EventRecorder : ObservableObject, IDisposable
             throw;
         }
 
-        using (GObject.Value location = new(filename))
-            _file?.SetProperty("location", location);
+        if (_file is not null)
+            _file["location"] = filename;
 
         // **計測のリセットは _IsRecording を立てる「前」に行う。**
         // 数えるのは _IsRecording が真の間だけなので、この順序なら
@@ -2478,7 +2484,7 @@ public partial class EventRecorder : ObservableObject, IDisposable
 
     /// <summary>
     /// 排出待ちの上限(ms)。アプリ層（<c>AppSettings.StopFinalizeTimeoutMs</c>）から設定する
-    /// static ミラー（<c>GStreamer.GirCore</c> は <c>AppSettings</c> を知らない設計のため、
+    /// static ミラー（<c>GStreamer.GstSharpBundle</c> は <c>AppSettings</c> を知らない設計のため、
     /// <see cref="PreferredH264Encoder"/> と同じ方式）。
     /// </summary>
     public static int StopFinalizeTimeoutMs { get; set; } = DefaultStopFinalizeTimeoutMs;
@@ -2531,13 +2537,11 @@ public partial class EventRecorder : ObservableObject, IDisposable
             }
             else if (signal == StopDrainSignal.Error)
             {
-                msg!.ParseError(out var gerror, out var debug);
-                using (gerror)
-                {
-                    string detail = $"recorder='{Name}' file='{LastFilename}' {gerror.Message} debug={debug}";
-                    Components.ActivityLog.Error("recording.stop error", detail);
-                    LastError = detail;
-                }
+                // GException のコンストラクタが g_error_free まで面倒を見る（Dispose 不要）。
+                msg!.ParseError(out GLib.GException gerror, out string debug);
+                string detail = $"recorder='{Name}' file='{LastFilename}' {gerror.Message} debug={debug}";
+                Components.ActivityLog.Error("recording.stop error", detail);
+                LastError = detail;
             }
 
             // **1フレームも書けていないなら、成功として返さない。**
@@ -2618,83 +2622,13 @@ public partial class EventRecorder : ObservableObject, IDisposable
         }
     }
 
-#if false
-    private void OnBusSyncMessage(Bus sender, Bus.SyncMessageSignalArgs e)
-    {
-        var message = e.Message;
-        switch (message.Type)
-        {
-            case MessageType.Error:
-                {
-                    /* dump graph on error */
-                    var pipeline = sender.Parent as Bin;
-                    if (pipeline is not null)
-                        Functions.DebugBinToDotFileWithTs(pipeline, DebugGraphDetails.All, $"{nameof(GstEventRecorder)}.{pipeline.Name ?? "unknown"}.error");
-
-                    message.ParseError(out var err, out var debug);
-                    using (err)
-                    {
-                        using var src = message.Handle.GetSrc() == 0 ? null : Gst.Object.NewFromPointer(message.Handle.GetSrc(), false);
-                        if (src is not null)
-                            Console.Error.WriteLine($"ERROR: from element {src.Name}: {err.Message}");
-                        else
-                            Console.Error.WriteLine($"ERROR: {err.Message}");
-                        Console.Error.WriteLine($"Additional debug info:\n{debug}");
-                    }
-                    break;
-                }
-            default:
-                break;
-        }
-    }
-
-    private void OnBusMessage(Bus sender, Bus.MessageSignalArgs e)
-    {
-        var message = e.Message;
-        switch (message.Type)
-        {
-            case MessageType.Info:
-                {
-                    using var src = message.Handle.GetSrc() == 0 ? null : Gst.Object.NewFromPointer(message.Handle.GetSrc(), false);
-                    var name = src?.GetPathString();
-
-                    message.ParseInfo(out var gerror, out var debug);
-                    using (gerror)
-                    {
-                        if (debug is not null)
-                            Console.Error.WriteLine($"INFO:\n{debug}");
-                    }
-                }
-                break;
-            case MessageType.Warning:
-                {
-                    using var src = message.Handle.GetSrc() == 0 ? null : Gst.Object.NewFromPointer(message.Handle.GetSrc(), false);
-                    var name = src?.GetPathString();
-
-                    /* dump graph on warning */
-                    var pipeline = sender.Parent as Bin;
-                    if (pipeline is not null)
-                        Functions.DebugBinToDotFileWithTs(pipeline, DebugGraphDetails.All, $"{nameof(GstEventRecorder)}.{pipeline.Name ?? "unknown"}.warning");
-
-                    message.ParseWarning(out var gerror, out var debug);
-                    using (gerror)
-                    {
-                        Console.Error.WriteLine($"WARNING: from element {name}: {gerror.Message}");
-                        if (debug is not null)
-                            Console.Error.WriteLine($"Additional debug info:\n{debug}");
-                    }
-                }
-                break;
-            default:
-                break;
-        }
-    }
-#endif
-
+    // bus のシグナル購読（Bus.Message / OnSyncMessage 相当）は書かない ──
+    // 実行中の GMainLoop に紐づく bus watch からしか発火しない。
+    // 実行時障害の観測は DrainBuses のポーリングで行う（HandleBusMessage を参照）。
 
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     protected static void Log(DebugLevel level, string message,
-        GObject.Object? @object = null,
+        GLib.Object? @object = null,
         [System.Runtime.CompilerServices.CallerFilePath] string file = "",
         [System.Runtime.CompilerServices.CallerLineNumber] int line = 0,
         [System.Runtime.CompilerServices.CallerMemberName] string function = "")

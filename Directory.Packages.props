@@ -37,9 +37,11 @@
     <PackageVersion Include="CommunityToolkit.WinUI.Controls.LayoutTransformControl" Version="8.2.251219" />
     <PackageVersion Include="CommunityToolkit.WinUI.Controls.Sizers" Version="8.2.251219" />
 
-    <!-- GStreamer / CLI -->
-    <PackageVersion Include="GirCore.GstApp-1.0" Version="0.8.1" />
-    <PackageVersion Include="GirCore.GstVideo-1.0" Version="0.8.1" />
+    <!-- GStreamer / CLI（GstSharpBundle は masa-iwm フォークの GitHub Packages 発行。
+         本体とランタイムで版が別なことに注意 ── Windows.X64 はネイティブのみの変更が
+         無かったため preview1 のまま） -->
+    <PackageVersion Include="GstSharpBundle" Version="1.28.4-preview2" />
+    <PackageVersion Include="GstSharpBundle.Windows.X64" Version="1.28.4-preview1" />
     <PackageVersion Include="System.CommandLine" Version="2.0.10" />
 
     <!-- UIA トリガ（0.x のあいだは公開 API が動くので、上げるときは使用面を確かめる） -->

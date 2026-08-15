@@ -11,8 +11,8 @@ namespace ProcessRecorderApp.Tests;
 /// （<see cref="GStreamerRuntimeLocator"/> の純粋関数部分）。
 ///
 /// <para>
-/// ここが守るのは2つ。<b>優先順位</b>（元の PATH → 環境変数 → レジストリ →
-/// MSYS2 → 同梱物）と、<b>選んだ1件だけを PATH の先頭に置くこと</b>。
+/// ここが守るのは2つ。<b>優先順位</b>（元の PATH → 環境変数 → レジストリ → 同梱物）と、
+/// <b>選んだ1件だけを PATH の先頭に置くこと</b>。
 /// 後者は「候補を全部繋ぐと gstreamer と glib が別の根から来る」混成を防ぐためで、
 /// 繋ぐ実装に戻すとここが落ちる。
 /// </para>
@@ -30,9 +30,8 @@ public class GStreamerRuntimeLocatorTests
 
     private static IReadOnlyList<GStreamerRuntimeCandidate> AllCandidates()
         => GStreamerRuntimeLocator.BuildCandidates(
-            mingwRoot: @"C:\gst-env",
+            msvcRoot: @"C:\gst-env",
             installedGStreamerRoot: @"C:\gst-reg",
-            msys2Root: @"C:\msys64",
             appDirectory: AppDir,
             runtimeIdentifier: Rid);
 
@@ -46,7 +45,6 @@ public class GStreamerRuntimeLocatorTests
             [
                 GStreamerRuntimeLocator.SourceEnvironment,
                 GStreamerRuntimeLocator.SourceRegistry,
-                GStreamerRuntimeLocator.SourceMsys2,
                 GStreamerRuntimeLocator.SourceBundled,
             ],
             candidates.Select(c => c.Source));
@@ -56,8 +54,7 @@ public class GStreamerRuntimeLocatorTests
             [
                 @"C:\gst-env\bin",
                 @"C:\gst-reg\bin",
-                @"C:\msys64\ucrt64\bin",
-                @"C:\app\runtimes\win-x64\bin",
+                @"C:\app\gstreamer\win-x64\bin",
             ],
             candidates.Select(c => c.BinDirectory));
     }
@@ -66,7 +63,7 @@ public class GStreamerRuntimeLocatorTests
     public void Candidates_SkipRootsThatWereNotDiscovered()
     {
         var candidates = GStreamerRuntimeLocator.BuildCandidates(
-            mingwRoot: null, installedGStreamerRoot: "  ", msys2Root: null,
+            msvcRoot: null, installedGStreamerRoot: "  ",
             appDirectory: AppDir, runtimeIdentifier: Rid);
 
         var only = Assert.Single(candidates);
@@ -76,9 +73,9 @@ public class GStreamerRuntimeLocatorTests
     [Fact]
     public void Candidates_TolerateATrailingSeparatorOnTheRoot()
     {
-        // GStreamer(MinGW) のインストーラはレジストリの InstallLocation を `\` 付きで書く。
+        // GStreamer のインストーラはレジストリの InstallLocation を `\` 付きで書く。
         var candidates = GStreamerRuntimeLocator.BuildCandidates(
-            mingwRoot: null, installedGStreamerRoot: @"C:\gst-reg\", msys2Root: null,
+            msvcRoot: null, installedGStreamerRoot: @"C:\gst-reg\",
             appDirectory: null, runtimeIdentifier: Rid);
 
         Assert.Equal(@"C:\gst-reg\bin", Assert.Single(candidates).BinDirectory);
@@ -119,7 +116,7 @@ public class GStreamerRuntimeLocatorTests
         var chosen = GStreamerRuntimeLocator.Select(
             (string[])[@"C:\windows"],
             AllCandidates(),
-            directory => directory is @"C:\gst-reg\bin" or @"C:\msys64\ucrt64\bin");
+            directory => directory is @"C:\gst-reg\bin" or @"C:\app\gstreamer\win-x64\bin");
 
         Assert.NotNull(chosen);
         Assert.Equal(GStreamerRuntimeLocator.SourceRegistry, chosen.Source);
@@ -131,7 +128,7 @@ public class GStreamerRuntimeLocatorTests
         var chosen = GStreamerRuntimeLocator.Select(
             (string[])[@"C:\windows"],
             AllCandidates(),
-            directory => directory == @"C:\app\runtimes\win-x64\bin");
+            directory => directory == @"C:\app\gstreamer\win-x64\bin");
 
         Assert.NotNull(chosen);
         Assert.Equal(GStreamerRuntimeLocator.SourceBundled, chosen.Source);
@@ -148,14 +145,14 @@ public class GStreamerRuntimeLocatorTests
     public void ComposePath_PutsOnlyTheChosenDirectoryInFront()
     {
         // **この1件が混成を防いでいる。** 候補を全部繋ぐ実装に戻すとここが落ちる
-        // ── 依存 DLL（libglib-2.0-0.dll）は PATH の順で解決されるので、
+        // ── 依存 DLL（glib-2.0-0.dll）は PATH の順で解決されるので、
         // 選ばなかった候補が前に残っていると別の根から取られる。
         var candidates = AllCandidates();
         var chosen = candidates.Single(c => c.Source == GStreamerRuntimeLocator.SourceBundled);
 
-        string composed = GStreamerRuntimeLocator.ComposePath(@"C:\windows;C:\msys64\ucrt64\bin", candidates, chosen);
+        string composed = GStreamerRuntimeLocator.ComposePath(@"C:\windows;C:\other\bin", candidates, chosen);
 
-        Assert.Equal(@"C:\app\runtimes\win-x64\bin;C:\windows;C:\msys64\ucrt64\bin", composed);
+        Assert.Equal(@"C:\app\gstreamer\win-x64\bin;C:\windows;C:\other\bin", composed);
         Assert.DoesNotContain(@"C:\gst-env\bin", composed, StringComparison.Ordinal);
         Assert.DoesNotContain(@"C:\gst-reg\bin", composed, StringComparison.Ordinal);
     }
@@ -168,7 +165,7 @@ public class GStreamerRuntimeLocatorTests
         string composed = GStreamerRuntimeLocator.ComposePath(@"C:\windows", AllCandidates(), chosen: null);
 
         Assert.Equal(
-            @"C:\windows;C:\gst-env\bin;C:\gst-reg\bin;C:\msys64\ucrt64\bin;C:\app\runtimes\win-x64\bin",
+            @"C:\windows;C:\gst-env\bin;C:\gst-reg\bin;C:\app\gstreamer\win-x64\bin",
             composed);
     }
 
@@ -181,7 +178,7 @@ public class GStreamerRuntimeLocatorTests
         Assert.Equal(@"C:\gst-env\bin", GStreamerRuntimeLocator.ComposePath(null, candidates, chosen));
         Assert.Equal(@"C:\gst-env\bin", GStreamerRuntimeLocator.ComposePath("", candidates, chosen));
         Assert.Equal(
-            @"C:\gst-env\bin;C:\gst-reg\bin;C:\msys64\ucrt64\bin;C:\app\runtimes\win-x64\bin",
+            @"C:\gst-env\bin;C:\gst-reg\bin;C:\app\gstreamer\win-x64\bin",
             GStreamerRuntimeLocator.ComposePath(null, candidates, chosen: null));
     }
 

@@ -1,6 +1,8 @@
 # CI とリリース
 
-CI は2つのワークフローに分かれる。`build.yml` は push のたびに「壊れていないこと」を検証し、`release.yml` は「配れるもの」を作る。GStreamer の実行時ツリーはリポジトリに置かず、履歴でも追跡しないため、`build.yml` はランナーに MSYS2(UCRT64) 版を入れ、`release.yml` は削減済みランタイムを Release アセットから取得して同梱する。この違いが、それぞれのワークフローで検証できる範囲を決めている。
+CI は2つのワークフローに分かれる。`build.yml` は push のたびに「壊れていないこと」を検証し、`release.yml` は「配れるもの」を作る。GStreamer の実行時ツリーはリポジトリに置かず、NuGet パッケージ **GstSharpBundle.Windows.X64**（GitHub Packages、フル構成 MSVC ビルド）が供給して発行物へ同梱される ── ランナーへの別途インストール（旧構成の MSYS2）は要らない。
+
+> **release.yml は旧構成（MinGW ランタイムの Release アセット取得・BundleGStreamerRuntime スイッチ）のまま**であり、GstSharpBundle 化に追従していない。このブランチではリリースを切らない前提で、作り直しはマージ検討時の課題（下の release.yml 節の記述も旧構成の説明として残している）。
 
 ## build.yml の構成と理由
 
@@ -8,18 +10,17 @@ CI は2つのワークフローに分かれる。`build.yml` は push のたび�
 
 `build-and-test` の段の順序と理由:
 
-1. **L4（ローカライズ・ドキュメント齟齬）を最初に置く。** 翻訳漏れやキーの綴り誤りは静かに壊れる種類の退行で、しかも検査は数秒で終わる。L4 のテストプロジェクトは Components / GStreamer.GirCore / SingleInstance しか参照しないので、XAML コンパイルを含む WinUI アプリ全体のビルドを待たずに弾ける。
-   **このステップにも `TreatWarningsAsErrors=true` が要る。** このステップが Components / GStreamer.GirCore / SingleInstance / テストの4プロジェクトを Release でビルドしてしまい、後続の `-warnaserror` ビルドではそれらが「最新」と判定されてコンパイラが走らず、警告が再出力されない。付けないとこの4プロジェクトだけ 0 警告の保証が抜ける。
+1. **L4（ローカライズ・ドキュメント齟齬）を最初に置く。** 翻訳漏れやキーの綴り誤りは静かに壊れる種類の退行で、しかも検査は数秒で終わる。L4 のテストプロジェクトは Components / GStreamer.GstSharpBundle / SingleInstance しか参照しないので、XAML コンパイルを含む WinUI アプリ全体のビルドを待たずに弾ける。
+   **このステップにも `TreatWarningsAsErrors=true` が要る。** このステップが Components / GStreamer.GstSharpBundle / SingleInstance / テストの4プロジェクトを Release でビルドしてしまい、後続の `-warnaserror` ビルドではそれらが「最新」と判定されてコンパイラが走らず、警告が再出力されない。付けないとこの4プロジェクトだけ 0 警告の保証が抜ける。
 2. **`dotnet build -c Release -warnaserror`。** リポジトリの規約は 0 警告。トリミング／AOT 解析（`IsAotCompatible` / `EnableTrimAnalyzer`）は `src/Directory.Build.props` の条件無し PropertyGroup にあり、構成によらず常時有効 ── 「Release だから解析される」のではない。このステップの価値は `-warnaserror` で解析警告をエラーに昇格させる側にあり、AOT 非互換の混入はこれで落ちる。
 3. **L1（単体テスト）。**
-4. **`publish`（selfcontained）＋ 発行物に exe が実在することの確認。** 発行ステップに `--no-restore` を使ってはいけない ── `PublishReadyToRun` は `.pubxml` にしか書いていないので、プロファイル抜きの restore では ReadyToRun のランタイムパック（crossgen2）が復元されず `NETSDK1094` になる。
-5. **MSYS2(UCRT64) で GStreamer を入れる**（`msys2/setup-msys2@v2`）。**`gst-plugins-ugly` は必須** ── E2E フィクスチャが `x264enc` を明示指定しており、抜けると `openh264enc` へ落ちる。openh264 の bitrate は bit/sec で x264 の kbit/sec と桁が違うため、生成サイズの前提（下記の 20MB 下限など）が丸ごとずれる。展開先はランナー任せなので `C:\msys64` を決め打ちせず、`steps.msys2.outputs.msys2-location` から `ucrt64\bin` を組み立てて `GITHUB_PATH` に足す（`GStreamerRuntimeLocator` の候補1「元の PATH」に効かせる）。本体 DLL と `libgstx264.dll` の存在はこのステップで確かめて早く落とす ── E2E まで持ち越すと「GStreamer が無い」のか製品の不具合なのかの切り分けに数十分かかる。ただしこの2点検査があるのは `build-and-test` だけで、`publish-aot` の同名ステップは本体 DLL しか確かめない ── AOT ジョブで `gst-plugins-ugly` が欠けると検査を素通りし、E2E で初めて表面化する。
-6. **L2 + L3（E2E）を発行物に対して実行する。** ここで初めて「録画が実際にできること」「GUI が実際に操作できること」が検証される。`--filter "Category!=Fragile"` で `TrayMenuTests` だけを外す ── 通知領域のオーバーフローを物理的なマウスカーソルで操作するテストで、不安定さの原因がシェル側にあるため、赤くなっても製品の退行を意味しない。CI ランナーには GPU が無い（WARP）ので、フィクスチャは `Type=System` + `videotestsrc` + `x264enc` を明示設定して起動する ── これはエンコーダーの自動フォールバックが効いていることの実証にもなる。このステップは `TMP` / `TEMP` を `runner.temp` に固定し `PROCESSRECORDERAPP_E2E_KEEP` を立てる ── 既定の一時ディレクトリはランナーによって `runner.temp` と別の場所になり、そのままだと失敗時の成果物収集が空振りする。
+4. **`publish`（selfcontained）＋ 発行物の検証。** exe に加えて、同梱ランタイムの本体 DLL（`gstreamer/win-x64/bin/gstreamer-1.0-0.dll`）と `gstx264.dll`（E2E フィクスチャが `x264enc` を明示指定する）の実在をここで確かめて早く落とす ── E2E まで持ち越すと「GStreamer が無い」のか製品の不具合なのかの切り分けに数十分かかる。発行ステップに `--no-restore` を使ってはいけない ── `PublishReadyToRun` は `.pubxml` にしか書いていないので、プロファイル抜きの restore では ReadyToRun のランタイムパック（crossgen2）が復元されず `NETSDK1094` になる。
+5. **L2 + L3（E2E）を発行物に対して実行する。** ここで初めて「録画が実際にできること」「GUI が実際に操作できること」が検証される。`--filter "Category!=Fragile"` で `TrayMenuTests` だけを外す ── 通知領域のオーバーフローを物理的なマウスカーソルで操作するテストで、不安定さの原因がシェル側にあるため、赤くなっても製品の退行を意味しない。CI ランナーには GPU が無い（WARP）ので、フィクスチャは `Type=System` + `videotestsrc` + `x264enc` を明示設定して起動する ── これはエンコーダーの自動フォールバックが効いていることの実証にもなる。このステップは `TMP` / `TEMP` を `runner.temp` に固定し `PROCESSRECORDERAPP_E2E_KEEP` を立てる ── 既定の一時ディレクトリはランナーによって `runner.temp` と別の場所になり、そのままだと失敗時の成果物収集が空振りする。
 7. **別ジョブ（`publish-aot`）で AOT 発行 ＋ AOT 発行物に対する L2 + L3。** 配布物が AOT（`release.yml`）なので、タグ限定ではなく常時流す（Fragile 除外は同じ）。AOT 固有の破損（リフレクション欠落）は発行時ではなく実行時に出る ── PropertyGrid のプロパティ列挙と設定 JSON のソース生成が危険域で、L1 では検出できない。このジョブはゲートである（`continue-on-error` は付けない ── run 単位の `success` 表示が赤いジョブを隠す誤読を防ぐ）。
 
-**NuGet の復元に認証は要らない。** 取得元はルートの `nuget.config` が nuget.org 1 つに固定しており（`<clear />` でマシン/ユーザー設定のソースを遮断）、`UiaTrigger.*` も nuget.org から取る。`permissions` はどちらのワークフローも必要なものだけを明示する ── `build.yml` は `contents: read`、`release.yml` は Release へ添付するための `contents: write`。permissions を書いた時点で未記載スコープは none になるので、増やすときは明示すること。
+**NuGet の復元には GitHub Packages の認証が要る。** `GstSharpBundle` / `GstSharpBundle.Windows.X64` は GitHub Packages（masa-iwm、private）から取り、それ以外は nuget.org（振り分けはルートの `nuget.config` の packageSourceMapping）。`build.yml` は `permissions` に `packages: read` を明示し、ワークフロー env の `NuGetPackageSourceCredentials_github`（Username + GITHUB_TOKEN）で認証する ── ソース key `github` と env 名の対応は NuGet の規約。**user 所有の private パッケージは、パッケージ側の「Manage Actions access」でこのリポジトリが許可されている必要がある**（403 になったらそこを疑う）。permissions を書いた時点で未記載スコープは none になるので、増やすときは明示すること。
 
-**AOT ジョブでは MSYS2 のステップを AOT 発行の「後」に置く。** この action は後続ステップの PATH を書き換える。ILCompiler は `findvcvarsall.bat` 経由で `vswhere` を PATH 前提で探すため、発行より前に PATH をいじると、リンカのパスが壊れて MSB3073（exit 123）になる罠を踏む。MSYS2 が要るのは E2E だけ。同じ理由で AOT 発行にも `--no-restore` は使えない（ILCompiler パッケージは `.pubxml` のプロファイル付き復元でしか入らない）。
+**AOT 発行に `--no-restore` は使えない**（ILCompiler パッケージは `.pubxml` のプロファイル付き復元でしか入らない）。また ILCompiler は `findvcvarsall.bat` 経由で `vswhere` を PATH 前提で探すため、発行より前のステップで PATH をいじる action を挟むと、リンカのパスが壊れて MSB3073（exit 123）になる罠がある（旧構成で MSYS2 の導入順として実測済み。現構成に PATH をいじるステップは無い）。
 
 両ジョブとも E2E の前に WER LocalDumps を武装する（DumpFolder を `runner.temp` 配下へ明示、DumpType=1 のミニダンプ）。書けたことを読み戻して `wer-status.log` に残す ── 武装できていない run の「ダンプが無い」を「クラッシュではない」と誤読しないため。AOT ではマネージドのスタックトレースが出ないので、ダンプが落ちた場所を知る唯一の手段になる。
 

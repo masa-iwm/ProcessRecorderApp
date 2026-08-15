@@ -11,7 +11,7 @@ namespace ProcessRecorderApp.GStreamer
         private bool _isInitialized;
 
         private Pipeline? _pipeline;
-        private GstApp.AppSrc? _appSrc;
+        private Gst.App.AppSrc? _appSrc;
         private Element? _sink;
         private Bus? _bus;
 
@@ -59,13 +59,13 @@ namespace ProcessRecorderApp.GStreamer
                 const string PipelineStr =
                     "appsrc format=time name=src ! queue ! d3d12swapchainsink name=sink sync=false";
 
-                _pipeline = (Pipeline)Functions.ParseLaunch(PipelineStr);
-                _appSrc = (GstApp.AppSrc)_pipeline.GetByName("src")!;
+                _pipeline = (Pipeline)Parse.Launch(PipelineStr);
+                _appSrc = (Gst.App.AppSrc)_pipeline.GetByName("src")!;
                 _sink = _pipeline.GetByName("sink")!;
 
                 // bus watch（OnMessage）は使えない ── GMainLoop が無いので発火しない
                 // （EventRecorder と同じ理由）。PushSample の周期でポーリングして汲む。
-                _bus = _pipeline.GetBus();
+                _bus = _pipeline.Bus;
                 _busErrorLogged = false;
 
                 if (_pipeline.SetState(State.Playing) == StateChangeReturn.Failure)
@@ -126,8 +126,8 @@ namespace ProcessRecorderApp.GStreamer
         /// サンプルのキャップスから表示サイズを読み、変わっていたら通知する。
         ///
         /// <para>
-        /// <b>読むのは <c>sample.GetCaps()</c>（＝実際にネゴシエートされた結果）。</b>
-        /// <c>_sink.GetCaps()</c> を使ってはいけない ── あちらは要素に設定された
+        /// <b>読むのは <c>sample.Caps</c>（＝実際にネゴシエートされた結果）。</b>
+        /// シンク要素側の caps を使ってはいけない ── あちらは要素に設定された
         /// （テンプレート由来でしばしば <c>ANY</c> な）キャップスであってネゴシエート結果ではない
         /// （<c>EventRecorder</c> が <c>appsrc</c> のキャップスで踏んでいるのと同じ罠）。
         /// </para>
@@ -145,12 +145,12 @@ namespace ProcessRecorderApp.GStreamer
         private void UpdateVideoSize(Sample sample)
         {
             // **破棄しない。** gst_sample_get_caps() は transfer none で、caps を所有するのは
-            // サンプルの側である ── using を付けると借り物の参照を解放することになり、
+            // サンプルの側である ── Dispose を呼ぶと借り物の参照を解放することになり、
             // まだ使われている caps が落ちる。毎フレーム通る経路だったので影響が出やすく、
             // **自動復帰のあとプレビューがカタつく**という形で実機に現れた
             // （パイプラインを組み直すと直るのは、caps が作り直されるため）。
             // 既存の 2 箇所（EventRecorder / ContinuousRecorder）も破棄していない。
-            var caps = sample.GetCaps();
+            var caps = sample.Caps;
             var structure = caps?.GetStructure(0);
             if (structure is null
                 || !structure.GetInt("width", out int width)
@@ -213,11 +213,9 @@ namespace ProcessRecorderApp.GStreamer
                     if (_busErrorLogged)
                         continue;
 
-                    msg.ParseError(out var gerror, out var debug);
-                    string? message;
-                    using (gerror)
-                        message = gerror.Message;
-                    Components.ActivityLog.Error("preview.error", $"{message} debug={debug}");
+                    // GException のコンストラクタが g_error_free まで面倒を見る（Dispose 不要）。
+                    msg.ParseError(out GLib.GException gerror, out string debug);
+                    Components.ActivityLog.Error("preview.error", $"{gerror.Message} debug={debug}");
                     _busErrorLogged = true;
                 }
             }
@@ -231,7 +229,7 @@ namespace ProcessRecorderApp.GStreamer
 
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
         protected static void Log(DebugLevel level, string message,
-            GObject.Object? @object = null,
+            GLib.Object? @object = null,
             [System.Runtime.CompilerServices.CallerFilePath] string file = "",
             [System.Runtime.CompilerServices.CallerLineNumber] int line = 0,
             [System.Runtime.CompilerServices.CallerMemberName] string function = "")

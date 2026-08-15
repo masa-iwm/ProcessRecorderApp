@@ -24,20 +24,12 @@ dotnet publish src/ProcessRecorderApp/ProcessRecorderApp.csproj -p:PublishProfil
 dotnet test  tests/ProcessRecorderApp.E2E   -c Release       # L2 + L3（発行物に対して実行する）
 ```
 
-> **GStreamer はリポジトリに同梱していない。** L2/L3 を回すには実機に
-> **GStreamer(MinGW)** か **MSYS2(UCRT64)** が入っている必要がある ──
-> アプリが起動時に自力で探す（`GStreamerRuntimeLocator`。
-> src/README.md の「GStreamer の解決経路」）。
+> **GStreamer ランタイムは発行物に同梱される**（GstSharpBundle.Windows.X64 の
+> フル構成 MSVC ビルド。x264enc も含む）。実機への別途インストールは要らない。
+> アプリは起動時に PATH → MSVC 環境変数 → レジストリ → 同梱物の順で探す
+> （`GStreamerRuntimeLocator`。src/README.md の「GStreamer の解決経路」）。
 > どこから読まれたかは `activity.log` の `gst.runtime` に出る。
-> 同梱版を作るときだけ `tools/Fetch-GStreamerRuntime.ps1` で展開してから
-> `-p:BundleGStreamerRuntime=true` で発行する。
->
-> **同梱物に対しては L2 の大半を流せない。** ハーネスが
-> `SettingsFile.DefaultEncoder = "x264enc"` を固定しており（尺とサイズを比較可能に
-> 保つための意図的な設計）、同梱ランタイムに x264 は無い（GPL を持ち込まないため）。
-> 通るのはエンコーダーに依存しないスモークだけ ── 詳細は
-> [docs/coverage-gaps.md](../docs/coverage-gaps.md) の「同梱ランタイムに対する
-> 録画系 E2E の大半」。
+> 復元には GitHub Packages の認証が要る（src/README.md の「パッケージの取得元」）。
 
 L2 は発行物を外から叩くので、**先に publish が要る**（発行物が無ければフィクスチャが
 その旨を出して即座に失敗する）。AOT 発行物に対して流すときは

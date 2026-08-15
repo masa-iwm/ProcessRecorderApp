@@ -195,7 +195,7 @@ if errorlevel 1 echo 録画の開始に失敗しました
 ## ディレクトリ構成
 
 - `src/ProcessRecorderApp/` — メインアプリケーション（画面・起動処理）
-- `src/GStreamer.GirCore/` — 録画・プレビューエンジン
+- `src/GStreamer.GstSharpBundle/` — 録画・プレビューエンジン
 - `src/SingleInstance/` — 常駐化・多重起動制御
 - `src/Components/` — 共通コンポーネント
 - `src/Controls/` — GUIパーツ

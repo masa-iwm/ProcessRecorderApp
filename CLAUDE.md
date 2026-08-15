@@ -13,8 +13,10 @@ dotnet test tests/ProcessRecorderApp.E2E -c Release                # L2/L3 E2E�
 dotnet publish src/ProcessRecorderApp/ProcessRecorderApp.csproj -p:PublishProfile=win-x64-aot
 ```
 
-パッケージの取得元は nuget.org だけで、restore に認証は要らない
-（src/README.md「パッケージの取得元」）。
+パッケージの取得元は nuget.org と GitHub Packages（masa-iwm）の 2 つで、
+**GstSharpBundle\* の restore には認証が要る**（手元は
+`$env:NuGetPackageSourceCredentials_github = "Username=masa-iwm;Password=$(gh auth token)"`、
+CI は build.yml が GITHUB_TOKEN で組み立てる。src/README.md「パッケージの取得元」）。
 
 テストの層構成・E2E の前提と運用は [tests/README.md](tests/README.md)、
 CI の構成と理由は [docs/ci.md](docs/ci.md)。

@@ -8,23 +8,26 @@ namespace ProcessRecorderApp.GStreamer;
 
 internal static class ImportResolver
 {
+    // Windows の実ファイル名は MSVC 命名（lib プレフィックス無し）。
+    // GstSharpBundle の DllImport が同じ名前をハードコードしているため、
+    // ここを揃えることで同一モジュールの解決が保証される（MinGW/MSVC の二重ロード防止）。
     public const string Library = "Gst";
-    private const string WindowsLibraryName = "libgstreamer-1.0-0.dll";
+    private const string WindowsLibraryName = "gstreamer-1.0-0.dll";
     private const string LinuxLibraryName = "libgstreamer-1.0.so.0";
     private const string OsxLibraryName = "libgstreamer-1.0.0.dylib";
 
     public const string LibraryVideo = "GstVideo";
-    private const string WindowsLibraryVideoName = "libgstvideo-1.0-0.dll";
+    private const string WindowsLibraryVideoName = "gstvideo-1.0-0.dll";
     private const string LinuxLibraryVideoName = "libgstvideo-1.0.so.0";
     private const string OsxLibraryVideoName = "libgstvideo-1.0.0.dylib";
 
     public const string LibraryGObject = "GObject";
-    private const string WindowsLibraryGObjectName = "libgobject-2.0-0.dll";
+    private const string WindowsLibraryGObjectName = "gobject-2.0-0.dll";
     private const string LinuxLibraryGObjectName = "libgobject-2.0.so.0";
     private const string OsxLibraryGObjectName = "libgobject-2.0.0.dylib";
 
     public const string LibraryGLib = "GLib";
-    private const string WindowsLibraryGLibName = "libglib-2.0-0.dll";
+    private const string WindowsLibraryGLibName = "glib-2.0-0.dll";
     private const string LinuxLibraryGLibName = "libglib-2.0.so.0";
     private const string OsxLibraryGLibName = "libglib-2.0.0.dylib";
 

@@ -17,11 +17,11 @@ public static partial class DebugLogEx
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     private static partial IntPtr _gst_debug_category_new([MarshalAs(UnmanagedType.LPUTF8Str)] string name, uint color, [MarshalAs(UnmanagedType.LPUTF8Str)] string description);
     public static DebugCategory DebugCategoryNew(string name, uint color, string description)
-        => new(new Gst.Internal.DebugCategoryOwnedHandle(_gst_debug_category_new(name, color, description)));
+        => Gst.DebugCategory.New(_gst_debug_category_new(name, color, description));
 
     private static DebugCategory? _debugCategory;
     public static void Log(DebugLevel level, string? message,
-        GObject.Object? @object = null,
+        GLib.Object? @object = null,
         [CallerFilePath] string file = "",
         [CallerLineNumber] int line = 0,
         [CallerMemberName] string function = "")
@@ -33,15 +33,15 @@ public static partial class DebugLogEx
             return;
 
         _debugCategory ??= DebugCategoryNew("myapp", 0, "My application");
-        Functions.DebugLogLiteral(_debugCategory!, level, file, function, line, @object, message ?? "");
+        Gst.Debug.LogLiteral(_debugCategory.Value, level, file, function, line, @object, message ?? "");
     }
 
     /// <summary>
-    /// <c>Gst.Functions.Init</c> が済んだか。<see cref="Controller.StaticInitialize"/> だけが立てる。
+    /// <c>Gst.Application.Init</c> が済んだか。<see cref="Controller.StaticInitialize"/> だけが立てる。
     ///
     /// <para>
     /// <b>これを見ずに GStreamer のネイティブを呼んではいけない。</b>
-    /// <c>AppSettings</c> は <c>Gst.Functions.Init</c> より前に読み込まれ
+    /// <c>AppSettings</c> は <c>Gst.Application.Init</c> より前に読み込まれ
     /// （<c>Program.cs</c> で <c>AppSettings.Default</c> → <c>Controller.StaticInitialize()</c> の順）、
     /// その逆シリアル化の setter からここへ来る。PATH の組み立てと
     /// <c>DllImportResolver</c> の登録より前にネイティブへ触ると、
@@ -52,7 +52,7 @@ public static partial class DebugLogEx
 
     /// <summary>
     /// <c>GST_DEBUG</c> 相当のしきい値を<b>今すぐ</b>適用する（<c>AppSettings.GstDebug</c> のミラー）。
-    /// 適用したら true、まだ <c>Gst.Functions.Init</c> 前で何もしなかったら false。
+    /// 適用したら true、まだ <c>Gst.Application.Init</c> 前で何もしなかったら false。
     ///
     /// <para>
     /// <b>起動時の反映はここではなく環境変数が担当する</b>
@@ -68,11 +68,11 @@ public static partial class DebugLogEx
             return false;
 
         // 既定でデバッグが有効かどうかに寄りかからず、明示的に有効化する。
-        Functions.DebugSetActive(true);
+        Debug.SetActive(true);
 
         // reset: true は「既定へ戻してから list を適用する」。空文字は
         // parse_debug_list が何もしないので、**空欄＝既定へ戻す**が自然に成り立つ。
-        Functions.DebugSetThresholdFromString(value ?? "", true);
+        Debug.SetThresholdFromString(value ?? "", true);
 
         Components.ActivityLog.Info("gst.debug", $"threshold='{value}'");
         return true;
@@ -93,7 +93,7 @@ public static partial class DebugLogEx
     {
         ArgumentNullException.ThrowIfNull(bin);
 
-        string dot = Functions.DebugBinToDotData(bin, DebugGraphDetails.All);
+        string dot = Debug.BinToDotData(bin, DebugGraphDetails.All);
         string path = Path.Combine(directory, BuildDotFileName(timestamp, name));
         Directory.CreateDirectory(directory);
 

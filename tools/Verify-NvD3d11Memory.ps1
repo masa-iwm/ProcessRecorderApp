@@ -19,7 +19,7 @@
     Output is English on purpose (Windows PowerShell 5.1 reads BOM-less .ps1 as ANSI).
 
 .PARAMETER PublishDir
-    The unpacked bundled build (the folder that has runtimes\win-x64 under it).
+    The unpacked bundled build (the folder that has gstreamer\win-x64 under it).
 
 .EXAMPLE
     .\Verify-NvD3d11Memory.ps1 -PublishDir D:\...\ProcessRecorderApp-v0.1.0-preview.6-win-x64-gstreamer
@@ -34,7 +34,7 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-$root = Join-Path (Resolve-Path $PublishDir).Path 'runtimes\win-x64'
+$root = Join-Path (Resolve-Path $PublishDir).Path 'gstreamer\win-x64'
 $bin = Join-Path $root 'bin'
 $launch = Join-Path $bin 'gst-launch-1.0.exe'
 $inspect = Join-Path $bin 'gst-inspect-1.0.exe'

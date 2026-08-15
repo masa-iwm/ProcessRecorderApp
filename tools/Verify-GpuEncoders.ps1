@@ -85,17 +85,18 @@ if (-not (Test-Path $exe)) {
 }
 
 # GStreamer is not assumed to sit next to the exe: a published app may be using an
-# installed GStreamer (MinGW), an MSYS2 UCRT64 install, or a bundled copy. Approximate
-# the order the app itself uses (GStreamerRuntimeLocator) -- the relative priority of the
-# GStreamer(MinGW) and MSYS2 registry entries is not exactly the app's, and any mismatch
-# is detected at run time by Verify-BinMatchesTheAppsChoice.
+# installed GStreamer (MSVC) or the bundled copy under the publish directory. Approximate
+# the order the app itself uses (GStreamerRuntimeLocator: PATH -> MSVC env var ->
+# bundled gstreamer\win-x64\bin); any mismatch is detected at run time by
+# Verify-BinMatchesTheAppsChoice. The DllImports are MSVC-named (gstreamer-1.0-0.dll),
+# so MinGW installs can never satisfy them and are not probed here.
 function Find-GStreamerBin {
     param([string] $PublishDir)
 
     $candidates = @()
 
     # PATH FIRST -- this is the app's highest-priority candidate (GStreamerRuntimeLocator.Select
-    # walks PATH in order and takes the first directory holding libgstreamer-1.0-0.dll).
+    # walks PATH in order and takes the first directory holding gstreamer-1.0-0.dll).
     #
     # Skipping PATH here would have two consequences, and the second is the dangerous one:
     #   1. A GStreamer that is only on PATH would be reported as "not found".
@@ -107,33 +108,13 @@ function Find-GStreamerBin {
         if ($dir) { $candidates += $dir.Trim() }
     }
 
-    $envRoot = $env:GSTREAMER_1_0_ROOT_MINGW_X86_64
+    $envRoot = $env:GSTREAMER_1_0_ROOT_MSVC_X86_64
     if ($envRoot) { $candidates += (Join-Path $envRoot 'bin') }
 
-    # The MinGW installer does not set the environment variable for a per-user install,
-    # so look the install up the way the app does.
-    $uninstall = @(
-        'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
-        'HKCU:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*',
-        'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
-        'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*')
-    foreach ($pattern in $uninstall) {
-        $entries = @(Get-ItemProperty $pattern -ErrorAction SilentlyContinue |
-                     Where-Object { $_.PSObject.Properties['DisplayName'] -and
-                                    $_.DisplayName -like 'GStreamer*' -and $_.DisplayName -like '*MinGW*' -and
-                                    $_.PSObject.Properties['InstallLocation'] -and $_.InstallLocation })
-        foreach ($e in $entries) { $candidates += (Join-Path $e.InstallLocation.TrimEnd('\', '/') 'bin') }
-
-        $msys = @(Get-ItemProperty $pattern -ErrorAction SilentlyContinue |
-                  Where-Object { $_.PSObject.Properties['DisplayName'] -and $_.DisplayName -like 'MSYS2*' -and
-                                 $_.PSObject.Properties['InstallLocation'] -and $_.InstallLocation })
-        foreach ($e in $msys) { $candidates += (Join-Path $e.InstallLocation.TrimEnd('\', '/') 'ucrt64\bin') }
-    }
-    $candidates += (Join-Path $env:SystemDrive 'msys64\ucrt64\bin')
-    $candidates += (Join-Path $PublishDir 'runtimes\win-x64\bin')
+    $candidates += (Join-Path $PublishDir 'gstreamer\win-x64\bin')
 
     foreach ($c in $candidates) {
-        if (Test-Path (Join-Path $c 'libgstreamer-1.0-0.dll')) { return $c }
+        if (Test-Path (Join-Path $c 'gstreamer-1.0-0.dll')) { return $c }
     }
     return $null
 }
@@ -411,8 +392,8 @@ function Verify-BinMatchesTheAppsChoice {
 function Test-BundledRuntimeWasExercised {
     param([string] $PublishDirectory, [switch] $Quiet)
 
-    $bundled = Join-Path $PublishDirectory 'runtimes\win-x64\bin'
-    if (-not (Test-Path (Join-Path $bundled 'libgstreamer-1.0-0.dll'))) {
+    $bundled = Join-Path $PublishDirectory 'gstreamer\win-x64\bin'
+    if (-not (Test-Path (Join-Path $bundled 'gstreamer-1.0-0.dll'))) {
         # Non-bundled publish: it is supposed to resolve GStreamer from somewhere else.
         return $null
     }

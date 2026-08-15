@@ -107,7 +107,7 @@ public class ContinuousRuntimeDependencyTests
 
         // (3) 無いときは名指しで失敗させる
         string recorder = File.ReadAllText(
-            RepositoryFiles.At("src", "GStreamer.GirCore", "EventRecorder.cs"));
+            RepositoryFiles.At("src", "GStreamer.GstSharpBundle", "EventRecorder.cs"));
         string guard = SourceMethodBody.Extract(recorder, "private H264EncoderDef ResolveContinuousEncoder");
 
         Assert.Contains("RequiresVideorate", guard, StringComparison.Ordinal);

@@ -1,6 +1,12 @@
 # 環境と実装の背景事実
 
-このファイルは、環境・外部要素（GStreamer / Windows / PowerShell）に関する恒久的な事実をまとめる。いずれも実装・テストの形を決めている制約であり、「なぜこう書いてあるか」の根拠がここにある。同じ事実の多くは実装側のコメント（`src/GStreamer.GirCore/EventRecorder.cs`、`src/SingleInstance/SingleInstanceManager.Launcher.cs`、`tools/` の検証スクリプトなど）にも書かれている。同じ事実を二重に持っている前提で、片方を直したらもう片方も直すこと。
+このファイルは、環境・外部要素（GStreamer / Windows / PowerShell）に関する恒久的な事実をまとめる。いずれも実装・テストの形を決めている制約であり、「なぜこう書いてあるか」の根拠がここにある。同じ事実の多くは実装側のコメント（`src/GStreamer.GstSharpBundle/EventRecorder.cs`、`src/SingleInstance/SingleInstanceManager.Launcher.cs`、`tools/` の検証スクリプトなど）にも書かれている。同じ事実を二重に持っている前提で、片方を直したらもう片方も直すこと。
+
+> 一部の記述の「同梱ランタイム」は旧構成（公式 MinGW ビルドを閉包で 46 ファイルへ削った
+> LGPL-only 構成）を指す。現行の同梱ランタイムは `GstSharpBundle.Windows.X64` の
+> フル構成 MSVC ビルド（x264 / openh264 / gst-discoverer 含む）で、旧記述のうち
+> 「同梱物に無い」系の制約は解消している。MinGW 固有の実測（cairo の D2D 経路等）は
+> 事実として残す。
 
 ## GStreamer と環境の事実
 

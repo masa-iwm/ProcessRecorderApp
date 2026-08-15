@@ -286,11 +286,14 @@ namespace ProcessRecorderApp.GStreamer
                     Environment.SetEnvironmentVariable("GST_DEBUG_COLOR_MODE", "unix");
                 }
 
-                GstApp.Module.Initialize();
-                GstVideo.Module.Initialize();
                 NativeLibrary.SetDllImportResolver(typeof(ExtendMethods).Assembly, ImportResolver.Resolve);
-                string[]? args = [];
-                Gst.Functions.Init(ref args);
+                Gst.Application.Init();
+
+                // GType → マネージド型の対応表を張る。Gst.Application.Init は呼んでくれない。
+                // **これ無しでもコンパイルは通り、実行も一見進む**が、
+                // `pipeline.GetByName(...) as Gst.App.AppSink` が無音で null、
+                // `msg.Src is Gst.Base.BaseSrc` が無音で false になる（静かな劣化）。
+                GtkSharp.GstreamerSharp.ObjectManager.Initialize();
 
                 // ここから先はネイティブを呼んでよい。**この1行だけが立てる**
                 // ── AppSettings は Init より前に読み込まれ、その setter から
@@ -304,7 +307,7 @@ namespace ProcessRecorderApp.GStreamer
                 Components.ActivityLog.Info("gst.runtime",
                     GStreamerRuntimeLocator.DescribeRuntime(candidates, chosen));
 
-                // Gst.Functions.Init の後に1回だけ H.264 エンコーダーの存在を確認する。
+                // Gst.Application.Init の後に1回だけ H.264 エンコーダーの存在を確認する。
                 // GPU 系プラグインは対応ハードウェアが無いと要素ファクトリを登録しないため、
                 // この結果がそのまま「この実機で使えるエンコーダー」になる。
                 // 出力先は activity.log（複写により アプリ内 Log 画面と AppSettings.DebugLogFile へも届く）。

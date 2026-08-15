@@ -4,7 +4,7 @@
 #   L4（ローカライズ・ドキュメント齟齬）を**最初**に置く。翻訳漏れやキーの綴り誤りは
 #   「壊れても静かに壊れる」種類の退行で、しかもこの検査は数秒で終わる。
 #   ソリューション全体（XAML コンパイルを含む WinUI アプリ）のビルドを待たずに弾ける。
-#   L4 が使うテストプロジェクトは Components / GStreamer.GirCore / SingleInstance しか
+#   L4 が使うテストプロジェクトは Components / GStreamer.GstSharpBundle / SingleInstance しか
 #   参照していないので、ここまでのビルドはアプリ本体より桁違いに軽い。
 #
 #   L2（E2E）は publish の後に実行する。発行済みの exe を外から叩くので、
@@ -12,12 +12,13 @@
 #   フィクスチャは Type=System + videotestsrc + x264enc を明示設定して起動する
 #   ── これはエンコーダーの自動フォールバックが効いていることの実証にもなる。
 #
-#   **GStreamer はリポジトリに同梱していない**（runtimes/ はサイズが大きいためリポジトリには置かない）。
-#   ランナーでは MSYS2(UCRT64) 版を pacman で入れ、アプリ側の
-#   GStreamerRuntimeLocator がそれを見つける。**gst-plugins-ugly は必須**
-#   ── 上記のとおりフィクスチャが x264enc を明示指定しており、抜けると openh264enc へ
-#   落ちる。openh264 の bitrate は bit/sec で x264 の kbit/sec と桁が違うため、
-#   生成サイズの前提（StopSynchronicityTests の 20MB 下限など）が丸ごとずれる。
+#   **GStreamer ランタイムは GstSharpBundle.Windows.X64（NuGet、MSVC 命名のフル構成）が
+#   供給し、発行物の gstreamer\win-x64\ に同梱される**。ランナーへの別途インストール
+#   （旧構成の MSYS2）は要らない。x264enc もこの同梱物に含まれる。
+#
+#   GstSharpBundle* は GitHub Packages（masa-iwm、private）から復元する。
+#   認証は下の env（NuGetPackageSourceCredentials_github）が GITHUB_TOKEN で組み立てる
+#   ── permissions の `packages: read` とパッケージ側の Actions アクセス許可が前提。
 #
 #   L3（GUI・UIA）は L2 と同じプロジェクトに入っているので、下の E2E ステップで
 #   一緒に走る。L3 は対話セッションとデスクトップに依存する ── 赤くなったら、
@@ -55,13 +56,18 @@ concurrency:
 
 # 既定の権限に依存せず、要るものだけを明示する（permissions を書いた時点で
 # 未記載のスコープは none になる）。
+# packages: read は GstSharpBundle*（GitHub Packages、private）の復元に要る。
 permissions:
   contents: read
+  packages: read
 
 env:
   DOTNET_NOLOGO: 'true'
   DOTNET_CLI_TELEMETRY_OPTOUT: 'true'
   DOTNET_SKIP_FIRST_TIME_EXPERIENCE: 'true'
+  # nuget.config のソース key `github` と対で解決される（NuGet の規約）。
+  # 値の形式は Username=...;Password=...（Password に GITHUB_TOKEN）。
+  NuGetPackageSourceCredentials_github: Username=masa-iwm;Password=${{ secrets.GITHUB_TOKEN }}
 
 jobs:
   build-and-test:
@@ -95,7 +101,7 @@ jobs:
       # README とコード（終了コード表 / コマンド表）の齟齬。
       #
       # TreatWarningsAsErrors をここにも付けているのは、このステップが
-      # Components / GStreamer.GirCore / SingleInstance / テストの4つを Release でビルドしてしまい、
+      # Components / GStreamer.GstSharpBundle / SingleInstance / テストの4つを Release でビルドしてしまい、
       # 後続の `-warnaserror` ビルドではそれらが「最新」と判定されてコンパイラが走らず、
       # **警告が再出力されない**ため。付けないとこの4プロジェクトだけ 0 警告の保証が抜ける。
       - name: Verify localization and documentation (L4)
@@ -160,44 +166,21 @@ jobs:
           dotnet publish src/ProcessRecorderApp/ProcessRecorderApp.csproj
           -p:PublishProfile=win-x64-selfcontained
 
-      # 発行が「成功したが中身が無い」状態を素通りさせない
+      # 発行が「成功したが中身が無い」状態を素通りさせない。
+      # GStreamer ランタイムは発行物に同梱される（GstSharpBundle.Windows.X64 由来）ので、
+      # ここで本体 DLL と x264 プラグイン（E2E フィクスチャが明示指定する）まで確かめる
+      # ── E2E まで持ち越すと、原因が「GStreamer が無い」なのか製品の不具合なのかの
+      # 切り分けに数十分かかる。
       - name: Verify the published output
         run: |
-          $exe = 'src/ProcessRecorderApp/bin/Release/win-x64/publish/selfcontained/ProcessRecorderApp.exe'
+          $dir = 'src/ProcessRecorderApp/bin/Release/win-x64/publish/selfcontained'
+          $exe = "$dir/ProcessRecorderApp.exe"
           if (-not (Test-Path $exe)) { throw "published exe not found: $exe" }
-          Write-Host "published: $((Get-Item $exe).Length) bytes"
-
-      # GStreamer は同梱していないので、ランナー側に入れる。
-      # 既定（release: true）は MSYS2 のリリースを新規に展開する ── パッケージDBが
-      # そのリリースと揃っているので `pacman -S` がそのまま通る。プリインストールの
-      # C:\msys64 を使う（release: false）と、DB が同期済みである保証が無い。
-      - name: Set up MSYS2 (GStreamer)
-        id: msys2
-        uses: msys2/setup-msys2@v2
-        with:
-          msystem: UCRT64
-          install: >-
-            mingw-w64-ucrt-x86_64-gstreamer
-            mingw-w64-ucrt-x86_64-gst-plugins-base
-            mingw-w64-ucrt-x86_64-gst-plugins-good
-            mingw-w64-ucrt-x86_64-gst-plugins-bad
-            mingw-w64-ucrt-x86_64-gst-plugins-ugly
-
-      # **展開先はランナー任せなので `C:\msys64` を決め打ちしない。**
-      # アプリ側の既定の探索場所（`%SystemDrive%\msys64`）とは限らないため、
-      # ここで明示的に PATH へ載せる ── GStreamerRuntimeLocator の候補1（元の PATH）に効く。
-      #
-      # ここで落としておく。E2E まで持ち越すと、原因が「GStreamer が無い」なのか
-      # 製品の不具合なのかの切り分けに数十分かかる。
-      - name: Make GStreamer visible to the app
-        run: |
-          $bin = Join-Path '${{ steps.msys2.outputs.msys2-location }}' 'ucrt64\bin'
-          $core = Join-Path $bin 'libgstreamer-1.0-0.dll'
-          if (-not (Test-Path $core)) { throw "GStreamer not found: $core" }
-          $x264 = Join-Path (Join-Path '${{ steps.msys2.outputs.msys2-location }}' 'ucrt64\lib\gstreamer-1.0') 'libgstx264.dll'
-          if (-not (Test-Path $x264)) { throw "gst-plugins-ugly (x264enc) not found: $x264" }
-          Add-Content -Path $env:GITHUB_PATH -Value $bin
-          Write-Host "gstreamer: $core"
+          $core = "$dir/gstreamer/win-x64/bin/gstreamer-1.0-0.dll"
+          if (-not (Test-Path $core)) { throw "bundled GStreamer not found: $core" }
+          $x264 = "$dir/gstreamer/win-x64/lib/gstreamer-1.0/gstx264.dll"
+          if (-not (Test-Path $x264)) { throw "bundled x264enc not found: $x264" }
+          Write-Host "published: $((Get-Item $exe).Length) bytes; bundled gstreamer OK"
 
       # 常駐ワーカーが app.exit も app.error も残さずに消えた場合に、クラッシュか
       # 終了経路かを切り分けるための**弁別子**であって、万能の捕捉網ではない:
@@ -240,33 +223,9 @@ jobs:
             Write-Host "::warning::WER LocalDumps could not be configured: $($_.Exception.Message)"
             Write-Host "'no dump' must NOT be read as 'not a crash' for this run."
           }
-
-          # **libcairo-2.dll の現物とエクスポート表を持ち帰る。** AOT/ミニダンプでは
-          # 自前フレームが記号化されないため、ダンプに出るモジュール内オフセットを
-          # 解決するには**現物とエクスポート表をそのまま持ち帰る**必要がある。
-          #
-          # **このブロックで例外を投げて止めないこと。** E2E の前にあるので、
-          # 落とすと本来欲しかった標本を丸ごと失う（上と同じ理由）。
-          try {
-            $cairo = Join-Path '${{ steps.msys2.outputs.msys2-location }}' 'ucrt64\bin\libcairo-2.dll'
-            if (Test-Path $cairo) {
-              Copy-Item $cairo (Join-Path '${{ runner.temp }}' 'libcairo-2.dll') -Force
-              Write-Host "cairo captured: $cairo"
-              # nm は MSYS2 の base に入っているとは限らない。無ければ現物だけ持ち帰る
-              # （手元の VS の dumpbin で解決できる）。
-              $nm = Join-Path '${{ steps.msys2.outputs.msys2-location }}' 'usr\bin\nm.exe'
-              if (Test-Path $nm) {
-                & $nm --defined-only $cairo | Set-Content -Path (Join-Path '${{ runner.temp }}' 'cairo-symbols.txt') -Encoding utf8
-                Write-Host "cairo symbols captured"
-              } else {
-                Write-Host "nm not present; shipping the DLL only"
-              }
-            } else {
-              Write-Host "::warning::libcairo-2.dll not found at $cairo"
-            }
-          } catch {
-            Write-Host "::warning::cairo capture failed: $($_.Exception.Message)"
-          }
+          # 旧構成にあった libcairo-2.dll の捕獲は MSYS2 と一緒に撤去した
+          # ── 同梱ランタイム（MSVC ビルド）の cairo は D2D 経路を採らない
+          # （docs/environment-facts.md）。ダンプの記号化に要る現物は発行物に入っている。
 
       # ここで初めて「録画が実際にできること」を検証する。
       # 発行物を起動して CLI・生成 MP4・activity.log を外から見る（詳細は docs/test-harness.md）。
@@ -360,8 +319,6 @@ jobs:
         with:
           name: crash-symbols
           path: |
-            ${{ runner.temp }}/cairo-symbols.txt
-            ${{ runner.temp }}/libcairo-2.dll
             src/ProcessRecorderApp/bin/Release/win-x64/publish/selfcontained/*.pdb
           if-no-files-found: ignore
 
@@ -408,35 +365,16 @@ jobs:
       - name: Publish (Native AOT)
         run: dotnet publish src/ProcessRecorderApp/ProcessRecorderApp.csproj -p:PublishProfile=win-x64-aot
 
+      # GStreamer ランタイムは発行物に同梱される（GstSharpBundle.Windows.X64 由来）。
+      # 旧構成の MSYS2 導入は不要になった（build-and-test 側のコメントも参照）。
       - name: Verify the published output
         run: |
-          $exe = 'src/ProcessRecorderApp/bin/Release/win-x64/publish/aot/ProcessRecorderApp.exe'
+          $dir = 'src/ProcessRecorderApp/bin/Release/win-x64/publish/aot'
+          $exe = "$dir/ProcessRecorderApp.exe"
           if (-not (Test-Path $exe)) { throw "published exe not found: $exe" }
-          Write-Host "published: $((Get-Item $exe).Length) bytes"
-
-      # **MSYS2 は AOT 発行の後に入れる。** この action は後続ステップの PATH を書き換える。
-      # ILCompiler は findvcvarsall.bat 経由で vswhere を PATH 前提で探すので、
-      # 発行より前に PATH をいじると、上のコメントで説明した MSB3073 の罠を
-      # 別の形で踏み直すことになる。ここで要るのは E2E だけ。
-      - name: Set up MSYS2 (GStreamer)
-        id: msys2
-        uses: msys2/setup-msys2@v2
-        with:
-          msystem: UCRT64
-          install: >-
-            mingw-w64-ucrt-x86_64-gstreamer
-            mingw-w64-ucrt-x86_64-gst-plugins-base
-            mingw-w64-ucrt-x86_64-gst-plugins-good
-            mingw-w64-ucrt-x86_64-gst-plugins-bad
-            mingw-w64-ucrt-x86_64-gst-plugins-ugly
-
-      - name: Make GStreamer visible to the app
-        run: |
-          $bin = Join-Path '${{ steps.msys2.outputs.msys2-location }}' 'ucrt64\bin'
-          $core = Join-Path $bin 'libgstreamer-1.0-0.dll'
-          if (-not (Test-Path $core)) { throw "GStreamer not found: $core" }
-          Add-Content -Path $env:GITHUB_PATH -Value $bin
-          Write-Host "gstreamer: $core"
+          $core = "$dir/gstreamer/win-x64/bin/gstreamer-1.0-0.dll"
+          if (-not (Test-Path $core)) { throw "bundled GStreamer not found: $core" }
+          Write-Host "published: $((Get-Item $exe).Length) bytes; bundled gstreamer OK"
 
       # 意図は build-and-test 側の同名ステップのコメントを参照。
       # **AOT でこそ効く** ── ネイティブコード生成後のクラッシュはマネージドの
@@ -461,33 +399,8 @@ jobs:
             Write-Host "::warning::WER LocalDumps could not be configured: $($_.Exception.Message)"
             Write-Host "'no dump' must NOT be read as 'not a crash' for this run."
           }
-
-          # **libcairo-2.dll の現物とエクスポート表を持ち帰る。** AOT/ミニダンプでは
-          # 自前フレームが記号化されないため、ダンプに出るモジュール内オフセットを
-          # 解決するには**現物とエクスポート表をそのまま持ち帰る**必要がある。
-          #
-          # **このブロックで例外を投げて止めないこと。** E2E の前にあるので、
-          # 落とすと本来欲しかった標本を丸ごと失う（上と同じ理由）。
-          try {
-            $cairo = Join-Path '${{ steps.msys2.outputs.msys2-location }}' 'ucrt64\bin\libcairo-2.dll'
-            if (Test-Path $cairo) {
-              Copy-Item $cairo (Join-Path '${{ runner.temp }}' 'libcairo-2.dll') -Force
-              Write-Host "cairo captured: $cairo"
-              # nm は MSYS2 の base に入っているとは限らない。無ければ現物だけ持ち帰る
-              # （手元の VS の dumpbin で解決できる）。
-              $nm = Join-Path '${{ steps.msys2.outputs.msys2-location }}' 'usr\bin\nm.exe'
-              if (Test-Path $nm) {
-                & $nm --defined-only $cairo | Set-Content -Path (Join-Path '${{ runner.temp }}' 'cairo-symbols.txt') -Encoding utf8
-                Write-Host "cairo symbols captured"
-              } else {
-                Write-Host "nm not present; shipping the DLL only"
-              }
-            } else {
-              Write-Host "::warning::libcairo-2.dll not found at $cairo"
-            }
-          } catch {
-            Write-Host "::warning::cairo capture failed: $($_.Exception.Message)"
-          }
+          # 旧構成にあった libcairo-2.dll の捕獲は MSYS2 と一緒に撤去した
+          # （build-and-test 側のコメントを参照。現物は発行物の同梱ランタイムに入っている）。
 
       # AOT 固有の破損（リフレクション欠落）は発行時ではなく**実行時**に出る。
       # PropertyGrid のプロパティ列挙と設定 JSON のソース生成がその危険域で、
@@ -538,7 +451,5 @@ jobs:
         with:
           name: crash-symbols-aot
           path: |
-            ${{ runner.temp }}/cairo-symbols.txt
-            ${{ runner.temp }}/libcairo-2.dll
             src/ProcessRecorderApp/bin/Release/win-x64/publish/aot/*.pdb
           if-no-files-found: ignore

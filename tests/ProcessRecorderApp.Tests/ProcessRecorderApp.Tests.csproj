@@ -48,7 +48,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Components\Components.csproj" />
-    <ProjectReference Include="..\..\src\GStreamer.GirCore\GStreamer.GirCore.csproj" />
+    <ProjectReference Include="..\..\src\GStreamer.GstSharpBundle\GStreamer.GstSharpBundle.csproj" />
     <ProjectReference Include="..\..\src\SingleInstance\SingleInstance.csproj" />
   </ItemGroup>
 

@@ -106,8 +106,8 @@
     ── release.yml が固めるのは publish ディレクトリの中身だけだからである。
     この ItemGroup を消すと **配布物からライセンス文が消える**（本体の MIT すら）。
 
-    同梱物（GStreamer）の第三者ライセンス文は配布形態によって要否が変わるので、
-    こちらではなく GStreamer.GirCore.csproj 側に、同梱の切り替えと同じ条件で書いてある。
+    同梱物（GStreamer）の第三者ライセンス文は、こちらではなく
+    GStreamer.GstSharpBundle.csproj 側に書いてある（ランタイム同梱と対にするため）。
   -->
   <ItemGroup>
     <Content Include="$(MSBuildThisFileDirectory)..\..\license.txt" Link="license.txt">
@@ -120,7 +120,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Controls\Controls.csproj" />
-    <ProjectReference Include="..\GStreamer.GirCore\GStreamer.GirCore.csproj" />
+    <ProjectReference Include="..\GStreamer.GstSharpBundle\GStreamer.GstSharpBundle.csproj" />
     <ProjectReference Include="..\SingleInstance\SingleInstance.csproj" />
   </ItemGroup>
 
@@ -176,4 +176,8 @@
           Condition="'%(RecursiveDir)' == 'en-us\' Or '%(RecursiveDir)' == 'ja-jp\'" />
     </ItemGroup>
   </Target>
+
+  <!-- 同梱 GStreamer ランタイムの複製は GStreamer.GstSharpBundle.csproj の None
+       （gstreamer\**、CopyToPublishDirectory 付き）が ProjectReference 経由で運ぶ。
+       こちら側に publish 用の細工は要らない。 -->
 </Project>

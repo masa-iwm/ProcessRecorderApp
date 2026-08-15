@@ -229,7 +229,7 @@ public class ThirdPartyLicenseTests
         string appProj = File.ReadAllText(
             RepositoryFiles.At("src", "ProcessRecorderApp", "ProcessRecorderApp.csproj"));
         string gstProj = File.ReadAllText(
-            RepositoryFiles.At("src", "GStreamer.GirCore", "GStreamer.GirCore.csproj"));
+            RepositoryFiles.At("src", "GStreamer.GstSharpBundle", "GStreamer.GstSharpBundle.csproj"));
         string release = File.ReadAllText(
             RepositoryFiles.At(".github", "workflows", "release.yml"));
 
@@ -242,17 +242,15 @@ public class ThirdPartyLicenseTests
                 missing.Add($"ProcessRecorderApp.csproj が {file} をコピーしていない");
         }
 
-        // 同梱物の分は同梱するときだけ入る。runtimes\** と同じ ItemGroup に居ること。
-        int bundleGroup = gstProj.IndexOf(
-            "<ItemGroup Condition=\"'$(BundleGStreamerRuntime)' == 'true'\">", StringComparison.Ordinal);
-        int bundleGroupEnd = bundleGroup < 0 ? -1 : gstProj.IndexOf("</ItemGroup>", bundleGroup, StringComparison.Ordinal);
-        if (bundleGroup < 0 || bundleGroupEnd < 0)
+        // 同梱物の分。GStreamer ランタイムは GstSharpBundle.Windows.X64 の contentFiles が
+        // 常に同梱するため、ライセンス文の複製も無条件の ItemGroup に居ること。
+        if (!gstProj.Contains(@"licenses\third-party", StringComparison.Ordinal))
         {
-            missing.Add("GStreamer.GirCore.csproj に BundleGStreamerRuntime 条件の ItemGroup が無い");
+            missing.Add(@"GStreamer.GstSharpBundle.csproj が licenses\third-party を複製していない");
         }
-        else if (!gstProj[bundleGroup..bundleGroupEnd].Contains(@"licenses\third-party", StringComparison.Ordinal))
+        else if (!gstProj.Contains("CopyToPublishDirectory", StringComparison.Ordinal))
         {
-            missing.Add(@"GStreamer.GirCore.csproj の同梱 ItemGroup が licenses\third-party を含めていない");
+            missing.Add("GStreamer.GstSharpBundle.csproj のライセンス文複製が publish へ届かない（CopyToPublishDirectory が無い）");
         }
 
         // 発行物と台帳の突き合わせ（「300 ファイル以上」の当て推量に戻さない）。

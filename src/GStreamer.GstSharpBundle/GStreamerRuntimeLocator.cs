@@ -22,57 +22,51 @@ public sealed record GStreamerRuntimeCandidate(string Source, string BinDirector
 /// GStreamer のネイティブ一式をどこから読むかを決める。
 ///
 /// <para>
-/// <b>優先順位（意図的な契約。<c>tools/Verify-GpuEncoders.ps1</c> が同じ順序を模倣する）</b>:
+/// <b>優先順位（意図的な契約）</b>:
 /// <list type="number">
 ///   <item>元の <c>PATH</c> に既に入っているディレクトリ</item>
-///   <item><c>%GSTREAMER_1_0_ROOT_MINGW_X86_64%\bin</c>（環境変数がある場合）</item>
+///   <item><c>%GSTREAMER_1_0_ROOT_MSVC_X86_64%\bin</c>（環境変数がある場合）</item>
 ///   <item>レジストリから見つけた GStreamer(MinGW) のインストール先の <c>bin</c></item>
-///   <item>MSYS2 の <c>ucrt64\bin</c></item>
-///   <item>同梱物 <c>&lt;exe&gt;\runtimes\&lt;RID&gt;\bin</c></item>
+///   <item>同梱物 <c>&lt;exe&gt;\gstreamer\&lt;RID&gt;\bin</c>
+///     （GstSharpBundle.Windows.X64 の contentFiles が出力ディレクトリへ複製する）</item>
 /// </list>
-/// 3 が要るのは実測による ── GStreamer(MinGW) を**ユーザー単位で**
-/// インストールすると、インストーラは <c>GSTREAMER_1_0_ROOT_MINGW_X86_64</c> も
-/// <c>PATH</c> も設定しない（実測: 1.28.6 を
-/// <c>%LOCALAPPDATA%\Programs\gstreamer\1.0\mingw_x86_64</c> へ導入した状態で、
-/// <c>HKLM\...\Session Manager\Environment</c> と <c>HKCU\Environment</c> の
-/// どちらにも存在しなかった）。2 だけに頼ると「入れたのに見つからない」になる。
+/// 3 の MinGW インストールは MSVC 命名の <see cref="CoreLibraryFileName"/> を持たないため
+/// <see cref="Select"/> では選ばれない。候補として残すのは、<c>gst.runtime</c> のログに
+/// 「MinGW 版しか無い環境で同梱物へ落ちた」ことを痕跡として出すため。
 /// </para>
 ///
 /// <para>
-/// <b>候補を全部 PATH に繋いではいけない。</b> 依存 DLL（<c>libglib-2.0-0.dll</c> 等）は
+/// <b>候補を全部 PATH に繋いではいけない。</b> 依存 DLL（<c>glib-2.0-0.dll</c> 等）は
 /// 「読み込み元 DLL のあるディレクトリ」ではなく <b>PATH の順</b>で解決されるため、
-/// 繋ぐと「gstreamer は同梱物・glib は MSYS2」のような<b>混成</b>が起こりうる。
+/// 繋ぐと「gstreamer は同梱物・glib は別インストール」のような<b>混成</b>が起こりうる。
 /// 症状はプラグインが黙って blacklist されることで、原因が見えない。
-/// GitHub ランナーには <b>GStreamer 抜きの MSYS2 が <c>C:\msys64</c> にプリインストール</b>
-/// されているので、これは机上の心配ではない。
 /// そこで<b>最初に <see cref="CoreLibraryFileName"/> を持っていた候補だけ</b>を選び、
 /// それを PATH の<b>先頭</b>へ置く。優先順位は上のとおりのまま保たれ、
 /// かつ選んだ根の <c>bin</c> が最優先になるので依存 DLL も同じ根から取れる。
 /// </para>
 ///
 /// <para>
-/// <b>公式 MSVC 版の GStreamer はこの経路からは見えない。</b>
-/// <see cref="ImportResolver"/> が要求するのは <c>libgstreamer-1.0-0.dll</c>（MinGW 命名）で、
-/// MSVC 版は <c>gstreamer-1.0-0.dll</c> と名前が違う。指示が MinGW / UCRT64 に
-/// 限定されているのはこのため。切り分けは <c>gst.runtime</c> のログで行う。
+/// <b>MinGW 命名の GStreamer はこの経路からは見えない。</b>
+/// <see cref="ImportResolver"/> と GstSharpBundle の DllImport が要求するのは
+/// <c>gstreamer-1.0-0.dll</c>（MSVC 命名）で、MinGW 版は <c>libgstreamer-1.0-0.dll</c> と
+/// 名前が違う。切り分けは <c>gst.runtime</c> のログで行う。
 /// </para>
 /// </summary>
 public static class GStreamerRuntimeLocator
 {
-    /// <summary>この経路が探している GStreamer 本体（MinGW 命名）。</summary>
-    public const string CoreLibraryFileName = "libgstreamer-1.0-0.dll";
+    /// <summary>この経路が探している GStreamer 本体（MSVC 命名）。</summary>
+    public const string CoreLibraryFileName = "gstreamer-1.0-0.dll";
 
     /// <summary>混成の検出に使う依存 DLL。本体と同じディレクトリから来ていなければ混成。</summary>
-    public const string GLibLibraryFileName = "libglib-2.0-0.dll";
+    public const string GLibLibraryFileName = "glib-2.0-0.dll";
 
-    /// <summary>GStreamer(MinGW) の公式インストーラが設定する環境変数。</summary>
-    public const string MinGwRootVariable = "GSTREAMER_1_0_ROOT_MINGW_X86_64";
+    /// <summary>GStreamer(MSVC) の公式インストーラが設定する環境変数。</summary>
+    public const string MsvcRootVariable = "GSTREAMER_1_0_ROOT_MSVC_X86_64";
 
     // --- Source の識別子。ログとテストが照合するのでリテラルを変えないこと ---
     public const string SourcePath = "PATH";
-    public const string SourceEnvironment = "env:" + MinGwRootVariable;
+    public const string SourceEnvironment = "env:" + MsvcRootVariable;
     public const string SourceRegistry = "registry:GStreamer-MinGW";
-    public const string SourceMsys2 = "msys2:ucrt64";
     public const string SourceBundled = "bundled";
 
     /// <summary>
@@ -95,18 +89,16 @@ public static class GStreamerRuntimeLocator
     /// 根が未指定（null / 空白）のものは飛ばす。
     /// </summary>
     public static IReadOnlyList<GStreamerRuntimeCandidate> BuildCandidates(
-        string? mingwRoot,
+        string? msvcRoot,
         string? installedGStreamerRoot,
-        string? msys2Root,
         string? appDirectory,
         string runtimeIdentifier)
     {
-        var candidates = new List<GStreamerRuntimeCandidate>(4);
+        var candidates = new List<GStreamerRuntimeCandidate>(3);
 
-        Add(SourceEnvironment, mingwRoot, "bin");
+        Add(SourceEnvironment, msvcRoot, "bin");
         Add(SourceRegistry, installedGStreamerRoot, "bin");
-        Add(SourceMsys2, msys2Root, "ucrt64", "bin");
-        Add(SourceBundled, appDirectory, "runtimes", runtimeIdentifier, "bin");
+        Add(SourceBundled, appDirectory, "gstreamer", runtimeIdentifier, "bin");
 
         return candidates;
 
@@ -175,17 +167,16 @@ public static class GStreamerRuntimeLocator
 
     /// <summary>
     /// 実在する候補だけを優先順に集める。レジストリ読みは失敗しても無視する
-    /// （<c>Gst.Functions.Init</c> より前に走るので、ここで例外を漏らすと起動が丸ごと死ぬ）。
+    /// （<c>Gst.Application.Init</c> より前に走るので、ここで例外を漏らすと起動が丸ごと死ぬ）。
     /// </summary>
     [SupportedOSPlatform("windows")]
     public static IReadOnlyList<GStreamerRuntimeCandidate> Discover(
         string? appDirectory, string runtimeIdentifier)
     {
-        string? mingwRoot = TryGet(() => Environment.GetEnvironmentVariable(MinGwRootVariable));
+        string? msvcRoot = TryGet(() => Environment.GetEnvironmentVariable(MsvcRootVariable));
         string? installedRoot = TryGet(FindInstalledGStreamerRoot);
-        string? msys2Root = TryGet(FindMsys2Root);
 
-        return BuildCandidates(mingwRoot, installedRoot, msys2Root, appDirectory, runtimeIdentifier)
+        return BuildCandidates(msvcRoot, installedRoot, appDirectory, runtimeIdentifier)
             .Where(c => Directory.Exists(c.BinDirectory))
             .ToArray();
 
@@ -204,38 +195,14 @@ public static class GStreamerRuntimeLocator
 
     /// <summary>
     /// レジストリのアンインストール情報から GStreamer(MinGW) のインストール先を探す。
-    /// <b>MSVC 版は拾わない</b>（DLL 名が違うので拾っても使えず、混乱を増やすだけ）。
+    /// MinGW インストールは MSVC 命名のセンチネルを満たさないため選ばれることは無いが、
+    /// 候補として <c>gst.runtime</c> のログに痕跡を残す（クラスの doc コメント参照）。
     /// </summary>
     [SupportedOSPlatform("windows")]
     public static string? FindInstalledGStreamerRoot()
         => FindInstallLocation(name =>
             name.StartsWith("GStreamer", StringComparison.OrdinalIgnoreCase)
             && name.Contains("MinGW", StringComparison.OrdinalIgnoreCase));
-
-    /// <summary>
-    /// MSYS2 のインストール先を探す。レジストリ → 既定の場所の順。
-    /// </summary>
-    [SupportedOSPlatform("windows")]
-    public static string? FindMsys2Root()
-    {
-        if (FindInstallLocation(name => name.StartsWith("MSYS2", StringComparison.OrdinalIgnoreCase))
-            is { } fromRegistry && Directory.Exists(fromRegistry))
-        {
-            return fromRegistry;
-        }
-
-        string?[] defaults =
-        [
-            Combine(Environment.GetEnvironmentVariable("SystemDrive"), "msys64"),
-            Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                    "Programs", "msys64"),
-        ];
-
-        return defaults.FirstOrDefault(d => d is not null && Directory.Exists(d));
-
-        static string? Combine(string? root, params string[] parts)
-            => string.IsNullOrWhiteSpace(root) ? null : Path.Combine([root, .. parts]);
-    }
 
     private static readonly string[] UninstallKeyPaths =
     [
@@ -302,7 +269,7 @@ public static class GStreamerRuntimeLocator
     ///
     /// <para>
     /// <b>「自分が選んだ候補」だけを出しても意味が無い。</b> それは自前の計算の写経であって、
-    /// 防ごうとしている混成そのものを見逃す。<b><c>Gst.Functions.Init</c> の後に呼び</b>、
+    /// 防ごうとしている混成そのものを見逃す。<b><c>Gst.Application.Init</c> の後に呼び</b>、
     /// 実際にロードされた本体と glib のパスを見て <c>mixed</c> を判定すること。
     /// </para>
     /// </summary>

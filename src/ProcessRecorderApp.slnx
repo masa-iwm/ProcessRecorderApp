@@ -8,7 +8,7 @@
   </Folder>
   <Project Path="Components/Components.csproj" Id="0c73b8c8-8850-4447-81ce-92a998943e78" />
   <Project Path="Controls/Controls.csproj" Id="6089b92c-df28-4759-a939-656eacd020af" />
-  <Project Path="GStreamer.GirCore/GStreamer.GirCore.csproj" Id="b5336e4f-7b60-411c-9704-7e82dc1c6563" />
+  <Project Path="GStreamer.GstSharpBundle/GStreamer.GstSharpBundle.csproj" Id="b5336e4f-7b60-411c-9704-7e82dc1c6563" />
   <Project Path="ProcessRecorderApp/ProcessRecorderApp.csproj" />
   <Project Path="SingleInstance/SingleInstance.csproj" Id="c1fe5f78-1db2-4872-8222-2858d71c85d2" />
   <Folder Name="/tests/">

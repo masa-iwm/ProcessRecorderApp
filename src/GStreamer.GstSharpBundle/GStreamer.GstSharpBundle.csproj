@@ -1,0 +1,93 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    GStreamer バインディングは GstSharpBundle（masa-iwm フォーク、GitHub Packages 発行、
+    GStreamer 1.28.4 参照）。ネイティブランタイムは GstSharpBundle.Windows.X64 の
+    contentFiles が出力ディレクトリの gstreamer\win-x64\ へ供給する（MSVC 命名）。
+
+    所有権の規律（フォークの MiniObject 修正はこの規律の上で成立する）:
+    - 所有権を得る呼び出し（TryPullSample / Bus.Pop 系 / Copy 生成）は必ず using/Dispose と
+      ペアにする。Dispose 漏れのファイナライザ経路は GLib メインループ前提で、
+      このアプリでは永久に実行されない。
+    - 借用参照（sample.Caps / sample.Buffer / msg.Src）は Dispose しない。
+
+    GtkSharp.GstreamerSharp.ObjectManager.Initialize() は Gst.Application.Init が呼ばない
+    ため Controller.StaticInitialize が必ず呼ぶ。未初期化だとキャストが無音で失敗する。
+
+    **この構成の発行物は配布しないこと** ── 同梱ランタイム（MSVC）は avcodec 等
+    FFmpeg 系 DLL を含み、THIRD-PARTY-NOTICES.md / licenses/third-party の台帳
+    （旧 MinGW 同梱ランタイム前提）がまだ実態を表していない。配布前に台帳の再構築が必須。
+  -->
+  <PropertyGroup>
+    <RootNamespace>ProcessRecorderApp.GStreamer</RootNamespace>
+    <AssemblyName>GStreamer</AssemblyName>
+    <!-- PRI 生成を切る。このプロジェクトに resw は無く、同梱 GStreamer ツリーを
+         インデックスした PRI ジェネレーターが `gstreamer-1.0` や `cp39-win_amd64` の
+         ハイフンをリソース修飾子として解釈し PRI249 で落ちる（実測）。
+         ゲートは MrtCore.PriGen.targets の _GenerateProjectPriFile の条件
+         '$(AppxGeneratePriEnabled)' == 'true'。
+         IncludeProjectPriFile も対で切る ── 既定 true のままだと GetMrtPackagingOutputs が
+         「GStreamer.pri がある」と参照元へ広告し、アプリ側の PRI 統合が
+         PRI252（File ... GStreamer.pri not found）で落ちる（実測）。 -->
+    <AppxGeneratePriEnabled>false</AppxGeneratePriEnabled>
+    <IncludeProjectPriFile>false</IncludeProjectPriFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <AdditionalFiles Include="NativeMethods.json" />
+    <AdditionalFiles Include="NativeMethods.txt" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      同梱 GStreamer ランタイム。GstSharpBundle.Windows.X64 の contentFiles を
+      **そのまま流し込んではいけない** ── contentFiles は Content 項目になり、
+      WinAppSDK の PRI 生成が gstreamer ツリーのパス（`gstreamer-1.0` 等）を
+      リソース修飾子として解釈して PRI249 で落ちる（実測）。
+      ExcludeAssets で止め、パッケージのパスから None として複製する
+      （旧 GirCore 構成の runtimes\** と同じ形。None なら PRI に拾われず、
+      CopyToPublishDirectory が ProjectReference 経由で publish まで届く）。
+    -->
+    <None Include="$(PkgGstSharpBundle_Windows_X64)\contentFiles\any\net8.0\gstreamer\**">
+      <Link>gstreamer\%(RecursiveDir)%(Filename)%(Extension)</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+      <ExcludeFromSingleFile>true</ExcludeFromSingleFile>
+    </None>
+    <!--
+      同梱物のライセンス文。ランタイムは上の ItemGroup が常に同梱するため
+      無条件で複製する（旧 GirCore 構成の BundleGStreamerRuntime 条件は撤去）。
+      中身の過不足は ThirdPartyLicenseTests(L1) が見る。
+    -->
+    <None Include="$(MSBuildThisFileDirectory)..\..\licenses\third-party\**">
+      <Link>licenses\third-party\%(RecursiveDir)%(Filename)%(Extension)</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+      <ExcludeFromSingleFile>true</ExcludeFromSingleFile>
+    </None>
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Components\Components.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- BusMessageThrottle（internal）の L1 テスト用 -->
+    <InternalsVisibleTo Include="ProcessRecorderApp.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Windows.SDK.BuildTools" />
+    <PackageReference Include="Microsoft.WindowsAppSDK" />
+    <PackageReference Include="CommunityToolkit.Mvvm" />
+    <PackageReference Include="GstSharpBundle" />
+    <!-- contentFiles を除外する理由と複製の仕組みは上の gstreamer\** の ItemGroup を参照。
+         GeneratePathProperty が $(PkgGstSharpBundle_Windows_X64) を供給する。 -->
+    <PackageReference Include="GstSharpBundle.Windows.X64"
+                      ExcludeAssets="contentFiles" GeneratePathProperty="true" />
+    <PackageReference Include="Microsoft.Windows.CsWin32">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+  </ItemGroup>
+</Project>

@@ -73,13 +73,13 @@ public class GpuVerifyScriptParsingTests
     public void TheDefaultInstallLocationIsReadWhole()
     {
         string line = @"2026-07-31 10:00:00.000 INFO gst.runtime selected=PATH "
-            + @"dir=C:\Program Files\gstreamer\1.0\mingw_x86_64\bin "
-            + @"core=C:\Program Files\gstreamer\1.0\mingw_x86_64\bin\libgstreamer-1.0-0.dll mixed=False";
+            + @"dir=C:\Program Files\gstreamer\1.0\msvc_x86_64\bin "
+            + @"core=C:\Program Files\gstreamer\1.0\msvc_x86_64\bin\gstreamer-1.0-0.dll mixed=False";
 
         Match m = PatternFromScript().Match(line);
 
         Assert.True(m.Success, "既定のインストール先の行から dir= を読めない。");
-        Assert.Equal(@"C:\Program Files\gstreamer\1.0\mingw_x86_64\bin", m.Groups[1].Value.Trim());
+        Assert.Equal(@"C:\Program Files\gstreamer\1.0\msvc_x86_64\bin", m.Groups[1].Value.Trim());
         // 次のフィールドまで飲み込んでいないこと（逆向きの壊れ方）。
         Assert.DoesNotContain("core=", m.Groups[1].Value, StringComparison.Ordinal);
     }
@@ -92,11 +92,11 @@ public class GpuVerifyScriptParsingTests
     public void APathWithoutSpacesStillReadsTheSameWay()
     {
         string line = @"2026-07-31 10:00:00.000 INFO gst.runtime selected=bundled "
-            + @"dir=D:\app\runtimes\win-x64\bin core=D:\app\runtimes\win-x64\bin\libgstreamer-1.0-0.dll mixed=False";
+            + @"dir=D:\app\gstreamer\win-x64\bin core=D:\app\gstreamer\win-x64\bin\gstreamer-1.0-0.dll mixed=False";
 
         Match m = PatternFromScript().Match(line);
 
         Assert.True(m.Success, "空白の無いパスの行から dir= を読めない。");
-        Assert.Equal(@"D:\app\runtimes\win-x64\bin", m.Groups[1].Value.Trim());
+        Assert.Equal(@"D:\app\gstreamer\win-x64\bin", m.Groups[1].Value.Trim());
     }
 }

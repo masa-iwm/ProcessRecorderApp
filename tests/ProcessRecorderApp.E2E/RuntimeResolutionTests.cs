@@ -7,12 +7,12 @@ namespace ProcessRecorderApp.E2E;
 /// GStreamer のネイティブ一式が<b>どこから読まれたか</b>（<c>activity.log</c> の <c>gst.runtime</c>）。
 ///
 /// <para>
-/// runtimes をリポジトリから外したので、本体は
-/// 「元の PATH → <c>GSTREAMER_1_0_ROOT_MINGW_X86_64</c> → レジストリの GStreamer(MinGW)
-/// → MSYS2 の ucrt64 → 同梱物」のいずれかから来る。**正解は環境ごとに違う**
-/// ── 開発機は MinGW インストール、CI は MSYS2、同梱リリースは <c>runtimes/</c>。
-/// そのため<b>特定のディレクトリを焼き込まない</b>。焼き込むとどこかで必ず
-/// 偽の赤になるか、逆に何も検証しない緑になる。
+/// 本体は「元の PATH → <c>GSTREAMER_1_0_ROOT_MSVC_X86_64</c> → レジストリの
+/// GStreamer(MinGW) → 同梱物（発行物の <c>gstreamer\win-x64\bin</c>）」の
+/// いずれかから来る。**正解は環境ごとに違う** ── MSVC 版のインストールがあれば
+/// それが勝ち、無ければ同梱物へ落ちる（MinGW インストールは MSVC 命名の本体を
+/// 持たないので選ばれない）。そのため<b>特定のディレクトリを焼き込まない</b>。
+/// 焼き込むとどこかで必ず偽の赤になるか、逆に何も検証しない緑になる。
 /// </para>
 ///
 /// <para>
@@ -21,7 +21,7 @@ namespace ProcessRecorderApp.E2E;
 ///   <item>解決先が1つに決まっていること（<c>selected</c> が <c>(none)</c> でない）</item>
 ///   <item><b>選んだディレクトリから実際にロードされていること</b>
 ///     ── 「選んだつもり」と「Windows がロードしたもの」は一致するとは限らない</item>
-///   <item><b><c>libgstreamer-1.0-0.dll</c> と <c>libglib-2.0-0.dll</c> が同じ根から来ていること</b>
+///   <item><b><c>gstreamer-1.0-0.dll</c> と <c>glib-2.0-0.dll</c> が同じ根から来ていること</b>
 ///     （<c>mixed=False</c>）。候補を全部 PATH に繋ぐ実装に戻すとここが落ちる。
 ///     混成は「プラグインが黙って blacklist される」形で出るので、
 ///     この表明が無いと原因に辿り着けない</item>
@@ -39,9 +39,8 @@ public sealed class RuntimeResolutionTests(PublishedApp app)
     private static readonly string[] KnownSources =
     [
         "PATH",
-        "env:GSTREAMER_1_0_ROOT_MINGW_X86_64",
+        "env:GSTREAMER_1_0_ROOT_MSVC_X86_64",
         "registry:GStreamer-MinGW",
-        "msys2:ucrt64",
         "bundled",
     ];
 

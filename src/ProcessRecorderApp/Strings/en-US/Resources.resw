@@ -588,7 +588,7 @@
     <value>(all recorders)</value>
   </data>
 
-  <!-- GStreamer.GirCore/SrcPipelineBuilder.cs: Pipeline Builder のソースカタログ -->
+  <!-- GStreamer.GstSharpBundle/SrcPipelineBuilder.cs: Pipeline Builder のソースカタログ -->
   <data name="Src_ScreenCapture_DisplayName" xml:space="preserve">
     <value>Screen capture (d3d12screencapturesrc)</value>
   </data>

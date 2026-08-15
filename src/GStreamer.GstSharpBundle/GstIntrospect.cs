@@ -23,11 +23,11 @@ public sealed class VideoDeviceInfo
     public string Path { get; init; } = "";
 
     /// <summary>デバイスが提供する format 値(例: NV12)。</summary>
-    public IReadOnlyList<string> Formats { get; init; } = Array.Empty<string>();
+    public IReadOnlyList<string> Formats { get; init; } = [];
     /// <summary>デバイスが提供する解像度(例: 1920x1080)。</summary>
-    public IReadOnlyList<string> Resolutions { get; init; } = Array.Empty<string>();
+    public IReadOnlyList<string> Resolutions { get; init; } = [];
     /// <summary>デバイスが提供するフレームレート(例: 30/1)。</summary>
-    public IReadOnlyList<string> Framerates { get; init; } = Array.Empty<string>();
+    public IReadOnlyList<string> Framerates { get; init; } = [];
 }
 
 /// <summary>
