@@ -327,6 +327,13 @@ public partial class EventRecorder : ObservableObject, IDisposable
     /// 読みだけで回すこと。
     /// </para>
     /// <para>
+    /// <b>バスの sync-message ハンドラもこのロックを取らない。</b>
+    /// ハンドラはメッセージを post した要素自身のストリーミングスレッドで走るので、
+    /// ここで <c>_stateLock</c> を待つと、そのロックを保持している <see cref="Close"/> の
+    /// <c>SetState(Null)</c>（当の要素の停止を待つ）と組んでデッドロックする。
+    /// ハンドラが取ってよいのは <see cref="_busLock"/> だけ。
+    /// </para>
+    /// <para>
     /// <b><see cref="StopAsync"/> がプールへ投げる排出タスクもこのロックを取らない。</b>
     /// <see cref="Close"/> はロックを保持したままその完了を待つ（<see cref="WaitForPendingStop"/>）
     /// ため、排出側がロックを取るとデッドロックする。排出が触るのはネイティブの
@@ -334,6 +341,63 @@ public partial class EventRecorder : ObservableObject, IDisposable
     /// </para>
     /// </summary>
     private readonly object _stateLock = new();
+
+    /// <summary>
+    /// バスの sync-message ハンドラの直列化と、購読の取り付けゲートを兼ねるロック。
+    ///
+    /// <para>
+    /// <b>ロック順序は <c>_stateLock</c> → <see cref="_busLock"/> → <c>_restartLock</c> の
+    /// 一方向のみ。</b> 逆向きの辺は存在しない ── <see cref="CancelPendingRestart"/> は
+    /// <c>_stateLock</c> → <c>_restartLock</c> で <see cref="_busLock"/> を挟まず、
+    /// <see cref="RestartLoopAsync"/> は <c>_restartLock</c> を離してから
+    /// <see cref="Initialize"/>（<c>_stateLock</c> → <see cref="_busLock"/>）へ進む。
+    /// </para>
+    /// <para>
+    /// <b>このロックを保持したまま <c>SetState</c> を呼んではいけない。</b>
+    /// ハンドラは post 元＝当の要素のストリーミングスレッドで走るため、
+    /// そこから状態遷移を掛けると自スレッドの復帰を待って固まる。
+    /// 状態遷移が要るときはプールスレッドへ逃がすこと。
+    /// </para>
+    /// <para>
+    /// <b>取り付けのゲートでもある。</b> <c>gst_bus_post</c> は sync-message を発火してから
+    /// キューへ積むので、このロックの下で「購読 → キューの汲み切り」を行えば、
+    /// 汲み切ったバックログとロック待ちの新着は重複も取りこぼしもしない。
+    /// </para>
+    /// </summary>
+    private readonly object _busLock = new();
+
+    /// <summary>
+    /// sink バスの sync-message ハンドラ（<c>-=</c> に同一のデリゲート実体が要るので保持する）。
+    /// 未購読なら <see langword="null"/>。
+    /// </summary>
+    private EventHandler<Bus.SyncMessageSignalArgs>? _sinkBusHandler;
+
+    /// <summary>src バスの sync-message ハンドラ（<see cref="_sinkBusHandler"/> と同じ理由で保持する）。</summary>
+    private EventHandler<Bus.SyncMessageSignalArgs>? _srcBusHandler;
+
+    /// <summary>
+    /// 停止の排出待ちが受け取る結果。<b>ラッパーではなく写した値を運ぶ</b> ──
+    /// sync-message の <c>Message</c> はハンドラの実行中しか有効でないので、
+    /// <c>ParseError</c> のマネージド値（Dispose 不要）だけを取り出して渡す。
+    /// </summary>
+    private readonly record struct StopDrainResult(StopDrainSignal Signal, string? ErrorMessage, string? Debug);
+
+    /// <summary>
+    /// 停止の排出待ち（<see cref="StopDrainAndFinalize"/> が武装し、src バスの
+    /// sync-message ハンドラが完了させる）。武装していなければ <see langword="null"/>。
+    ///
+    /// <para>
+    /// <b>読み書きは必ず <see cref="_busLock"/> の下で行う。</b> 武装は
+    /// <c>EndOfStream()</c> より前に済ませること ── 後にすると、EOS より先に届く
+    /// Error を取りこぼす。
+    /// </para>
+    /// <para>
+    /// <b>生成は必ず <c>RunContinuationsAsynchronously</c> つきで、待ちは同期
+    /// <c>Wait(timeout)</c>。</b> どちらかを外すと継続が post 元のストリーミングスレッドで
+    /// インライン実行され、<c>finally</c> の <c>SetState(Null)</c> が自スレッドで走って固まる。
+    /// </para>
+    /// </summary>
+    private System.Threading.Tasks.TaskCompletionSource<StopDrainResult>? _stopDrain;
 
     [ObservableProperty]
     public partial EventRecordingType Type { get; set; }
@@ -1123,6 +1187,17 @@ public partial class EventRecorder : ObservableObject, IDisposable
 
             WaitUntilPlaying(_sinkPipeline);
 
+            // **バスの購読はここで 1 回だけ。** src 側は録画中しか動かないが、
+            // GstPipeline は READY→NULL でバスを flushing 化する（auto-flush-bus 既定 true）ので、
+            // 停止中の src バスには post が届かず残骸も掃除される ── 録画のたびに
+            // 掛け直す必要は無い。
+            // **PLAYING 到達より後に置く。** 候補フォールバックで落ちた候補のメッセージが
+            // recorder.error として残らない現行の挙動をここで保つ。
+            if (_sinkBus is { } sinkBus)
+                _sinkBusHandler = SubscribeBus(sinkBus, "sink", _sinkThrottles);
+            if (_srcBus is { } srcBus)
+                _srcBusHandler = SubscribeBus(srcBus, "src", _srcThrottles);
+
             // appsrc のキャップスはここでは設定しない。_appSink.GetCaps() は appsink に
             // 設定された（テンプレート由来の、しばしば ANY な）キャップスであって、
             // 実際にネゴシエートされた結果ではないため。
@@ -1520,9 +1595,17 @@ public partial class EventRecorder : ObservableObject, IDisposable
             _pullPreviewThread = null;
             _pullSampleThread = null;
 
-            // pull スレッドが止まるまでの間も DrainBuses はバスを汲んでいるので、
-            // teardown 中のエラーが ScheduleRestart で新しい復帰を積んでいることがある
-            // ── 上の CancelPendingRestart はそれを知らない。Join の後にもう一度畳む。
+            // **バスの購読はパイプラインを落とす前に外す。** 残したまま Null へ落とすと、
+            // 遷移中に出た Error がストリーミングスレッドでハンドラを起こし、
+            // 破棄の途中で ScheduleRestart が積まれる。
+            // 参照を落とす前に外すこと ── 解除の鍵はバスのラッパー実体そのもの。
+            UnsubscribeBus(_srcBus, _srcBusHandler);
+            _srcBusHandler = null;
+            UnsubscribeBus(_sinkBus, _sinkBusHandler);
+            _sinkBusHandler = null;
+
+            // 購読を外すまでの間にハンドラが新しい復帰を積んでいることがある
+            // ── 上の CancelPendingRestart はそれを知らない。ここでもう一度畳む。
             // 畳み残すと、直後の再初期化（Initialize は必ず Close を先に呼ぶ）で
             // _isAlive が立ち直った後に、旧セッション由来の復帰が走り出す。
             CancelPendingRestart();
@@ -1561,6 +1644,7 @@ public partial class EventRecorder : ObservableObject, IDisposable
             }
             else
             {
+                System.Diagnostics.Debug.Assert(!Monitor.IsEntered(_busLock), "SetState must not run under _busLock");
                 _srcPipeline?.SetState(State.Null);
                 // 要素・バスはインターンされた GObject ラッパーなので Dispose しない
                 // （プロセス共通の参照を持ち、解放はランタイム側の責務）。参照だけ落とす。
@@ -1581,11 +1665,12 @@ public partial class EventRecorder : ObservableObject, IDisposable
             // フラッシュして、孤児スレッドがブロックしている TryPullSample を返させる
             // 唯一の信号であり、止めなければキャプチャとエンコードが誰にも管理されないまま
             // 走り続ける。状態遷移はスレッドセーフで、Dispose とは別物。
+            System.Diagnostics.Debug.Assert(!Monitor.IsEntered(_busLock), "SetState must not run under _busLock");
             _sinkPipeline?.SetState(State.Null);
             if (!pullStopped)
             {
-                // TryPullSample / DrainBus が sink 側ネイティブをまだ触っている可能性がある
-                // ので、パイプラインも Dispose せず参照だけ落とす（recorder.leak は上で記録済み）。
+                // TryPullSample が sink 側ネイティブをまだ触っている可能性があるので、
+                // パイプラインも Dispose せず参照だけ落とす（recorder.leak は上で記録済み）。
                 _previewSink = null;
                 _appSink = null;
                 _continuousSink = null;
@@ -1711,7 +1796,10 @@ public partial class EventRecorder : ObservableObject, IDisposable
         {
             try
             {
-                DrainBuses();
+                // GObject ラッパーのファイナライザが積んだ解放要求を消化する。
+                // このアプリは GMainLoop を回さないので、ここで消化しないと誰も消化しない
+                // ── バスは sync-message で受けるようになったので、定常の排水点はここだけ。
+                global::GstSharp.DrainPendingReleases();
 
                 using var sample = _appSink?.TryPullSample(ClockTime.FromMilliseconds(100));
                 if (sample is null)
@@ -1838,65 +1926,100 @@ public partial class EventRecorder : ObservableObject, IDisposable
     }
 
     /// <summary>
-    /// 両方のバスに溜まったメッセージを**空になるまで**取り出して記録する。
+    /// 1 本のバスを sync-message で購読し、取り付け直前までに溜まっていた分を汲み切る。
+    /// 返り値は解除に使うハンドラ（<c>-=</c> には同一のデリゲート実体が要る）。
     ///
     /// <para>
-    /// <b>1周につき1件ではなく汲み切る。</b> GstBus のキューは既定で無制限なので、
-    /// 洪水（<c>h264parse</c> が捨てた NAL ごとに Warning を出す等）の最中に
-    /// 1周1件だと 10 件/秒しか抜けず、キューが際限なく積み上がる。
+    /// <b>このアプリでは <c>Bus.Message</c> / <c>AddWatch</c> は使えない</b>
+    /// ── どちらも GMainLoop から配送されるが、GMainLoop を回していないので発火しない。
+    /// メインループ無しで push 型に受けられるのは sync-message だけである。
     /// </para>
-    ///
     /// <para>
-    /// <b>EOS の担当分けが重要。</b> <c>_srcBus</c> の <c>Eos</c> は
-    /// <see cref="StopDrainAndFinalize"/> の専有で、ここでは**読まない**
-    /// ── ここで先に取ってしまうと停止側が EOS を永久に（有界化後はタイムアウトまで）待ち、
-    /// 「たまに停止が数秒かかる」という原因の追いにくい症状になる。
-    /// <c>_sinkBus</c> の EOS は誰も待っていないので拾ってよい。
+    /// <b>取り付けと汲み切りを <see cref="_busLock"/> の下でまとめて行う。</b>
+    /// <c>gst_bus_post</c> は「sync-message を発火 → その後キューへ積む」の順なので、
+    /// ロック中に汲めるのは取り付け前の残り物だけ、ロック待ちの新着は必ずハンドラが受ける
+    /// ── 重複も取りこぼしも生じない。
+    /// </para>
+    /// <para>
+    /// <c>EnableSyncMessageEmission</c> は refcount なので、解除では必ず
+    /// <c>DisableSyncMessageEmission</c> と対にすること（<see cref="UnsubscribeBus"/>）。
     /// </para>
     /// </summary>
-    private void DrainBuses()
+    private EventHandler<Bus.SyncMessageSignalArgs> SubscribeBus(Bus bus, string busName, BusThrottles throttles)
     {
-        // GObject ラッパーのファイナライザが積んだ解放要求を消化する。
-        // このアプリは GMainLoop を回さないので、ここで消化しないと誰も消化しない
-        // （バスのポーリングと同じ周期で1回）。
-        global::GstSharp.DrainPendingReleases();
+        void Handler(object? sender, Bus.SyncMessageSignalArgs args)
+        {
+            // **例外を漏らさない。** ここはネイティブのトランポリンの中であり、
+            // 抜けた例外は GStreamer 側へ持ち出せない。
+            try
+            {
+                lock (_busLock)
+                {
+                    // args.Message はハンドラの実行中だけ有効（バインディングが破棄する）。
+                    // Dispose してはいけない。
+                    HandleBusMessage(args.Message, busName, throttles);
 
-        // sink 側: 常時稼働。EOS を待つ者がいないので Eos も拾う。
-        DrainBus(_sinkBus, MessageType.Error | MessageType.Warning | MessageType.Eos, _sinkThrottles, "sink");
+                    // **残骸の回収。** 発火はキュー投入より前なので、キューに居るのは
+                    // 既に別の発火で処理し終えたメッセージだけ。汲んで捨てないと
+                    // キューが際限なく伸びる（GstBus のキューは無制限）。
+                    // Pop の戻りは所有権つきなので必ず解放する。
+                    while (bus.Pop() is { } stale)
+                        stale.Dispose();
+                }
+            }
+            catch (Exception ex)
+            {
+                Log(DebugLevel.Error, $"GstEventRecorder sync-message handler failed! bus={busName}\n{ex}");
+            }
+        }
 
-        // src 側: 録画中のみ存在する。ここで拾えるのが「録画中の filesink / mp4mux の障害」
-        // ＝ディスク満杯・書込権限なし。
-        //
-        // **停止処理中は src バスに触らない。** StopDrainAndFinalize は EOS を送ってから
-        // Eos|Error を待つが、ここが同じバスを汲んでいると**その Eos / Error を先に取ってしまい**、
-        // 停止側はタイムアウトまで（有界化する前は永久に）待つことになる。
-        // 実際にこれで停止スレッドが1本ハングし、recording.stop が出ず MP4 も確定しなかった。
-        // 「録画中に src エラー → 中止」の経路は Error を検出した直後にここへ入るため、
-        // この分担が無いと最も検出したい状況で必ず踏む。
-        if (!_srcBusOwnedByStop)
-            DrainBus(_srcBus, MessageType.Error | MessageType.Warning, _srcThrottles, "src");
+        EventHandler<Bus.SyncMessageSignalArgs> handler = Handler;
+        lock (_busLock)
+        {
+            bus.EnableSyncMessageEmission();
+            bus.SyncMessage += handler;
+
+            try
+            {
+                while (bus.Pop() is { } backlog)
+                {
+                    using (backlog)
+                        HandleBusMessage(backlog, busName, throttles);
+                }
+            }
+            catch (Exception ex)
+            {
+                // バックログの処理の失敗で初期化そのものを落とさない
+                // （購読は成立しているので、以後のメッセージは受けられる）。
+                Log(DebugLevel.Error, $"GstEventRecorder bus backlog failed! bus={busName}\n{ex}");
+            }
+        }
+        return handler;
     }
 
-    private void DrainBus(Bus? bus, MessageType filter, BusThrottles throttles, string busName)
+    /// <summary>
+    /// バスの購読を解除する。<b><see cref="_busLock"/> を保持せずに呼ぶこと</b>
+    /// ── 解除は実行中のハンドラと競合しうる。
+    /// <c>EnableSyncMessageEmission</c> は refcount なので Disable と対で呼ぶ。
+    /// </summary>
+    private static void UnsubscribeBus(Bus? bus, EventHandler<Bus.SyncMessageSignalArgs>? handler)
     {
-        if (bus is null)
+        if (bus is null || handler is null)
             return;
 
-        // _isAlive も脱出条件に含める ── 「空になるまで汲む」は洪水対策として必須だが、
-        // GstBus のキューは無制限なので、洪水の最中に Close が来た場合はここが有界でないと
-        // Join(5000) に間に合わず、破棄が「リークして手放す」側へ倒れる。
-        while (_isAlive)
-        {
-            var msg = bus.PopFiltered(filter);
-            if (msg is null)
-                return;
-
-            using (msg)
-                HandleBusMessage(msg, busName, throttles);
-        }
+        bus.SyncMessage -= handler;
+        bus.DisableSyncMessageEmission();
     }
 
-    /// <summary>バスメッセージ1件を分類して記録し、必要なら復帰・停止へつなぐ。</summary>
+    /// <summary>
+    /// バスメッセージ1件を分類して記録し、必要なら復帰・停止へつなぐ。
+    /// <b>呼び出しは必ず <see cref="_busLock"/> の下で行う</b>（<see cref="_stopDrain"/> を読むため）。
+    ///
+    /// <para>
+    /// <b>ここから <c>SetState</c> を呼んではいけない。</b> post 元＝当の要素の
+    /// ストリーミングスレッドで走るので、状態遷移はプールスレッドへ逃がすこと。
+    /// </para>
+    /// </summary>
     private void HandleBusMessage(Message msg, string busName, BusThrottles throttles)
     {
         // メッセージの発信元。インターンされた GObject ラッパーで、ラッパー自身が
@@ -1913,6 +2036,17 @@ public partial class EventRecorder : ObservableObject, IDisposable
                     // GException はただの例外オブジェクトなので解放は不要。
                     var (error, debug) = msg.ParseError();
                     string message = error.Message;
+
+                    // **停止の排出待ちが武装中の src Error は、ここでは報告しない。**
+                    // 報告するのは停止側（recording.stop error）1 箇所だけ ──
+                    // 両方から出すと同じ障害が recorder.error / recording.aborted と
+                    // recording.stop error の二重になる。
+                    if (busName == "src" && _stopDrain is { } draining)
+                    {
+                        draining.TrySetResult(new(StopDrainSignal.Error, message, debug));
+                        break;
+                    }
+
                     string detail = $"recorder='{Name}' bus={busName} element='{elementName}' {message} debug={debug}";
 
                     // Error も洪水になる ── 「Error は1件ごとに意味があるので抑制しない」は
@@ -1952,7 +2086,15 @@ public partial class EventRecorder : ObservableObject, IDisposable
                         if (srcObject is GstBase.BaseSrc erroredSource)
                         {
                             _errorSinkSrc = erroredSource;
-                            _errorSinkSrc.SetState(State.Ready);
+
+                            // **状態遷移はプールスレッドへ逃がす。** ここは post 元＝
+                            // まさにこの要素のストリーミングスレッドなので、インラインで
+                            // Ready へ落とすと自スレッドの復帰を待って固まる。
+                            System.Threading.Tasks.Task.Run(() =>
+                            {
+                                try { erroredSource.SetState(State.Ready); }
+                                catch (Exception ex) { Log(DebugLevel.Error, $"resetting '{elementName}' to Ready failed\n{ex}"); }
+                            });
                         }
                         ScheduleRestart(elementName);
                     }
@@ -1983,10 +2125,17 @@ public partial class EventRecorder : ObservableObject, IDisposable
                 }
 
             case MessageType.Eos:
+                // src 側の EOS を待つのは停止の排出だけ。武装していなければ黙って捨てる
+                // （recorder.eos は sink バス専用の印であって、停止のたびに出るものではない）。
+                if (busName == "src")
+                {
+                    _stopDrain?.TrySetResult(new(StopDrainSignal.Eos, null, null));
+                    break;
+                }
+
                 // sink 側の EOS は「このパイプラインはもう戻せない」という印
                 // （<see cref="_sinkSawEos"/>）。次の復帰は要素単位を飛ばして作り直す。
-                if (string.Equals(busName, "sink", StringComparison.Ordinal))
-                    _sinkSawEos = true;
+                _sinkSawEos = true;
                 Components.ActivityLog.Info("recorder.eos", $"recorder='{Name}' bus={busName} element='{elementName}'");
                 break;
         }
@@ -2003,17 +2152,18 @@ public partial class EventRecorder : ObservableObject, IDisposable
 
     /// <summary>
     /// 録画中に src 側の障害を検出したときの停止要求。
-    /// <b>pull スレッドから <see cref="Stop"/> を直接呼んではいけない。</b>
+    /// <b>バスのハンドラから <see cref="Stop"/> を直接呼んではいけない。</b>
     /// プールスレッドへ逃がし、そちらで通常の停止経路を通す。
     ///
     /// <para>
     /// 理由は2つあり、排出がプールで走る現在の形でも<b>この Task.Run は外せない</b>：
     /// </para>
     /// <list type="number">
-    /// <item><see cref="StopAsync"/> は <c>_stateLock</c> を取る。<see cref="Close"/> は
-    /// そのロックを保持したまま <c>_pullSampleThread.Join(5000)</c> するので、
-    /// pull スレッドがロックを待つとデッドロックする（<c>_stateLock</c> の注記を参照）。</item>
-    /// <item>排出は同じ <c>_srcBus</c> の EOS を待つ。pull スレッド上で待つと自己デッドロックする。</item>
+    /// <item><see cref="StopAsync"/> は <c>_stateLock</c> を取る。ハンドラは
+    /// <see cref="_busLock"/> を保持しているので、そこから <c>_stateLock</c> を取ると
+    /// ロック順序（<c>_stateLock</c> → <see cref="_busLock"/>）が逆向きになる。</item>
+    /// <item>排出は同じ <c>_srcBus</c> の EOS を待つ。ハンドラは post 元＝当のパイプラインの
+    /// ストリーミングスレッドで走るので、そこで待つと EOS を運ぶスレッドを自分で止めることになる。</item>
     /// </list>
     /// </summary>
     private void RequestAbortRecording()
@@ -2554,7 +2704,7 @@ public partial class EventRecorder : ObservableObject, IDisposable
     /// <para>
     /// <b>それでもこの待ちは有界にする。</b> 「排出は <see cref="StopFinalizeTimeoutMs"/> で
     /// 有界だから必ず返る」は<b>成り立たない</b> ── 有界なのは
-    /// <c>TimedPopFiltered</c> だけで、<c>finally</c> の <c>SetState(State.Null)</c> は
+    /// EOS / Error の待ちだけで、<c>finally</c> の <c>SetState(State.Null)</c> は
     /// mux が詰まると無期限に掛かりうる（まさに <see cref="StopFinalizeTimeoutMs"/> が
     /// 存在する理由の状況）。無期限に待てば終了しなくなり、諦めて破棄すれば
     /// 使用中のオブジェクトを壊す。
@@ -2581,12 +2731,6 @@ public partial class EventRecorder : ObservableObject, IDisposable
             + $"{StopFinalizeTimeoutMs + StopFinalizeSlackMs}ms; abandoning the src pipeline without disposing it");
         return false;
     }
-
-    /// <summary>
-    /// 停止処理が <c>_srcBus</c> を専有している間 true。
-    /// <see cref="DrainBuses"/> はこの間 src バスに触らない（詳細はそちらのコメント）。
-    /// </summary>
-    private volatile bool _srcBusOwnedByStop;
 
     /// <summary>
     /// 排出待ちの既定上限(ms)。ランチャーの結果待ちは 60 秒なので、
@@ -2630,14 +2774,25 @@ public partial class EventRecorder : ObservableObject, IDisposable
     /// 呼び出し側で <c>_IsRecording</c> を false にしてから呼ぶこと。
     ///
     /// <para>
-    /// <b>排出待ちは有界。</b> <c>ClockTime.None</c>（無限待ち）にすると、mux が詰まったとき
+    /// <b>排出待ちは有界。</b> 無限待ちにすると、mux が詰まったとき
     /// 呼び出しスレッド（UI スレッドや CLI 経路）ごと永久にハングする。
     /// タイムアウトしても <c>SetState(Null)</c> は必ず実行し、結果を <c>result=</c> に残す。
+    /// </para>
+    /// <para>
+    /// <b>待ちは同期の <c>Wait</c> にする（<c>await</c> にしない）。</b>
+    /// 完了させるのは src バスの sync-message ハンドラ＝当のパイプラインの
+    /// ストリーミングスレッドなので、継続がそこでインライン実行されると
+    /// <c>finally</c> の <c>SetState(Null)</c> が自スレッドで走って固まる。
     /// </para>
     /// </summary>
     private void StopDrainAndFinalize(long elapsedMs)
     {
-        _srcBusOwnedByStop = true;
+        // **武装は EndOfStream() より前。** 後にすると、EOS より先に届く Error を取りこぼす。
+        var drain = new System.Threading.Tasks.TaskCompletionSource<StopDrainResult>(
+            System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously);
+        lock (_busLock)
+            _stopDrain = drain;
+
         string result = "ok";
 
         // **src パイプラインの状態は EOS を送る「前」に、待たずに読む。**
@@ -2654,12 +2809,10 @@ public partial class EventRecorder : ObservableObject, IDisposable
         {
             _appSrc?.EndOfStream();
 
-            var timeout = ClockTime.FromMilliseconds(Math.Max(0, StopFinalizeTimeoutMs));
-            using var msg = _srcBus?.TimedPopFiltered(timeout, MessageType.Eos | MessageType.Error);
-
-            StopDrainSignal signal = msg is null ? StopDrainSignal.Timeout
-                : msg.Type == MessageType.Error ? StopDrainSignal.Error
-                : StopDrainSignal.Eos;
+            StopDrainResult drained = drain.Task.Wait(Math.Max(0, StopFinalizeTimeoutMs))
+                ? drain.Task.Result
+                : new(StopDrainSignal.Timeout, null, null);
+            StopDrainSignal signal = drained.Signal;
 
             if (signal == StopDrainSignal.Timeout)
             {
@@ -2673,8 +2826,7 @@ public partial class EventRecorder : ObservableObject, IDisposable
             }
             else if (signal == StopDrainSignal.Error)
             {
-                var (error, debug) = msg!.ParseError();
-                string detail = $"recorder='{Name}' file='{LastFilename}' {error.Message} debug={debug}";
+                string detail = $"recorder='{Name}' file='{LastFilename}' {drained.ErrorMessage} debug={drained.Debug}";
                 Components.ActivityLog.Error("recording.stop error", detail);
                 LastError = detail;
             }
@@ -2716,9 +2868,14 @@ public partial class EventRecorder : ObservableObject, IDisposable
         }
         finally
         {
+            // 武装を解く。以後 src バスの Error は通常どおり recorder.error として記録され、
+            // Eos は捨てられる。
+            lock (_busLock)
+                _stopDrain = null;
+
             // タイムアウトでもエラーでも必ず Null へ落とす（要素を再利用可能な状態にする）
+            System.Diagnostics.Debug.Assert(!Monitor.IsEntered(_busLock), "SetState must not run under _busLock");
             _srcPipeline?.SetState(State.Null);
-            _srcBusOwnedByStop = false;
             FlushThrottles(_srcThrottles, "src");
             Components.ActivityLog.Info("recording.stop",
                 $"recorder='{Name}' file='{LastFilename}' elapsedMs={elapsedMs} result={result}"

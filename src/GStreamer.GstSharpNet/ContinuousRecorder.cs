@@ -89,9 +89,8 @@ internal sealed partial class ContinuousRecorder : IDisposable
     private volatile bool _isAlive;
     private Thread? _thread;
 
-    private Pipeline? _writer;
-    private Bus? _writerBus;
-    private GstApp.AppSrc? _writerSrc;
+    /// <summary>いま書き出し中のセグメント（キーフレーム待ちの間は <see langword="null"/>）。</summary>
+    private SegmentWriter? _writer;
 
     private int _segmentIndex;
     private string? _currentPath;
@@ -100,6 +99,42 @@ internal sealed partial class ContinuousRecorder : IDisposable
     private bool _overshootReported;
     private bool _firstSampleReported;
     private bool _disposed;
+
+    /// <summary>
+    /// セグメントの排出待ちが受け取る結果。<b>ラッパーではなく写した値を運ぶ</b> ──
+    /// sync-message の <c>Message</c> はハンドラの実行中しか有効でない。
+    /// </summary>
+    private readonly record struct SegmentDrainResult(StopDrainSignal Signal, string? ErrorMessage, string? Debug);
+
+    /// <summary>
+    /// 書き出し中のセグメント 1 本ぶんの状態。
+    ///
+    /// <para>
+    /// <b>排出は sync-message で受ける。</b> このアプリは GMainLoop を回さないので
+    /// <c>Bus.Message</c> / <c>AddWatch</c> は発火しない。バスをポーリングしない代わりに、
+    /// セグメントの寿命の間もキューを空に保つ責任がハンドラ側にある。
+    /// </para>
+    /// <para>
+    /// <b><see cref="Drain"/> はセグメントを開いた時点で武装する</b>
+    /// ── Error は EOS より前に届きうるので、確定の直前に武装したのでは取りこぼす。
+    /// 生成に <c>RunContinuationsAsynchronously</c> が要るのは、継続が
+    /// post 元のストリーミングスレッドで走ると <c>SetState(Null)</c> が自スレッドで
+    /// 走って固まるため（<c>EventRecorder._stopDrain</c> と同じ理由）。
+    /// </para>
+    /// </summary>
+    private sealed class SegmentWriter(Pipeline pipeline, Bus? bus, GstApp.AppSrc? src, string path)
+    {
+        public Pipeline Pipeline { get; } = pipeline;
+        public Bus? Bus { get; } = bus;
+        public GstApp.AppSrc? Src { get; } = src;
+        public string Path { get; } = path;
+
+        public System.Threading.Tasks.TaskCompletionSource<SegmentDrainResult> Drain { get; } =
+            new(System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously);
+
+        /// <summary>バスの sync-message ハンドラ（<c>-=</c> に同一の実体が要るので保持する）。</summary>
+        public EventHandler<Gst.Bus.SyncMessageSignalArgs>? Handler { get; set; }
+    }
 
     public ContinuousRecorder(
         IContinuousRecorderHost host,
@@ -151,12 +186,10 @@ internal sealed partial class ContinuousRecorder : IDisposable
             // SetState(Null) や pipeline.Dispose() は使用中のネイティブオブジェクトを
             // 壊すので行わず、参照だけ落とす（bus/src はインターンされた GObject
             // ラッパーで、もともと Dispose しない）── EventRecorder の recorder.leak
-            // と同じ規律。
+            // と同じ規律。バスの購読も外さない ── 解除は実行中のハンドラと競合しうる。
             Components.ActivityLog.Warn("continuous.leak",
                 $"recorder='{_host.Name}' the continuous pull thread did not stop in time; "
                 + "leaked the segment writer instead of disposing it");
-            _writerSrc = null;
-            _writerBus = null;
             _writer = null;
         }
 
@@ -295,14 +328,19 @@ internal sealed partial class ContinuousRecorder : IDisposable
 
         // ParseLaunch は失敗すると Gst.GLib.GException を投げる（Proc の catch が報告する）。
         var pipeline = (Pipeline)Gst.Global.ParseLaunch(ContinuousBranch.SegmentWriterPipeline);
-        Bus? bus = null;
-        GstApp.AppSrc? src = null;
+        SegmentWriter? writer = null;
         try
         {
             pipeline.SetName($"continuous-writer-{_segmentIndex}");
-            bus = pipeline.GetBus();
-            src = (GstApp.AppSrc)pipeline.GetByName("src")!;
+            Bus? bus = pipeline.GetBus();
+            var src = (GstApp.AppSrc)pipeline.GetByName("src")!;
             Element file = pipeline.GetByName("file")!;
+
+            // **購読は PLAYING より前に済ませる。** まだ NULL 状態のバスには post が
+            // 届かないので取り付けのゲートは要らず、再生開始の直後に出た Error も
+            // 取りこぼさない。
+            writer = new SegmentWriter(pipeline, bus, src, path);
+            SubscribeSegment(writer);
 
             using (GObject.Value location = GObject.Value.New(GObject.GType.String))
             {
@@ -332,14 +370,15 @@ internal sealed partial class ContinuousRecorder : IDisposable
             // 畳まないとネイティブのパイプラインがキーフレームごとに積み上がる。
             // bus/src/file はインターンされた GObject ラッパーなので Dispose しない
             // ── 自前で作ったパイプラインだけを Null に落としてから Dispose する。
+            // 購読は Dispose より前に外す（Enable は refcount なので Disable と対で）。
+            if (writer is not null)
+                UnsubscribeSegment(writer);
             pipeline.SetState(State.Null);
             pipeline.Dispose();
             throw;
         }
 
-        _writer = pipeline;
-        _writerBus = bus;
-        _writerSrc = src;
+        _writer = writer;
         _segmentStartPts = pts;
         _currentPath = path;
         _overshootReported = false;
@@ -358,26 +397,93 @@ internal sealed partial class ContinuousRecorder : IDisposable
     /// </summary>
     private void CloseSegment()
     {
-        var pipeline = _writer;
-        var bus = _writerBus;
-        var src = _writerSrc;
+        var writer = _writer;
         string? path = _currentPath;
 
         _writer = null;
-        _writerBus = null;
-        _writerSrc = null;
         _previousPath = path;
         _currentPath = null;
 
-        if (pipeline is null)
+        if (writer is null)
             return;
 
         // 在庫が上限なら、新しいセグメントを作る前にここで有界に待つ。
         WaitForFinalizers(all: false);
 
-        var task = STTask.Run(() => FinalizeSegment(pipeline, bus, src, path));
+        var task = STTask.Run(() => FinalizeSegment(writer));
         lock (_finalizerLock)
             _finalizers.Add((task, path));
+    }
+
+    /// <summary>
+    /// セグメントのバスを sync-message で購読する。
+    /// <b>ハンドラがするのは「排出待ちの完了」と「残骸の回収」だけ</b>
+    /// ── <c>continuous.error</c> の報告は <see cref="FinalizeSegment"/> 1 箇所に置く。
+    ///
+    /// <para>
+    /// <b>残骸の回収が要る。</b> <c>gst_bus_post</c> は sync-message を発火してから
+    /// キューへ積むので、汲まなければセグメントの寿命ぶんキューが伸び続ける。
+    /// キューに居るのは処理済みのメッセージだけなので、捨ててよい。
+    /// </para>
+    /// </summary>
+    private void SubscribeSegment(SegmentWriter writer)
+    {
+        if (writer.Bus is not { } bus)
+            return;
+
+        void Handler(object? sender, Gst.Bus.SyncMessageSignalArgs args)
+        {
+            // 例外を漏らさない（ここはネイティブのトランポリンの中）。
+            try
+            {
+                // args.Message はハンドラの実行中だけ有効なので Dispose しない。
+                var msg = args.Message;
+                switch (msg.Type)
+                {
+                    case MessageType.Eos:
+                        writer.Drain.TrySetResult(new(StopDrainSignal.Eos, null, null));
+                        break;
+
+                    case MessageType.Error:
+                        {
+                            // ParseError はネイティブ側のメモリをすべてバインディングが解放した上で
+                            // GException（ただの managed 例外オブジェクト）を返すので、Dispose は不要。
+                            var (gerror, debug) = msg.ParseError();
+                            writer.Drain.TrySetResult(new(StopDrainSignal.Error, gerror.Message, debug));
+                            break;
+                        }
+                }
+
+                // Pop の戻りは所有権つきなので必ず解放する。
+                while (bus.Pop() is { } stale)
+                    stale.Dispose();
+            }
+            catch (Exception ex)
+            {
+                // activity.log には出さない（報告は FinalizeSegment の担当）。
+                DebugLogEx.Log(DebugLevel.Error,
+                    $"the continuous segment writer sync-message handler failed!\n{ex}");
+            }
+        }
+
+        EventHandler<Gst.Bus.SyncMessageSignalArgs> handler = Handler;
+        writer.Handler = handler;
+        bus.EnableSyncMessageEmission();
+        bus.SyncMessage += handler;
+    }
+
+    /// <summary>
+    /// セグメントのバスの購読を解除する
+    /// （<c>EnableSyncMessageEmission</c> は refcount なので Disable と対で呼ぶ）。
+    /// </summary>
+    private static void UnsubscribeSegment(SegmentWriter writer)
+    {
+        if (writer.Bus is not { } bus || writer.Handler is not { } handler)
+            return;
+
+        writer.Handler = null;
+        bus.SyncMessage -= handler;
+        bus.DisableSyncMessageEmission();
     }
 
     /// <summary>
@@ -385,19 +491,23 @@ internal sealed partial class ContinuousRecorder : IDisposable
     /// 「有界待ち → 必ず Null」の形。<b>失敗してもエンジンは止めない</b>
     /// ── 1 本が壊れても常時録画そのものは続ける方が損失が小さい。
     /// </summary>
-    private void FinalizeSegment(Pipeline pipeline, Bus? bus, GstApp.AppSrc? src, string? path)
+    private void FinalizeSegment(SegmentWriter writer)
     {
         string result = "ok";
         int timeoutMs = EventRecorder.StopFinalizeTimeoutMs;
+        string path = writer.Path;
         try
         {
-            src?.EndOfStream();
+            writer.Src?.EndOfStream();
 
-            using var msg = bus?.TimedPopFiltered(
-                ClockTime.FromMilliseconds(Math.Max(0, timeoutMs)),
-                MessageType.Eos | MessageType.Error);
+            // **同期の Wait にする（await にしない）。** 完了させるのは sync-message
+            // ハンドラ＝当のパイプラインのストリーミングスレッドなので、継続がそこで
+            // インライン実行されると finally の SetState(Null) が自スレッドで走って固まる。
+            SegmentDrainResult drained = writer.Drain.Task.Wait(Math.Max(0, timeoutMs))
+                ? writer.Drain.Task.Result
+                : new(StopDrainSignal.Timeout, null, null);
 
-            if (msg is null)
+            if (drained.Signal == StopDrainSignal.Timeout)
             {
                 result = "timeout";
                 string detail = $"recorder='{_host.Name}' file='{path}' "
@@ -405,13 +515,10 @@ internal sealed partial class ContinuousRecorder : IDisposable
                 Components.ActivityLog.Error("continuous.error", detail);
                 _host.OnContinuousError(detail);
             }
-            else if (msg.Type == MessageType.Error)
+            else if (drained.Signal == StopDrainSignal.Error)
             {
                 result = "error";
-                // ParseError はネイティブ側のメモリをすべてバインディングが解放した上で
-                // GException（ただの managed 例外オブジェクト）を返すので、Dispose は不要。
-                var (gerror, debug) = msg.ParseError();
-                string detail = $"recorder='{_host.Name}' file='{path}' {gerror.Message} debug={debug}";
+                string detail = $"recorder='{_host.Name}' file='{path}' {drained.ErrorMessage} debug={drained.Debug}";
                 Components.ActivityLog.Error("continuous.error", detail);
                 _host.OnContinuousError(detail);
             }
@@ -427,8 +534,10 @@ internal sealed partial class ContinuousRecorder : IDisposable
         {
             // bus/src はインターンされた GObject ラッパーなので Dispose しない。
             // 自前で作ったパイプラインだけは Null に落としてから Dispose する。
-            pipeline.SetState(State.Null);
-            pipeline.Dispose();
+            // 購読は Dispose より前に外す（Enable は refcount なので Disable と対で）。
+            UnsubscribeSegment(writer);
+            writer.Pipeline.SetState(State.Null);
+            writer.Pipeline.Dispose();
             Components.ActivityLog.Info("continuous.finalize",
                 $"recorder='{_host.Name}' file='{path}' result={result}");
         }
@@ -507,7 +616,7 @@ internal sealed partial class ContinuousRecorder : IDisposable
     /// </summary>
     private void Push(Gst.Buffer buffer, ulong pts)
     {
-        if (_writerSrc is null)
+        if (_writer?.Src is not { } src)
             return;
 
         // 呼び出し元では sample がまだ同じネイティブバッファへの参照を握っているので、
@@ -517,7 +626,7 @@ internal sealed partial class ContinuousRecorder : IDisposable
         buffer.SetPts(ClockTime.FromNanoseconds(pts - _segmentStartPts));
         buffer.SetDts(ClockTime.None);
 
-        var flow = _writerSrc.PushBuffer(buffer);
+        var flow = src.PushBuffer(buffer);
         if (flow == FlowReturn.Ok)
             return;
 
