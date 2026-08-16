@@ -7,13 +7,14 @@ namespace ProcessRecorderApp.Tests;
 /// <b><c>GstDebug</c> の即時反映が、GStreamer の初期化前に発火しても安全であること。</b>
 ///
 /// <para>
-/// <c>AppSettings</c> は <c>Gst.Functions.Init</c> より<b>前</b>に読み込まれる
+/// <c>AppSettings</c> は GStreamer の初期化より<b>前</b>に読み込まれる
 /// （<c>Program.Main</c> の初期化コールバックが <c>AppSettings.Default</c> を触った後に
 /// <c>Controller.StaticInitialize()</c> を呼ぶ）。逆シリアル化は
 /// <c>[ObservableProperty]</c> の setter を通るので、<c>OnGstDebugChanged</c> は
-/// <b>PATH の組み立てと <c>DllImportResolver</c> の登録より前に</b>呼ばれる。
-/// ここでネイティブへ触ると <c>libgstreamer-1.0-0.dll</c> の解決に失敗し、
-/// <b>settings.json に <c>GstDebug</c> を書いた利用者だけがアプリを起動できなくなる</b>。
+/// <b>ロケーターの選定と <c>Initialize(options)</c> より前に</b>呼ばれる。
+/// ここでバインディングへ触ると、ネイティブローダーが自力プローブで見つけた根を
+/// 先にピンしてしまい、後から走る <c>Initialize</c> が InvalidOperationException になる
+/// ── <b>settings.json に <c>GstDebug</c> を書いた利用者だけがアプリを起動できなくなる</b>。
 /// </para>
 /// <para>
 /// このテストが見られるのは<b>ガードの向きだけ</b>である（L1 では GStreamer を

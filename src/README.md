@@ -13,11 +13,11 @@
 |---|---|
 | `ProcessRecorderApp` | メインアプリ本体（エントリポイント、画面、CLI コマンド定義） |
 | `SingleInstance` | 単一インスタンス制御（ランチャー/常駐ワーカー分離）・タスクトレイ常駐 |
-| `GStreamer.GirCore`（AssemblyName: `GStreamer`） | GStreamer による録画エンジン・プレビュー生成 |
+| `GStreamer.GstSharpNet`（AssemblyName: `GStreamer`） | GStreamer による録画エンジン・プレビュー生成 |
 | `Controls` | 再利用可能な WinUI コントロール（`NativeSwapChainPanel`、`PropertyGridView` など） |
 | `Components` | 各プロジェクト共通の基盤（設定永続化、標準出力キャプチャなど） |
 
-依存関係: `ProcessRecorderApp` → `SingleInstance` / `Controls` / `GStreamer.GirCore` → `Components`。
+依存関係: `ProcessRecorderApp` → `SingleInstance` / `Controls` / `GStreamer.GstSharpNet` → `Components`。
 
 ## 要件と実装の対応
 
@@ -26,34 +26,38 @@
 | .NET10 / C# / WinUI3 | `net10.0-windows10.0.19041.0`（動作対象OSの下限は `TargetPlatformMinVersion` `10.0.17763.0`）、Windows App SDK **2.3.1**、`UseWinUI` |
 | MVVM 実装 | CommunityToolkit.Mvvm **8.4.2** |
 | Native AOT発行対応 | `PublishAot=true` + `SelfContained=true`（アンパッケージ配布）。**これらの発行設定は `Properties/PublishProfiles/*.pubxml` にのみ存在し、`.csproj` には構成条件付きの `PublishAot` 等を置いていない**（Release構成に条件付けすると CI の Release ビルドがすべて AOT になり、ビルド時間が現実的でなくなるため）。`.csproj` にあるのは AOT 時の挙動を調整するプロパティ（`TrimMode=full` / `StripSymbols=true` / `OptimizationPreference` / `IlcMaxVectorTBitWidth` など）だけで、これらは発行時以外は無害 |
-| 常時バッファリングによるイベント録画 | `GStreamer.GirCore/EventRecorder.cs`（後述） |
-| ライブプレビュー（D3D12 SwapChain） | `GStreamer.GirCore/GstPreviewer.cs` + `Controls/Controls/NativeSwapChainPanel.cs`（後述） |
+| 常時バッファリングによるイベント録画 | `GStreamer.GstSharpNet/EventRecorder.cs`（後述） |
+| ライブプレビュー（D3D12 SwapChain） | `GStreamer.GstSharpNet/GstPreviewer.cs` + `Controls/Controls/NativeSwapChainPanel.cs`（後述） |
 | 起動済インスタンスをActivate | `AppInstance.FindOrRegisterForKey` + `RedirectActivationToAsync`（`ShowWindow=true` を指定したコマンドのみ。素の起動・サブコマンドなしではActivateしない） |
 | 引数付き起動で既存インスタンスに処理させる | `AppActivationArguments` をそのままリダイレクトし、`Activated` イベントで受信・解析 |
 | 呼び出しプロセスは必ず終了、実処理インスタンスは終了しない（初回起動時も含む） | **ランチャー/常駐ワーカー分離アーキテクチャ**（後述） |
 | 常駐ワーカー起動の排他制御 | 名前付き **Mutex** + 名前付き **EventWaitHandle**（後述） |
 | タスクトレイ常駐・閉じる/最小化でトレイ格納 | **WinUIEx**（`WindowManager.IsVisibleInTray` 等、MIT License）を使用 |
-| Win32 P/Invoke | **CsWin32**（`Microsoft.Windows.CsWin32`、MIT License）によるソース生成。使用箇所は `Components`・`GStreamer.GirCore` のみ（後述） |
+| Win32 P/Invoke | **CsWin32**（`Microsoft.Windows.CsWin32`、MIT License）によるソース生成。使用箇所は `Components`・`GStreamer.GstSharpNet` のみ（後述） |
 | コマンドライン解析 | **System.CommandLine 2.0.10**（MIT License）による解析（後述） |
 | 常駐ワーカーでの処理失敗をランチャーの終了コードで識別 | 名前付き **EventWaitHandle** + **MemoryMappedFile** による結果通知（後述） |
 | Variables 画面のキー/値グリッド | **WinUI.TableView 1.4.1**（MIT License） |
-| 録画・プレビューエンジン | **gir.core**（`GirCore.GstApp-1.0` / `GirCore.GstVideo-1.0` 0.8.1、GStreamer の .NET バインディング） |
+| 録画・プレビューエンジン | **GstSharp.Net**（`GstSharp.Net` / `GstSharp.Net.App` / `GstSharp.Net.Base` 1.28.0-preview.1、GStreamer の .NET バインディング。GitHub Packages から取得する。後述「パッケージの取得元」） |
 | en-US / ja-JP ローカライズ（OS表示言語に自動追従） | MRT Core（`.resw` + `resources.pri`）+ `x:Uid` + `Components/Localization.cs`（後述） |
 
 ---
 
-## 録画エンジン（GStreamer.GirCore）
+## 録画エンジン（GStreamer.GstSharpNet）
 
 本アプリの中核機能は、GStreamer をエンジンとした「常時バッファリング → 遡っての録画開始」
-という**イベント録画**である。実装は主に `GStreamer.GirCore/EventRecorder.cs` にある。
+という**イベント録画**である。実装は主に `GStreamer.GstSharpNet/EventRecorder.cs` にある。
 
 ### 初期化（`Controller.cs`）
 
 `Controller.StaticInitialize()`（`Program.Main` の常駐ワーカー初期化コールバックから呼ばれる）が、
 
-- GStreamer ネイティブ一式の在り処を決めて `PATH` を整える（下記「GStreamer の解決経路」）
-- `NativeLibrary` の DllImport リゾルバー（`ImportResolver.cs`）をインストール
-- `GstApp`/`GstVideo` モジュールを初期化し、`Gst.Functions.Init` を呼び出す
+- GStreamer ネイティブ一式の在り処を決め、`GstSharpOptions.NativeSearchPath` として
+  バインディングへ渡す（下記「GStreamer の解決経路」）
+- アプリ自身の生 P/Invoke が使う論理名（`"Gst"` / `"GLib"` / `"GObject"`）を、
+  バインディングがピンしたのと同じ DLL へ解決させる
+  （`Gst.Interop.NativeLoader.EnsureRegistered`）
+- `Gst.App.GstApp.Initialize(options)`（ネイティブのロード + `gst_init` + App 型の登録）と
+  `Gst.Base.GstBase.Initialize()`（`BaseSrc` 等の決定的な型登録）を呼ぶ
 - **どこからロードされたか**を `activity.log` の `gst.runtime` に1行残す
 
 ことで、GStreamer ネイティブライブラリをロードできるようにしている。
@@ -76,11 +80,23 @@
 「読み込み元 DLL のあるディレクトリ」ではなく `PATH` の順で解決されるため、繋ぐと
 「gstreamer は同梱物・glib は MSYS2」のような**混成**が起こりうる（症状はプラグインが
 黙って blacklist されること）。そこで**最初に `libgstreamer-1.0-0.dll` を持っていた候補
-1件だけ**を選び、それを `PATH` の先頭に置く。優先順位は上のまま保たれ、
-かつ依存 DLL も同じ根から取れる。
+1件だけ**を選ぶ。優先順位は上のまま保たれ、かつ依存 DLL も同じ根から取れる。
 
-**公式 MSVC 版の GStreamer はこの経路からは見えない。** `ImportResolver` が要求するのは
+**役割分担: ロケーターは根を選ぶだけで、実際のロードは GstSharp.Net が行う。**
+選んだ根は `GstSharpOptions.NativeSearchPath` としてバインディングへ渡り、
+バインディングが各モジュールを**その根から絶対パスで**ロードし、プラグインの依存解決の
+ためにその `bin` を自分で `PATH` の先頭へ足す。最初にロードした根への固定（ピン）も
+バインディング側にあるので、**アプリは `PATH` を組み立てない**。
+その代わり、`Initialize` より前に `Gst.*` の API を1つでも呼ぶとローダーが自分で
+プローブして別の根をピンし、あとからの `Initialize(options)` が
+`InvalidOperationException` で落ちる（初期化より前に走りうる経路は
+`DebugLogEx.IsGstInitialized` で塞いである）。
+
+**公式 MSVC 版の GStreamer はこの候補探索からは選ばれない。** 候補の確認に使うのは
 `libgstreamer-1.0-0.dll`（MinGW 命名）で、MSVC 版は `gstreamer-1.0-0.dll` と名前が違う。
+ただしここで何も選べなかった場合（`NativeSearchPath` が null）は、GstSharp.Net 自身の
+プローブ（レジストリ／既定ディレクトリ）が MSVC 版も見つけられる。どちらが勝ったかは
+`gst.runtime` の `loaderFlavor` で分かる。
 
 初期化に失敗したときは `activity.log` に **ERROR の `gst.runtime`**（探した候補と例外）を
 **MessageBox より先に**書く。この MessageBox はモーダルで、常駐ワーカーはメッセージループに
@@ -339,7 +355,7 @@ I フレームゲートが次の I まで捨てる ── そのぶんの映像�
 ### H.264 エンコーダーの自動選択（`EncoderCatalog`）
 
 エンコーダーを決め打ちにすると、その要素が無い機械では `Initialize()` が失敗して
-**録画そのものができない**。そのため `GStreamer.GirCore/EncoderCatalog.cs` が実機に
+**録画そのものができない**。そのため `GStreamer.GstSharpNet/EncoderCatalog.cs` が実機に
 存在するエンコーダーを優先順に並べ、`EventRecorder.Initialize()` が上から順に実際に試す。
 
 優先順位:
@@ -352,7 +368,7 @@ I フレームゲートが次の I まで捨てる ── そのぶんの映像�
 設計上の要点:
 
 - **プローブは `Gst.ElementFactory.Find`**。`Controller.StaticInitialize()` の末尾
-  （`Gst.Functions.Init` の後）で1回だけ実行する。GStreamer の GPU 系プラグイン
+  （`Gst.App.GstApp.Initialize` の後）で1回だけ実行する。GStreamer の GPU 系プラグイン
   （qsv / d3d12 / nvcodec / amfcodec）は、プラグイン自体はロードされても**対応ハードウェアが
   無ければ要素ファクトリを登録しない**ため、`Find` が null を返すことがそのまま
   「この実機では使えない」という正しい判定になる。
@@ -385,7 +401,7 @@ I フレームゲートが次の I まで捨てる ── そのぶんの映像�
 **これは画質設定ではなく、アプリの中核契約を成立させるための制約**。
 
 録画開始時、`PushRecordBuffer` は最初の I フレームが見つかるまでバッファを捨て続ける
-（[EventRecorder.cs](GStreamer.GirCore/EventRecorder.cs) の `isIframeFound`）。
+（[EventRecorder.cs](GStreamer.GstSharpNet/EventRecorder.cs) の `isIframeFound`）。
 リングバッファ（`BufferDuration`）の中に I フレームが1枚も無いと、
 **事前バッファが丸ごと捨てられたうえ、次の I フレームが来るまでのライブ映像まで失われる**。
 つまり「録画ボタンを押す前の映像が残る」というアプリの中核価値が、
@@ -448,7 +464,7 @@ I フレームゲートが次の I まで捨てる ── そのぶんの映像�
 キャプチャ(`d3d12screencapturesrc` / `d3d11screencapturesrc`)・カメラ(`mfvideosrc`)・テストパターン
 (`d3d12testsrc`/`videotestsrc`)などを組み立てて指定する（UI 上は Pipeline Builder ダイアログ、
 `ProcessRecorderApp/Views/PipelineBuilderDialog.xaml` 経由。ソースの候補・プロパティ定義は
-`GStreamer.GirCore/SrcPipelineBuilder.cs`、カメラ/モニタの実機列挙は `GstIntrospect.cs`）。
+`GStreamer.GstSharpNet/SrcPipelineBuilder.cs`、カメラ/モニタの実機列挙は `GstIntrospect.cs`）。
 
 ### カメラ設定（`mfvideosrc` のフォーカス・明るさ等）
 
@@ -470,9 +486,9 @@ I フレームゲートが次の I まで捨てる ── そのぶんの映像�
 
 | 層 | ファイル | 役割 |
 |---|---|---|
-| 書式（純粋） | `GStreamer.GirCore/CameraControlSettings.cs` | `Parse` / `Format` / **`Merge`**、候補 17 項目のカタログ。**COM に触れない** |
-| COM | `GStreamer.GirCore/CameraControl.cs` | MF のデバイスソースから制御インターフェイスを取り出して `GetRange` / `Get` / `Set`。デバイスパスの解決（`ResolveDevicePath`）もここ |
-| スレッド | `GStreamer.GirCore/CameraControlWorker.cs` | セッションを**専用スレッド 1 本の上だけ**で開き・使い・畳む |
+| 書式（純粋） | `GStreamer.GstSharpNet/CameraControlSettings.cs` | `Parse` / `Format` / **`Merge`**、候補 17 項目のカタログ。**COM に触れない** |
+| COM | `GStreamer.GstSharpNet/CameraControl.cs` | MF のデバイスソースから制御インターフェイスを取り出して `GetRange` / `Get` / `Set`。デバイスパスの解決（`ResolveDevicePath`）もここ |
+| スレッド | `GStreamer.GstSharpNet/CameraControlWorker.cs` | セッションを**専用スレッド 1 本の上だけ**で開き・使い・畳む |
 | UI | `ProcessRecorderApp/Views/CameraControlDialog.xaml`(.cs) + `ViewModels/CameraControlViewModel.cs` | 対応項目だけをスライダーで出す |
 
 **自動テストできるのは書式の層だけ**（`CameraControlSettingsTests`）── 開発機にカメラが無いので
@@ -644,7 +660,7 @@ Windows App SDK 側の `Microsoft.Windows.Storage.Pickers` を使う** ── �
 （SwapChainPanel + `d3d12swapchainsink`）で描画する
 （ネイティブ子 HWND の直接生成は使わない）。
 
-- `GStreamer.GirCore/GstPreviewer.cs`（`Previewer`）: 選択中レコーダーの映像だけを受け取り、
+- `GStreamer.GstSharpNet/GstPreviewer.cs`（`Previewer`）: 選択中レコーダーの映像だけを受け取り、
   `appsrc ! queue ! d3d12swapchainsink name=sink sync=false` というパイプラインで描画する。
   `d3d12swapchainsink` は `IDXGIFactory2::CreateSwapChainForComposition` により
   **HWND を持たない**コンポジションスワップチェーンを生成し、そのハンドルは
@@ -873,7 +889,7 @@ L3 の `PreviewFullScreenTests.FullScreen_DoesNotOverwriteTheSavedWindowSize` �
 
 - 生成は `App.OnLaunched` の `GstControllerViewModel.Start(dispatcherQueue)`。**`new MainWindow()` より前**に呼ぶ。
   起動順序は `Program.Main` → `StartResidentWorker` → `Controller.StaticInitialize()`
-  → `Gst.Functions.Init` → `Application.Start` → `new App()` → `OnLaunched` であり、
+  → `Gst.App.GstApp.Initialize` → `Application.Start` → `new App()` → `OnLaunched` であり、
   この時点で GStreamer は初期化済み。アクティベーション転送は `TryEnqueue` 経由でメッセージループが
   回るまで処理されないため、**最初の CLI コマンド処理より前に `Current` が必ず設定される**。
 - `Start()` は `Current ??= new(...)` であり、`Current` への登録はここだけで行う（ctor では設定しない）。
@@ -1163,7 +1179,7 @@ CsWin32（`Microsoft.Windows.CsWin32`、MIT License）は以下の2箇所での�
 - `Components/NativeMethods.txt`: `CreatePipe` / `CreateNamedPipe` / `CreateFile` /
   `GetStdHandle` / `SetStdHandle` / `DuplicateHandle` / `GetCurrentProcess` など
   （`StandardStreamRedirector.cs` の標準入出力キャプチャ用）。
-- `GStreamer.GirCore/NativeMethods.txt`: `MessageBox`（`Controller.StaticInitialize` の
+- `GStreamer.GstSharpNet/NativeMethods.txt`: `MessageBox`（`Controller.StaticInitialize` の
   初期化エラー表示用）。
 
 `NativeMethods.txt` にAPI名を1行ずつ列挙するだけで、正確な型定義付きのP/Invokeコードが
@@ -1293,13 +1309,13 @@ CommandOutcome { ShowWindow, ToastTitle, ToastMessage, ConsoleOutput, ConsoleErr
 
 `start-recording <target>` / `stop-recording <target>` の名前解決は**序数での完全一致・先勝ち**
 （数値はインデックスとして解釈し、名前へはフォールバックしない。規則は
-`GStreamer.GirCore/RecorderCliRules.ResolveTargetIndex` にあり L1 が守る）。
+`GStreamer.GstSharpNet/RecorderCliRules.ResolveTargetIndex` にあり L1 が守る）。
 したがって**同名のレコーダーが2つあると、2つ目には CLI から永久に到達できない**
 （画面上は普通に2件並んで見えるため、「コマンドが効かない」ではなく
 「毎回1つ目が動く」という気付きにくい形で現れる）。
 
 これを防ぐため、**追加時と UI からの改名時に名前を一意化する**
-（`GStreamer.GirCore/RecorderNaming.cs` の `MakeUnique`。衝突したら ` (2)` / ` (3)` … を付ける）。
+（`GStreamer.GstSharpNet/RecorderNaming.cs` の `MakeUnique`。衝突したら ` (2)` / ` (3)` … を付ける）。
 規則は純粋関数として切り出してあり L1（`RecorderNamingTests`）が守る。
 比較は序数なので `Recorder` と `recorder` は衝突しない ── CLI の解決も序数であり、
 どちらにも到達できるものを勝手に改名しないため。
@@ -1806,7 +1822,7 @@ GPU テクスチャになるため**アクセシブルテキストが 1 つも�
 | `app.start` | INFO | `Program.Main`（ワーカー分岐） | pid とデータディレクトリ |
 | `app.exit` | INFO | `Program.Main`（`StartResidentWorker` から復帰後） | pid と終了コード |
 | `app.error` | ERROR | `App.LogException`（未処理例外の3ハンドラ）／`SingleInstanceManager.HandleActivation`（コマンド処理の予期しない例外。終了コード 99 と対で残る） | 発生源と例外の全文 |
-| `gst.runtime` | INFO / **ERROR** | `Controller.StaticInitialize` | 実際にロードされた `libgstreamer-1.0-0.dll` / `libglib-2.0-0.dll` のパス、採用した候補、混成の有無。1回のみ。初期化に失敗した場合は ERROR で、探した候補と例外の全文が付く |
+| `gst.runtime` | INFO / **ERROR** | `Controller.StaticInitialize` | 実際にロードされた本体と GLib のパス（`libgstreamer-1.0-0.dll` / `gstreamer-1.0-0.dll` のどちらの命名でも探す）、採用した候補、混成の有無、末尾にバインディングがピンした `loaderDir=` / `loaderFlavor=`。1回のみ。初期化に失敗した場合は ERROR で、探した候補と例外の全文が付く |
 | `cleanup.run` | INFO | `RecordingCleanupScheduler` | 古い mp4 の自動削除の結果（保存先・削除数・解放バイト数・削除したフォルダー数・失敗数）。**何もしなかった周回は出さない** |
 | `cleanup.error` | WARN | 同上 | 削除できなかった理由（1件1行・上限あり）。ロック中のファイルなど |
 | `gst.encoders` | INFO | `Controller.StaticInitialize` | プローブ結果（存在/欠落と候補順）。1回のみ |
@@ -2101,15 +2117,20 @@ error APPX0002: Task 'WinAppSdkExpandPriContent' failed. Could not find file
 
 ### パッケージの取得元
 
-取得元は **nuget.org だけ**で、復元に認証は要らない（`UiaTrigger.Core` /
-`UiaTrigger.Picker.WinUI` も nuget.org から取る）。リポジトリルートの `nuget.config` が
-ソースを 1 つに固定しており、`<clear />` でマシン/ユーザー設定のソースを遮断する
+取得元は **nuget.org と GitHub Packages（masa-iwm）の 2 つ**で、リポジトリルートの
+`nuget.config` が固定する。`<clear />` でマシン/ユーザー設定のソースを遮断する
 ── 手元にだけ登録されたフィードから同名パッケージが解決されると、CI と手元で
 別の中身をビルドしうるため。
 
-`packageSourceMapping` はソースが 1 つの今は解決結果を変えないが、書いたままにしてある
-── ソースを増やしたときに「どれをどこから取るか」を書き忘れると、パッケージ版の
-集中管理（次項）との組み合わせで `NU1507` になる。
+- **GitHub Packages から取るのは `GstSharp.Net*` だけ**（録画エンジンのバインディング）。
+  それ以外（`UiaTrigger.Core` / `UiaTrigger.Picker.WinUI` を含む）は nuget.org。
+  振り分けの正本は `packageSourceMapping` で、**複数ソース＋パッケージ版の集中管理
+  （次項）ではマッピングが無いと `NU1507` になる**。
+- **GitHub Packages は public パッケージでも復元に認証が要る。** 資格情報は
+  `nuget.config` には書かず、ソース key と対になる環境変数
+  `NuGetPackageSourceCredentials_github`（`Username=masa-iwm;Password=<トークン>`）で渡す。
+  トークンには `read:packages` スコープが要る。CI は `build.yml` が `GITHUB_TOKEN` で
+  同じ環境変数を組み立てる。手順と 401（`NU1301`）の切り分けは `nuget.config` のコメント。
 
 ### パッケージ版の集中管理
 
@@ -2157,7 +2178,7 @@ Windows SDK 参照のバージョン」であり、動作対象OSの下限は独
   AOT 非互換の混入は Release ビルドの解析警告として検出される。
 - `Properties/PublishProfiles/` に AOT・フレームワーク依存・セルフコンテインド・
   シングルファイルの各発行プロファイルを用意。
-- `GStreamer.GirCore` プロジェクトの `runtimes/win-x64` は **リポジトリには入っていない**
+- `GStreamer.GstSharpNet` プロジェクトの `runtimes/win-x64` は **リポジトリには入っていない**
   （サイズが大きいため追跡しない）。同梱ビルドを作るときだけ
   `tools/Fetch-GStreamerRuntime.ps1` でここへ展開する。csproj 側は
   `None Include="runtimes\**"`（`Content` にすると `GStreamer/runtimes` にも複写される）で、

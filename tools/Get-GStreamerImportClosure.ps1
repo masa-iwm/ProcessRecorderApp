@@ -12,9 +12,10 @@
 
       * every plugin under lib/gstreamer-1.0 (or -SeedPlugins when the tree still holds
         plugins the product never builds -- the untrimmed installer output does)
-      * the libraries named from managed code: ImportResolver's libgstreamer-1.0-0.dll,
-        libgstvideo-1.0-0.dll and libgobject-2.0-0.dll, plus GStreamerRuntimeLocator's
-        libglib-2.0-0.dll
+      * the libraries named from managed code: the module set the GstSharp.Net binding
+        registers (libgstreamer-1.0-0.dll, libgstbase-1.0-0.dll, libgstapp-1.0-0.dll,
+        libgobject-2.0-0.dll, libgmodule-2.0-0.dll, libglib-2.0-0.dll). The app's own
+        P/Invokes and GStreamerRuntimeLocator name a subset of the same libraries
       * bin/gst-inspect-1.0.exe, which tools/Verify-GpuEncoders.ps1 runs out of the
         bundled tree during the real-machine check
       * bin/gst-launch-1.0.exe, shipped so that a pipeline can be reproduced stand-alone

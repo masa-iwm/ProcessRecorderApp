@@ -90,10 +90,13 @@
 
 1. 製品が構築しうる要素（`SrcPipelineBuilder` / `EncoderCatalog` / `EventRecorder` /
    `GstPreviewer`）から必要プラグインを決める（14 件）
-2. **種はその 14 プラグインと、マネージド側が名前で読む3ライブラリだけ**
-   ── `ImportResolver`（`libgstreamer-1.0-0.dll` / `libgstvideo-1.0-0.dll` /
-   `libgobject-2.0-0.dll`）と `GStreamerRuntimeLocator`（`libglib-2.0-0.dll`）。
-   加えて `tools/Verify-GpuEncoders.ps1` が実行する `gst-inspect-1.0.exe`
+2. **種はその 14 プラグインと、マネージド側が名前で読む6ライブラリだけ**
+   ── GstSharp.Net バインディングが登録するモジュール集合
+   （`libgstreamer-1.0-0.dll` / `libgstbase-1.0-0.dll` / `libgstapp-1.0-0.dll` /
+   `libgobject-2.0-0.dll` / `libgmodule-2.0-0.dll` / `libglib-2.0-0.dll`。
+   アプリ自身の生 P/Invoke と `GStreamerRuntimeLocator` が読む名前もこの部分集合）。
+   加えて `tools/Verify-GpuEncoders.ps1` が実行する `gst-inspect-1.0.exe` と、
+   利用者の機械でパイプラインを単体再現するための `gst-launch-1.0.exe`
 3. そこから **PE のインポートを再帰的に辿って閉包を取る**
    ── 依存を推測で削ると、プラグインが**黙って blacklist される**。
    実行するのは [`tools/Get-GStreamerImportClosure.ps1`](tools/Get-GStreamerImportClosure.ps1)
