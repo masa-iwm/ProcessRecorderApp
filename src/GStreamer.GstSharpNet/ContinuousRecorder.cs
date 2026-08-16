@@ -42,16 +42,21 @@ internal interface IContinuousRecorderHost
 /// （<c>splitmuxsink</c> は同梱ランタイムに無い）。
 /// </para>
 /// <para>
-/// <b>スレッドの規律は <c>EventRecorder.PullSampleProc</c> と同じ。</b>
-/// ループは <see cref="_isAlive"/>（volatile）だけで回し、
-/// <c>EventRecorder._stateLock</c> は絶対に取らない
-/// ── <c>CloseCore</c> はそのロックを保持したままこのエンジンの停止を待つ。
+/// <b>サンプルは <c>appsink</c> のコールバックで受ける。</b> 呼ばれるのは枝の
+/// ストリーミングスレッドなので、<c>EventRecorder._stateLock</c> は絶対に取らない
+/// ── <c>CloseCore</c> はそのロックを保持したまま sink パイプラインを <c>Null</c> へ
+/// 落とし、<b>実行中のコールバックの復帰を待つ</b>。コールバックが処理を続けるかどうかは
+/// <see cref="_isAlive"/>（volatile）だけで決め、セグメントの状態に触るのは
+/// <see cref="_sampleLock"/> の下だけに閉じる（排他の理由は <see cref="Close"/> の doc）。
 /// </para>
 /// </summary>
 internal sealed partial class ContinuousRecorder : IDisposable
 {
-    /// <summary>pull スレッドの停止を待つ上限(ms)。<c>EventRecorder</c> の Join と同じ。</summary>
-    internal const int JoinTimeoutMs = 5000;
+    /// <summary>
+    /// <see cref="Close"/> が「進行中のサンプル処理が抜ける」のを待つ上限(ms)。
+    /// <c>EventRecorder</c> の quiesce（<c>SinkQuiesceTimeoutMs</c>）と同じ 5 秒。
+    /// </summary>
+    internal const int CallbackExitTimeoutMs = 5000;
 
     /// <summary>
     /// 同時に排出中にしてよい書き出しパイプラインの本数。
@@ -66,6 +71,19 @@ internal sealed partial class ContinuousRecorder : IDisposable
     private readonly int _firstSampleBudgetMs;
 
     private readonly object _finalizerLock = new();
+
+    /// <summary>
+    /// セグメントの状態（<see cref="_writer"/> とその周辺）に触ってよい者を 1 人に絞るロック。
+    /// 取るのはサンプルのコールバックと <see cref="Close"/> の「最後のセグメントの確定」だけ。
+    ///
+    /// <para>
+    /// <b>保持中に <c>Join</c> / 無期限の待ちを行わない。</b> 中で待つのは
+    /// <see cref="WaitForFinalizers"/>（在庫の上限ぶんの有界待ち）と、
+    /// 自前で作った書き出しパイプラインの <c>SetState</c> だけ ──
+    /// sink パイプラインには触らないので、<c>CloseCore</c> の quiesce と組んだ輪はできない。
+    /// </para>
+    /// </summary>
+    private readonly object _sampleLock = new();
 
     /// <summary>
     /// 排出中のセグメント（タスクと、そのタスクがまだ書いているパス）。
@@ -87,7 +105,12 @@ internal sealed partial class ContinuousRecorder : IDisposable
     private readonly BusMessageThrottle _rewindWarnings = new();
 
     private volatile bool _isAlive;
-    private Thread? _thread;
+
+    /// <summary>
+    /// 最初のサンプルが予算内に来ないことを見張るタイマー
+    /// （<see cref="ReportMissingFirstSample"/>）。サンプルが来たら畳む。
+    /// </summary>
+    private System.Threading.Timer? _firstSampleTimer;
 
     /// <summary>いま書き出し中のセグメント（キーフレーム待ちの間は <see langword="null"/>）。</summary>
     private SegmentWriter? _writer;
@@ -97,7 +120,15 @@ internal sealed partial class ContinuousRecorder : IDisposable
     private string? _previousPath;
     private ulong _segmentStartPts;
     private bool _overshootReported;
-    private bool _firstSampleReported;
+
+    /// <summary>
+    /// 「最初のサンプルの見張り」を畳んだ者がいるか（0 = まだ、1 = 済み）。
+    /// <b><see cref="Interlocked"/> で立てる</b> ── サンプルの到着（枝のストリーミング
+    /// スレッド）とタイマーの発火（プールスレッド）は同時に起こりうるので、
+    /// フラグを立てられた側だけが報告する。
+    /// </summary>
+    private int _firstSampleReported;
+
     private bool _disposed;
 
     /// <summary>
@@ -153,44 +184,113 @@ internal sealed partial class ContinuousRecorder : IDisposable
     /// <summary>書き出したセグメントの本数。</summary>
     public int SegmentCount => _segmentIndex;
 
+    /// <summary>
+    /// 常時枝の <c>appsink</c> にサンプルのコールバックを取り付け、
+    /// 最初のサンプルの見張りを武装する。
+    /// <b>取り付けのゲートは要らない</b> ── 呼び出し元（<c>EventRecorder.StartContinuous</c>）は
+    /// sink パイプラインが <c>PLAYING</c> に達してからここへ来る。
+    /// </summary>
     public void Start()
     {
         _isAlive = true;
-        _thread = new Thread(Proc)
+
+        // **予算の見張りはタイマーで持つ。** サンプルを待つループが無いので、
+        // 「1 枚も来ない」を観測する者は他にいない。
+        _firstSampleTimer = new System.Threading.Timer(
+            static state => ((ContinuousRecorder)state!).ReportMissingFirstSample(),
+            this, _firstSampleBudgetMs, Timeout.Infinite);
+
+        _source.SetSimpleCallbacks(onNewSample: sink =>
         {
-            IsBackground = true,
-            Name = $"continuous-{_host.Name}",
-        };
-        _thread.Start();
+            // **例外を漏らさない。** トランポリンは抜けた例外を FlowReturn.Error へ
+            // 変換するので、漏らすと枝が止まる（サンプル 1 枚の失敗で常時録画を殺さない）。
+            try
+            {
+                // teardown 中は触らない。Close は _isAlive を倒してから
+                // 最後のセグメントの確定に入る。
+                if (!_isAlive)
+                    return FlowReturn.Ok;
+
+                // **1 プルでは足りない。** appsink は 1 render につき 1 回しか呼ばないので、
+                // 取り付け前に溜まった分は初回に吸い切る（sink / preview の枝と同じ形）。
+                while (sink!.TryPullSample(ClockTime.Zero) is { } sample)
+                {
+                    using (sample)
+                    {
+                        lock (_sampleLock)
+                        {
+                            // Close がロックを取れた側だった場合はここで降りる
+                            // （確定済みのセグメントの後に新しいセグメントを開かない）。
+                            if (!_isAlive)
+                                break;
+                            OnContSample(sample);
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                string detail = $"recorder='{_host.Name}' {ex.Message}";
+                Components.ActivityLog.Error("continuous.error", detail);
+                _host.OnContinuousError(detail);
+            }
+
+            // **空プルでも Ok を返す。** Eos を返すと枝が止まる
+            // （1 コールバック 1 プルの例をドレイン形へ写してはいけない）。
+            return FlowReturn.Ok;
+        });
     }
 
     /// <summary>
     /// エンジンを止め、<b>現在のセグメントを確定させてから</b>返る。
     /// 待ちはすべて有界。<c>EventRecorder.CloseCore</c> はこれをイベント側の排出と
     /// <b>並行</b>に走らせる（直列にすると停止の予算を超える）。
+    ///
+    /// <para>
+    /// <b>コールバックの退去を保証するのは <c>EventRecorder</c> の quiesce</b>
+    /// （sink パイプラインの <c>Null</c> 化。実行中の <c>onNewSample</c> の復帰を待つ）で、
+    /// このクラスではない。<c>CloseCore</c> は quiesce のあとにここを呼ぶので、
+    /// 通常は誰もセグメントを触っていない。<b>quiesce が予算内に終わらなかったときだけ</b>
+    /// コールバックがまだ走っていることがあり、そのまま確定させると進行中の
+    /// <c>OnContSample</c> と <see cref="_writer"/> を奪い合う ── だから
+    /// <see cref="_sampleLock"/> を<b>有界に</b>待ち、取れなければ確定を諦める
+    /// （<c>EventRecorder</c> の <c>recorder.leak</c> と同じ「リークするが壊さない」規律）。
+    /// </para>
     /// </summary>
     public void Close()
     {
         _isAlive = false;
-        bool stopped = _thread is null || _thread.Join(JoinTimeoutMs);
-        _thread = null;
 
-        if (stopped)
+        // 見張りは待ちに入る前に畳む。予算より前に閉じたときに、閉じたあとから
+        // continuous.error が出ないようにする。
+        StopFirstSampleWatch();
+
+        bool entered = false;
+        try
         {
-            // 最後のセグメントを確定させる（ここを飛ばすと moov が書かれず全損する）
-            CloseSegment();
+            Monitor.TryEnter(_sampleLock, CallbackExitTimeoutMs, ref entered);
+            if (entered)
+            {
+                // 最後のセグメントを確定させる（ここを飛ばすと moov が書かれず全損する）
+                CloseSegment();
+            }
+            else
+            {
+                // コールバックがまだ書き出しパイプラインを触っている可能性がある。
+                // SetState(Null) や pipeline.Dispose() は使用中のネイティブオブジェクトを
+                // 壊すので行わず、参照だけ落とす（bus/src はインターンされた GObject
+                // ラッパーで、もともと Dispose しない）。バスの購読も外さない
+                // ── 解除は実行中のハンドラと競合しうる。
+                Components.ActivityLog.Warn("continuous.leak",
+                    $"recorder='{_host.Name}' a continuous sample callback was still running after "
+                    + $"{CallbackExitTimeoutMs}ms; leaked the segment writer instead of finalizing it");
+                _writer = null;
+            }
         }
-        else
+        finally
         {
-            // pull スレッドがまだ書き出しパイプラインを触っている可能性がある。
-            // SetState(Null) や pipeline.Dispose() は使用中のネイティブオブジェクトを
-            // 壊すので行わず、参照だけ落とす（bus/src はインターンされた GObject
-            // ラッパーで、もともと Dispose しない）── EventRecorder の recorder.leak
-            // と同じ規律。バスの購読も外さない ── 解除は実行中のハンドラと競合しうる。
-            Components.ActivityLog.Warn("continuous.leak",
-                $"recorder='{_host.Name}' the continuous pull thread did not stop in time; "
-                + "leaked the segment writer instead of disposing it");
-            _writer = null;
+            if (entered)
+                Monitor.Exit(_sampleLock);
         }
 
         WaitForFinalizers(all: true);
@@ -205,116 +305,126 @@ internal sealed partial class ContinuousRecorder : IDisposable
             $"recorder='{_host.Name}' segments={_segmentIndex}");
     }
 
-    private void Proc()
+    /// <summary>
+    /// サンプル 1 枚を処理する。<b>呼び出しは <see cref="_sampleLock"/> の下で行う</b>
+    /// ── ここが触るセグメントの状態を <see cref="Close"/> の確定と奪い合わないため。
+    /// </summary>
+    private void OnContSample(Sample sample)
     {
-        long startedAt = Environment.TickCount64;
+        StopFirstSampleWatch();
 
-        while (_isAlive)
+        using var buffer = sample.GetBuffer();
+        if (buffer is null)
+            return;
+
+        ulong pts = buffer.Pts.IsNone
+            ? (ulong)(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() * 1_000_000)
+            : buffer.Pts.Nanoseconds;
+        bool keyframe = !buffer.HasFlags(BufferFlags.DeltaUnit);
+
+        if (_writer is null)
         {
-            try
+            // セグメントの先頭は必ずキーフレーム。h264parse config-interval=-1 が
+            // 全 IDR の直前にパラメータセットを入れるので、ここから始めれば単体で再生できる。
+            if (!keyframe)
+                return;
+            OpenSegment(sample, pts);
+        }
+        else if (pts < _segmentStartPts)
+        {
+            // PTS の巻き戻し（ソースの再起動、あるいは B フレームによる並べ替え）。
+            // 符号なし減算のまま押し込むと約 2^64 ns の PTS が mux へ渡って
+            // タイムスタンプが壊れる。現在のセグメントを確定させ、
+            // 次のキーフレームから作り直す。
+            //
+            // **記録は畳む。** B フレームを出すエンコーダーを手書きで指定されると
+            // 毎フレーム起こりうるので、素で書くと activity.log が埋まる
+            // （EventRecorder の pts-rewind と同じ扱い）。
+            var (emitRewind, rewindRepeated) = _rewindWarnings.Observe("pts-rewind");
+            if (emitRewind)
             {
-                // GMainLoop を回していないアプリなので、ファイナライザーが積んだ
-                // GObject の解放はこのループで消化する（1 イテレーションに 1 回）。
-                GstSharp.DrainPendingReleases();
-
-                using var sample = _source.TryPullSample(ClockTime.FromMilliseconds(100));
-                if (sample is null)
-                {
-                    ReportMissingFirstSample(startedAt);
-                    continue;
-                }
-                _firstSampleReported = true;
-
-                using var buffer = sample.GetBuffer();
-                if (buffer is null)
-                    continue;
-
-                ulong pts = buffer.Pts.IsNone
-                    ? (ulong)(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() * 1_000_000)
-                    : buffer.Pts.Nanoseconds;
-                bool keyframe = !buffer.HasFlags(BufferFlags.DeltaUnit);
-
-                if (_writer is null)
-                {
-                    // セグメントの先頭は必ずキーフレーム。h264parse config-interval=-1 が
-                    // 全 IDR の直前にパラメータセットを入れるので、ここから始めれば単体で再生できる。
-                    if (!keyframe)
-                        continue;
-                    OpenSegment(sample, pts);
-                }
-                else if (pts < _segmentStartPts)
-                {
-                    // PTS の巻き戻し（ソースの再起動、あるいは B フレームによる並べ替え）。
-                    // 符号なし減算のまま押し込むと約 2^64 ns の PTS が mux へ渡って
-                    // タイムスタンプが壊れる。現在のセグメントを確定させ、
-                    // 次のキーフレームから作り直す。
-                    //
-                    // **記録は畳む。** B フレームを出すエンコーダーを手書きで指定されると
-                    // 毎フレーム起こりうるので、素で書くと activity.log が埋まる
-                    // （EventRecorder の pts-rewind と同じ扱い）。
-                    var (emitRewind, rewindRepeated) = _rewindWarnings.Observe("pts-rewind");
-                    if (emitRewind)
-                    {
-                        string repeated = 0 < rewindRepeated ? $" repeated={rewindRepeated}" : "";
-                        Components.ActivityLog.Warn("continuous.error",
-                            $"recorder='{_host.Name}' the source timestamp went backwards; "
-                            + $"closed the segment and waiting for the next key frame{repeated}");
-                    }
-                    CloseSegment();
-                    if (!keyframe)
-                        continue;
-                    OpenSegment(sample, pts);
-                }
-                else
-                {
-                    long elapsed = (long)(pts - _segmentStartPts);
-                    if (SegmentRotationRules.ShouldRotate(elapsed, _segmentNs, keyframe))
-                    {
-                        CloseSegment();
-                        OpenSegment(sample, pts);
-                    }
-                    else if (!_overshootReported && SegmentRotationRules.IsOvershooting(elapsed, _segmentNs))
-                    {
-                        _overshootReported = true;
-                        string detail = $"recorder='{_host.Name}' file='{_currentPath}' "
-                            + $"elapsedMs={elapsed / 1_000_000} segmentMs={_segmentNs / 1_000_000} "
-                            + "no key frame arrived at the split point; pin the GOP length in "
-                            + "ContinuousEncodingProperties to keep segments on time";
-                        Components.ActivityLog.Warn("continuous.overshoot", detail);
-                        _host.OnContinuousError(detail);
-                    }
-                }
-
-                // Push が buffer を消費する（PushBuffer がラッパーごと Dispose する）。
-                // この行から先で buffer に触れてはならない。押し込まなかった経路では
-                // 上の using が Dispose し、押し込んだ経路では using は空振りする
-                // （Dispose は冪等）。
-                Push(buffer, pts);
+                string repeated = 0 < rewindRepeated ? $" repeated={rewindRepeated}" : "";
+                Components.ActivityLog.Warn("continuous.error",
+                    $"recorder='{_host.Name}' the source timestamp went backwards; "
+                    + $"closed the segment and waiting for the next key frame{repeated}");
             }
-            catch (Exception ex)
+            CloseSegment();
+            if (!keyframe)
+                return;
+            OpenSegment(sample, pts);
+        }
+        else
+        {
+            long elapsed = (long)(pts - _segmentStartPts);
+            if (SegmentRotationRules.ShouldRotate(elapsed, _segmentNs, keyframe))
             {
-                string detail = $"recorder='{_host.Name}' {ex.Message}";
-                Components.ActivityLog.Error("continuous.error", detail);
+                CloseSegment();
+                OpenSegment(sample, pts);
+            }
+            else if (!_overshootReported && SegmentRotationRules.IsOvershooting(elapsed, _segmentNs))
+            {
+                _overshootReported = true;
+                string detail = $"recorder='{_host.Name}' file='{_currentPath}' "
+                    + $"elapsedMs={elapsed / 1_000_000} segmentMs={_segmentNs / 1_000_000} "
+                    + "no key frame arrived at the split point; pin the GOP length in "
+                    + "ContinuousEncodingProperties to keep segments on time";
+                Components.ActivityLog.Warn("continuous.overshoot", detail);
                 _host.OnContinuousError(detail);
             }
         }
+
+        // Push が buffer を消費する（PushBuffer がラッパーごと Dispose する）。
+        // この行から先で buffer に触れてはならない。押し込まなかった経路では
+        // 上の using が Dispose し、押し込んだ経路では using は空振りする
+        // （Dispose は冪等）。
+        Push(buffer, pts);
+    }
+
+    /// <summary>
+    /// 最初のサンプルの見張りを畳む（サンプルが来た、あるいはエンジンを止めた）。
+    /// フラグを先に立てた側だけが報告できるので、これが先ならタイマーは黙って降りる。
+    /// </summary>
+    private void StopFirstSampleWatch()
+    {
+        Interlocked.Exchange(ref _firstSampleReported, 1);
+        Interlocked.Exchange(ref _firstSampleTimer, null)?.Dispose();
     }
 
     /// <summary>
     /// 予算を過ぎても最初のサンプルが来ないことを 1 回だけ報告する。
     /// <c>async=false</c> の枝は 1 フレームも出さなくても <c>PLAYING</c> になるので、
     /// これが無いと「常時録画 on なのに何も起きない」が無音の失敗になる。
+    ///
+    /// <para>
+    /// <b>予算の切れ際の同時発火を弾く。</b> ここはプールスレッド、サンプルの到着は
+    /// 枝のストリーミングスレッドなので、両者が同時にここへ来ることがある
+    /// ── フラグを立てられた側だけが報告する。
+    /// </para>
+    /// <para>
+    /// <b>例外を漏らさない。</b> タイマーのコールバックから抜けた例外は誰も受けず、
+    /// プールスレッドの未処理例外としてプロセスを落とす。報告先
+    /// （<see cref="IContinuousRecorderHost.OnContinuousError"/>）は購読側の
+    /// <c>PropertyChanged</c> まで届くので、投げうる。
+    /// </para>
     /// </summary>
-    private void ReportMissingFirstSample(long startedAt)
+    private void ReportMissingFirstSample()
     {
-        if (_firstSampleReported || Environment.TickCount64 - startedAt < _firstSampleBudgetMs)
-            return;
+        try
+        {
+            if (Interlocked.Exchange(ref _firstSampleReported, 1) != 0)
+                return;
+            Interlocked.Exchange(ref _firstSampleTimer, null)?.Dispose();
 
-        _firstSampleReported = true;
-        string detail = $"recorder='{_host.Name}' no encoded frame reached the continuous branch "
-            + $"within {_firstSampleBudgetMs}ms; nothing is being recorded continuously";
-        Components.ActivityLog.Error("continuous.error", detail);
-        _host.OnContinuousError(detail);
+            string detail = $"recorder='{_host.Name}' no encoded frame reached the continuous branch "
+                + $"within {_firstSampleBudgetMs}ms; nothing is being recorded continuously";
+            Components.ActivityLog.Error("continuous.error", detail);
+            _host.OnContinuousError(detail);
+        }
+        catch (Exception ex)
+        {
+            DebugLogEx.Log(DebugLevel.Error,
+                $"the continuous first-sample watchdog failed!\n{ex}");
+        }
     }
 
     /// <summary>次のセグメントの書き出しパイプラインを作って <c>PLAYING</c> にする。</summary>
@@ -326,7 +436,8 @@ internal sealed partial class ContinuousRecorder : IDisposable
         if (!string.IsNullOrEmpty(directory))
             Directory.CreateDirectory(directory);
 
-        // ParseLaunch は失敗すると Gst.GLib.GException を投げる（Proc の catch が報告する）。
+        // ParseLaunch は失敗すると Gst.GLib.GException を投げる
+        // （サンプルのコールバックの catch が報告する）。
         var pipeline = (Pipeline)Gst.Global.ParseLaunch(ContinuousBranch.SegmentWriterPipeline);
         SegmentWriter? writer = null;
         try
@@ -546,6 +657,13 @@ internal sealed partial class ContinuousRecorder : IDisposable
     /// <summary>
     /// 排出の在庫を掃除する。<paramref name="all"/> が false のときは
     /// <see cref="MaxFinalizersInFlight"/> を超えている分だけ待つ。
+    ///
+    /// <para>
+    /// <b>この待ちはサンプルのコールバック（＝枝のストリーミングスレッド）の中で起こる。</b>
+    /// 待っている間フレームが溜まる先は枝の <c>queue</c>
+    /// （<c>leaky=downstream max-size-buffers=8</c>）で、上限に達すれば古い方から捨てられる
+    /// ── 待ちの長さに関わらず、この枝が抱えるメモリは有界である。
+    /// </para>
     /// </summary>
     private void WaitForFinalizers(bool all)
     {

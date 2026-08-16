@@ -320,12 +320,12 @@ public partial class EventRecorder : ObservableObject, IDisposable
     /// これまで同期が一切無かった。
     ///
     /// <para>
-    /// <b>sink と preview の <c>appsink</c> コールバック、および常時録画の pull スレッドは
-    /// このロックを取らない。</b> <see cref="Close"/> はロックを保持したまま
-    /// sink パイプラインを <c>Null</c> へ落として<b>実行中のコールバックの復帰を待ち</b>
-    /// （<see cref="CloseCore"/> の quiesce）、そのあと常時録画の停止を待つ
+    /// <b>sink・preview・常時録画の <c>appsink</c> コールバックはこのロックを取らない。</b>
+    /// <see cref="Close"/> はロックを保持したまま sink パイプラインを <c>Null</c> へ落として
+    /// <b>実行中のコールバックの復帰を待ち</b>（<see cref="CloseCore"/> の quiesce）、
+    /// そのあと常時録画の停止を待つ
     /// ── どちらも同じロックを待つ側に回った瞬間にデッドロックする。
-    /// コールバックと pull 側は volatile フィールド（<see cref="_isAlive"/> /
+    /// コールバックは volatile フィールド（<see cref="_isAlive"/> /
     /// <see cref="_IsRecording"/>）の読みだけで回すこと。
     /// </para>
     /// <para>
@@ -1614,16 +1614,19 @@ public partial class EventRecorder : ObservableObject, IDisposable
             ContinuousLastError = null;
 
             // **押し込みの継続条件を先に倒す。** サンプルのコールバック（sink / preview）の
-            // 早期 return と常時録画の pull ループの終了条件はこれ 1 本で、quiesce より前に
-            // 倒すことで「これから来るサンプルは触らない」を先に立てる。
+            // 早期 return はこれ 1 本で、quiesce より前に倒すことで
+            // 「これから来るサンプルは触らない」を先に立てる
+            // （常時録画のコールバックは自前の `_isAlive` を Close が倒す）。
             _isAlive = false;
 
             // **quiesce: sink パイプラインを Null へ落として、コールバックを退去させる。**
             // Null への遷移は appsink をフラッシュしてストリーミングスレッドを止める
             // ── GStreamer は実行中の onNewSample が返るまで待つので、これが返れば
             // 「もう誰もサンプルを押し込んでいない・リングを触っていない」が保証される。
-            // 常時録画の pull スレッドにとっても、ブロックしている
-            // TryPullSample を返させる唯一の信号である。
+            // **常時録画のコールバックの退去を保証するのもこれ 1 本**（3 本とも
+            // この sink パイプラインの appsink に付いている）── ContinuousRecorder.Close
+            // が最後のセグメントを安全に確定できるのは、これが成功した場合である
+            // （失敗した場合の備えは ContinuousRecorder.Close の doc）。
             //
             // **SetState(Null) は必ず呼ぶ。** 呼ばなければキャプチャとエンコードが
             // 誰にも管理されないまま走り続ける。有界にするのは**待ちだけ**で、
@@ -1674,9 +1677,11 @@ public partial class EventRecorder : ObservableObject, IDisposable
             // パイプラインへ SetState したり Initialize() を呼んだりする。
             CancelPendingRestart();
 
-            // **常時録画のスレッドが降りるまで sink 側を Dispose してはいけない**
-            // （cont appsink を読んでいる）。quiesce で TryPullSample は即 null を返すように
-            // なっているので、通常はすぐ降りる。
+            // 常時録画の後始末（最後のセグメントの確定と、排出中のセグメントの回収）を待つ。
+            // **これは sink 側を Dispose してよいかの判断には効かない** ── あちらが触るのは
+            // 自前の書き出しパイプラインだけで、cont appsink を読んでいるコールバックは
+            // 上の quiesce が退去させている。予算を超えたら、まだ排出中のセグメントを
+            // 置いたまま先へ進む（その報告は recorder.leak と continuous.finalize backlog）。
             bool continuousStopped = continuousClose is null
                 || continuousClose.Wait(StopFinalizeTimeoutMs + StopFinalizeSlackMs);
 
@@ -1717,7 +1722,7 @@ public partial class EventRecorder : ObservableObject, IDisposable
             string? leaked =
                 abandonedStop ? "the src pipeline was still draining; leaked instead of disposed"
                 : !quiesced ? "the sink pipeline did not reach NULL in time; leaked the pipelines instead of disposing them"
-                : !continuousStopped ? "the continuous pull thread did not stop in time; leaked the sink pipeline instead of disposing it"
+                : !continuousStopped ? "the continuous recording did not finish closing in time; left its segment writer(s) draining"
                 : null;
             if (leaked is not null)
                 Components.ActivityLog.Warn("recorder.leak", $"recorder='{Name}' {leaked}");
@@ -1759,12 +1764,15 @@ public partial class EventRecorder : ObservableObject, IDisposable
             }
 
             // sink パイプライン側（SetState(Null) は手順の先頭の quiesce で済んでいる）
-            // 常時録画の pull スレッドが降りていない場合も Dispose しない ──
-            // あちらは _continuousSink（この sink パイプラインの要素）を読み続けている。
-            if (!quiesced || !continuousStopped)
+            //
+            // **判断は quiesce だけで決まる。** sink パイプラインの appsink 3 本
+            // （録画・プレビュー・常時録画）に触れるのはコールバックだけで、
+            // その退去を保証するのは quiesce である。常時録画の Close がまだ走っていても、
+            // あちらが触るのは自前の書き出しパイプラインなので、ここの判断には関わらない。
+            if (!quiesced)
             {
-                // 実行中のコールバック、または TryPullSample が sink 側ネイティブを
-                // まだ触っている可能性がある。パイプラインを Dispose せず参照だけ落とす
+                // 実行中のコールバックが sink 側ネイティブをまだ触っている可能性がある。
+                // パイプラインを Dispose せず参照だけ落とす
                 // （recorder.leak は上で記録済み）。**コールバックも外さない** ──
                 // 解除は実行中のコールバックと競合しうる（バスの購読と同じ規律）。
                 _previewSink = null;
@@ -1784,6 +1792,7 @@ public partial class EventRecorder : ObservableObject, IDisposable
                 // 後者へ解決されると「1 つも指定が無い」として実行時に弾かれる。
                 _appSink?.SetSimpleCallbacks((GstApp.AppSinkSimpleCallbacks?)null);
                 _previewSink?.SetSimpleCallbacks((GstApp.AppSinkSimpleCallbacks?)null);
+                _continuousSink?.SetSimpleCallbacks((GstApp.AppSinkSimpleCallbacks?)null);
 
                 // 要素（appsink 群）とバスはインターンされた GObject ラッパーなので
                 // Dispose しない。Dispose するのはこのコードが作ったパイプラインだけ。
@@ -1821,7 +1830,7 @@ public partial class EventRecorder : ObservableObject, IDisposable
     /// <c>recorder.leak</c> を残して「Dispose もコールバックの解除もしない」へ倒す。
     /// </para>
     /// <para>
-    /// 値は常時録画の pull スレッドの <c>Join</c>（<c>ContinuousRecorder.JoinTimeoutMs</c>）と
+    /// 値は常時録画側の退去待ち（<c>ContinuousRecorder.CallbackExitTimeoutMs</c>）と
     /// 同じ 5 秒。健全なパイプラインの
     /// <c>Null</c> 化はミリ秒で終わり、掛かるのは要素が固まっている場合だけである。
     /// </para>
@@ -1829,10 +1838,10 @@ public partial class EventRecorder : ObservableObject, IDisposable
     private const int SinkQuiesceTimeoutMs = 5000;
 
     /// <summary>
-    /// sink の <c>appsink</c> コールバックと preview の pull ループの継続条件。
+    /// sink と preview の <c>appsink</c> コールバックの継続条件。
     /// <b>volatile は必須</b> ── <see cref="CloseCore"/> はこれを false にしてから
-    /// quiesce と <c>Join(5000)</c> へ進む。可視性が保証されないと、コールバックが
-    /// teardown 中も押し込みを続け、Join もタイムアウトするまで返らない。
+    /// quiesce へ進む。可視性が保証されないと、コールバックが teardown 中も
+    /// 押し込みを続け、quiesce の待ちがそのぶん伸びる。
     /// </summary>
     private volatile bool _isAlive = true;
 
