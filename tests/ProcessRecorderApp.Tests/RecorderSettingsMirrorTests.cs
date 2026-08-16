@@ -23,7 +23,7 @@ namespace ProcessRecorderApp.Tests;
 public class RecorderSettingsMirrorTests
 {
     private static string RecorderSourcePath =>
-        RepositoryFiles.At("src", "GStreamer.GirCore", "EventRecorder.cs");
+        RepositoryFiles.At("src", "GStreamer.GstSharpNet", "EventRecorder.cs");
 
     private static string ViewModelSourcePath =>
         RepositoryFiles.At("src", "ProcessRecorderApp", "ViewModels", "GstEventRecorderViewModel.cs");

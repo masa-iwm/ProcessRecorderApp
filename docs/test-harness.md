@@ -29,7 +29,7 @@ L2 の主な対象範囲:
 | テストクラス | 対象 |
 |---|---|
 | `SmokeTests` | ハーネス自身の健全性（`ping`・隔離が効いていること・レコーダーの初期化） |
-| `RuntimeResolutionTests` | GStreamer がどこからロードされたか（`gst.runtime`）。解決先が1つに決まり、選んだディレクトリから実際にロードされ、本体と glib が同じ根から来ていること（`mixed=False`）。特定のディレクトリは焼き込まない ── 正解は環境ごとに違う（開発機は MinGW インストール／CI は MSYS2／同梱リリースは `runtimes/`） |
+| `RuntimeResolutionTests` | GStreamer がどこからロードされたか（`gst.runtime`）。解決先が1つに決まり（`selected=` はバインディングの `GstInstallOrigin` の名前）、選んだディレクトリから実際にロードされ、本体と glib が同じ根から来ていること（`mixed=False`）。**ディレクトリを固定しない最後の段だけは照合を免除する**（`dir=(search-path)` ── ベアネームで OS のローダーに任せた場合）。特定のディレクトリは焼き込まない ── 正解は環境ごとに違う（開発機は MinGW インストール／CI は MSYS2／同梱リリースは `runtimes/`） |
 | `OutputDirectoryTests` | 保存先（相対テンプレートが `OutputDirectory` の下に出ること・発行ディレクトリに漏れないこと）と古い mp4 の自動削除 |
 | `PreBufferTests` | 事前バッファ（録画ボタンを押す前の映像が残ること）。アプリの中核契約 |
 | `CliContractTests` | 終了コードの契約・`--set` `--get` の往復・`activate` でウィンドウが出ること |

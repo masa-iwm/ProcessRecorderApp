@@ -19,9 +19,9 @@
 #       ── docs/gpu-verification.md）。
 #
 # **同梱物の検証はここでしかできない。** 開発機には GStreamer が入っており、
-# 解決順（元の PATH → 環境変数 → レジストリ → MSYS2 → 同梱物）の都合で
-# 同梱物は必ず負ける。このジョブは MSYS2 を入れないので、
-# ランナーでは同梱物が唯一の候補になり `selected=bundled` を実際に踏める。
+# 解決順（元の PATH → 環境変数 → レジストリ → 既定の導入先 → MSYS2 → 同梱物）の
+# 都合で同梱物は必ず負ける。このジョブは MSYS2 を入れないので、
+# ランナーでは同梱物が唯一の当たりになり `selected=BundledRuntime` を実際に踏める。
 # ただし流せるのは**エンコーダーに依存しないケースだけ** ── L2 のハーネスは
 # `SettingsFile.DefaultEncoder = "x264enc"` を固定しており、同梱物に x264 は無い。
 
@@ -159,8 +159,8 @@ jobs:
             if (-not (Test-Path (Join-Path $dir $f))) { throw "not in the package: $f" }
           }
 
-      # このジョブは MSYS2 を入れていないので、同梱物が唯一の候補になる。
-      # ここが `selected=bundled` を実際に踏む唯一の場所（上の冒頭コメントを参照）。
+      # このジョブは MSYS2 を入れていないので、同梱物が唯一の当たりになる。
+      # ここが `selected=BundledRuntime` を実際に踏む唯一の場所（上の冒頭コメントを参照）。
       - name: Smoke-test the bundled build
         env:
           PROCESSRECORDERAPP_E2E_PUBLISH_DIR: ${{ github.workspace }}/src/ProcessRecorderApp/bin/Release/win-x64/publish/bundled

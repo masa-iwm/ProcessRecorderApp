@@ -24,9 +24,10 @@ public sealed class GstDebugLiveTests(PublishedApp app)
     ///
     /// <para>
     /// 反映のフック（<c>AppSettings.OnGstDebugChanged</c>）は逆シリアル化の setter でも
-    /// 発火する。そこは PATH の組み立てと <c>DllImportResolver</c> の登録より前なので、
-    /// <c>DebugLogEx.IsGstInitialized</c> のガードが無いとネイティブの解決に失敗して
-    /// プロセスごと落ちる。<b>症状は「起動しない」であって、ログには何も残らない。</b>
+    /// 発火する。そこはロケーターの選定と <c>Initialize(options)</c> より前なので、
+    /// <c>DebugLogEx.IsGstInitialized</c> のガードが無いとローダーが勝手な根をピンし、
+    /// 後続の初期化が InvalidOperationException でプロセスごと落ちる。
+    /// <b>症状は「起動しない」であって、ログには何も残らない。</b>
     /// </para>
     /// </summary>
     [Fact]

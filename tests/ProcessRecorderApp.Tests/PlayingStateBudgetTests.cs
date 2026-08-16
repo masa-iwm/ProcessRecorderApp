@@ -17,7 +17,7 @@ namespace ProcessRecorderApp.Tests;
 /// 起動直後のコマンドが「録画エンジンが利用できない」で失敗し始める。</b>
 /// </para>
 /// <para>
-/// <b>2つの定数は別アセンブリにある</b>（<c>GStreamer.GirCore</c> と
+/// <b>2つの定数は別アセンブリにある</b>（<c>GStreamer.GstSharpNet</c> と
 /// <c>ProcessRecorderApp</c>）。しかも L1 テストは WinUI 側のプロジェクトを参照していないので、
 /// <c>StopFinalizeBudgetTests</c> のように型で突き合わせることができない
 /// ── <c>AppSettingsReloadTests</c> と同じくソースをテキストとして読む。

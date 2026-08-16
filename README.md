@@ -207,7 +207,7 @@ carries two zip files; unpack one and run `ProcessRecorderApp.exe` — nothing i
 ## Repository layout
 
 - `src/ProcessRecorderApp/` — the main application (UI and startup)
-- `src/GStreamer.GirCore/` — the recording and preview engine
+- `src/GStreamer.GstSharpNet/` — the recording and preview engine
 - `src/SingleInstance/` — tray residency and single-instance control
 - `src/Components/` — shared components
 - `src/Controls/` — GUI parts

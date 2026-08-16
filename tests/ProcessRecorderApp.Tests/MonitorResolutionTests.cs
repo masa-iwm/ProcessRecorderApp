@@ -1,4 +1,4 @@
-﻿using ProcessRecorderApp.GStreamer;
+using ProcessRecorderApp.GStreamer;
 using Xunit;
 
 namespace ProcessRecorderApp.Tests;
@@ -12,33 +12,19 @@ namespace ProcessRecorderApp.Tests;
 /// 効かせられない</b>ので、その値を利用者が手で調べなくて済むようにするための経路である。
 /// </para>
 /// <para>
+/// <b>大きさは <c>d3d12screencapturedeviceprovider</c> のデバイス caps が運ぶ</b>
+/// （<c>width</c> / <c>height</c>）。キャプチャ側がこれから出す大きさそのものなので、
+/// <b>プロセスの DPI 認識に依存しない</b> ── 生の Win32（<c>GetMonitorInfo</c> の
+/// <c>rcMonitor</c> や <c>DXGI_OUTPUT_DESC.DesktopCoordinates</c>）で取っていた頃の
+/// 「DPI 非対応プロセスでは仮想化された半端な値が返る」罠は、経路ごと無くなっている。
+/// </para>
+/// <para>
 /// <b>この検査はこの機械の実物を読む。</b> 値そのものは機械ごとに違うので固定できないが、
-/// <b>DPI 仮想化された値が返っていないこと</b>は形で分かる ── テストホストは
-/// DPI 非対応のプロセスなので、<c>GetMonitorInfo</c> 系なら仮想化された値
-/// （実測で 2194x1234 のような半端な大きさ）が返る。<c>EnumDisplaySettings</c> は
-/// ディスプレイの現在のモードを返すのでプロセスの DPI 認識に依存しない。
+/// <b>実寸としてありえない値でないこと</b>は形で確かめられる。
 /// </para>
 /// </summary>
 public class MonitorResolutionTests
 {
-    /// <summary>
-    /// <b>P/Invoke で渡す構造体が Windows の定義と同じ大きさであること。</b>
-    /// ずれると <c>EnumDisplayDevices</c> / <c>EnumDisplaySettings</c> がスタックの隣を
-    /// 書き潰し、<b>あとから無関係な場所でアクセス違反になる</b>（原因が現場に残らない）。
-    /// </summary>
-    [Fact]
-    public void TheNativeStructs_HaveTheSizeWindowsExpects()
-    {
-        var (outputDesc, monitorInfo, devmode) = GstIntrospect.NativeStructSizes();
-        Assert.Equal(96, outputDesc);       // DXGI_OUTPUT_DESC
-        Assert.Equal(104, monitorInfo);     // MONITORINFOEXW
-        Assert.Equal(220, devmode);         // DEVMODEW
-
-        // vtable のスロット（dxgi.h の Vtbl 構造体の並び）。ずれると別の関数を呼ぶ。
-        var slots = GstIntrospect.NativeVtableSlots();
-        Assert.Equal((2, 12, 7, 7), slots);
-    }
-
     [Fact]
     public void EveryConnectedMonitor_ReportsAPlausiblePhysicalSize()
     {
@@ -51,9 +37,14 @@ public class MonitorResolutionTests
 
         foreach (string value in resolutions)
         {
+            // 読めなかったモニターは**空文字で席が残る**（意図的。詰めると以降の
+            // monitor-index が1つずつずれ、直そうとしている取り違えを作ってしまう）。
+            if (value.Length == 0)
+                continue;
+
             Assert.True(ContinuousBranch.TryParseResolution(value, out int width, out int height),
                 $"解像度として読めない値が返っている: '{value}'");
-            // 640x480 未満・16K 超は、DPI 仮想化や単位の取り違えを疑う形
+            // 640x480 未満・16K 超は、単位の取り違えや caps の読み違いを疑う形
             Assert.InRange(width, 640, 15360);
             Assert.InRange(height, 480, 8640);
         }

@@ -1,5 +1,8 @@
 ﻿using CommunityToolkit.Mvvm.ComponentModel;
 using Gst;
+using GstApp = Gst.App;
+using GstBase = Gst.Base;
+using GObject = Gst.GObject;
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
@@ -519,7 +522,7 @@ public partial class EventRecorder : ObservableObject, IDisposable
     /// アプリ層から設定される、優先する H.264 エンコーダーのファクトリ名
     /// （<c>AppSettings.PreferredH264Encoder</c>。空なら自動選択）。
     ///
-    /// <c>GStreamer.GirCore</c> は <c>AppSettings</c> を知らない設計なので、
+    /// <c>GStreamer.GstSharpNet</c> は <c>AppSettings</c> を知らない設計なので、
     /// <c>EventRecorder.TemplateVariables</c> と同じく static のミラーとして受け取る。
     /// </summary>
     public static string? PreferredH264Encoder { get; set; }
@@ -994,13 +997,15 @@ public partial class EventRecorder : ObservableObject, IDisposable
             const string SrcPipelineStr =
                 "appsrc format=time name=src ! h264parse ! mp4mux faststart=true name=mux ! filesink name=file";
 
-            _sinkPipeline = (Pipeline)Functions.ParseLaunch(SinkPipelineStr);
-            _sinkPipeline.Name = "event-recorder-sink-pipeline";
+            // ParseLaunch は失敗を Gst.GLib.GException で投げる。候補ごとの失敗は
+            // InitializeCore の catch が次の候補へ送るので、ここでは握らない。
+            _sinkPipeline = (Pipeline)Global.ParseLaunch(SinkPipelineStr);
+            _sinkPipeline.SetName("event-recorder-sink-pipeline");
             _sinkBus = _sinkPipeline.GetBus();
             _appSink = (GstApp.AppSink)_sinkPipeline.GetByName("sink")!;
             _previewSink = (GstApp.AppSink)_sinkPipeline.GetByName("preview")!;
-            _srcPipeline = (Pipeline)Functions.ParseLaunch(SrcPipelineStr);
-            _srcPipeline.Name = "event-recorder-src-pipeline";
+            _srcPipeline = (Pipeline)Global.ParseLaunch(SrcPipelineStr);
+            _srcPipeline.SetName("event-recorder-src-pipeline");
             _srcBus = _srcPipeline.GetBus();
             _appSrc = (GstApp.AppSrc)_srcPipeline.GetByName("src")!;
             _mux = _srcPipeline.GetByName("mux")!;
@@ -1123,7 +1128,7 @@ public partial class EventRecorder : ObservableObject, IDisposable
 
     /// <summary>
     /// <c>.dot</c> の保存先（<c>AppSettings.GstDebugDumpDotDir</c> の static ミラー）。
-    /// 空なら書かない。<c>GStreamer.GirCore</c> は <c>AppSettings</c> を知らない設計なので、
+    /// 空なら書かない。<c>GStreamer.GstSharpNet</c> は <c>AppSettings</c> を知らない設計なので、
     /// <see cref="OutputDirectory"/> と同じく static のミラーとして受け取る。
     /// </summary>
     public static string DebugDumpDotDirectory { get; set; } = "";
@@ -1279,7 +1284,7 @@ public partial class EventRecorder : ObservableObject, IDisposable
     private static void WaitUntilPlaying(Pipeline pipeline)
     {
         var ret = pipeline.GetState(
-            out var state, out var pending, (ulong)PlayingStateTimeoutMs * 1_000_000UL);
+            out var state, out var pending, ClockTime.FromMilliseconds(PlayingStateTimeoutMs));
 
         if (ret is StateChangeReturn.Success or StateChangeReturn.NoPreroll)
             return;
@@ -1438,9 +1443,10 @@ public partial class EventRecorder : ObservableObject, IDisposable
             {
                 // 排出タスク（abandonedStop）または pull スレッドがまだ
                 // _srcPipeline / _appSrc / _srcBus を触っている可能性がある。
-                // ここで Dispose すると使用中のネイティブオブジェクトを壊す（＝クラッシュ）。
-                // 参照だけ落として解放は諦める ── リークするが落ちはしない
+                // ここでパイプラインを Dispose すると使用中のネイティブオブジェクトを壊す
+                // （＝クラッシュ）。Dispose せず参照だけ落とす ── リークするが落ちはしない
                 // （排出の abandonedStop と同じ規律を pull スレッド側にも適用する）。
+                // 要素・バスはインターンされた GObject ラッパーで、どの経路でも Dispose しない。
                 Components.ActivityLog.Warn("recorder.leak",
                     $"recorder='{Name}' " + (abandonedStop
                         ? "the src pipeline was still draining; leaked instead of disposed"
@@ -1455,20 +1461,20 @@ public partial class EventRecorder : ObservableObject, IDisposable
             else
             {
                 _srcPipeline?.SetState(State.Null);
-                _file?.Dispose();
+                // 要素・バスはインターンされた GObject ラッパーなので Dispose しない
+                // （プロセス共通の参照を持ち、解放はランタイム側の責務）。参照だけ落とす。
+                // Dispose するのは、このコードが作って「もう使わない」と決めた
+                // パイプラインだけ（Null へ落とした後の公認の破棄）。
                 _file = null;
-                _mux?.Dispose();
                 _mux = null;
-                _appSrc?.Dispose();
                 _appSrc = null;
-                _srcBus?.Dispose();
                 _srcBus = null;
                 _srcPipeline?.Dispose();
                 _srcPipeline = null;
                 _errorSinkSrc = null;
             }
 
-            // sink パイプライン側（_previewSink は sink 側の要素なのでこちらで解放する）
+            // sink パイプライン側
             //
             // **SetState(Null) は pull が降りていなくても必ず実行する。** これは appsink を
             // フラッシュして、孤児スレッドがブロックしている TryPullSample を返させる
@@ -1478,7 +1484,7 @@ public partial class EventRecorder : ObservableObject, IDisposable
             if (!pullStopped)
             {
                 // TryPullSample / DrainBus が sink 側ネイティブをまだ触っている可能性がある
-                // ので、Dispose はせず参照だけ落とす（recorder.leak は上で記録済み）。
+                // ので、パイプラインも Dispose せず参照だけ落とす（recorder.leak は上で記録済み）。
                 _previewSink = null;
                 _appSink = null;
                 _continuousSink = null;
@@ -1487,13 +1493,11 @@ public partial class EventRecorder : ObservableObject, IDisposable
             }
             else
             {
-                _previewSink?.Dispose();
+                // 要素（appsink 群）とバスはインターンされた GObject ラッパーなので
+                // Dispose しない。Dispose するのはこのコードが作ったパイプラインだけ。
                 _previewSink = null;
-                _appSink?.Dispose();
                 _appSink = null;
-                _continuousSink?.Dispose();
                 _continuousSink = null;
-                _sinkBus?.Dispose();
                 _sinkBus = null;
                 _sinkPipeline?.Dispose();
                 _sinkPipeline = null;
@@ -1545,6 +1549,10 @@ public partial class EventRecorder : ObservableObject, IDisposable
         // **エラーにはならないまま**中身の無い MP4 が出来上がる（実機の nvh264enc で観測）。
         // sink 側で実際にネゴシエートされたキャップスを渡して推測をやめさせる。
         bool appSrcCapsSet = false;
+        // **所有権: buffer は消費しない（リング所有のまま借りる）。** 押し込むのは
+        // ここで作る複製 ── 旧実装の MakeWritable も、リングが参照を持つ共有バッファでは
+        // 必ず複製を作ってから押し込んでいた（コストは同一）。リングの項目を消費しない
+        // ことで、停止→即開始の次セッションが同じ事前バッファ窓をそのまま再押し込みできる。
         void PushRecordBuffer(ulong bufferPts, Gst.Buffer buffer)
         {
             if (!isIframeFound)
@@ -1575,11 +1583,19 @@ public partial class EventRecorder : ObservableObject, IDisposable
                 isIframeFound = false;
                 return;
             }
-            using MiniObject miniObject = new(Gst.Internal.MiniObjectOwnedHandle.FromUnowned(((GLib.BoxedRecord)buffer).GetHandle()));
-            using MiniObject writableMiniObject = miniObject.MakeWritable()!;
-            Gst.Buffer buf = new(Gst.Internal.BufferOwnedHandle.FromUnowned(((GLib.BoxedRecord)writableMiniObject)!.GetHandle()));
-            buf.Handle.SetPts(bufferPts - startPts);
-            buf.Handle.SetDts(Constants.CLOCK_TIME_NONE);
+            // gst_buffer_copy 相当（メタデータ複製・メモリは参照共有）。複製は参照1本の
+            // 単独所有なので、MakeWritable なしで PTS/DTS を直接書ける。
+            // PushBuffer はネイティブの所有権ごと引き取りラッパーも自ら Dispose する ──
+            // using は押し込めなかった経路（appsrc 不在）の後始末で、PushBuffer 後の
+            // 二重 Dispose は冪等なので無害。
+            using var buf = buffer.CopyRegion(BufferCopy.All, 0, nuint.MaxValue);
+            if (buf is null)
+            {
+                Log(DebugLevel.Warning, "gst_buffer_copy_region failed; dropping one record buffer");
+                return;
+            }
+            buf.SetPts(ClockTime.FromNanoseconds(bufferPts - startPts));
+            buf.SetDts(ClockTime.None);
             // **数えるのは appsrc が受理した押し込みだけ。** PushBuffer は EOS 後は Eos、
             // 未始動なら Flushing を返してバッファを受け取らない。拒否も数えると
             // 「pushed が 0 でないのに MP4 は空」が成立し、停止時の空検出
@@ -1596,7 +1612,7 @@ public partial class EventRecorder : ObservableObject, IDisposable
             {
                 DrainBuses();
 
-                using var sample = _appSink?.TryPullSample(100_000_000); // 100 ms
+                using var sample = _appSink?.TryPullSample(ClockTime.FromMilliseconds(100));
                 if (sample is null)
                     continue;
 
@@ -1607,15 +1623,20 @@ public partial class EventRecorder : ObservableObject, IDisposable
                 // 途中で SetCaps すると下流の再ネゴシエーションが起きるので一度だけ。
                 if (!appSrcCapsSet)
                 {
-                    var negotiated = sample.GetCaps();
+                    // sample.GetCaps() のラッパーは同じネイティブ caps への参照を自前で
+                    // 1本持つ。Dispose が返すのはその1本だけで、sample 側の caps は残る。
+                    using var negotiated = sample.GetCaps();
                     if (negotiated is not null)
                     {
+                        // SetCaps は caps を複製する。渡したラッパーの所有はこちらのまま。
                         _appSrc?.SetCaps(negotiated);
                         appSrcCapsSet = true;
-                        // GirCore の Gst.Caps は文字列化 API を公開していないため、構造体名だけを出す
+                        // GetStructure(0) は所有するコピー（Boxed）を返すので解放する。
+                        // ログには従来どおり構造体名だけを出す
                         // （実際のキャップス全体は GST_DEBUG のネゴシエーションログに出る）。
+                        using var structure = negotiated.GetStructure(0);
                         Log(DebugLevel.Info,
-                            $"appsrc caps set from the negotiated sink caps ({negotiated.GetStructure(0)?.GetName() ?? "?"})");
+                            $"appsrc caps set from the negotiated sink caps ({structure.GetName()})");
                     }
                 }
 
@@ -1623,11 +1644,24 @@ public partial class EventRecorder : ObservableObject, IDisposable
                 if (buffer is null)
                     continue;
 
-                var pts = buffer.Handle.GetPts();
-                if (pts == Constants.CLOCK_TIME_NONE)
-                    pts = (ulong)(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() * 1_000_000);
+                // リングのキーは ulong(ns) のまま（押し込み時に ClockTime へ組み直す）。
+                var pts = buffer.Pts.IsNone
+                    ? (ulong)(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() * 1_000_000)
+                    : buffer.Pts.Nanoseconds;
 
-                var copy = buffer.Copy()!;
+                // gst_buffer_copy 相当（GST_BUFFER_COPY_ALL・全域）。null は複製の失敗。
+                var copy = buffer.CopyRegion(BufferCopy.All, 0, nuint.MaxValue);
+                if (copy is null)
+                {
+                    Log(DebugLevel.Error, "gst_buffer_copy_region failed; dropping this sample");
+                    continue;
+                }
+
+                // 録画中もリングへ溜め続ける（所有権はリングへ移り、解放は退避か
+                // CloseCore の DrainAll が行う）── 停止→即開始の次セッションが
+                // 「直前の録画中」も含めた事前バッファ窓をそのまま再押し込みできる。
+                // PushRecordBuffer はリングの項目を消費せず複製を送るので、
+                // リングに残したままで安全。
                 _ringBuffer.Enqueue(pts, copy, copy.GetSize());
 
                 // 退避条件（時間・サイズの2本立て）と「直近の1件は必ず残す」ガードは
@@ -1721,6 +1755,11 @@ public partial class EventRecorder : ObservableObject, IDisposable
     /// </summary>
     private void DrainBuses()
     {
+        // GObject ラッパーのファイナライザが積んだ解放要求を消化する。
+        // このアプリは GMainLoop を回さないので、ここで消化しないと誰も消化しない
+        // （バスのポーリングと同じ周期で1回）。
+        global::GstSharp.DrainPendingReleases();
+
         // sink 側: 常時稼働。EOS を待つ者がいないので Eos も拾う。
         DrainBus(_sinkBus, MessageType.Error | MessageType.Warning | MessageType.Eos, _sinkThrottles, "sink");
 
@@ -1759,21 +1798,20 @@ public partial class EventRecorder : ObservableObject, IDisposable
     /// <summary>バスメッセージ1件を分類して記録し、必要なら復帰・停止へつなぐ。</summary>
     private void HandleBusMessage(Message msg, string busName, BusThrottles throttles)
     {
-        // メッセージの発信元。所有しない（owned: false）ラッパーで、実体は
-        // パイプライン（Bin）が参照を持っているのでメッセージの解放後も有効。
-        var srcObject = msg.Handle.GetSrc() == 0
-            ? null
-            : Gst.Object.NewFromPointer(msg.Handle.GetSrc(), false);
+        // メッセージの発信元。インターンされた GObject ラッパーで、ラッパー自身が
+        // 参照を持つのでメッセージの解放後も有効。Dispose してはいけない。
+        // フィールドに保持してメッセージを跨いで使ってもよい（_errorSinkSrc がそれ）。
+        var srcObject = msg.Src;
         string elementName = srcObject?.Name ?? "?";
 
         switch (msg.Type)
         {
             case MessageType.Error:
                 {
-                    msg.ParseError(out var gerror, out var debug);
-                    string? message;
-                    using (gerror)
-                        message = gerror.Message;
+                    // ParseError はネイティブ側の後始末込みで (GException, debug) を返す。
+                    // GException はただの例外オブジェクトなので解放は不要。
+                    var (error, debug) = msg.ParseError();
+                    string message = error.Message;
                     string detail = $"recorder='{Name}' bus={busName} element='{elementName}' {message} debug={debug}";
 
                     // Error も洪水になる ── 「Error は1件ごとに意味があるので抑制しない」は
@@ -1822,10 +1860,8 @@ public partial class EventRecorder : ObservableObject, IDisposable
 
             case MessageType.Warning:
                 {
-                    msg.ParseWarning(out var gerror, out var debug);
-                    string? message;
-                    using (gerror)
-                        message = gerror.Message;
+                    var (error, debug) = msg.ParseWarning();
+                    string message = error.Message;
 
                     // Warning は洪水になる。同一内容の連続は畳む（BusMessageThrottle 参照）。
                     var (emit, repeatedBefore) = throttles.Warning.Observe($"{elementName} {message}");
@@ -2112,7 +2148,7 @@ public partial class EventRecorder : ObservableObject, IDisposable
         {
             try
             {
-                using var sample = _previewSink?.TryPullSample(100_000_000);
+                using var sample = _previewSink?.TryPullSample(ClockTime.FromMilliseconds(100));
                 if (sample is null)
                     continue;
 
@@ -2248,8 +2284,13 @@ public partial class EventRecorder : ObservableObject, IDisposable
             throw;
         }
 
-        using (GObject.Value location = new(filename))
-            _file?.SetProperty("location", location);
+        // GObject.Value は所有する（using で必ず解放する）。SetProperty は値を
+        // 複製して渡すので、この Value の所有はこちらに残る。
+        using (var location = GObject.Value.New(GObject.GType.String))
+        {
+            location.SetString(filename);
+            _file?.SetProperty("location", in location);
+        }
 
         // **計測のリセットは _IsRecording を立てる「前」に行う。**
         // 数えるのは _IsRecording が真の間だけなので、この順序なら
@@ -2478,7 +2519,7 @@ public partial class EventRecorder : ObservableObject, IDisposable
 
     /// <summary>
     /// 排出待ちの上限(ms)。アプリ層（<c>AppSettings.StopFinalizeTimeoutMs</c>）から設定する
-    /// static ミラー（<c>GStreamer.GirCore</c> は <c>AppSettings</c> を知らない設計のため、
+    /// static ミラー（<c>GStreamer.GstSharpNet</c> は <c>AppSettings</c> を知らない設計のため、
     /// <see cref="PreferredH264Encoder"/> と同じ方式）。
     /// </summary>
     public static int StopFinalizeTimeoutMs { get; set; } = DefaultStopFinalizeTimeoutMs;
@@ -2488,7 +2529,7 @@ public partial class EventRecorder : ObservableObject, IDisposable
     /// 呼び出し側で <c>_IsRecording</c> を false にしてから呼ぶこと。
     ///
     /// <para>
-    /// <b>排出待ちは有界。</b> <c>CLOCK_TIME_NONE</c>（無限待ち）にすると、mux が詰まったとき
+    /// <b>排出待ちは有界。</b> <c>ClockTime.None</c>（無限待ち）にすると、mux が詰まったとき
     /// 呼び出しスレッド（UI スレッドや CLI 経路）ごと永久にハングする。
     /// タイムアウトしても <c>SetState(Null)</c> は必ず実行し、結果を <c>result=</c> に残す。
     /// </para>
@@ -2512,8 +2553,8 @@ public partial class EventRecorder : ObservableObject, IDisposable
         {
             _appSrc?.EndOfStream();
 
-            ulong timeoutNs = (ulong)Math.Max(0, StopFinalizeTimeoutMs) * 1_000_000UL;
-            using var msg = _srcBus?.TimedPopFiltered(timeoutNs, MessageType.Eos | MessageType.Error);
+            var timeout = ClockTime.FromMilliseconds(Math.Max(0, StopFinalizeTimeoutMs));
+            using var msg = _srcBus?.TimedPopFiltered(timeout, MessageType.Eos | MessageType.Error);
 
             StopDrainSignal signal = msg is null ? StopDrainSignal.Timeout
                 : msg.Type == MessageType.Error ? StopDrainSignal.Error
@@ -2531,13 +2572,10 @@ public partial class EventRecorder : ObservableObject, IDisposable
             }
             else if (signal == StopDrainSignal.Error)
             {
-                msg!.ParseError(out var gerror, out var debug);
-                using (gerror)
-                {
-                    string detail = $"recorder='{Name}' file='{LastFilename}' {gerror.Message} debug={debug}";
-                    Components.ActivityLog.Error("recording.stop error", detail);
-                    LastError = detail;
-                }
+                var (error, debug) = msg!.ParseError();
+                string detail = $"recorder='{Name}' file='{LastFilename}' {error.Message} debug={debug}";
+                Components.ActivityLog.Error("recording.stop error", detail);
+                LastError = detail;
             }
 
             // **1フレームも書けていないなら、成功として返さない。**
@@ -2609,7 +2647,7 @@ public partial class EventRecorder : ObservableObject, IDisposable
             if (pipeline is null)
                 return "none";
 
-            var ret = pipeline.GetState(out var state, out var pending, 0);
+            var ret = pipeline.GetState(out var state, out var pending, ClockTime.Zero);
             return ret == StateChangeReturn.Async ? $"{state}->{pending}" : state.ToString();
         }
         catch (Exception)
@@ -2658,12 +2696,9 @@ public partial class EventRecorder : ObservableObject, IDisposable
                     using var src = message.Handle.GetSrc() == 0 ? null : Gst.Object.NewFromPointer(message.Handle.GetSrc(), false);
                     var name = src?.GetPathString();
 
-                    message.ParseInfo(out var gerror, out var debug);
-                    using (gerror)
-                    {
-                        if (debug is not null)
-                            Console.Error.WriteLine($"INFO:\n{debug}");
-                    }
+                    // gst_message_parse_info には GstSharp.Net（preview1）の束縛が無い
+                    // （preview2 取り込み予定）。ここは無効化済みの参考コードなので、
+                    // Info の中身は読まない。
                 }
                 break;
             case MessageType.Warning:

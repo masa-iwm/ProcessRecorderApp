@@ -4,6 +4,8 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Threading;
+using GObject = Gst.GObject;
+using GstApp = Gst.App;
 using STTask = System.Threading.Tasks.Task;
 
 namespace ProcessRecorderApp.GStreamer;
@@ -90,7 +92,6 @@ internal sealed partial class ContinuousRecorder : IDisposable
     private Pipeline? _writer;
     private Bus? _writerBus;
     private GstApp.AppSrc? _writerSrc;
-    private Element? _writerFile;
 
     private int _segmentIndex;
     private string? _currentPath;
@@ -147,12 +148,13 @@ internal sealed partial class ContinuousRecorder : IDisposable
         else
         {
             // pull スレッドがまだ書き出しパイプラインを触っている可能性がある。
-            // Dispose すると使用中のネイティブオブジェクトを壊すので、参照だけ落とす
-            // ── EventRecorder の recorder.leak と同じ規律。
+            // SetState(Null) や pipeline.Dispose() は使用中のネイティブオブジェクトを
+            // 壊すので行わず、参照だけ落とす（bus/src はインターンされた GObject
+            // ラッパーで、もともと Dispose しない）── EventRecorder の recorder.leak
+            // と同じ規律。
             Components.ActivityLog.Warn("continuous.leak",
                 $"recorder='{_host.Name}' the continuous pull thread did not stop in time; "
                 + "leaked the segment writer instead of disposing it");
-            _writerFile = null;
             _writerSrc = null;
             _writerBus = null;
             _writer = null;
@@ -178,7 +180,11 @@ internal sealed partial class ContinuousRecorder : IDisposable
         {
             try
             {
-                using var sample = _source.TryPullSample(100_000_000); // 100 ms
+                // GMainLoop を回していないアプリなので、ファイナライザーが積んだ
+                // GObject の解放はこのループで消化する（1 イテレーションに 1 回）。
+                GstSharp.DrainPendingReleases();
+
+                using var sample = _source.TryPullSample(ClockTime.FromMilliseconds(100));
                 if (sample is null)
                 {
                     ReportMissingFirstSample(startedAt);
@@ -190,9 +196,9 @@ internal sealed partial class ContinuousRecorder : IDisposable
                 if (buffer is null)
                     continue;
 
-                ulong pts = buffer.Handle.GetPts();
-                if (pts == Constants.CLOCK_TIME_NONE)
-                    pts = (ulong)(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() * 1_000_000);
+                ulong pts = buffer.Pts.IsNone
+                    ? (ulong)(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() * 1_000_000)
+                    : buffer.Pts.Nanoseconds;
                 bool keyframe = !buffer.HasFlags(BufferFlags.DeltaUnit);
 
                 if (_writer is null)
@@ -246,6 +252,10 @@ internal sealed partial class ContinuousRecorder : IDisposable
                     }
                 }
 
+                // Push が buffer を消費する（PushBuffer がラッパーごと Dispose する）。
+                // この行から先で buffer に触れてはならない。押し込まなかった経路では
+                // 上の using が Dispose し、押し込んだ経路では using は空振りする
+                // （Dispose は冪等）。
                 Push(buffer, pts);
             }
             catch (Exception ex)
@@ -283,24 +293,30 @@ internal sealed partial class ContinuousRecorder : IDisposable
         if (!string.IsNullOrEmpty(directory))
             Directory.CreateDirectory(directory);
 
-        var pipeline = (Pipeline)Functions.ParseLaunch(ContinuousBranch.SegmentWriterPipeline);
+        // ParseLaunch は失敗すると Gst.GLib.GException を投げる（Proc の catch が報告する）。
+        var pipeline = (Pipeline)Gst.Global.ParseLaunch(ContinuousBranch.SegmentWriterPipeline);
         Bus? bus = null;
         GstApp.AppSrc? src = null;
-        Element? file = null;
         try
         {
-            pipeline.Name = $"continuous-writer-{_segmentIndex}";
+            pipeline.SetName($"continuous-writer-{_segmentIndex}");
             bus = pipeline.GetBus();
             src = (GstApp.AppSrc)pipeline.GetByName("src")!;
-            file = pipeline.GetByName("file")!;
+            Element file = pipeline.GetByName("file")!;
 
-            using (GObject.Value location = new(path))
-                file.SetProperty("location", location);
+            using (GObject.Value location = GObject.Value.New(GObject.GType.String))
+            {
+                location.SetString(path);
+                file.SetProperty("location", in location);
+            }
 
             // **ネゴシエート済みの caps をそのまま渡す。** 渡さないと h264parse が
             // stream-format / alignment を typefind で推測することになり、外れると
             // 全 NAL が黙って捨てられて中身の無い MP4 が残る（EventRecorder と同じ罠）。
-            var negotiated = sample.GetCaps();
+            // GetCaps のラッパーは自前の参照を 1 本持つので必ず Dispose する
+            // ── 解放されるのはラッパーの参照だけで、sample 側の caps は無傷のまま
+            // （SetCaps もコピーを取る）。
+            using var negotiated = sample.GetCaps();
             if (negotiated is not null)
                 src.SetCaps(negotiated);
 
@@ -314,10 +330,9 @@ internal sealed partial class ContinuousRecorder : IDisposable
         {
             // **作りかけを必ず畳む。** 出力先が書けない等で毎キーフレームここへ来る場合、
             // 畳まないとネイティブのパイプラインがキーフレームごとに積み上がる。
+            // bus/src/file はインターンされた GObject ラッパーなので Dispose しない
+            // ── 自前で作ったパイプラインだけを Null に落としてから Dispose する。
             pipeline.SetState(State.Null);
-            file?.Dispose();
-            src?.Dispose();
-            bus?.Dispose();
             pipeline.Dispose();
             throw;
         }
@@ -325,7 +340,6 @@ internal sealed partial class ContinuousRecorder : IDisposable
         _writer = pipeline;
         _writerBus = bus;
         _writerSrc = src;
-        _writerFile = file;
         _segmentStartPts = pts;
         _currentPath = path;
         _overshootReported = false;
@@ -347,13 +361,11 @@ internal sealed partial class ContinuousRecorder : IDisposable
         var pipeline = _writer;
         var bus = _writerBus;
         var src = _writerSrc;
-        var file = _writerFile;
         string? path = _currentPath;
 
         _writer = null;
         _writerBus = null;
         _writerSrc = null;
-        _writerFile = null;
         _previousPath = path;
         _currentPath = null;
 
@@ -363,7 +375,7 @@ internal sealed partial class ContinuousRecorder : IDisposable
         // 在庫が上限なら、新しいセグメントを作る前にここで有界に待つ。
         WaitForFinalizers(all: false);
 
-        var task = STTask.Run(() => FinalizeSegment(pipeline, bus, src, file, path));
+        var task = STTask.Run(() => FinalizeSegment(pipeline, bus, src, path));
         lock (_finalizerLock)
             _finalizers.Add((task, path));
     }
@@ -373,7 +385,7 @@ internal sealed partial class ContinuousRecorder : IDisposable
     /// 「有界待ち → 必ず Null」の形。<b>失敗してもエンジンは止めない</b>
     /// ── 1 本が壊れても常時録画そのものは続ける方が損失が小さい。
     /// </summary>
-    private void FinalizeSegment(Pipeline pipeline, Bus? bus, GstApp.AppSrc? src, Element? file, string? path)
+    private void FinalizeSegment(Pipeline pipeline, Bus? bus, GstApp.AppSrc? src, string? path)
     {
         string result = "ok";
         int timeoutMs = EventRecorder.StopFinalizeTimeoutMs;
@@ -381,8 +393,9 @@ internal sealed partial class ContinuousRecorder : IDisposable
         {
             src?.EndOfStream();
 
-            ulong timeoutNs = (ulong)Math.Max(0, timeoutMs) * 1_000_000UL;
-            using var msg = bus?.TimedPopFiltered(timeoutNs, MessageType.Eos | MessageType.Error);
+            using var msg = bus?.TimedPopFiltered(
+                ClockTime.FromMilliseconds(Math.Max(0, timeoutMs)),
+                MessageType.Eos | MessageType.Error);
 
             if (msg is null)
             {
@@ -395,13 +408,12 @@ internal sealed partial class ContinuousRecorder : IDisposable
             else if (msg.Type == MessageType.Error)
             {
                 result = "error";
-                msg.ParseError(out var gerror, out var debug);
-                using (gerror)
-                {
-                    string detail = $"recorder='{_host.Name}' file='{path}' {gerror.Message} debug={debug}";
-                    Components.ActivityLog.Error("continuous.error", detail);
-                    _host.OnContinuousError(detail);
-                }
+                // ParseError はネイティブ側のメモリをすべてバインディングが解放した上で
+                // GException（ただの managed 例外オブジェクト）を返すので、Dispose は不要。
+                var (gerror, debug) = msg.ParseError();
+                string detail = $"recorder='{_host.Name}' file='{path}' {gerror.Message} debug={debug}";
+                Components.ActivityLog.Error("continuous.error", detail);
+                _host.OnContinuousError(detail);
             }
         }
         catch (Exception ex)
@@ -413,10 +425,9 @@ internal sealed partial class ContinuousRecorder : IDisposable
         }
         finally
         {
+            // bus/src はインターンされた GObject ラッパーなので Dispose しない。
+            // 自前で作ったパイプラインだけは Null に落としてから Dispose する。
             pipeline.SetState(State.Null);
-            file?.Dispose();
-            src?.Dispose();
-            bus?.Dispose();
             pipeline.Dispose();
             Components.ActivityLog.Info("continuous.finalize",
                 $"recorder='{_host.Name}' file='{path}' result={result}");
@@ -489,21 +500,24 @@ internal sealed partial class ContinuousRecorder : IDisposable
         return directory.Length == 0 ? unique : Path.Combine(directory, unique);
     }
 
-    /// <summary>セグメント基準へ PTS を張り替えて書き出しパイプラインへ押し込む。</summary>
+    /// <summary>
+    /// セグメント基準へ PTS を張り替えて書き出しパイプラインへ押し込む。
+    /// <b>buffer はこの呼び出しが消費する</b>（<c>PushBuffer</c> がラッパーごと
+    /// Dispose する）── 呼び出し側は以後 buffer に触れてはならない。
+    /// </summary>
     private void Push(Gst.Buffer buffer, ulong pts)
     {
         if (_writerSrc is null)
             return;
 
-        using MiniObject miniObject = new(
-            Gst.Internal.MiniObjectOwnedHandle.FromUnowned(((GLib.BoxedRecord)buffer).GetHandle()));
-        using MiniObject writableMiniObject = miniObject.MakeWritable()!;
-        Gst.Buffer buf = new(
-            Gst.Internal.BufferOwnedHandle.FromUnowned(((GLib.BoxedRecord)writableMiniObject)!.GetHandle()));
-        buf.Handle.SetPts(pts - _segmentStartPts);
-        buf.Handle.SetDts(Constants.CLOCK_TIME_NONE);
+        // 呼び出し元では sample がまだ同じネイティブバッファへの参照を握っているので、
+        // この MakeWritable はコピーを作り、ラッパーの中身がそのコピーへ差し替わる
+        // ── sample 側のバッファは無傷のまま、タイムスタンプはコピーにだけ書く。
+        buffer.MakeWritable();
+        buffer.SetPts(ClockTime.FromNanoseconds(pts - _segmentStartPts));
+        buffer.SetDts(ClockTime.None);
 
-        var flow = _writerSrc.PushBuffer(buf);
+        var flow = _writerSrc.PushBuffer(buffer);
         if (flow == FlowReturn.Ok)
             return;
 

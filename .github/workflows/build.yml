@@ -4,7 +4,7 @@
 #   L4（ローカライズ・ドキュメント齟齬）を**最初**に置く。翻訳漏れやキーの綴り誤りは
 #   「壊れても静かに壊れる」種類の退行で、しかもこの検査は数秒で終わる。
 #   ソリューション全体（XAML コンパイルを含む WinUI アプリ）のビルドを待たずに弾ける。
-#   L4 が使うテストプロジェクトは Components / GStreamer.GirCore / SingleInstance しか
+#   L4 が使うテストプロジェクトは Components / GStreamer.GstSharpNet / SingleInstance しか
 #   参照していないので、ここまでのビルドはアプリ本体より桁違いに軽い。
 #
 #   L2（E2E）は publish の後に実行する。発行済みの exe を外から叩くので、
@@ -13,8 +13,8 @@
 #   ── これはエンコーダーの自動フォールバックが効いていることの実証にもなる。
 #
 #   **GStreamer はリポジトリに同梱していない**（runtimes/ はサイズが大きいためリポジトリには置かない）。
-#   ランナーでは MSYS2(UCRT64) 版を pacman で入れ、アプリ側の
-#   GStreamerRuntimeLocator がそれを見つける。**gst-plugins-ugly は必須**
+#   ランナーでは MSYS2(UCRT64) 版を pacman で入れ、GstSharp.Net のローダーが
+#   それを見つける（PATH の走査が最優先の段）。**gst-plugins-ugly は必須**
 #   ── 上記のとおりフィクスチャが x264enc を明示指定しており、抜けると openh264enc へ
 #   落ちる。openh264 の bitrate は bit/sec で x264 の kbit/sec と桁が違うため、
 #   生成サイズの前提（StopSynchronicityTests の 20MB 下限など）が丸ごとずれる。
@@ -57,11 +57,19 @@ concurrency:
 # 未記載のスコープは none になる）。
 permissions:
   contents: read
+  packages: read
 
 env:
   DOTNET_NOLOGO: 'true'
   DOTNET_CLI_TELEMETRY_OPTOUT: 'true'
   DOTNET_SKIP_FIRST_TIME_EXPERIENCE: 'true'
+  # GstSharp.Net* は GitHub Packages（masa-iwm、private）から復元する。
+  # nuget.config のソース key `github` と対で解決される（NuGet の規約）。
+  # 値の形式は Username=...;Password=...（Password に GITHUB_TOKEN）。
+  # GITHUB_TOKEN で読めるのは、パッケージ側（GstSharp.Net リポジトリの各パッケージ）が
+  # このリポジトリへ Actions アクセスを許可している場合だけ ── 401 (NU1301) になったら
+  # まずそちらの設定を確認する。
+  NuGetPackageSourceCredentials_github: Username=masa-iwm;Password=${{ secrets.GITHUB_TOKEN }}
 
 jobs:
   build-and-test:
@@ -95,7 +103,7 @@ jobs:
       # README とコード（終了コード表 / コマンド表）の齟齬。
       #
       # TreatWarningsAsErrors をここにも付けているのは、このステップが
-      # Components / GStreamer.GirCore / SingleInstance / テストの4つを Release でビルドしてしまい、
+      # Components / GStreamer.GstSharpNet / SingleInstance / テストの4つを Release でビルドしてしまい、
       # 後続の `-warnaserror` ビルドではそれらが「最新」と判定されてコンパイラが走らず、
       # **警告が再出力されない**ため。付けないとこの4プロジェクトだけ 0 警告の保証が抜ける。
       - name: Verify localization and documentation (L4)
@@ -184,8 +192,8 @@ jobs:
             mingw-w64-ucrt-x86_64-gst-plugins-ugly
 
       # **展開先はランナー任せなので `C:\msys64` を決め打ちしない。**
-      # アプリ側の既定の探索場所（`%SystemDrive%\msys64`）とは限らないため、
-      # ここで明示的に PATH へ載せる ── GStreamerRuntimeLocator の候補1（元の PATH）に効く。
+      # ローダーが見る既定の MSYS2 の場所（`%SystemDrive%\msys64`）とは限らないため、
+      # ここで明示的に PATH へ載せる ── 解決順で最優先の段（元の PATH の走査）に効く。
       #
       # ここで落としておく。E2E まで持ち越すと、原因が「GStreamer が無い」なのか
       # 製品の不具合なのかの切り分けに数十分かかる。

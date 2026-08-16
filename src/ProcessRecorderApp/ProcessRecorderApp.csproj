@@ -107,7 +107,7 @@
     この ItemGroup を消すと **配布物からライセンス文が消える**（本体の MIT すら）。
 
     同梱物（GStreamer）の第三者ライセンス文は配布形態によって要否が変わるので、
-    こちらではなく GStreamer.GirCore.csproj 側に、同梱の切り替えと同じ条件で書いてある。
+    こちらではなく GStreamer.GstSharpNet.csproj 側に、同梱の切り替えと同じ条件で書いてある。
   -->
   <ItemGroup>
     <Content Include="$(MSBuildThisFileDirectory)..\..\license.txt" Link="license.txt">
@@ -120,7 +120,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Controls\Controls.csproj" />
-    <ProjectReference Include="..\GStreamer.GirCore\GStreamer.GirCore.csproj" />
+    <ProjectReference Include="..\GStreamer.GstSharpNet\GStreamer.GstSharpNet.csproj" />
     <ProjectReference Include="..\SingleInstance\SingleInstance.csproj" />
   </ItemGroup>
 

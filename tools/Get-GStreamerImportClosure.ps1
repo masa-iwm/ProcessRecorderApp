@@ -12,9 +12,10 @@
 
       * every plugin under lib/gstreamer-1.0 (or -SeedPlugins when the tree still holds
         plugins the product never builds -- the untrimmed installer output does)
-      * the libraries named from managed code: ImportResolver's libgstreamer-1.0-0.dll,
-        libgstvideo-1.0-0.dll and libgobject-2.0-0.dll, plus GStreamerRuntimeLocator's
-        libglib-2.0-0.dll
+      * the libraries named from managed code: the module set the GstSharp.Net binding
+        registers (libgstreamer-1.0-0.dll, libgstbase-1.0-0.dll, libgstapp-1.0-0.dll,
+        libgobject-2.0-0.dll, libgmodule-2.0-0.dll, libglib-2.0-0.dll). The app's own
+        code names no GStreamer library any more: the binding is the only one that does
       * bin/gst-inspect-1.0.exe, which tools/Verify-GpuEncoders.ps1 runs out of the
         bundled tree during the real-machine check
       * bin/gst-launch-1.0.exe, shipped so that a pipeline can be reproduced stand-alone
@@ -50,7 +51,7 @@
     Write closure.txt / removable.txt / external.txt / edges.csv here.
 
 .EXAMPLE
-    tools\Get-GStreamerImportClosure.ps1 -RuntimeRoot src\GStreamer.GirCore\runtimes\win-x64
+    tools\Get-GStreamerImportClosure.ps1 -RuntimeRoot src\GStreamer.GstSharpNet\runtimes\win-x64
 
 .OUTPUTS
     A summary on stdout. Exit code is 0 even when files are removable -- this reports, it
@@ -133,15 +134,19 @@ if ($SeedPlugins) {
     }
 }
 
-# Named from managed code -- keep in step with ImportResolver.cs and
-# GStreamerRuntimeLocator.cs -- plus the two tools shipped on purpose:
+# Named from managed code -- the modules the GstSharp.Net binding loads by name
+# (source of truth: NativeNames.cs in the GstSharp.Net repo, MinGW column,
+# restricted to the assemblies this app references: GLib/GObject/GModule/Gst/
+# GstBase/GstApp) -- plus the two tools shipped on purpose:
 # gst-inspect-1.0.exe for Verify-GpuEncoders.ps1 and gst-launch-1.0.exe for
 # stand-alone pipeline repros on a user's machine. RuntimeClosureSeedSyncTests (L1)
 # pins this list.
 $namedSeeds = @(
     'bin/libgstreamer-1.0-0.dll',
-    'bin/libgstvideo-1.0-0.dll',
+    'bin/libgstbase-1.0-0.dll',
+    'bin/libgstapp-1.0-0.dll',
     'bin/libgobject-2.0-0.dll',
+    'bin/libgmodule-2.0-0.dll',
     'bin/libglib-2.0-0.dll',
     'bin/gst-inspect-1.0.exe',
     'bin/gst-launch-1.0.exe'

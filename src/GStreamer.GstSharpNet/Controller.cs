@@ -3,7 +3,6 @@ using System;
 using System.Collections.Generic;
 using System.Collections.Specialized;
 using System.Linq;
-using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using System.Text;
 using Windows.Win32;
@@ -256,28 +255,8 @@ namespace ProcessRecorderApp.GStreamer
         [SupportedOSPlatform("windows5.0")]
         public static void StaticInitialize()
         {
-            // catch からも見えるようにここで宣言する ── 失敗したときこそ
-            // 「どこを探したのか」が要る（下の catch を参照）。
-            IReadOnlyList<GStreamerRuntimeCandidate> candidates = [];
-            GStreamerRuntimeCandidate? chosen = null;
             try
             {
-                // GStreamer のネイティブ一式をどこから読むかを決める。
-                // 同梱物は**最後の候補**であって既定ではない（GStreamerRuntimeLocator の
-                // doc コメントに優先順位と、候補を全部 PATH に繋いではいけない理由がある）。
-                candidates = GStreamerRuntimeLocator.Discover(
-                    Path.GetDirectoryName(Environment.ProcessPath),
-                    RuntimeInformation.RuntimeIdentifier);
-                chosen = GStreamerRuntimeLocator.Select(
-                    GStreamerRuntimeLocator.SplitPath(Environment.GetEnvironmentVariable("PATH")),
-                    candidates,
-                    directory => File.Exists(Path.Combine(
-                        directory, GStreamerRuntimeLocator.CoreLibraryFileName)));
-
-                Environment.SetEnvironmentVariable("PATH",
-                    GStreamerRuntimeLocator.ComposePath(
-                        Environment.GetEnvironmentVariable("PATH"), candidates, chosen));
-
                 // パイプへのリダイレクト時も ANSI エスケープで色付きデバッグ出力させる
                 // （既定の Windows コンソール API 色はパイプでは無色になるため。
                 //   ユーザーが環境変数で明示指定している場合は尊重して上書きしない）
@@ -286,25 +265,33 @@ namespace ProcessRecorderApp.GStreamer
                     Environment.SetEnvironmentVariable("GST_DEBUG_COLOR_MODE", "unix");
                 }
 
-                GstApp.Module.Initialize();
-                GstVideo.Module.Initialize();
-                NativeLibrary.SetDllImportResolver(typeof(ExtendMethods).Assembly, ImportResolver.Resolve);
-                string[]? args = [];
-                Gst.Functions.Init(ref args);
+                // **ネイティブ一式をどこから読むかはアプリが決めない。** 探索の順序
+                // （PATH のディレクトリ走査 → 環境変数 → レジストリ → 既定の導入先 → MSYS2 →
+                //  同梱の runtimes\<rid>）はバインディングのローダーが持ち、勝った段と
+                // ディレクトリ・系統（MinGW / MSVC）を ResolvedOrigin / ResolvedDirectory /
+                // ResolvedFlavor で公開する ── アプリはそれを下の gst.runtime に写すだけ。
+                // 混成（本体と glib が別の根）はローダーのピン（最初にロードした根に固定）が防ぐ。
+                Gst.App.GstApp.Initialize();   // ネイティブのロード + gst_init + App 型の登録
+                Gst.Base.GstBase.Initialize(); // BaseSrc 等の決定的な型登録（msg.Src is BaseSrc 用）
+
+                // 診断の購読: 基底型へのフォールバック（型未登録の兆候）と、
+                // ネイティブコールバック境界で捕捉された例外を activity.log へ残す。
+                global::GstSharp.TypeFallback += f => Components.ActivityLog.Info("gst.typefallback",
+                    $"instance={f.InstanceType} wrapped-as={f.WrapperType}");
+                global::GstSharp.UnhandledCallbackException += ex => Components.ActivityLog.Error("gst.callback", $"{ex}");
 
                 // ここから先はネイティブを呼んでよい。**この1行だけが立てる**
-                // ── AppSettings は Init より前に読み込まれ、その setter から
-                // DebugLogEx.TrySetThreshold へ来るので、フラグが早すぎると起動ごと落ちる。
+                // ── AppSettings は Initialize より前に読み込まれ、その setter から
+                // DebugLogEx.TrySetThreshold へ来る。フラグが早すぎると、その呼び出しが
+                // **gst_init より前にネイティブを解決してピン**してしまい、
+                // 下の gst.runtime も本来の初期化の結果ではなくなる。
                 DebugLogEx.IsGstInitialized = true;
 
-                // **どこから読まれたか**を1行残す。Init の後でなければ意味が無い
-                // ── ここで見たいのは「自分が選んだ候補」ではなく
-                // 「Windows が実際にロードしたモジュールのパス」で、両者は一致するとは限らない
-                // （元の PATH に GStreamer が入っていれば候補より先に勝つ）。
-                Components.ActivityLog.Info("gst.runtime",
-                    GStreamerRuntimeLocator.DescribeRuntime(candidates, chosen));
+                // **どこから読まれたか**を1行残す。Initialize の後でなければ意味が無い
+                // ── ローダーが解決するのは最初の Initialize なので、それより前は全部空になる。
+                Components.ActivityLog.Info("gst.runtime", DescribeRuntime());
 
-                // Gst.Functions.Init の後に1回だけ H.264 エンコーダーの存在を確認する。
+                // Initialize の後に1回だけ H.264 エンコーダーの存在を確認する。
                 // GPU 系プラグインは対応ハードウェアが無いと要素ファクトリを登録しないため、
                 // この結果がそのまま「この実機で使えるエンコーダー」になる。
                 // 出力先は activity.log（複写により アプリ内 Log 画面と AppSettings.DebugLogFile へも届く）。
@@ -328,8 +315,14 @@ namespace ProcessRecorderApp.GStreamer
                 // イベント名は成功時と同じ `gst.runtime` で、レベルだけ ERROR にする
                 // （成功と失敗をイベント名で分ける規約は「同じ名前で成功/失敗が混ざる」ことを
                 //   避けるためのもので、こちらは詳細の中身自体が別物なので水準で足りる）。
-                Components.ActivityLog.Error("gst.runtime",
-                    GStreamerRuntimeLocator.DescribeRuntime(candidates, chosen) + $" error={ex}");
+                //
+                // ロードに失敗したときはバインディングが**実際に試したパス**を持っている
+                // （各項目に「なぜ試したか」が付く）。error= より前に置く ── ex は複数行になり、
+                // 後ろへ足すと行解析から見えなくなる。
+                string detail = DescribeRuntime();
+                if (ex is Gst.Interop.GstNativeLoadException loadEx)
+                    detail += $" attemptedPaths=[{string.Join(", ", loadEx.AttemptedPaths)}]";
+                Components.ActivityLog.Error("gst.runtime", detail + $" error={ex}");
 
                 _ = PInvoke.MessageBox(HWND.Null,
                     $"{ex}",
@@ -337,6 +330,42 @@ namespace ProcessRecorderApp.GStreamer
                     MESSAGEBOX_STYLE.MB_ICONERROR | MESSAGEBOX_STYLE.MB_OK);
                 throw;
             }
+        }
+
+        /// <summary>
+        /// <c>activity.log</c> の <c>gst.runtime</c> に出す1行を組み立てる。
+        ///
+        /// <para>
+        /// 出すのは<b>ローダーが選んだ結果</b>（<c>selected</c> / <c>flavor</c> / <c>dir</c> /
+        /// <c>source</c>）と、<b>Windows が実際にロードしたモジュールのパス</b>
+        /// （<c>core</c> / <c>glib</c>）の両方。前者だけでは、防ごうとしている混成そのものを
+        /// 見逃す。<c>mixed</c> は本体と glib が同じディレクトリから来たかで、
+        /// どちらかのパスが取れなければ判定しない（<c>unknown</c>）。
+        /// </para>
+        /// <para>
+        /// <c>dir</c> が <c>(search-path)</c> なのは、OS の探索パスで見つかって
+        /// ローダーがディレクトリをピンしていない場合（<c>ResolvedDirectory</c> が null）。
+        /// <c>source=</c> は空白を含む説明文なので<b>必ず最後</b>に置く ── 前へ入れると、
+        /// 後ろの項目を位置で読む道具（<c>tools/Verify-GpuEncoders.ps1</c>）から見えなくなる。
+        /// </para>
+        /// </summary>
+        private static string DescribeRuntime()
+        {
+            string? corePath = Gst.Interop.NativeLoader.GetLoadedModulePath("Gst");
+            string? glibPath = Gst.Interop.NativeLoader.GetLoadedModulePath("GLib");
+
+            // 同じディレクトリから来ていれば混成ではない。どちらかが取れないときは判定しない。
+            string mixed = corePath is null || glibPath is null
+                ? "unknown"
+                : (string.Equals(Path.GetDirectoryName(corePath), Path.GetDirectoryName(glibPath),
+                                 StringComparison.OrdinalIgnoreCase) ? "False" : "True");
+
+            return $"selected={Gst.Interop.NativeLoader.ResolvedOrigin?.ToString() ?? "(none)"}"
+                 + $" flavor={Gst.Interop.NativeLoader.ResolvedFlavor?.ToString() ?? "(none)"}"
+                 + $" dir={Gst.Interop.NativeLoader.ResolvedDirectory ?? "(search-path)"}"
+                 + $" core={corePath ?? "(not loaded)"} glib={glibPath ?? "(not loaded)"}"
+                 + $" mixed={mixed}"
+                 + $" source={Gst.Interop.NativeLoader.ResolvedSourceDescription ?? "(none)"}";
         }
     }
 }
