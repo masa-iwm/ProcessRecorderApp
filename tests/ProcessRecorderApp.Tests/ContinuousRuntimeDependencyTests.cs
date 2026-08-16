@@ -20,12 +20,22 @@ namespace ProcessRecorderApp.Tests;
 /// </summary>
 public class ContinuousRuntimeDependencyTests
 {
-    private static string[] BundledPlugins()
+    /// <summary>
+    /// 同梱ランタイムの台帳（形態ごとに1つ）。<b>MinGW 版と MSVC 版の両方を見る</b>
+    /// ── MSVC 版は同じプラグインを <c>lib</c> 接頭辞なしで配るので、
+    /// 片方だけを読むともう片方の欠落を捕まえられない。
+    /// </summary>
+    private static string[] Ledgers()
     {
-        string[] lines = File.ReadAllLines(
-            RepositoryFiles.At("licenses", "third-party", "COMPONENTS.tsv"));
+        string[] paths = [.. Directory.EnumerateFiles(
+            RepositoryFiles.At("licenses", "third-party"), "COMPONENTS*.tsv")];
+        Assert.NotEmpty(paths);
+        return paths;
+    }
 
-        string[] paths = [.. lines
+    private static string[] BundledPlugins(string ledger)
+    {
+        string[] paths = [.. File.ReadAllLines(ledger)
             .Where(l => !l.StartsWith('#') && 0 < l.Trim().Length)
             .Skip(1)
             .Select(l => l.Split('\t')[0])
@@ -35,8 +45,23 @@ public class ContinuousRuntimeDependencyTests
         return paths;
     }
 
-    private static bool IsBundled(string pluginFileName)
-        => BundledPlugins().Any(p => p.EndsWith("/" + pluginFileName, StringComparison.OrdinalIgnoreCase));
+    /// <summary>
+    /// <b>どの形態の台帳にも在ること。</b> 引数は MinGW 命名（<c>libgstX.dll</c>）で書き、
+    /// MSVC 命名（<c>gstX.dll</c>）はここで導く ── 呼び出し側に両方書かせると、
+    /// 形態が増えるたびに全 <c>InlineData</c> を触ることになる。
+    /// </summary>
+    private static string[] LedgersMissing(string mingwPluginFileName)
+    {
+        string msvcName = mingwPluginFileName.StartsWith("lib", StringComparison.Ordinal)
+            ? mingwPluginFileName[3..]
+            : mingwPluginFileName;
+
+        return [.. Ledgers()
+            .Where(ledger => !BundledPlugins(ledger).Any(p =>
+                p.EndsWith("/" + mingwPluginFileName, StringComparison.OrdinalIgnoreCase)
+                || p.EndsWith("/" + msvcName, StringComparison.OrdinalIgnoreCase)))
+            .Select(Path.GetFileName)!];
+    }
 
     private static string Build(
         EventRecordingType type, string encoder, bool needsSystemMemory,
@@ -56,8 +81,9 @@ public class ContinuousRuntimeDependencyTests
     [InlineData("libgstd3d12.dll")]          // d3d12convert / d3d12download
     public void EveryElementTheContinuousBranchAlwaysUses_IsBundled(string plugin)
     {
-        Assert.True(IsBundled(plugin),
-            $"{plugin} が COMPONENTS.tsv に無い。常時録画は同梱配布で動かなくなる。");
+        string[] missing = LedgersMissing(plugin);
+        Assert.True(missing.Length == 0,
+            $"{plugin} が {string.Join(" / ", missing)} に無い。常時録画はその同梱配布で動かなくなる。");
     }
 
     /// <summary>
@@ -72,9 +98,10 @@ public class ContinuousRuntimeDependencyTests
     [Fact]
     public void Videorate_IsBundled_SoADifferentFramerateWorksInTheShippedRuntime()
     {
-        Assert.True(IsBundled("libgstvideorate.dll"),
-            "libgstvideorate.dll が COMPONENTS.tsv に無い。"
-            + "ContinuousFramerate（別 fps の常時録画）が同梱配布でだけ使えなくなる。");
+        string[] missing = LedgersMissing("libgstvideorate.dll");
+        Assert.True(missing.Length == 0,
+            $"videorate のプラグインが {string.Join(" / ", missing)} に無い。"
+            + "ContinuousFramerate（別 fps の常時録画）がその同梱配布でだけ使えなくなる。");
     }
 
     /// <summary>

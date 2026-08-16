@@ -219,6 +219,35 @@ public sealed partial class PipelineBuilderViewModel : ObservableObject
             {
                 string? pv = null;
                 bool hasParsed = parsed?.Properties.TryGetValue(def.Name, out pv) == true;
+
+                // **このランタイムに無いプロパティは編集させない。**
+                // `capture-api` のようにビルド構成で有無が変わるものがある
+                // （GStreamer の conditionally available）。無いものを書くと
+                // ParseLaunch が `no property` で落ちるので、行そのものを出さない。
+                //
+                // ただし**いま入力に在る値は必ず持ち越す。** ここで単に `continue` すると、
+                // 下の「カタログに無いプロパティ」の救済にも引っかからず
+                // （名前はカタログに在るため）、**MSVC 版で書いたパイプラインを
+                // MinGW 版の機械で開いて OK を押しただけで capture-api が黙って消える**。
+                // これは device-path で実際に踏んだ壊れ方と同じで、
+                // **VM は WinUI プロジェクト側なので L1 では守れない**。
+                if (def.ConditionallyAvailable
+                    && !GstIntrospect.ElementHasProperty(source.ElementName, def.Name))
+                {
+                    if (hasParsed)
+                    {
+                        AddRow(PropertyRows, new PipelineFieldRow
+                        {
+                            Name = def.Name,
+                            Description = def.Description,
+                            EditKind = FieldEditKind.Text,
+                            Enabled = true,
+                            Value = pv ?? "",
+                        });
+                    }
+                    continue;
+                }
+
                 string[] choices = GetDynamicChoices(def.DynamicKey) ?? def.EnumChoices ?? Array.Empty<string>();
                 FieldEditKind kind = def.Kind == SrcPropertyKind.Bool ? FieldEditKind.Bool
                     : choices.Length > 0 ? FieldEditKind.Choice

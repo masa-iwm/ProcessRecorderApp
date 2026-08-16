@@ -22,17 +22,31 @@
   -->
   <PropertyGroup>
     <!-- RuntimeIdentifiers は win-x64 のみ（src/Directory.Build.props）。
-         増やすときはここも合わせること。 -->
+         増やすときはここも合わせること。
+
+         **番人は2つある。** 同梱ランタイムには MinGW 版と MSVC 版の2形態があり、
+         MSVC 版は同じライブラリを `lib` 接頭辞なしで配る（`gstreamer-1.0-0.dll`）。
+         片方だけを見ていると、MSVC 版を展開したのに「同梱物が無い」と判定して
+         **黙って非同梱で発行する**。tools/Fetch-GStreamerRuntime.ps1 の $sentinels と
+         対で直すこと。 -->
     <GStreamerRuntimeSentinel>$(MSBuildProjectDirectory)\runtimes\win-x64\bin\libgstreamer-1.0-0.dll</GStreamerRuntimeSentinel>
-    <BundleGStreamerRuntime Condition="'$(BundleGStreamerRuntime)' == '' AND Exists('$(GStreamerRuntimeSentinel)')">true</BundleGStreamerRuntime>
+    <GStreamerRuntimeSentinelMsvc>$(MSBuildProjectDirectory)\runtimes\win-x64\bin\gstreamer-1.0-0.dll</GStreamerRuntimeSentinelMsvc>
+    <BundleGStreamerRuntime Condition="'$(BundleGStreamerRuntime)' == '' AND (Exists('$(GStreamerRuntimeSentinel)') OR Exists('$(GStreamerRuntimeSentinelMsvc)'))">true</BundleGStreamerRuntime>
     <BundleGStreamerRuntime Condition="'$(BundleGStreamerRuntime)' == ''">false</BundleGStreamerRuntime>
   </PropertyGroup>
 
   <!-- 明示的に同梱を指示したのに中身が無ければ落とす。
        黙って非同梱で発行されると、リリース zip が「同梱版」を名乗ったまま空になる。 -->
   <Target Name="VerifyGStreamerRuntimeBundle" BeforeTargets="BeforeBuild"
-          Condition="'$(BundleGStreamerRuntime)' == 'true' AND !Exists('$(GStreamerRuntimeSentinel)')">
-    <Error Text="BundleGStreamerRuntime=true が指定されましたが $(GStreamerRuntimeSentinel) がありません。先に tools/Fetch-GStreamerRuntime.ps1 を実行してください。" />
+          Condition="'$(BundleGStreamerRuntime)' == 'true' AND !Exists('$(GStreamerRuntimeSentinel)') AND !Exists('$(GStreamerRuntimeSentinelMsvc)')">
+    <Error Text="BundleGStreamerRuntime=true が指定されましたが $(GStreamerRuntimeSentinel) も $(GStreamerRuntimeSentinelMsvc) もありません。先に tools/Fetch-GStreamerRuntime.ps1 を実行してください。" />
+  </Target>
+
+  <!-- 2形態が混ざった木は、名前が衝突しないぶん上書きも起きず、両方の本体が
+       同じ bin に並ぶ。その木のプラグインは黙って blacklist される。 -->
+  <Target Name="VerifyGStreamerRuntimeFlavor" BeforeTargets="BeforeBuild"
+          Condition="Exists('$(GStreamerRuntimeSentinel)') AND Exists('$(GStreamerRuntimeSentinelMsvc)')">
+    <Error Text="runtimes\win-x64 に MinGW 版と MSVC 版の両方が入っています。tools/Fetch-GStreamerRuntime.ps1 で片方だけを展開し直してください。" />
   </Target>
 
   <ItemGroup Condition="'$(BundleGStreamerRuntime)' == 'true'">

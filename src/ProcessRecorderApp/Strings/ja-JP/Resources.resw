@@ -610,6 +610,9 @@
   <data name="Src_ShowCursor_Desc" xml:space="preserve">
     <value>マウスカーソルを含めるかどうか</value>
   </data>
+  <data name="Src_CaptureApi_Desc" xml:space="preserve">
+    <value>取り込み API: dxgi（デスクトップ複製）または wgc（Windows Graphics Capture）。使用中の GStreamer が WGC 対応でビルドされている場合にだけ表示されます（同梱ランタイムは MSVC 版が対応、MinGW 版は非対応）。</value>
+  </data>
   <data name="Src_DeviceIndex_Desc" xml:space="preserve">
     <value>キャプチャデバイスのインデックス</value>
   </data>

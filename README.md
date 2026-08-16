@@ -194,15 +194,20 @@ if errorlevel 1 echo Failed to start recording
 
 Pre-built packages are on the
 [Releases page](https://github.com/masa-iwm/ProcessRecorderApp/releases). Each release
-carries two zip files; unpack one and run `ProcessRecorderApp.exe` — nothing is installed.
+carries three zip files; unpack one and run `ProcessRecorderApp.exe` — nothing is installed.
 
-- `ProcessRecorderApp-<version>-win-x64-gstreamer.zip` — **bundled**: ships the GStreamer
-  runtime the app needs (LGPL components only; the inventory is in
-  [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)). Works on its own.
+- `ProcessRecorderApp-<version>-win-x64-gstreamer.zip` — **bundled (MinGW)**: ships the
+  GStreamer runtime the app needs (LGPL components only; the inventory is in
+  [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)). Works on its own, with no
+  prerequisites. **Start here if you are unsure.**
+- `ProcessRecorderApp-<version>-win-x64-gstreamer-msvc.zip` — **bundled (MSVC)**: the same
+  selection built with MSVC. Half the size, and screen capture additionally offers
+  `capture-api=wgc` (Windows Graphics Capture). **Requires the Microsoft Visual C++
+  redistributable (x64)** on your machine — the C/C++ runtime is not bundled.
 - `ProcessRecorderApp-<version>-win-x64.zip` — **non-bundled**: contains no third-party
-  runtime. At start-up the app resolves a GStreamer (MinGW 64-bit) installation provided by
-  you. Pick this one to use your own GStreamer build — including GPL-licensed encoders such
-  as `x264enc`, which the bundled runtime deliberately leaves out.
+  runtime. At start-up the app resolves a GStreamer (MinGW or MSVC 64-bit) installation
+  provided by you. Pick this one to use your own GStreamer build — including GPL-licensed
+  encoders such as `x264enc`, which the bundled runtimes deliberately leave out.
 
 ## Repository layout
 

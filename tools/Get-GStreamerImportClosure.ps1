@@ -15,7 +15,9 @@
       * the libraries named from managed code: the module set the GstSharp.Net binding
         registers (libgstreamer-1.0-0.dll, libgstbase-1.0-0.dll, libgstapp-1.0-0.dll,
         libgobject-2.0-0.dll, libgmodule-2.0-0.dll, libglib-2.0-0.dll). The app's own
-        code names no GStreamer library any more: the binding is the only one that does
+        code names no GStreamer library any more: the binding is the only one that does.
+        Those are MinGW names; on an MSVC tree the same files have no 'lib' prefix and
+        are found under the stripped name
       * bin/gst-inspect-1.0.exe, which tools/Verify-GpuEncoders.ps1 runs out of the
         bundled tree during the real-machine check
       * bin/gst-launch-1.0.exe, shipped so that a pipeline can be reproduced stand-alone
@@ -44,6 +46,14 @@
     objdump.exe from binutils. MSYS2 has it (pacman -S binutils); the GStreamer MinGW
     installer does not ship one.
 
+    Ignored when -Dumpbin is given.
+
+.PARAMETER Dumpbin
+    dumpbin.exe from Visual Studio, as an alternative to objdump. Any machine that can
+    link a Native AOT publish already has one; a machine with the MSVC GStreamer and no
+    MSYS2 has no objdump at all. Both readers are given the same treatment: the import
+    list of a file that cannot be read is an ERROR, never an empty list.
+
 .PARAMETER SeedPlugins
     File names of the plugins to seed with. Defaults to every plugin in the tree.
 
@@ -53,6 +63,15 @@
 .EXAMPLE
     tools\Get-GStreamerImportClosure.ps1 -RuntimeRoot src\GStreamer.GstSharpNet\runtimes\win-x64
 
+.EXAMPLE
+    An untrimmed MSVC installation, on a machine that has Visual Studio but no MSYS2:
+
+    tools\Get-GStreamerImportClosure.ps1 ``
+        -RuntimeRoot $env:LOCALAPPDATA\Programs\gstreamer\1.0\msvc_x86_64 ``
+        -Dumpbin 'C:\Program Files\Microsoft Visual Studio\18\Professional\VC\Tools\MSVC\14.51.36231\bin\Hostx64\x64\dumpbin.exe' ``
+        -SeedPlugins gstd3d12.dll,gstd3d11.dll,... ``
+        -OutDir out
+
 .OUTPUTS
     A summary on stdout. Exit code is 0 even when files are removable -- this reports, it
     does not delete.
@@ -61,6 +80,7 @@
 param(
     [Parameter(Mandatory)][string] $RuntimeRoot,
     [string] $Objdump = 'objdump.exe',
+    [string] $Dumpbin,
     [string[]] $SeedPlugins,
     [string] $OutDir
 )
@@ -69,26 +89,42 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 $RuntimeRoot = (Resolve-Path $RuntimeRoot).Path.TrimEnd('\')
-$objdumpCommand = Get-Command $Objdump -ErrorAction SilentlyContinue
-if (-not $objdumpCommand) {
-    throw "objdump not found: '$Objdump'. Install MSYS2 binutils and pass -Objdump <path to objdump.exe>."
-}
-$ObjdumpExe = $objdumpCommand.Source
 
-# Run objdump through System.Diagnostics.Process, NOT the PowerShell pipeline with a
+# Pick the import reader. -Dumpbin wins when given; otherwise objdump, which is the
+# historical default. A machine with the MSVC GStreamer and no MSYS2 has no objdump,
+# and every machine that can link a Native AOT publish has dumpbin.
+if ($Dumpbin) {
+    $readerCommand = Get-Command $Dumpbin -ErrorAction SilentlyContinue
+    if (-not $readerCommand) { throw "dumpbin not found: '$Dumpbin'." }
+    $ReaderMode = 'dumpbin'
+}
+else {
+    $readerCommand = Get-Command $Objdump -ErrorAction SilentlyContinue
+    if (-not $readerCommand) {
+        throw "objdump not found: '$Objdump'. Install MSYS2 binutils and pass -Objdump <path to objdump.exe>, or pass -Dumpbin <path to dumpbin.exe> from Visual Studio."
+    }
+    $ReaderMode = 'objdump'
+}
+$ReaderExe = $readerCommand.Source
+
+# Run the reader through System.Diagnostics.Process, NOT the PowerShell pipeline with a
 # stderr redirect. In Windows PowerShell 5.1, redirecting a native command's stderr
 # (2>$null included) wraps every line in an ErrorRecord, and with
-# $ErrorActionPreference='Stop' the first warning objdump prints would terminate the
-# whole walk (.claude/rules/powershell.md bans 2>&1 for the same mechanism).
-# Also fail loudly when objdump cannot parse a file: a silently-empty import list makes
+# $ErrorActionPreference='Stop' the first warning it prints would terminate the whole
+# walk (.claude/rules/powershell.md bans 2>&1 for the same mechanism).
+# Also fail loudly when the reader cannot parse a file: a silently-empty import list makes
 # the closure smaller, and the closure is what decides which files may be DELETED from
 # the bundled runtime -- the exact failure mode this script's own docs call the top risk.
+# An EMPTY import list is an error for the same reason: every PE in these trees imports at
+# least KERNEL32, so "no imports" means the output was not understood (a localized dumpbin
+# header, a format change) rather than a leaf binary.
 function Get-ImportedDllNames {
     param([string] $Path)
 
     $psi = New-Object System.Diagnostics.ProcessStartInfo
-    $psi.FileName               = $ObjdumpExe
-    $psi.Arguments              = '-p "' + $Path + '"'
+    $psi.FileName               = $ReaderExe
+    if ($ReaderMode -eq 'dumpbin') { $psi.Arguments = '/nologo /dependents "' + $Path + '"' }
+    else                           { $psi.Arguments = '-p "' + $Path + '"' }
     $psi.UseShellExecute        = $false
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError  = $true
@@ -100,11 +136,36 @@ function Get-ImportedDllNames {
     $out = $outTask.Result
     $errText = $errTask.Result
     if ($p.ExitCode -ne 0) {
-        throw "objdump failed for '$Path' (exit $($p.ExitCode)): $($errText.Trim())"
+        throw "$ReaderMode failed for '$Path' (exit $($p.ExitCode)): $($errText.Trim())"
     }
-    return @($out -split "`r?`n" | ForEach-Object {
-        if ($_ -match '^\s*DLL Name:\s*(\S+)\s*$') { $Matches[1] }
-    })
+
+    $names = New-Object System.Collections.ArrayList
+    if ($ReaderMode -eq 'dumpbin') {
+        # dumpbin prints one block per import table:
+        #   "  Image has the following dependencies:"   / "... delay load dependencies:"
+        #   ""
+        #   "    NAME.dll"
+        #   ""
+        # objdump's "DLL Name:" covers the delay import table too, so both blocks are read
+        # here -- otherwise the two readers would not produce the same closure.
+        $inBlock = $false
+        foreach ($line in ($out -split "`r?`n")) {
+            if ($line -match 'Image has the following .*dependencies:') { $inBlock = $true; continue }
+            if (-not $inBlock) { continue }
+            if ($line -match '^\s*$') { continue }
+            if ($line -match '^\s+(\S+\.(?:dll|exe))\s*$') { $null = $names.Add($Matches[1]) }
+            else { $inBlock = $false }   # "Summary", "Header values", ...
+        }
+    }
+    else {
+        foreach ($line in ($out -split "`r?`n")) {
+            if ($line -match '^\s*DLL Name:\s*(\S+)\s*$') { $null = $names.Add($Matches[1]) }
+        }
+    }
+    if ($names.Count -eq 0) {
+        throw "$ReaderMode reported no imports for '$Path'. Every PE in a GStreamer tree imports at least KERNEL32, so its output was not understood -- this is not an empty import list."
+    }
+    return @($names)
 }
 
 function Get-RelativePath {
@@ -151,9 +212,30 @@ $namedSeeds = @(
     'bin/gst-inspect-1.0.exe',
     'bin/gst-launch-1.0.exe'
 )
+#
+# The list above is MinGW naming. The MSVC build of GStreamer ships the very same
+# libraries WITHOUT the 'lib' prefix (gstreamer-1.0-0.dll, glib-2.0-0.dll, ...), so each
+# seed is looked up under both names and the one that exists is used. Deriving the MSVC
+# name here keeps ONE literal list in this file -- the list the L1 test parses.
+#
+# On the 1.28.6 trees this list changes nothing about the RESULT: every one of the six is
+# also reached by a PE import from some plugin (measured, both flavours), so a walk seeded
+# with the plugins alone produces the identical 44/46 files. The list is here for the case
+# it does not -- the binding loads these BY NAME, which no import table records -- and
+# that guarantee only holds if a lookup that fails is loud. Hence the throw: without the
+# MSVC derivation an MSVC tree would emit six "seed not in tree" warnings on every run,
+# and warnings that are always there are warnings nobody reads.
 foreach ($s in $namedSeeds) {
-    if (Test-Path (Join-Path $RuntimeRoot ($s -replace '/', '\'))) { $null = $seeds.Add($s) }
-    else { Write-Warning "seed not in tree: $s" }
+    $candidates = @($s)
+    $leaf = $s.Substring($s.LastIndexOf('/') + 1)
+    if ($leaf.StartsWith('lib')) { $candidates += ($s.Substring(0, $s.Length - $leaf.Length) + $leaf.Substring(3)) }
+
+    $found = $null
+    foreach ($c in $candidates) {
+        if (Test-Path (Join-Path $RuntimeRoot ($c -replace '/', '\'))) { $found = $c; break }
+    }
+    if (-not $found) { throw "named seed not in tree under either naming: $($candidates -join ' / ')" }
+    $null = $seeds.Add($found)
 }
 if ($seeds.Count -eq 0) { throw "No seeds. Is '$RuntimeRoot' really a GStreamer runtime tree?" }
 

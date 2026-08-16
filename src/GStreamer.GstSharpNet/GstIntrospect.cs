@@ -40,6 +40,78 @@ public static partial class GstIntrospect
 {
     private const int SM_CMONITORS = 80; // GetSystemMetrics: number of display monitors
 
+    /// <summary>
+    /// <see cref="ElementHasProperty"/> の結果（要素名＋プロパティ名 → 有無）。
+    /// 問い合わせは要素を1つ作るので、ソースを切り替えるたびに走らせない。
+    /// </summary>
+    private static readonly Dictionary<string, bool> _propertyProbeCache = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// <b>その要素が実際にそのプロパティを持っているかを実行時に確かめる。</b>
+    ///
+    /// <para>
+    /// GStreamer には「ビルド構成によっては登録されないプロパティ」がある
+    /// （<c>gst-inspect-1.0</c> の <c>conditionally available</c>）。
+    /// <c>d3d12screencapturesrc</c> の <c>capture-api</c> がまさにそれで、
+    /// <b>Windows Graphics Capture を組み込んだビルドにしか生えない</b>
+    /// ── 同梱ランタイムの MSVC 版には在り（<c>gstwinrt-1.0-0.dll</c> がある）、
+    /// MinGW 版には無い（実測）。
+    /// </para>
+    /// <para>
+    /// <b>形態（MinGW / MSVC）で判定しないこと。</b> 判定材料としては近そうに見えるが、
+    /// 実際に効くのは「そのビルドがその機能を持つか」であって、
+    /// 利用者が別途入れた GStreamer は同じ形態でも構成が違いうる。
+    /// 要素そのものに訊けば、どの経路で解決されたランタイムでも正しい答えになる。
+    /// </para>
+    /// <para>
+    /// GStreamer 初期化前・要素を作れない・その他どんな失敗でも
+    /// <see langword="false"/>（＝出さない）へ倒す。
+    /// </para>
+    /// </summary>
+    public static bool ElementHasProperty(string factoryName, string propertyName)
+    {
+        string key = factoryName + "\u0000" + propertyName;
+        lock (_propertyProbeCache)
+        {
+            if (_propertyProbeCache.TryGetValue(key, out bool cached))
+                return cached;
+        }
+
+        bool has = Probe();
+
+        lock (_propertyProbeCache)
+        {
+            _propertyProbeCache[key] = has;
+        }
+        return has;
+
+        bool Probe()
+        {
+            if (!DebugLogEx.IsGstInitialized)
+                return false;
+            try
+            {
+                // 要素は所有する GObject なので破棄する（GST0001 が見張っている）。
+                using Element? element = ElementFactory.Make(factoryName, name: null);
+                if (element is null)
+                    return false;
+
+                // 無いプロパティは ArgumentException。返る Value も所有物なので破棄する。
+                using Gst.GObject.Value value = element.GetProperty(propertyName);
+                return true;
+            }
+            catch (ArgumentException)
+            {
+                return false;
+            }
+            catch
+            {
+                // 要素が作れない機械（D3D12 が無い等）でも UI は成立させる。
+                return false;
+            }
+        }
+    }
+
     [LibraryImport("user32.dll")]
     private static partial int GetSystemMetrics(int nIndex);
 

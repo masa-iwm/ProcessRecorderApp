@@ -8,7 +8,8 @@ namespace ProcessRecorderApp.Tests;
 /// 製品側の実際の名前に固定する。</b>
 ///
 /// <para>
-/// 同梱物は<b>この種から辿った PE インポート閉包そのもの</b>である（46 ファイル。docs/runtime-update.md）。
+/// 同梱物は<b>この種から辿った PE インポート閉包そのもの</b>である
+/// （MinGW 版 46 ファイル / MSVC 版 44 ファイル。docs/runtime-update.md）。
 /// 種が製品より狭ければ、閉包から落ちたライブラリが同梱物から消える
 /// ── <b>PE のインポートではなくマネージド側が名前で読むものは、
 /// ビルドでもテストでも落ちず、同梱配布の実行時にだけ壊れる。</b>
@@ -131,17 +132,66 @@ public class RuntimeClosureSeedSyncTests
     [Fact]
     public void EverySeedIsActuallyShipped()
     {
-        HashSet<string> shipped = [.. File.ReadAllLines(
-                RepositoryFiles.At("licenses", "third-party", "COMPONENTS.tsv"))
-            .Where(l => !l.StartsWith('#') && l.Trim().Length > 0)
-            .Skip(1)
-            .Select(l => l.Split('\t')[0])];
-        Assert.NotEmpty(shipped);
+        // 台帳は形態ごとに1つ（MinGW / MSVC）。**両方見る** ── 片方だけを見ると、
+        // もう片方の同梱物から種が抜けても緑のままになる。
+        string[] ledgers = [.. Directory.EnumerateFiles(
+            RepositoryFiles.At("licenses", "third-party"), "COMPONENTS*.tsv")];
+        Assert.NotEmpty(ledgers);
 
-        string[] missing = [.. NamedSeeds().Where(s => !shipped.Contains(s))];
+        List<string> missing = [];
+        foreach (string ledger in ledgers)
+        {
+            HashSet<string> shipped = [.. File.ReadAllLines(ledger)
+                .Where(l => !l.StartsWith('#') && l.Trim().Length > 0)
+                .Skip(1)
+                .Select(l => l.Split('\t')[0])];
+            Assert.NotEmpty(shipped);
 
-        Assert.True(missing.Length == 0,
-            "閉包の種なのに COMPONENTS.tsv に無い（＝同梱物に入らない）: "
+            // 種は MinGW 命名で書いてある。MSVC 版は同じライブラリを `lib` 接頭辞なしで
+            // 配るので、**そのままの文字列照合では MSVC 台帳と1件も一致しない**
+            // ── そのまま「無い」と読むと全件が偽の赤になる。
+            // スクリプト側（Get-GStreamerImportClosure.ps1）と同じ導き方をする。
+            missing.AddRange(NamedSeeds()
+                .Where(seed => !shipped.Contains(seed) && !shipped.Contains(ToMsvcNaming(seed)))
+                .Select(seed => $"{Path.GetFileName(ledger)}: {seed}"));
+        }
+
+        Assert.True(missing.Count == 0,
+            "閉包の種なのに台帳に無い（＝同梱物に入らない）: "
             + string.Join(", ", missing));
+    }
+
+    /// <summary>
+    /// MinGW 命名の相対パスを MSVC 命名へ直す（先頭の <c>lib</c> を落とすだけ）。
+    /// 正本はスクリプト側の同じ導出で、ここはその写し。
+    /// </summary>
+    private static string ToMsvcNaming(string relative)
+    {
+        int slash = relative.LastIndexOf('/');
+        string leaf = relative[(slash + 1)..];
+        return leaf.StartsWith("lib", StringComparison.Ordinal)
+            ? relative[..(slash + 1)] + leaf[3..]
+            : relative;
+    }
+
+    /// <summary>
+    /// <b>スクリプトが MSVC 命名も引けること。</b> 種の一覧は MinGW 命名の 1 つだけを
+    /// 持ち、MSVC 版はそこから導く ── 導出が消えると、MSVC ツリーでは
+    /// <c>Test-Path</c> が 6 件とも外れる。
+    ///
+    /// <para>
+    /// <b>1.28.6 の木では、それでも閉包の結果は変わらない</b>（6 本とも
+    /// どこかのプラグインから PE インポートで辿れる ── 両形態で実測）。
+    /// それでも種として持つのは、これらが<b>バインディングから名前で読まれる</b>もので、
+    /// インポート表には現れないから。その保証は「引けなかったら止まる」ことで初めて成立する
+    /// ── 導出が無いと毎回 6 件の警告が出て、本物の警告が埋もれる。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void TheScriptResolvesSeedsUnderTheMsvcNamingToo()
+    {
+        string text = File.ReadAllText(ScriptPath);
+        Assert.Contains("StartsWith('lib')", text, StringComparison.Ordinal);
+        Assert.Contains("named seed not in tree under either naming", text, StringComparison.Ordinal);
     }
 }

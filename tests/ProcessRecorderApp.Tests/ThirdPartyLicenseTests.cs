@@ -64,9 +64,45 @@ public class ThirdPartyLicenseTests
         => [.. ReadTable(Path.Combine(LicenseRoot, "SOURCES.tsv"), 5)
                 .Select(f => new SourceRow(f[0], f[1], f[2], f[3], f[4]))];
 
-    private static List<ComponentRow> Components()
-        => [.. ReadTable(Path.Combine(LicenseRoot, "COMPONENTS.tsv"), 2)
+    /// <summary>
+    /// 同梱ランタイムの形態と、その台帳。<b>MinGW 版と MSVC 版は別のファイル一覧</b>で
+    /// （MSVC 版は同じライブラリを <c>lib</c> 接頭辞なしで配る）、どちらも配布する。
+    ///
+    /// <para>
+    /// この一覧はディスクの <c>COMPONENTS*.tsv</c> と<b>過不足なく一致すること</b>を
+    /// <see cref="EveryLedgerOnDiskIsCovered"/> が見る ── 台帳を1つ足して
+    /// テスト側を直し忘れると、<b>その形態だけ何も検査されないまま配られる</b>。
+    /// </para>
+    /// </summary>
+    private sealed record Flavor(string Ledger, string Label);
+
+    private static readonly Flavor[] Flavors =
+    [
+        new("COMPONENTS.tsv", "MinGW"),
+        new("COMPONENTS-msvc.tsv", "MSVC"),
+    ];
+
+    private static List<ComponentRow> Components(Flavor flavor)
+        => [.. ReadTable(Path.Combine(LicenseRoot, flavor.Ledger), 2)
                 .Select(f => new ComponentRow(f[0], f[1]))];
+
+    /// <summary>全形態の台帳を合わせたもの（「どこかで同梱されている」の判定用）。</summary>
+    private static List<ComponentRow> AllComponents()
+        => [.. Flavors.SelectMany(Components)];
+
+    /// <summary>
+    /// <b>ディスクにある台帳が、上の <see cref="Flavors"/> と過不足なく一致すること。</b>
+    /// 形態を増やしたのにここへ足し忘れると、以下の検査はすべてその形態を素通りする。
+    /// </summary>
+    [Fact]
+    public void EveryLedgerOnDiskIsCovered()
+    {
+        string[] onDisk = [.. Directory.EnumerateFiles(LicenseRoot, "COMPONENTS*.tsv")
+            .Select(Path.GetFileName)
+            .OrderBy(p => p, StringComparer.Ordinal)!];
+
+        Assert.Equal([.. Flavors.Select(f => f.Ledger).OrderBy(p => p, StringComparer.Ordinal)], onDisk);
+    }
 
     private static string[] LicenseFilesOnDisk()
         => [.. Directory.EnumerateFiles(LicenseRoot, "*", SearchOption.AllDirectories)
@@ -125,9 +161,10 @@ public class ThirdPartyLicenseTests
     public void EveryBundledFileIsCoveredByALicenseText()
     {
         HashSet<string> licensed = [.. Sources().Select(r => r.Project)];
-        string[] uncovered = [.. Components()
-            .Where(c => !licensed.Contains(c.Project))
-            .Select(c => $"{c.Path} -> {c.Project}")
+        string[] uncovered = [.. Flavors
+            .SelectMany(f => Components(f).Select(c => (Flavor: f, Component: c)))
+            .Where(x => !licensed.Contains(x.Component.Project))
+            .Select(x => $"[{x.Flavor.Label}] {x.Component.Path} -> {x.Component.Project}")
             .Distinct()
             .OrderBy(p => p, StringComparer.Ordinal)];
 
@@ -143,7 +180,9 @@ public class ThirdPartyLicenseTests
     [Fact]
     public void NoLicenseTextIsKeptForSomethingNoLongerBundled()
     {
-        HashSet<string> bundled = [.. Components().Select(c => c.Project)];
+        // **どの形態かは問わない。** MSVC 版は libstdc++ / libgcc / libwinpthread を
+        // 同梱しないが、MinGW 版は同梱するので、それらのライセンス文は残す。
+        HashSet<string> bundled = [.. AllComponents().Select(c => c.Project)];
         string[] stale = [.. Sources()
             .Select(r => r.Project)
             .Distinct()
@@ -185,32 +224,36 @@ public class ThirdPartyLicenseTests
     public void TheCountsInTheNoticesFileMatchTheComponentList()
     {
         string notices = File.ReadAllText(RepositoryFiles.At("THIRD-PARTY-NOTICES.md"));
-        List<ComponentRow> components = Components();
 
-        int plugins = components.Count(c => c.Path.StartsWith("lib/gstreamer-1.0/", StringComparison.Ordinal));
-        int gstLibs = components.Count(c => c.Path.StartsWith("bin/libgst", StringComparison.Ordinal)
-                                            && c.Path.EndsWith("-1.0-0.dll", StringComparison.Ordinal));
-        // GStreamer 以外（gst-inspect-1.0.exe を除く）。ここを数えていなかったため、
-        // 「その他の第三者ライブラリ（12）」だけが古くなっても気付けなかった。
-        int otherLibs = components.Count - plugins - gstLibs
-                        - components.Count(c => c.Path.EndsWith(".exe", StringComparison.Ordinal));
-        int total = components.Count;
+        // **形態ごとに1行**。見出しに数を埋めるのは形態が1つのときの書き方で、
+        // 2つある今は「どちらの数か」が本文から読めなくなる ── 表の行を正本にする。
+        List<string> wrong = [];
+        foreach (Flavor flavor in Flavors)
+        {
+            List<ComponentRow> components = Components(flavor);
 
-        (string Label, string Expected)[] expectations =
-        [
-            ("プラグイン", $"GStreamer プラグイン（{plugins}）"),
-            ("ライブラリ", $"GStreamer ライブラリ（{gstLibs}）"),
-            ("その他のライブラリ", $"その他の第三者ライブラリ（{otherLibs}）"),
-            ("同梱ファイル総数", $"同梱 {total} ファイル全件"),
-        ];
+            int plugins = components.Count(c => c.Path.StartsWith("lib/gstreamer-1.0/", StringComparison.Ordinal));
+            // MinGW 版は `bin/libgst…-1.0-0.dll`、MSVC 版は `bin/gst…-1.0-0.dll`。
+            // 接頭辞で見分けようとすると MSVC 版で 0 件になり、その分が
+            // 「その他の第三者ライブラリ」へ流れ込む（数は合うので気付けない）。
+            int gstLibs = components.Count(c =>
+                c.Path.StartsWith("bin/", StringComparison.Ordinal)
+                && c.Path.EndsWith("-1.0-0.dll", StringComparison.Ordinal)
+                && (c.Path.StartsWith("bin/libgst", StringComparison.Ordinal)
+                    || c.Path.StartsWith("bin/gst", StringComparison.Ordinal)));
+            int tools = components.Count(c => c.Path.EndsWith(".exe", StringComparison.Ordinal));
+            int otherLibs = components.Count - plugins - gstLibs - tools;
 
-        List<string> wrong = [.. expectations
-            .Where(e => !notices.Contains(e.Expected, StringComparison.Ordinal))
-            .Select(e => $"{e.Label}: 見出し '{e.Expected}' が無い")];
+            string row = $"| {flavor.Label} | {components.Count} | {plugins} | {gstLibs} | {otherLibs} |";
+            if (!notices.Contains(row, StringComparison.Ordinal))
+                wrong.Add($"{flavor.Ledger}: 内訳の表に行 '{row}' が無い");
+        }
 
         Assert.True(wrong.Count == 0,
-            "THIRD-PARTY-NOTICES.md の件数が COMPONENTS.tsv と合っていない:"
-            + Environment.NewLine + string.Join(Environment.NewLine, wrong));
+            "THIRD-PARTY-NOTICES.md の件数が COMPONENTS*.tsv と合っていない:"
+            + Environment.NewLine + string.Join(Environment.NewLine, wrong)
+            + Environment.NewLine
+            + "列は「同梱ファイル総数・プラグイン・GStreamer ライブラリ・その他の第三者ライブラリ」。");
     }
 
     /// <summary>
@@ -256,8 +299,13 @@ public class ThirdPartyLicenseTests
         }
 
         // 発行物と台帳の突き合わせ（「300 ファイル以上」の当て推量に戻さない）。
-        if (!release.Contains("COMPONENTS.tsv", StringComparison.Ordinal))
-            missing.Add("release.yml が COMPONENTS.tsv と発行物を突き合わせていない");
+        // **形態ごとに**見る ── 片方しか照合していない release.yml は、
+        // もう片方について「同梱版」を名乗ったまま無検証の zip を配る。
+        foreach (Flavor flavor in Flavors)
+        {
+            if (!release.Contains(flavor.Ledger, StringComparison.Ordinal))
+                missing.Add($"release.yml が {flavor.Ledger} と発行物を突き合わせていない");
+        }
 
         Assert.True(missing.Count == 0,
             "ライセンス文が配布物へ入る配線が外れている:"

@@ -255,8 +255,8 @@ tee name=t
 > カーソル形状を組み立てる `PtrInfo::BuildTexture` の中で `abort()` に至る。
 > **MinGW 版の GStreamer で起き、MSVC 版では起きない**（`gst-launch` の1行で再現。
 > アプリは関与していない）。**アプリ側では捕捉できない。** 既定の `false` のままにすること。
-> **同梱ランタイム（`gstreamer-runtime-v1.28.6-r2` 以降）にはこの修正を当てた
-> `libgstd3d12.dll` を積んでいる**が、**非同梱配布は利用者の GStreamer をそのまま使うので
+> **同梱ランタイム（MinGW 版は `gstreamer-runtime-v1.28.6-r2` 以降、MSVC 版は
+> `gstreamer-runtime-msvc-v1.28.6` 以降）にはこの修正を当てた d3d12 プラグインを積んでいる**が、**非同梱配布は利用者の GStreamer をそのまま使うので
 > 従来どおり**（修正は上流のリリースにはまだ入っていない）。
 > **カーソルを写したいなら `d3d11screencapturesrc` を選べる**
 > （パイプラインの編集ダイアログのソース一覧にある）。**上流の D3D11 側は
@@ -484,7 +484,7 @@ I フレームゲートが次の I まで捨てる ── そのぶんの映像�
 > などだけで、**カメラ制御のプロパティは 1 つも無く、`Implemented Interfaces:` の節そのものが
 > 出ない**（＝ `GstColorBalance` も `GstPhotography` も未実装。対照として `videobalance` は
 > `GstColorBalance` を出す）。`ksvideosrc` も同じで、しかも `libgstwinks.dll` は
-> 同梱ランタイム（`licenses/third-party/COMPONENTS.tsv`）に無い。
+> 同梱ランタイム（`licenses/third-party/COMPONENTS.tsv` / `COMPONENTS-msvc.tsv`）に無い。
 > したがって **Windows のカメラ制御 COM（`IAMVideoProcAmp` / `IAMCameraControl`）を
 > 自前で叩くのが唯一の道**である。
 
@@ -1615,7 +1615,7 @@ UMD なのでバンドラーは要らず、グローバル名は `Terminal` / `F
 `WebglAddon.WebglAddon`。
 
 - **`licenses/third-party/` には入れない。** あちらは同梱 GStreamer 専用の台帳で、
-  `ThirdPartyLicenseTests` がディスクと `SOURCES.tsv` を、`release.yml` が `COMPONENTS.tsv` と
+  `ThirdPartyLicenseTests` がディスクと `SOURCES.tsv` を、`release.yml` が `COMPONENTS*.tsv` と
   発行物の `runtimes/win-x64` を双方向で突き合わせる。xterm.js は同梱・非同梱の**両方**に
   入るので、載せると必ず赤になる。ライセンス文は `Assets/Terminal/vendor/` に同梱する。
 - **`ExcludeFromSingleFile=true` は必須。** `SetVirtualHostNameToFolderMapping` は

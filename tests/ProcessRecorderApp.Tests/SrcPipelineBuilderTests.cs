@@ -29,6 +29,54 @@ public class SrcPipelineBuilderTests
         => Assert.NotNull(SrcPipelineBuilder.FindSource(elementName));
 
     /// <summary>
+    /// <b><c>capture-api</c> は画面キャプチャ 2 種にだけ、条件付きで載っていること。</b>
+    ///
+    /// <para>
+    /// このプロパティは GStreamer の <c>conditionally available</c> ── Windows Graphics
+    /// Capture を組み込んだビルドにしか登録されない（同梱ランタイムの MSVC 版には在り、
+    /// MinGW 版には無い。実測）。したがって
+    /// <see cref="SrcPropertyDef.ConditionallyAvailable"/> が立っていなければならない
+    /// ── 立っていないと UI は無条件に行を出し、<b>MinGW 版のランタイムで
+    /// <c>no property "capture-api"</c> のパイプラインを組み立ててしまう</b>。
+    /// </para>
+    /// <para>
+    /// <b>2 種に同じ綴りで載っていること</b>も固定する ── 片方だけだと、
+    /// ソースを D3D12 ⇔ D3D11 で切り替えた瞬間に <see cref="SrcPipelineBuilder.CarryOver"/>
+    /// が名前照合で落とす。カメラやテストソースには存在しないので、載っていたら誤り。
+    /// </para>
+    /// <para>
+    /// <b>「実行時に無いときに値を持ち越す」ことはここでは見られない</b>
+    /// ── その分岐は <c>PipelineBuilderViewModel</c>（WinUI アプリ側）に在り、
+    /// L1 からは参照できない。
+    /// </para>
+    /// </summary>
+    [Theory]
+    [InlineData("d3d12screencapturesrc", true)]
+    [InlineData("d3d11screencapturesrc", true)]
+    [InlineData("mfvideosrc", false)]
+    [InlineData("d3d12testsrc", false)]
+    [InlineData("videotestsrc", false)]
+    public void CaptureApi_IsDeclaredConditionallyOnTheScreenCaptureSourcesOnly(string elementName, bool expected)
+    {
+        SrcElementDef source = Assert.IsType<SrcElementDef>(SrcPipelineBuilder.FindSource(elementName));
+        SrcPropertyDef? def = source.Properties.FirstOrDefault(p => p.Name == "capture-api");
+
+        if (!expected)
+        {
+            Assert.Null(def);
+            return;
+        }
+
+        Assert.NotNull(def);
+        Assert.True(def.ConditionallyAvailable,
+            $"{elementName} の capture-api に ConditionallyAvailable が立っていない。"
+            + "WGC 非対応のランタイムで存在しないプロパティを書き込むことになる。");
+        Assert.Equal(SrcPropertyKind.Enum, def.Kind);
+        Assert.Equal("dxgi", def.DefaultValue);
+        Assert.Equal(["dxgi", "wgc"], Assert.IsType<string[]>(def.EnumChoices));
+    }
+
+    /// <summary>
     /// D3D11 版の画面キャプチャは <c>memory:D3D11Memory</c> を名乗ること。
     ///
     /// <para>

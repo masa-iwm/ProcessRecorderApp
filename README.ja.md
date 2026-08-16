@@ -53,7 +53,8 @@ exe を実行するとタスクトレイに常駐し、ウィンドウは表示�
 | 画面 | 内容 |
 |---|---|
 | **Preview** | レコーダーごとのライブプレビューと設定（映像ソース・バッファ秒数・ファイル名テンプレートなど）。左側のプロパティ欄で編集し、右側に映像が表示されます。レコーダーの追加・削除もここから行います。 |
-| **Log** | アプリ内部の動作ログをターミナル表示します。ANSI の色と `` による行上書きがそのまま出ます。保持する行数には上限があり、表示される前に破棄された行があればログ中に明示します。 |
+| **Log** | アプリ内部の動作ログをターミナル表示します。ANSI の色と `
+` による行上書きがそのまま出ます。保持する行数には上限があり、表示される前に破棄された行があればログ中に明示します。 |
 | **Variables** | ファイル名テンプレートで使う変数（キーと値）を一覧・編集します。 |
 | **Settings** | ウィンドウサイズなど、アプリ全体の設定です。UIA トリガの作成・編集（「…」ボタンからエディタとピッカーを開く）と、トリガごとの録画操作（なし／開始／終了／条件成立中のみ録画）・対象レコーダーの割り当てもここで行います。右上の**「再読み込み」**ボタンは、手で `settings.json` を書き換えたときに、その内容をディスクから読み直します（録画中・書き出し中は押せません）。 |
 
@@ -181,15 +182,20 @@ if errorlevel 1 echo 録画の開始に失敗しました
 
 ビルド済みの配布物は
 [Releases ページ](https://github.com/masa-iwm/ProcessRecorderApp/releases) にあります。
-各リリースに zip が2種類あり、展開して `ProcessRecorderApp.exe` を実行するだけです
+各リリースに zip が3種類あり、展開して `ProcessRecorderApp.exe` を実行するだけです
 （何もインストールしません）。
 
-- `ProcessRecorderApp-<バージョン>-win-x64-gstreamer.zip` — **同梱版**: アプリに必要な
-  GStreamer ランタイムを同梱しています（LGPL 構成のみ。内訳は
-  [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)）。これ単体で動きます。
+- `ProcessRecorderApp-<バージョン>-win-x64-gstreamer.zip` — **同梱版（MinGW）**: アプリに
+  必要な GStreamer ランタイムを同梱しています（LGPL 構成のみ。内訳は
+  [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)）。前提条件なしで単体で動きます。
+  **迷ったらこれ。**
+- `ProcessRecorderApp-<バージョン>-win-x64-gstreamer-msvc.zip` — **同梱版（MSVC）**:
+  同じ構成を MSVC でビルドしたもの。サイズは約半分で、画面キャプチャで
+  `capture-api=wgc`（Windows Graphics Capture）も選べます。**Microsoft Visual C++
+  再頒布可能パッケージ（x64）が必要**です ── C/C++ ランタイムは同梱していません。
 - `ProcessRecorderApp-<バージョン>-win-x64.zip` — **非同梱版**: 第三者ランタイムを
-  含みません。起動時に、利用者がインストールした GStreamer（MinGW 64-bit）を解決します。
-  同梱版があえて外している `x264enc` など GPL のエンコーダーも含めて、自前の
+  含みません。起動時に、利用者がインストールした GStreamer（MinGW / MSVC 64-bit）を
+  解決します。同梱版があえて外している `x264enc` など GPL のエンコーダーも含めて、自前の
   GStreamer を使いたい場合はこちらです。
 
 ## ディレクトリ構成

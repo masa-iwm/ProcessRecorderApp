@@ -25,17 +25,21 @@ CI は2つのワークフローに分かれる。`build.yml` は push のたび�
 
 ## release.yml の構成と理由
 
-トリガーは `v*` タグの push と `workflow_dispatch`。`build.yml` と分けるのは、同梱用の GStreamer ランタイムを毎回取得するため push のたびに走らせる価値が無いから。**発行は Native AOT（`win-x64-aot`。`build.yml` の AOT ジョブと同じ形態）で、配布するのは AOT 版のみ** ── selfcontained(ReadyToRun) は CI の検証用で配布しない。**同梱・非同梱の2つの zip** を作る:
+トリガーは `v*` タグの push と `workflow_dispatch`。`build.yml` と分けるのは、同梱用の GStreamer ランタイムを毎回取得するため push のたびに走らせる価値が無いから。**発行は Native AOT（`win-x64-aot`。`build.yml` の AOT ジョブと同じ形態）で、配布するのは AOT 版のみ** ── selfcontained(ReadyToRun) は CI の検証用で配布しない。**3つの zip** を作る（同梱ランタイムは MinGW 版と MSVC 版の2形態あり、どちらも配る）:
 
-- 非同梱（`ProcessRecorderApp-<tag>-win-x64.zip`）── 利用者側に GStreamer(MinGW) か MSYS2(UCRT64) が要る。軽い。
-- 同梱（`ProcessRecorderApp-<tag>-win-x64-gstreamer.zip`）── 削減済み runtimes（46 ファイル・49.9MB）を同梱する。x264 と libav を含まないので GPL を持ち込まず、openh264 も特許の都合で含まない。同梱構成の `Type=System` は `mfh264enc` に落ちる。
+- 非同梱（`ProcessRecorderApp-<tag>-win-x64.zip`）── 利用者側に GStreamer(MinGW/MSVC) か MSYS2(UCRT64) が要る。軽い。
+- 同梱 MinGW（`ProcessRecorderApp-<tag>-win-x64-gstreamer.zip`）── 削減済み runtimes（46 ファイル・49.9MB）を同梱する。**自己完結**（libstdc++ / libgcc / libwinpthread も入る）。
+- 同梱 MSVC（`ProcessRecorderApp-<tag>-win-x64-gstreamer-msvc.zip`）── 同じ選択の MSVC ビルド（44 ファイル・24.6MB）。小さく、`capture-api`（WGC）が使えるが、**利用者の機械に VC++ 再頒布可能パッケージが要る**（`msvcp140` / `vcruntime140` / `vcruntime140_1` は同梱しない）。
+
+同梱版はどちらも x264 と libav を含まないので GPL を持ち込まず、openh264 も特許の都合で含まない。同梱構成の `Type=System` は `mfh264enc` に落ちる。
 
 **このジョブは MSYS2 を入れない。** そのため同梱物がランタイム解決の唯一の当たりになり、`gst.runtime selected=BundledRuntime` を実際に踏める唯一の場所である ── 開発機や `build.yml` では、解決順（元の `PATH` → 環境変数 → レジストリ → 既定の導入先 → MSYS2 → 同梱物）の都合で同梱物が必ず負けるため、ここでしか検証できない。流すのはエンコーダーに依存しないスモークだけ ── フィルタ `FullyQualifiedName~SmokeTests|FullyQualifiedName~RuntimeResolutionTests` は部分一致なので、実際に走るのは `SmokeTests`・`GuiSmokeTests`・`RuntimeResolutionTests` の 3 クラス。録画系 E2E が流れないのは、ハーネスが `SettingsFile.DefaultEncoder = "x264enc"` を固定しており同梱物に x264 が無いため（詳細は docs/coverage-gaps.md）。
 
 検証の要点:
 
-- 同梱ランタイムは `licenses/third-party/COMPONENTS.tsv` と**過不足なく一致**することを見る。件数の下限では「多い分」を捕まえられず、ライセンス文の無いファイルが黙って混ざる。
-- **スモークが実際にテストを選べたことを、直後のステップが `release-smoke.trx` で確認する。** `--filter` は1件も選ばなくても `dotnet test` が成功で終わるので、これが無いとクラスの改名・移動で**緑のまま無検証の zip を配る**。見るのは件数の下限ではなく「上の3クラスが結果に出ていること」── 下限では「1クラスだけ消えた」を捕まえられない。フィルタを変えるときは、このステップの期待クラス一覧も一緒に直すこと。
+- 同梱ランタイムは**その形態の台帳**（`licenses/third-party/COMPONENTS.tsv` / `COMPONENTS-msvc.tsv`）と**過不足なく一致**することを見る。件数の下限では「多い分」を捕まえられず、ライセンス文の無いファイルが黙って混ざる。中身は `tools/Verify-BundledPublish.ps1` にあり、**形態ごとに1回ずつ**呼ぶ ── YAML に書き写すと必ず片方が古くなる。
+- **MSVC 版の「VC++ 再頒布可能パッケージが要る」という前提は、ここでは踏めない。** `windows-latest` には Visual Studio が入っているので CRT は必ず在り、緑は「入っていなくても動く」の根拠にならない。
+- **スモークが実際にテストを選べたことを、直後のステップが `release-smoke-<形態>.trx` で確認する**（`tools/Assert-SmokeSelection.ps1`。形態ごとに1回）。 `--filter` は1件も選ばなくても `dotnet test` が成功で終わるので、これが無いとクラスの改名・移動で**緑のまま無検証の zip を配る**。見るのは件数の下限ではなく「上の3クラスが結果に出ていること」── 下限では「1クラスだけ消えた」を捕まえられない。フィルタを変えるときは、このステップの期待クラス一覧も一緒に直すこと。
 - ライセンス文はリポジトリのものとハッシュ一致まで確認する。**配布物にライセンス文が入っていることを見る唯一の場所**である（L1 の `ThirdPartyLicenseTests` が見られるのはリポジトリ内の整合だけ）。
 - 非同梱側は `runtimes/` と `licenses/third-party/` が**入っていないこと**を確認する（「入っていないのが正しい」側の検証）。
 - 非同梱の発行には `BundleGStreamerRuntime=false` を明示する。既定は「`runtimes/` に本体 DLL があれば同梱」なので、取得ステップとの順序が入れ替わると黙って同梱版になる。
@@ -46,7 +50,7 @@ CI は2つのワークフローに分かれる。`build.yml` は push のたび�
 1. **先に Release の箱を作る**: `gh release create <tag> --target <フル SHA> --prerelease`。`--target` に短縮 SHA を渡すと `HTTP 422 Release.target_commitish is invalid` になる ── フル SHA を使うこと。この手順が要るのは、ワークフロー最後の `gh release upload <tag>` が**既存の Release を要求する**ためで、タグ push だけでは Release はできない。
 2. タグが push されると `release.yml` が走る（`gh release create` のような API 経由のタグ作成でも `push` イベントは飛ぶ）。タグはどのブランチのコミットに打ってもよい。
 3. `workflow_dispatch` でも流せるが、Release への添付ステップは `refs/tags/v*` のときだけ実行される。dispatch 実行では zip はワークフローのアーティファクト（`packages`）としてだけ取れる。
-4. ランナーの自己申告（ステップの success）だけで済ませず、`gh release download` で出来上がった zip を落として中身を数え直すこと ── runtimes の件数が `COMPONENTS.tsv` と一致するか、ライセンス文がリポジトリと SHA256 一致で入っているか、openh264 を含むファイルが 0 件か。
+4. ランナーの自己申告（ステップの success）だけで済ませず、`gh release download` で出来上がった zip を落として中身を数え直すこと ── **3 本とも**上がっているか、runtimes の件数がその形態の台帳（`COMPONENTS.tsv` / `COMPONENTS-msvc.tsv`）と一致するか、ライセンス文がリポジトリと SHA256 一致で入っているか、openh264 を含むファイルが 0 件か。
 
 ## 運用上の注意
 

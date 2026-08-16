@@ -258,14 +258,24 @@ GPU 実機に**発行物一式**（`dotnet publish -p:PublishProfile=win-x64-aot
   （目安: `本数 × セグメント長 + 30 秒`）。
 ## 未検証の項目
 
-検証済みの範囲（対になる事実）: 同梱ランタイムを NVIDIA/Intel の実機で流した検証は
-全ケース OK（`retries` も全件 0）で、**GOP の逆算も実機で見ている**
-（15fps のソースで `gop-size=30`、5fps の常時枝で `gop-size=10`、
-手動指定は文字列のまま＝`gop-size=60`。`Verify-HighResolution.ps1` は 26 ケース全件 OK で
-`continuous.overshoot` 無し）、GPU 専用候補（`d3d12h264enc` / `qsvh264enc` / `nvd3d11h264enc` /
-`nvh264enc` / `nvautogpuh264enc`）が選ばれて有効な MP4 を出すこと、`System` の自動選択が
-`mfh264enc` を選んで有効な MP4 を出すことまで観測済み。残っているのは以下。
+検証済みの範囲（対になる事実）:
 
-- `amfh264enc`（AMD）── AMD GPU の機械が無く未検証。AMD 機で `tools/Verify-GpuEncoders.ps1` を1回流せばケースは自動生成される。カタログに実在しない名前を書いても例外も警告も出ずに候補から黙って消え、録画は他候補で成立してしまうため、「録画できている」ことは名前が正しい証拠にならない ── レポート冒頭の `All H.264 encoders gst-inspect reports` 行に `amfh264enc` が載り、専用ケースが OK になっていることまで確認する。確認済みのプロパティをカタログへ足すときは `EncoderCatalogScriptSyncTests` が落ちてスクリプト側の一覧の追随を迫るので、一緒に直す。
+**両形態とも** ── 同梱ランタイムを NVIDIA/Intel の実機で流した `Verify-GpuEncoders.ps1` は
+全ケース OK（`retries` も全件 0）。GPU 専用候補（`d3d12h264enc` / `qsvh264enc` /
+`nvd3d11h264enc` / `nvh264enc` / `nvautogpuh264enc`）が選ばれて有効な MP4 を出すこと、
+`System` の自動選択が `mfh264enc` を選んで有効な MP4 を出すことまで観測済み。
+**同梱物が実際に当たっていること**もレポート冒頭の読み込み元
+（`<発行ディレクトリ>/runtimes/win-x64/bin`）で確認している。
+
+**MinGW 版だけ** ── **GOP の逆算を実機で見ている**（15fps のソースで `gop-size=30`、
+5fps の常時枝で `gop-size=10`、手動指定は文字列のまま＝`gop-size=60`）。
+`Verify-HighResolution.ps1`（26 ケース全件 OK・`continuous.overshoot` 無し）も
+MinGW 版で流したもの。
+
+残っているのは以下。
+
+- **`capture-api=wgc` とエンコーダーを繋いだ経路 ── 未検証。** `Verify-GpuEncoders.ps1` は `capture-api` を触らない（既定の `dxgi` で回る）ので、実機の全ケース OK は WGC 経路について何も言っていない。GPU 無しの機械までは通っている ── MSVC 同梱ツリーの `gst-launch-1.0` で `d3d12screencapturesrc capture-api=dxgi` / `=wgc` をそれぞれ 60 フレーム、どちらも EOS・終了コード 0（WARP ＋ RDP の開発機。`wgc` の方が立ち上がりが遅く、同じ 60 フレームに約 5 秒かかる）。**`fakesink` までしか繋いでいない**ので、実機で WGC ＋ ハードウェアエンコーダーを通す確認は残っている。
+- **VC++ 再頒布可能パッケージが無い機械での MSVC 版 ── 未検証。** 実機検証を流した機械には CRT が在ったので、この前提が欠けたときの挙動は観測できていない（`docs/coverage-gaps.md` を参照）。
+- `amfh264enc`（AMD）── AMD GPU の機械が無く未検証（MinGW 版・MSVC 版のどちらでも同じ。実機のレポートでは両方とも `missing=[amfh264enc,openh264enc,x264enc]`）。AMD 機で `tools/Verify-GpuEncoders.ps1` を1回流せばケースは自動生成される。カタログに実在しない名前を書いても例外も警告も出ずに候補から黙って消え、録画は他候補で成立してしまうため、「録画できている」ことは名前が正しい証拠にならない ── レポート冒頭の `All H.264 encoders gst-inspect reports` 行に `amfh264enc` が載り、専用ケースが OK になっていることまで確認する。確認済みのプロパティをカタログへ足すときは `EncoderCatalogScriptSyncTests` が落ちてスクリプト側の一覧の追随を迫るので、一緒に直す。
 - （解決済み）`nvd3d11h264enc` のメモリ交渉 ── `tools/Verify-NvD3d11Memory.ps1` を NVIDIA 実機で流して決着した。sink caps は `video/x-raw(memory:D3D11Memory)` と素の `video/x-raw` だけで **D3D12Memory は受けない**（download は必須）。一方で、`video/x-raw(memory:SystemMemory)` の capsfilter を外すと **`d3d12download` の src もエンコーダーの sink も `memory:D3D11Memory` で折り合う** ── つまり CPU 往復を強いていたのはこちらの capsfilter であり、現行の形は `d3d12download ! videoconvert !` にしてある（`videoconvert` の caps は `video/x-raw(ANY)` なので交渉を妨げない）。**この形で NVIDIA/Intel 実機の全ケースが OK であることまで確認済み** ── `nvd3d11h264enc` / `nvh264enc` / `nvautogpuh264enc` の専用ケースがいずれも選ばれ、`retries` 0 で有効な MP4 を出す。
 - スクリプトは実在する要素からしかケースを作らないため、無い要素は黙って検証されない（走らなかったことは FAILED としては現れない）。意図した要素が本当に検証されたかは、レポートのケース一覧と冒頭の `All H.264 encoders gst-inspect reports` 行で確認する（どちらもレポート内にあり、手で `gst-inspect` を叩く必要はない）。

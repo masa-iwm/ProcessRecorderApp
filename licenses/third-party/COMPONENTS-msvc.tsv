@@ -1,0 +1,75 @@
+# Every file in the MSVC bundled GStreamer runtime, and the upstream project it comes from.
+#
+# The MinGW flavour is licenses/third-party/COMPONENTS.tsv; this is the same ledger for the
+# MSVC flavour. Both are read the same way -- ThirdPartyLicenseTests checks every shipped
+# binary against a license text under licenses/third-party/, and
+# .github/workflows/release.yml compares the matching publish directory against the matching
+# ledger -- an exact match (missing AND extra), because a count floor cannot catch extra
+# files.
+#
+# Generated from the runtime tree, not written by hand. Plugin-to-subproject attribution
+# comes from `gst-inspect-1.0 <plugin>` (its "Source module" line); library-to-subproject
+# attribution comes from where each library is built in the GStreamer 1.28.6 tree.
+#
+# The MSVC build names the same libraries WITHOUT the 'lib' prefix, so no path here matches
+# a path in the MinGW ledger. Two differences are real, not just naming:
+#
+#   * no libgcc_s_seh-1.dll / libstdc++-6.dll / libwinpthread-1.dll -- the MSVC build uses
+#     the Microsoft C/C++ runtime instead, which is NOT bundled: msvcp140.dll,
+#     vcruntime140.dll and vcruntime140_1.dll resolve outside the tree, so this flavour
+#     requires the VC++ redistributable on the user's machine (THIRD-PARTY-NOTICES.md)
+#   * gstwinrt-1.0-0.dll is here and not in the MinGW ledger -- it is what makes Windows
+#     Graphics Capture available, and therefore what makes d3d12screencapturesrc carry the
+#     capture-api property on this flavour
+#
+# lib/gstreamer-1.0/gstd3d12.dll is the one file that is NOT an upstream binary: it is
+# built from the same 1.28.6 sources plus patches/gst-plugins-bad-1.28.6-d3d12-monochrome-
+# cursor.patch. Project stays gst-plugins-bad -- the licence is unchanged. See
+# THIRD-PARTY-NOTICES.md for the provenance.
+#
+# Columns (tab separated): Path (relative to runtimes/win-x64), Project.
+Path	Project
+bin/ffi-7.dll	libffi
+bin/gio-2.0-0.dll	glib
+bin/glib-2.0-0.dll	glib
+bin/gmodule-2.0-0.dll	glib
+bin/gobject-2.0-0.dll	glib
+bin/gst-inspect-1.0.exe	gstreamer
+bin/gst-launch-1.0.exe	gstreamer
+bin/gstapp-1.0-0.dll	gst-plugins-base
+bin/gstaudio-1.0-0.dll	gst-plugins-base
+bin/gstbase-1.0-0.dll	gstreamer
+bin/gstcodecparsers-1.0-0.dll	gst-plugins-bad
+bin/gstcodecs-1.0-0.dll	gst-plugins-bad
+bin/gstcuda-1.0-0.dll	gst-plugins-bad
+bin/gstd3d11-1.0-0.dll	gst-plugins-bad
+bin/gstd3d12-1.0-0.dll	gst-plugins-bad
+bin/gstd3dshader-1.0-0.dll	gst-plugins-bad
+bin/gstdxva-1.0-0.dll	gst-plugins-bad
+bin/gstgl-1.0-0.dll	gst-plugins-base
+bin/gstpbutils-1.0-0.dll	gst-plugins-base
+bin/gstreamer-1.0-0.dll	gstreamer
+bin/gstriff-1.0-0.dll	gst-plugins-base
+bin/gstrtp-1.0-0.dll	gst-plugins-base
+bin/gsttag-1.0-0.dll	gst-plugins-base
+bin/gstvideo-1.0-0.dll	gst-plugins-base
+bin/gstwinrt-1.0-0.dll	gst-plugins-bad
+bin/intl-8.dll	proxy-libintl
+bin/orc-0.4-0.dll	orc
+bin/pcre2-8-0.dll	pcre2
+bin/z-1.dll	zlib
+lib/gstreamer-1.0/gstamfcodec.dll	gst-plugins-bad
+lib/gstreamer-1.0/gstapp.dll	gst-plugins-base
+lib/gstreamer-1.0/gstcoreelements.dll	gstreamer
+lib/gstreamer-1.0/gstd3d11.dll	gst-plugins-bad
+lib/gstreamer-1.0/gstd3d12.dll	gst-plugins-bad
+lib/gstreamer-1.0/gstdwrite.dll	gst-plugins-bad
+lib/gstreamer-1.0/gstisomp4.dll	gst-plugins-good
+lib/gstreamer-1.0/gstmediafoundation.dll	gst-plugins-bad
+lib/gstreamer-1.0/gstnvcodec.dll	gst-plugins-bad
+lib/gstreamer-1.0/gstqsv.dll	gst-plugins-bad
+lib/gstreamer-1.0/gsttypefindfunctions.dll	gst-plugins-base
+lib/gstreamer-1.0/gstvideoconvertscale.dll	gst-plugins-base
+lib/gstreamer-1.0/gstvideoparsersbad.dll	gst-plugins-bad
+lib/gstreamer-1.0/gstvideorate.dll	gst-plugins-base
+lib/gstreamer-1.0/gstvideotestsrc.dll	gst-plugins-base

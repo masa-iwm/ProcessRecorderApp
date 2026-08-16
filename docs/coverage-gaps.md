@@ -125,7 +125,15 @@ Log 画面の表示は 2 経路ある。**既定は WebView2 の中の xterm.js*
 
 ### 同梱ランタイムに対する録画系 E2E の大半
 
-E2E ハーネスは `SettingsFile.DefaultEncoder = "x264enc"` を固定しており、配布 zip に同梱するランタイム一式には x264 が無い。`release.yml` のフィルタは `FullyQualifiedName~SmokeTests|FullyQualifiedName~RuntimeResolutionTests`（`~` は部分一致）なので、同梱物に対して流れるのは `SmokeTests`・`GuiSmokeTests`（L3 の GUI スモークもここで走る）・`RuntimeResolutionTests` の 3 クラスで、**事前バッファ・停止の同期性・ファイル名テンプレートなどの録画系 E2E は同梱物に対しては一度も流れない**。非同梱版と共通のコードなので「アプリの不具合」は `build.yml` で捕まる。捕まらないのは「その runtimes の組み合わせでしか出ない問題」。なお停止結果の規則そのものはランタイム非依存の L1（`RecordingStopRulesTests`）が押さえている。
+E2E ハーネスは `SettingsFile.DefaultEncoder = "x264enc"` を固定しており、配布 zip に同梱するランタイム一式には x264 が無い。`release.yml` のフィルタは `FullyQualifiedName~SmokeTests|FullyQualifiedName~RuntimeResolutionTests`（`~` は部分一致）なので、同梱物に対して流れるのは `SmokeTests`・`GuiSmokeTests`（L3 の GUI スモークもここで走る）・`RuntimeResolutionTests` の 3 クラスで、**事前バッファ・停止の同期性・ファイル名テンプレートなどの録画系 E2E は同梱物に対しては一度も流れない**。非同梱版と共通のコードなので「アプリの不具合」は `build.yml` で捕まる。捕まらないのは「その runtimes の組み合わせでしか出ない問題」。なお停止結果の規則そのものはランタイム非依存の L1（`RecordingStopRulesTests`）が押さえている。**このスモークは MinGW 版・MSVC 版の同梱物それぞれに対して1回ずつ流れる**（`tools/Assert-SmokeSelection.ps1` が、どちらの回でも 3 クラスが実際に選ばれたことを見る）。
+
+### MSVC 同梱版が要求する VC++ 再頒布可能パッケージ
+
+MSVC 版の同梱ランタイムは `msvcp140.dll` / `vcruntime140.dll` / `vcruntime140_1.dll` を**同梱せず、利用者の機械から**解決する（MinGW 版は自前の libstdc++ / libgcc / libwinpthread を同梱するので自己完結）。**この前提が満たされない機械での挙動は、CI では一切踏めない** ── `windows-latest` には Visual Studio が入っており CRT は必ず在るため、release.yml のスモークが緑でも「再頒布可能パッケージが無くても動く」根拠にはならない。**GPU 実機検証も同じ** ── 流した機械には CRT が在り、そこで全ケース OK になっただけである。前提は THIRD-PARTY-NOTICES.md と README に明記してあるだけで、**実行時に検出して案内する経路も無い**。CRT の無い素の Windows で 1 回確かめること（症状は起動時のネイティブ DLL 解決の失敗で、アプリ側では捕まえられない）。
+
+### `capture-api` が無いランタイムでの値の持ち越し
+
+`capture-api` は WGC 対応のビルドにしか登録されない（同梱の MSVC 版には在り、MinGW 版には無い）。UI は `GstIntrospect.ElementHasProperty` で要素に訊き、無ければ行を出さないが、**いま設定に入っている値は捨てずにテキスト行として持ち越す**（`PipelineBuilderViewModel.RebuildForSource`）── これが外れると「MSVC 版で書いたパイプラインを MinGW 版の機械で開いて OK を押しただけで `capture-api` が消える」。**この分岐は自動テストで守られていない**: `PipelineBuilderViewModel` は WinUI アプリプロジェクト側なので L1 から参照できず、L2/L3 は片方のランタイムでしか走らない。カタログ側の宣言（2 ソースに `ConditionallyAvailable` で載っていること）だけは L1（`SrcPipelineBuilderTests`）が固定している。**持ち越しそのものは手で 1 回確認済み**だが、退行しても赤くならない ── ここを触るときは手で確かめ直すこと。
 
 ### 常時録画（`ContinuousRecording`）の実機・同梱面
 
@@ -140,7 +148,7 @@ E2E ハーネスは `SettingsFile.DefaultEncoder = "x264enc"` を固定してお
     -ContinuousMinSegments 20 -ContinuousWaitSeconds 180
 ```
 
-**(2) `videorate` が無い GStreamer。** `ContinuousFramerate` を空でない値にすると枝に `videorate` が入る。**同梱ランタイムには入れてある**（`libgstvideorate.dll`。`ContinuousRuntimeDependencyTests` が `COMPONENTS.tsv` との一致を固定する）が、**利用者が別途入れた GStreamer には無いことがある** ── そのとき「`videorate` が無い」と名指しで失敗して枝だけ落ちる経路（`EventRecorder.ResolveContinuousEncoder`）を、**実際に流す自動テストは無い**（開発機も CI もフル構成なので再現できない）。要素を意図的に隠したツリーで手で 1 回確かめること。
+**(2) `videorate` が無い GStreamer。** `ContinuousFramerate` を空でない値にすると枝に `videorate` が入る。**同梱ランタイムには入れてある**（`libgstvideorate.dll` / MSVC 版は `gstvideorate.dll`。`ContinuousRuntimeDependencyTests` が**両形態の台帳**との一致を固定する）が、**利用者が別途入れた GStreamer には無いことがある** ── そのとき「`videorate` が無い」と名指しで失敗して枝だけ落ちる経路（`EventRecorder.ResolveContinuousEncoder`）を、**実際に流す自動テストは無い**（開発機も CI もフル構成なので再現できない）。要素を意図的に隠したツリーで手で 1 回確かめること。
 
 **(3) 上流を固定できないソースでの解像度の上書き。** `ContinuousResolution` が効くのは `SrcPipeline` の caps が `width` / `height` を固定しているときだけで、していなければ上書きは捨てられる（理由は `ContinuousLastError` に出る）。**この制限そのものは L1（`ContinuousBranchTests`）と L2（`AResolutionOverride_NeverShrinksTheEventRecording` / `OnTheD3d12Path_...`）が縛っている**が、**「利用者が caps に width/height を書いたら画面キャプチャでも期待どおり縮む」ことを実機で確かめてはいない**（開発機は GPU 無し）。画面キャプチャで常時録画の解像度を使うときは、一度目視で本線の解像度が落ちていないことを確かめること。
 

@@ -3,6 +3,10 @@
 このファイルは **同梱（bundled）配布に含まれる第三者コンポーネント**と、
 **配布形態によらず入る Web アセット**の一覧です。
 
+- **同梱配布には2形態あります** ── **MinGW 版**と **MSVC 版**。中身は同じ製品面
+  （まっさらなレジストリでの要素は**どちらも 16 プラグイン・268 件**で一致）ですが、
+  **ファイル一覧は別**です（MSVC 版は同じライブラリを `lib` 接頭辞なしで配ります）。
+  以下、両方に共通することは形態を書かずに、違うところは形態を明記しています。
 - **非同梱配布には適用されません。** あちらは GStreamer を同梱せず、利用者が別途
   インストールしたものを、GstSharp.Net のローダーが実行時に解決します。
 - 本体（ProcessRecorderApp）のライセンスは [`license.txt`](license.txt)（MIT）です。
@@ -21,8 +25,9 @@
 
 - 取得元・版・SHA256 は [`licenses/third-party/SOURCES.tsv`](licenses/third-party/SOURCES.tsv)。
   取得は `tools/Fetch-ThirdPartyLicenses.ps1`、照合は `-Verify` で行えます。
-- どのファイルがどのプロジェクト由来かは
-  [`licenses/third-party/COMPONENTS.tsv`](licenses/third-party/COMPONENTS.tsv)（同梱 46 ファイル全件）。
+- どのファイルがどのプロジェクト由来かは、形態ごとの台帳
+  [`licenses/third-party/COMPONENTS.tsv`](licenses/third-party/COMPONENTS.tsv)（MinGW 版・46 ファイル全件）と
+  [`licenses/third-party/COMPONENTS-msvc.tsv`](licenses/third-party/COMPONENTS-msvc.tsv)（MSVC 版・44 ファイル全件）。
 - 同梱版の配布 zip では、これらは発行物直下の `licenses/third-party/` に入ります。
   `license.txt` と本ファイルは**同梱・非同梱の両方**に入ります。
 
@@ -36,30 +41,55 @@
 
 ## 由来（provenance）
 
-公式インストーラ **`gstreamer-1.0-mingw-x86_64-1.28.6.exe`** の
-**Runtime / LGPL-only** 構成でインストールしたバイナリを、
-**このアプリが実際に構築しうる要素だけ**へ絞ったものです。
-**46 ファイル中 45 ファイルは上流のバイナリそのまま**で、残る 1 件
-`libgstd3d12.dll` だけが**改変版**です（下記「改変している唯一のファイル」）。
+公式ビルドの GStreamer 1.28.6 を導入したツリーから、**このアプリが実際に構築しうる
+要素だけ**へ絞ったものです。**各形態とも 1 ファイルだけが改変版**で、残りは上流の
+バイナリそのままです（下記「改変しているファイル」）。
+
+| 形態 | 元にしたツリー |
+|---|---|
+| MinGW | 公式インストーラ `gstreamer-1.0-mingw-x86_64-1.28.6.exe` の Runtime / **LGPL-only** 構成 |
+| MSVC | 公式 MSVC ビルドの**フル構成**（`x264` / `libav` を含むツリー。LGPL-only に相当する選択肢は無い） |
 
 | | ファイル数 | サイズ | zip |
 |---|---:|---:|---:|
-| インストール直後 | 349 | 254MB | 79.5MB |
-| **同梱物（現在）** | **46** | **49.9MB** | **16.0MB** |
+| MinGW 削減前（LGPL-only） | 349 | 254MB | 79.5MB |
+| MSVC 削減前（フル構成） | 828 | 349MB | ── |
+| **同梱物: MinGW 版** | **46** | **49.9MB** | **16.0MB** |
+| **同梱物: MSVC 版** | **44** | **24.6MB** | **8.2MB** |
+
+内訳（`ThirdPartyLicenseTests`（L1）が台帳から数え直して突き合わせます）:
+
+| 形態 | 同梱ファイル総数 | プラグイン | GStreamer ライブラリ | その他の第三者ライブラリ | ツール（`.exe`） |
+|---|---:|---:|---:|---:|---:|
+| MinGW | 46 | 15 | 17 | 12 | 2 |
+| MSVC | 44 | 15 | 18 | 9 | 2 |
 
 **一覧は、下記の種から辿った推移閉包そのものです**（それ以外は1件も入っていません）。
 このアプリが読み込まない `webrtc` / `rtsp` / `rtspserver` / `sctp` / `mse` / `play` /
 `player` / `transcoder` などのコアライブラリは含まれません。
 
 **GPL のコンポーネントは含まれません**（`x264` / `x265` / `xvid` / `a52` / `dvdread` /
-`mpeg2enc` などは1つも入っていない）。インストーラの LGPL-only 選択と、
-削減後の実測の両方で確認しています。**`libstdc++` / `libgcc` は GPL-3.0 ですが
-例外条項が付いています** ── 下記「1.」を参照。
+`mpeg2enc` などは1つも入っていない）。**MinGW 版**はインストーラの LGPL-only 選択と
+削減後の実測の両方で、**MSVC 版は削減後の実測だけ**で確認しています ── MSVC 版の
+インストーラはフル構成（`x264` も `libav` も入っている）で、LGPL-only の選択肢に
+相当するものが無いためです。**閉包はそれらを1件も引き込みません**。
+**`libstdc++` / `libgcc` は GPL-3.0 ですが例外条項が付いています** ── 下記「1.」を参照
+（**MSVC 版はそもそも含みません**）。
 
-### 改変している唯一のファイル: `libgstd3d12.dll`
+> **⚠ MSVC 版は VC++ 再頒布可能パッケージを前提とします。**
+> `msvcp140.dll` / `vcruntime140.dll` / `vcruntime140_1.dll` は**同梱していません**
+> ── 木の外（利用者の機械）で解決されます。MinGW 版は `libstdc++-6.dll` /
+> `libgcc_s_seh-1.dll` / `libwinpthread-1.dll` を同梱するので自己完結です。
+> **CI のランナーには Visual Studio が入っているため、この前提の欠落は
+> release.yml の smoke では踏めません**（緑を「入っていなくても動く」の根拠にしないこと）。
+> GPU 実機検証も CRT の在る機械で行っているので、同じく根拠になりません。
 
-同梱の `libgstd3d12.dll` は**上流のバイナリではありません**。GStreamer 1.28.6 の
-`gst-plugins-bad` に修正を1つ当てて自前でビルドしたものです。
+### 改変しているファイル: `libgstd3d12.dll` / `gstd3d12.dll`
+
+同梱の d3d12 プラグイン（MinGW 版 `libgstd3d12.dll`、MSVC 版 `gstd3d12.dll`）は
+**上流のバイナリではありません**。GStreamer 1.28.6 の `gst-plugins-bad` に
+**同じ修正を1つ**当てて自前でビルドしたものです（形態ごとに別のツールチェーンで
+ビルドしていますが、当てた変更は同一です）。
 
 - **修正内容**: `d3d12screencapturesrc` がモノクロ（ハイコントラスト）カーソルを取り込む
   ときの範囲外読み出し。XOR プレーンの開始位置に**出力 RGBA バッファの大きさ**を足して
@@ -72,19 +102,27 @@
   にもあります。上流の課題は
   <https://gitlab.freedesktop.org/gstreamer/gstreamer/-/work_items/5259> で、
   **上流のリリースにはまだ入っていません**。
-- **ビルドに使ったツールチェーン**: MinGW-W64 GCC 14.1.0（ucrt / posix / seh）。
+- **ビルドに使ったツールチェーン（MinGW 版）**: MinGW-W64 GCC 14.1.0（ucrt / posix / seh）。
   cerbero の 14.2.0 とは別物です（バイナリの `GCC:` 文字列で確認）。同梱の
   `libstdc++-6.dll` は 14.2.0 で、より新しい側なので読み込めます。
-- **SHA256**: `bf8c5a08e9756c056d80566eef23ff54210aca4e00882db9423c8b5870c3a6ed`
-- **公式ビルドとの同一性（実測）**: PE のインポートは1件も違いません。この木の閉包は
-  46 ファイル・removable 0、まっさらなレジストリでの要素は 268 件で公式ビルドの木と
-  完全一致、blacklist は 0 件。`gst-inspect-1.0 d3d12` の `Version` は 1.28.6、
-  `License` は LGPL、`Source module` は gst-plugins-bad です。
+- **ビルドに使ったツールチェーン（MSVC 版）**: MSVC リンカー 14.51
+  （Visual Studio 18 / MSVC 14.51.36231）。上流の公式ビルドは 14.44 です
+  （どちらも PE ヘッダーの linker version の実測値）。
+- **SHA256（MinGW 版 `libgstd3d12.dll`）**: `bf8c5a08e9756c056d80566eef23ff54210aca4e00882db9423c8b5870c3a6ed`
+- **SHA256（MSVC 版 `gstd3d12.dll`）**: `e27157082f59be15f855f4e5a961d2627ed8cc95b9abdb8eacdf76ada6b791f9`
+- **公式ビルドとの同一性（実測・両形態）**: PE のインポートは1件も違いません
+  （MSVC 版は差し替え前の公式バイナリと 28 件すべて一致）。それぞれの木の閉包は
+  MinGW 版 46 ファイル / MSVC 版 44 ファイルで removable 0、まっさらなレジストリでの要素は
+  **どちらも 16 プラグイン・268 件**で公式ビルドの木と完全一致、blacklist は 0 件。
+  `gst-inspect-1.0 d3d12` の `Version` は 1.28.6、`License` は LGPL、
+  `Source module` は gst-plugins-bad です。
 - **確かめていないこと**: **クラッシュそのものの解消は、この開発機では確認できません**
   （WARP ＋ RDP でモノクロカーソルの経路に入らない）。当てた修正は
   [`docs/environment-facts.md`](docs/environment-facts.md) に書いた原因分析と
   同じ箇所・同じ値です。取り込みが動くこと（`show-cursor=true` で 60 フレーム、終了コード 0）
-  だけは同梱する木そのもので確認しています。
+  だけは**両形態の同梱する木そのもの**で確認しています
+  （`gst-launch-1.0 -e d3d12screencapturesrc show-cursor=true num-buffers=60 ! fakesink`
+  を各ツリーの `gst-launch-1.0.exe` で実行し、どちらも EOS・終了コード 0）。
 
 ### 一覧の作り方（再現手順）
 
@@ -108,7 +146,7 @@
 
 > **PE のインポートは「静的に import しているもの」しか映しません。**
 > 実行時に名前で開く（`g_module_open` / `LoadLibrary`）ものは映らないので、
-> 削除候補の名前が**残す 46 件のバイナリの中に文字列として現れないこと**も確認しています
+> 削除候補の名前が**残すバイナリの中に文字列として現れないこと**も確認しています（両形態）
 > （`libgst….dll` の形と、`lib` と `.dll` を落とした gmodule の形の両方で、
 > **DLL 名は 0 件**）。
 >
@@ -118,11 +156,13 @@
 > いずれも**同梱していません**が、無ければ GStreamer はプラグインの走査を
 > プロセス内で行うなどの退避経路を持ち、下記の要素一覧の照合（blacklist 0 件・
 > 要素 268 件が削減前と一致）で実際に影響が無いことを確かめています。
+> **MSVC 版でも同じ 4 件・同じ結論**です。
 
-## GStreamer プラグイン（15）
+## GStreamer プラグイン
 
-いずれも GStreamer 1.28.6 の一部で、**申告ライセンスはすべて LGPL** です
-（`gst-inspect-1.0` の `License` 行の実測値）。
+**両形態とも同じ 15 本**で、いずれも GStreamer 1.28.6 の一部、**申告ライセンスはすべて LGPL**
+です（`gst-inspect-1.0` の `License` 行の実測値）。ファイル名は MinGW 版が
+`libgstX.dll`、MSVC 版が `gstX.dll` です。
 
 | プラグイン | 由来（Source module） | 用途 |
 |---|---|---|
@@ -144,16 +184,21 @@
 
 > **`openh264` は同梱していません。** 理由は下記「2.」。
 
-## GStreamer ライブラリ（17）
+## GStreamer ライブラリ
 
-`libgstreamer-1.0-0.dll` を含む GStreamer 本体のライブラリ群で、
-いずれも **GStreamer 1.28.6（LGPL-2.1-or-later）** の一部です。内訳:
+`libgstreamer-1.0-0.dll`（MSVC 版は `gstreamer-1.0-0.dll`）を含む GStreamer 本体の
+ライブラリ群で、いずれも **GStreamer 1.28.6（LGPL-2.1-or-later）** の一部です。内訳:
 
-| 由来 | 数 | ライセンス文 |
-|---|---:|---|
-| gstreamer（core） | 2 | `licenses/third-party/gstreamer/COPYING` |
-| gst-plugins-base | 8 | `licenses/third-party/gst-plugins-base/COPYING` |
-| gst-plugins-bad | 7 | `licenses/third-party/gst-plugins-bad/COPYING` |
+| 由来 | MinGW 版 | MSVC 版 | ライセンス文 |
+|---|---:|---:|---|
+| gstreamer（core） | 2 | 2 | `licenses/third-party/gstreamer/COPYING` |
+| gst-plugins-base | 8 | 8 | `licenses/third-party/gst-plugins-base/COPYING` |
+| gst-plugins-bad | 7 | 8 | `licenses/third-party/gst-plugins-bad/COPYING` |
+
+> **MSVC 版だけ 1 本多いのは `gstwinrt-1.0-0.dll`** です。Windows Graphics Capture を
+> 使えるようにしているのがこのライブラリで、**`d3d12screencapturesrc` に
+> `capture-api` プロパティが生えるのはこの形態だけ**という違いはここから来ています
+> （MinGW 版はこのライブラリを持たず、プロパティ自体が登録されません ── 実測）。
 
 `gst-inspect-1.0.exe` と `gst-launch-1.0.exe`（いずれも gstreamer core）も同梱しています
 ── 前者は `tools/Verify-GpuEncoders.ps1` が実機検証で実行するため、後者は利用者の機械で
@@ -162,7 +207,7 @@
 > **`gst-rtsp-server` は同梱していません**（閉包の外）。
 > サブプロジェクトごと配布物に含まれず、ライセンス文もありません。
 
-## その他の第三者ライブラリ（12）
+## その他の第三者ライブラリ
 
 | ファイル | プロジェクト・版 | ライセンス | 全文（`licenses/third-party/` 配下） |
 |---|---|---|---|
@@ -175,6 +220,21 @@
 | `libstdc++-6.dll`, `libgcc_s_seh-1.dll` | GCC runtime 14.2.0 | **GPL-3.0 with GCC Runtime Library Exception** | `gcc-runtime/COPYING3`, `gcc-runtime/COPYING.RUNTIME` |
 | `libwinpthread-1.dll` | mingw-w64 winpthreads 12.0.0 | MIT（一部に BSD-3-Clause 由来の部分） | `mingw-w64-winpthreads/COPYING` |
 
+> **ファイル名は MinGW 版のものです。** MSVC 版は同じライブラリを `lib` 接頭辞なしで
+> 配ります（`glib-2.0-0.dll` / `intl-8.dll` / `ffi-7.dll` / `orc-0.4-0.dll` /
+> `pcre2-8-0.dll` / `z-1.dll`）。**最後の 3 行 ── GCC runtime と winpthreads ──
+> は MSVC 版には入りません**（12 件ではなく 9 件になるのはこのためです）。
+> その代わりに `msvcp140.dll` / `vcruntime140.dll` / `vcruntime140_1.dll` を
+> **利用者の機械の VC++ 再頒布可能パッケージから**解決します
+> ── 同梱しないので、この一覧にも `licenses/third-party/` にも現れません。
+>
+> **ライセンス文だけは両形態とも全部入ります。** 配布物の `licenses/third-party/` は
+> リポジトリの中身をそのまま複写したもので、形態では絞っていません
+> ── したがって **MSVC 版の配布物にも `gcc-runtime/` と `mingw-w64-winpthreads/` の
+> 全文が入りますが、対応するバイナリは入っていません**（過剰包含。
+> 足りないより安全な側で、形態ごとに絞る仕掛けを増やすと、
+> そちらがずれたときに**足りない側**へ倒れるため）。
+
 > **`glib/` に置いてあるファイル名が `COPYING` でないのは上流の都合です。**
 > GLib 2.82.4 の `COPYING` は中身が1行（`LICENSES/LGPL-2.1-or-later.txt`）の
 > ポインタなので、実体である `LICENSES/LGPL-2.1-or-later.txt` の方を取得しています。
@@ -186,9 +246,11 @@
 > 「GNU *Library* General Public License, Version 2」**（本文は上流の `COPYING`、
 > ソースヘッダーは "either version 2 of the License, or (at your option) any later version"）。
 
-`libstdc++-6.dll` は 25.3MB で**同梱物の半分以上（51%）**を占めます。
+`libstdc++-6.dll` は 25.3MB で**MinGW 版の半分以上（51%）**を占めます。
 **削減で減らせるのはここではありません** ── 同梱物は改変しない方針なので、
-`strip` も部分リンクもしていません。
+`strip` も部分リンクもしていません。**MSVC 版が 24.6MB と半分以下で済むのは、
+まさにこの1ファイルを持たないからです**（その代わり利用者側に VC++ 再頒布可能
+パッケージを要求します）。
 
 ## アプリ本体に同梱する Web アセット（同梱・非同梱の両方に入る）
 
@@ -249,8 +311,8 @@ LGPL は「対応するソースの入手先を示すこと」を求めます。
 > `gitlab.freedesktop.org` と `gcc.gnu.org` が実際にそうで、`SOURCES.tsv` が
 > GitHub ミラーを使っているのはそのためです）。
 > **GStreamer は4サブプロジェクトを別行にしてあります。** ディレクトリ索引
-> （`.../src/`）1行で済ませると版が固定されず、**同梱 46 ファイルのうち 34 件**
-> ＝最大の塊が最も弱い指し方になってしまうためです。
+> （`.../src/`）1行で済ませると版が固定されず、**MinGW 版 46 ファイルのうち 34 件 /
+> MSVC 版 44 ファイルのうち 35 件**＝最大の塊が最も弱い指し方になってしまうためです。
 
 > **libffi・Orc・PCRE2・zlib・proxy-libintl の URL は、cerbero が
 > `tarball_checksum` を付けて指定しているものと同一**です（`recipes/*.recipe`）。
@@ -266,6 +328,9 @@ LGPL は「対応するソースの入手先を示すこと」を求めます。
 ## 確認が要る点
 
 ### 1. `libstdc++` / `libgcc_s_seh` は GPLv3 だが、例外条項が付いている
+
+**この項は MinGW 版だけの話です。** MSVC 版はこの2本を含みません
+（代わりに利用者の機械の VC++ 再頒布可能パッケージを使います ── 上記「由来」の警告）。
 
 **GCC Runtime Library Exception** により、GCC でコンパイルしたプログラムと一緒に
 再配布しても、そのプログラムが GPL になることはありません。
@@ -293,12 +358,14 @@ Cisco のロイヤリティフリー枠は「**Cisco が公開しているバイ
 
 ### 3. LGPL の義務
 
-同梱物は**動的リンク（DLL）**で、**46 件中 45 件は改変していません**
-（`libgstd3d12.dll` だけが改変版 ── 上記「改変している唯一のファイル」）。したがって
+同梱物は**動的リンク（DLL）**で、改変しているのは**各形態とも d3d12 プラグイン 1 件だけ**
+です（MinGW 版 46 件中 45 件・MSVC 版 44 件中 43 件は上流のまま ── 上記
+「改変しているファイル」）。したがって
 
 - 対応するソースの入手先を示すこと ── **上記「版とソースの入手先」に版を固定した
-  URL で記載**。改変した `libgstd3d12.dll` は、そのソースと
-  `patches/` のパッチを合わせたものが対応するソース
+  URL で記載**。改変した d3d12 プラグイン（`libgstd3d12.dll` / `gstd3d12.dll`）は、
+  そのソースと `patches/` のパッチを合わせたものが対応するソース ──
+  **両形態とも同一のパッチ**です
 - **利用者が DLL を差し替えられる状態を保つこと** ── 現状そうなっています。
   GstSharp.Net のローダーは PATH・環境変数・レジストリ・既定の導入先・MSYS2 を
   同梱物より**優先**するので、利用者は自分のビルドに差し替えられます
@@ -311,16 +378,20 @@ Cisco のロイヤリティフリー枠は「**Cisco が公開しているバイ
   `licenses/third-party/` の過不足と、全文が上流の原文のままであること。
   **見ているのはリポジトリの中だけ**です。
 - **配布 zip 側**は `.github/workflows/release.yml` が担います ── 発行ディレクトリの
-  同梱ランタイムを `COMPONENTS.tsv` と突き合わせ、ライセンス文と `license.txt`・
-  本ファイルの存在を確認してから zip を作ります。同梱物の smoke テストは
+  同梱ランタイムを**その形態の台帳**（`COMPONENTS.tsv` / `COMPONENTS-msvc.tsv`）と
+  突き合わせ、ライセンス文と `license.txt`・本ファイルの存在を確認してから zip を作ります。
+  **形態ごとに1回ずつ**行います ── 片方しか照合しない構成に戻すと、もう片方は
+  「同梱版」を名乗ったまま無検証で配られます。同梱物の smoke テストは
   **件数を見ること** ── 0 件を選ぶフィルタでも `dotnet test` は成功で終わります。
+- **どちらの検証も VC++ 再頒布可能パッケージの前提までは見ません** ── CI のランナーには
+  Visual Studio が入っており、MSVC 版の smoke はその前提が満たされた機械で通るだけです。
 - zip には**長さ 0 のディレクトリエントリ**が入ります
   （`runtimes/win-x64/` と `runtimes/win-x64/lib/`）。
   **エントリ数と実ファイル数は別物**なので、数えるときは長さで分けること。
 
 ### 5. 非同梱配布という選択肢
 
-非同梱版は**上記の GStreamer 由来のものを1つも含みません**。入るのは `license.txt`・本ファイル・
+非同梱版は**上記の GStreamer 由来のものを1つも含みません**（形態という区別もありません）。入るのは `license.txt`・本ファイル・
 `Assets/Terminal/` の Web アセットとそのライセンス文（下記「アプリ本体に同梱する Web アセット」）だけです。
 
 ### 6. 同梱ランタイムからファイルを削るときに確かめること

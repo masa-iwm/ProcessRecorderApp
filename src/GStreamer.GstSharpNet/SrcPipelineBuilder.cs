@@ -23,7 +23,8 @@ public sealed class SrcPropertyDef(
     string? defaultValue = null,
     string[]? enumChoices = null,
     string? description = null,
-    string? dynamicKey = null)
+    string? dynamicKey = null,
+    bool conditionallyAvailable = false)
 {
     /// <summary>GStreamer プロパティ名(例: is-live, monitor-index)。</summary>
     public string Name { get; } = name;
@@ -35,6 +36,21 @@ public sealed class SrcPropertyDef(
     public string? Description { get; } = description;
     /// <summary>実行時に選択肢を動的取得するためのキー(例: monitor-index, mf-device-name)。null なら動的取得なし。</summary>
     public string? DynamicKey { get; } = dynamicKey;
+
+    /// <summary>
+    /// <b>ビルド構成によっては要素に登録されないプロパティ</b>
+    /// （GStreamer の <c>conditionally available</c>）。true のとき、UI は
+    /// <see cref="GstIntrospect.ElementHasProperty"/> で<b>実物に訊いてから</b>行を出す。
+    ///
+    /// <para>
+    /// カタログには常に載せておくこと ── 載っていない名前は
+    /// 「未知のプロパティ」としてテキスト行で保持されるが、載っているのに
+    /// 行を出さないだけだと、<b>編集して OK した時点で黙って消える</b>
+    /// （<c>device-path</c> で踏んだのと同じ壊れ方）。
+    /// 行を出さない場合の持ち越しは UI 側の責務。
+    /// </para>
+    /// </summary>
+    public bool ConditionallyAvailable { get; } = conditionallyAvailable;
 }
 
 /// <summary>caps の 1 フィールドの定義(format/framerate/resolution 等)。</summary>
@@ -109,6 +125,12 @@ public static partial class SrcPipelineBuilder
     private static readonly string[] FormatChoices =
         ["NV12", "I420", "RGBA", "BGRA", "RGB", "BGR", "YUY2", "P010_10LE"];
 
+    // 画面キャプチャの capture-api の選択肢。**D3D12 と D3D11 で同じ綴り**
+    // （上流の GstD3D12ScreenCaptureAPI / GstD3D11ScreenCaptureAPI がどちらも
+    // dxgi=0 / wgc=1。実測）。同じ配列を使うのは、ソースを切り替えたときに
+    // CarryOver が値をそのまま運べるようにするため。
+    private static readonly string[] ScreenCaptureApis = ["dxgi", "wgc"];
+
     // テストソースの pattern 代表的な選択肢
     private static readonly string[] TestPatterns =
         ["smpte", "snow", "black", "white", "red", "green", "blue", "ball", "smpte75", "circular"];
@@ -134,6 +156,17 @@ public static partial class SrcPipelineBuilder
                     description: Localization.GetString("Resources/Src_MonitorIndex_Desc"), dynamicKey: "monitor-index"),
                 new SrcPropertyDef("show-cursor", SrcPropertyKind.Bool, "false",
                     description: Localization.GetString("Resources/Src_ShowCursor_Desc")),
+                // **在るビルドと無いビルドがある。** Windows Graphics Capture を組み込んだ
+                // ビルドにだけ生えるプロパティで、同梱ランタイムでは MSVC 版に在り
+                // MinGW 版には無い（実測）。したがって選択肢に出すかどうかは
+                // 要素に訊いて決める ── ConditionallyAvailable の説明を参照。
+                // **D3D11 版にも同じものが在る**（同じ綴り・同じ既定値。実測）ので、
+                // あちらのカタログにも同じ形で載せてある ── 片方だけに載せると、
+                // ソースを切り替えた瞬間に CarryOver が値を落とす。
+                new SrcPropertyDef("capture-api", SrcPropertyKind.Enum, "dxgi",
+                    ScreenCaptureApis,
+                    Localization.GetString("Resources/Src_CaptureApi_Desc"),
+                    conditionallyAvailable: true),
             ],
             capsFields:
             [
@@ -174,6 +207,11 @@ public static partial class SrcPipelineBuilder
                     description: Localization.GetString("Resources/Src_MonitorIndex_Desc"), dynamicKey: "monitor-index"),
                 new SrcPropertyDef("show-cursor", SrcPropertyKind.Bool, "false",
                     description: Localization.GetString("Resources/Src_ShowCursor_Desc")),
+                // D3D12 版と同じ条件付きプロパティ（同じ綴り・同じ既定値。実測）。
+                new SrcPropertyDef("capture-api", SrcPropertyKind.Enum, "dxgi",
+                    ScreenCaptureApis,
+                    Localization.GetString("Resources/Src_CaptureApi_Desc"),
+                    conditionallyAvailable: true),
             ],
             capsFields:
             [
