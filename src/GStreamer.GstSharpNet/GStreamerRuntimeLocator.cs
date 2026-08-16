@@ -9,7 +9,7 @@ using System.Runtime.Versioning;
 namespace ProcessRecorderApp.GStreamer;
 
 /// <summary>
-/// PATH に載せる候補1件。
+/// GStreamer の根の候補1件。
 /// </summary>
 /// <param name="Source">
 /// どこから来た候補か。<b>activity.log とテストの照合に使う識別子</b>なので、
@@ -39,22 +39,26 @@ public sealed record GStreamerRuntimeCandidate(string Source, string BinDirector
 /// </para>
 ///
 /// <para>
-/// <b>候補を全部 PATH に繋いではいけない。</b> 依存 DLL（<c>libglib-2.0-0.dll</c> 等）は
-/// 「読み込み元 DLL のあるディレクトリ」ではなく <b>PATH の順</b>で解決されるため、
-/// 繋ぐと「gstreamer は同梱物・glib は MSYS2」のような<b>混成</b>が起こりうる。
-/// 症状はプラグインが黙って blacklist されることで、原因が見えない。
+/// <b>候補は1件だけを選ぶ（全部渡さない）。</b> 依存 DLL（<c>libglib-2.0-0.dll</c> 等）が
+/// 別の根から解決されると「gstreamer は同梱物・glib は MSYS2」のような<b>混成</b>が
+/// 起こりうる。症状はプラグインが黙って blacklist されることで、原因が見えない。
 /// GitHub ランナーには <b>GStreamer 抜きの MSYS2 が <c>C:\msys64</c> にプリインストール</b>
 /// されているので、これは机上の心配ではない。
-/// そこで<b>最初に <see cref="CoreLibraryFileName"/> を持っていた候補だけ</b>を選び、
-/// それを PATH の<b>先頭</b>へ置く。優先順位は上のとおりのまま保たれ、
-/// かつ選んだ根の <c>bin</c> が最優先になるので依存 DLL も同じ根から取れる。
+/// そこで<b>最初に <see cref="CoreLibraryFileName"/> を持っていた候補だけ</b>を選ぶ
+/// （この選定契約は従来のまま）。選んだ根は <c>GstSharpOptions.NativeSearchPath</c> として
+/// GstSharp.Net へ渡り、バインディングが各モジュールを<b>その根から絶対パスで</b>ロードし、
+/// プラグインの依存解決のために <c>bin</c> を自分で PATH の先頭へ足す。
+/// 最初にロードした根への固定（ピン）もバインディング側にあるので、
+/// アプリはもう PATH を組み立てない。
 /// </para>
 ///
 /// <para>
-/// <b>公式 MSVC 版の GStreamer はこの経路からは見えない。</b>
-/// <see cref="ImportResolver"/> が要求するのは <c>libgstreamer-1.0-0.dll</c>（MinGW 命名）で、
-/// MSVC 版は <c>gstreamer-1.0-0.dll</c> と名前が違う。指示が MinGW / UCRT64 に
-/// 限定されているのはこのため。切り分けは <c>gst.runtime</c> のログで行う。
+/// <b>公式 MSVC 版の GStreamer はこの候補探索からは選ばれない。</b>
+/// 候補の確認に使うのは <c>libgstreamer-1.0-0.dll</c>（MinGW 命名）で、
+/// MSVC 版は <c>gstreamer-1.0-0.dll</c> と名前が違う。ただしここで何も選べなかった
+/// 場合（<c>NativeSearchPath</c> が null）、GstSharp.Net 自身のプローブ
+/// （レジストリ／既定ディレクトリ）は MSVC 版も見つけられる。
+/// どちらが勝ったかは <c>gst.runtime</c> のログ（<c>loaderFlavor</c>）で切り分ける。
 /// </para>
 /// </summary>
 public static class GStreamerRuntimeLocator
@@ -64,6 +68,14 @@ public static class GStreamerRuntimeLocator
 
     /// <summary>混成の検出に使う依存 DLL。本体と同じディレクトリから来ていなければ混成。</summary>
     public const string GLibLibraryFileName = "libglib-2.0-0.dll";
+
+    // MSVC 命名（lib 接頭辞なし）。DescribeRuntime のロード済み判定にだけ使う
+    // ── バインディング自身のプローブは MSVC 版も選びうるので、診断はどちらの命名でも
+    // 本体を見つけられる必要がある。候補の探索（選定契約）と同梱の種は MinGW のままなので、
+    // 意図的に *LibraryFileName の命名から外してある（RuntimeClosureSeedSyncTests が
+    // その接尾辞で種を収集する）。
+    private const string MsvcCoreFileName = "gstreamer-1.0-0.dll";
+    private const string MsvcGLibFileName = "glib-2.0-0.dll";
 
     /// <summary>GStreamer(MinGW) の公式インストーラが設定する環境変数。</summary>
     public const string MinGwRootVariable = "GSTREAMER_1_0_ROOT_MINGW_X86_64";
@@ -144,38 +156,8 @@ public static class GStreamerRuntimeLocator
     }
 
     /// <summary>
-    /// 新しい <c>PATH</c> を組み立てる（純粋関数）。
-    ///
-    /// <para>
-    /// 選べたときは<b>その1件だけを先頭へ</b>置く（依存 DLL を同じ根から取るため）。
-    /// 選べなかったときは候補を末尾に全部繋ぐ ── 元の PATH を壊さず、
-    /// 失敗の出方を「本体が見つからない」のまま保つ。
-    /// </para>
-    /// </summary>
-    public static string ComposePath(
-        string? originalPath,
-        IReadOnlyList<GStreamerRuntimeCandidate> candidates,
-        GStreamerRuntimeCandidate? chosen)
-    {
-        string original = originalPath ?? string.Empty;
-
-        if (chosen is not null)
-            return string.IsNullOrEmpty(original)
-                ? chosen.BinDirectory
-                : chosen.BinDirectory + ";" + original;
-
-        var tail = candidates.Select(c => c.BinDirectory).ToArray();
-        if (tail.Length == 0)
-            return original;
-
-        return string.IsNullOrEmpty(original)
-            ? string.Join(';', tail)
-            : original + ";" + string.Join(';', tail);
-    }
-
-    /// <summary>
     /// 実在する候補だけを優先順に集める。レジストリ読みは失敗しても無視する
-    /// （<c>Gst.Functions.Init</c> より前に走るので、ここで例外を漏らすと起動が丸ごと死ぬ）。
+    /// （GstSharp.Net の初期化より前に走るので、ここで例外を漏らすと起動が丸ごと死ぬ）。
     /// </summary>
     [SupportedOSPlatform("windows")]
     public static IReadOnlyList<GStreamerRuntimeCandidate> Discover(
@@ -302,16 +284,23 @@ public static class GStreamerRuntimeLocator
     ///
     /// <para>
     /// <b>「自分が選んだ候補」だけを出しても意味が無い。</b> それは自前の計算の写経であって、
-    /// 防ごうとしている混成そのものを見逃す。<b><c>Gst.Functions.Init</c> の後に呼び</b>、
+    /// 防ごうとしている混成そのものを見逃す。<b>GstSharp.Net の初期化の後に呼び</b>、
     /// 実際にロードされた本体と glib のパスを見て <c>mixed</c> を判定すること。
+    /// バインディングのローダーが最終的に選んだ根と系統（MinGW / MSVC）も
+    /// <c>loaderDir</c> / <c>loaderFlavor</c> として末尾に出す
+    /// （末尾に足すのは、<c>tools/Verify-GpuEncoders.ps1</c> が <c>dir=</c> を
+    /// 位置で読むため）。
     /// </para>
     /// </summary>
     public static string DescribeRuntime(
         IReadOnlyList<GStreamerRuntimeCandidate> candidates,
         GStreamerRuntimeCandidate? chosen)
     {
-        string? corePath = FindLoadedModulePath(CoreLibraryFileName);
-        string? glibPath = FindLoadedModulePath(GLibLibraryFileName);
+        // ローダーは MSVC 版を選ぶこともあるので、両方の命名で探す（見つかった方を採る）。
+        string? corePath = FindLoadedModulePath(CoreLibraryFileName)
+            ?? FindLoadedModulePath(MsvcCoreFileName);
+        string? glibPath = FindLoadedModulePath(GLibLibraryFileName)
+            ?? FindLoadedModulePath(MsvcGLibFileName);
 
         // 同じディレクトリから来ていれば混成ではない。どちらかが取れないときは判定しない。
         string mixed = corePath is null || glibPath is null
@@ -323,8 +312,12 @@ public static class GStreamerRuntimeLocator
             ? "(none)"
             : string.Join(", ", candidates.Select(c => $"{c.Source}={c.BinDirectory}"));
 
+        // loaderDir が null なのは「まだ何もロードしていない」か「プロセスの探索パスで
+        // 見つかった（ピンにディレクトリが無い）」とき。
         return $"selected={chosen?.Source ?? "(none)"} dir={chosen?.BinDirectory ?? "(none)"}"
              + $" core={corePath ?? "(not loaded)"} glib={glibPath ?? "(not loaded)"}"
-             + $" mixed={mixed} candidates=[{candidateList}]";
+             + $" mixed={mixed} candidates=[{candidateList}]"
+             + $" loaderDir={Gst.Interop.NativeLoader.ResolvedDirectory ?? "(search-path)"}"
+             + $" loaderFlavor={Gst.Interop.NativeLoader.ResolvedFlavor?.ToString() ?? "(none)"}";
     }
 }

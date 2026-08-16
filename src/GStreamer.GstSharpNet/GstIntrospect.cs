@@ -279,8 +279,9 @@ public static partial class GstIntrospect
     /// <c>mfvideosrc</c> 対応のビデオ入力デバイス一覧と、それぞれの対応 caps を取得する。
     ///
     /// <para>
-    /// <b>gir-core のオブジェクト束縛を通してはいけない。</b> <c>gst_device_provider_get_devices</c>
-    /// が返す <c>GList</c> を <c>Device.NewFromPointer</c> で包む書き方はマネージドヒープを壊し、
+    /// <b>マネージドのオブジェクト束縛を通してはいけない。</b> gir-core では
+    /// <c>gst_device_provider_get_devices</c> が返す <c>GList</c> を <c>Device.NewFromPointer</c>
+    /// で包む書き方がマネージドヒープを壊し、
     /// <b>あとから無関係な場所でアクセス違反になる</b>（実測: <c>ucrtbase.dll</c> の
     /// 0xc0000409 と、CoreCLR の FailFast が示す <c>DispatchResolve.FindImplSlotInSimpleMap</c>
     /// でのアクセス違反）。
@@ -288,8 +289,10 @@ public static partial class GstIntrospect
     /// カメラの無い CI と開発機は緑のまま、利用者の機械でだけ落ちる。
     /// </para>
     /// <para>
-    /// そのためここは C の API を直接呼ぶ。所有権は <c>gst_device_provider_get_devices</c> が
-    /// transfer full ── 各要素を <c>gst_object_unref</c> し、リスト自体を <c>g_list_free</c> する。
+    /// そのためここは C の API を直接呼ぶ。GstSharp.Net preview1 にデバイス列挙の
+    /// バインディングは無い（preview2 受け入れの筆頭）。所有権は
+    /// <c>gst_device_provider_get_devices</c> が transfer full ── 各要素を
+    /// <c>gst_object_unref</c> し、リスト自体を <c>g_list_free</c> する。
     /// </para>
     /// </summary>
     public static IReadOnlyList<VideoDeviceInfo> GetVideoSourceDevices()
@@ -465,61 +468,65 @@ public static partial class GstIntrospect
         }
     }
 
-    [LibraryImport(ImportResolver.Library, StringMarshalling = StringMarshalling.Utf8)]
+    // "Gst" / "GLib" は論理名。Controller.StaticInitialize が
+    // Gst.Interop.NativeLoader.EnsureRegistered で登録するリゾルバが、バインディング本体と
+    // 同じ固定ディレクトリの DLL に解決する（フレーバー混在は起きない）。未知の名前
+    // (dxgi.dll / user32.dll) には関与しない。
+    [LibraryImport("Gst", StringMarshalling = StringMarshalling.Utf8)]
     private static partial IntPtr gst_device_provider_factory_get_by_name(string factoryname);
 
-    [LibraryImport(ImportResolver.Library)]
+    [LibraryImport("Gst")]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static partial bool gst_device_provider_start(IntPtr provider);
 
-    [LibraryImport(ImportResolver.Library)]
+    [LibraryImport("Gst")]
     private static partial void gst_device_provider_stop(IntPtr provider);
 
-    [LibraryImport(ImportResolver.Library)]
+    [LibraryImport("Gst")]
     private static partial IntPtr gst_device_provider_get_devices(IntPtr provider);
 
-    [LibraryImport(ImportResolver.Library)]
+    [LibraryImport("Gst")]
     private static partial IntPtr gst_device_get_display_name(IntPtr device);
 
     /// <summary>transfer full の <c>GstStructure*</c>（解放は gst_structure_free）。</summary>
-    [LibraryImport(ImportResolver.Library)]
+    [LibraryImport("Gst")]
     private static partial IntPtr gst_device_get_properties(IntPtr device);
 
     /// <summary><c>GstStructure</c> は MiniObject ではないので専用の解放関数を使う。</summary>
-    [LibraryImport(ImportResolver.Library)]
+    [LibraryImport("Gst")]
     private static partial void gst_structure_free(IntPtr structure);
 
-    [LibraryImport(ImportResolver.Library)]
+    [LibraryImport("Gst")]
     private static partial IntPtr gst_device_get_caps(IntPtr device);
 
-    [LibraryImport(ImportResolver.Library)]
+    [LibraryImport("Gst")]
     private static partial uint gst_caps_get_size(IntPtr caps);
 
-    [LibraryImport(ImportResolver.Library)]
+    [LibraryImport("Gst")]
     private static partial IntPtr gst_caps_get_structure(IntPtr caps, uint index);
 
-    [LibraryImport(ImportResolver.Library, StringMarshalling = StringMarshalling.Utf8)]
+    [LibraryImport("Gst", StringMarshalling = StringMarshalling.Utf8)]
     private static partial IntPtr gst_structure_get_string(IntPtr structure, string fieldname);
 
-    [LibraryImport(ImportResolver.Library, StringMarshalling = StringMarshalling.Utf8)]
+    [LibraryImport("Gst", StringMarshalling = StringMarshalling.Utf8)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static partial bool gst_structure_get_int(IntPtr structure, string fieldname, out int value);
 
-    [LibraryImport(ImportResolver.Library, StringMarshalling = StringMarshalling.Utf8)]
+    [LibraryImport("Gst", StringMarshalling = StringMarshalling.Utf8)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static partial bool gst_structure_get_fraction(IntPtr structure, string fieldname,
         out int numerator, out int denominator);
 
-    [LibraryImport(ImportResolver.Library)]
+    [LibraryImport("Gst")]
     private static partial void gst_object_unref(IntPtr obj);
 
-    [LibraryImport(ImportResolver.Library)]
+    [LibraryImport("Gst")]
     private static partial void gst_mini_object_unref(IntPtr obj);
 
-    [LibraryImport(ImportResolver.LibraryGLib)]
+    [LibraryImport("GLib")]
     private static partial void g_free(IntPtr mem);
 
-    [LibraryImport(ImportResolver.LibraryGLib)]
+    [LibraryImport("GLib")]
     private static partial void g_list_free(IntPtr list);
 
     /// <summary>

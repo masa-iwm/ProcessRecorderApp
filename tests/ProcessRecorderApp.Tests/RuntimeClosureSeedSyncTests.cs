@@ -59,29 +59,29 @@ public class RuntimeClosureSeedSyncTests
     }
 
     /// <summary>
-    /// 製品がファイル名を書いている場所 ── <c>ImportResolver</c>（P/Invoke の解決先）と
-    /// <c>GStreamerRuntimeLocator</c>（探索の目印）。Windows 版の名前だけを見る。
+    /// 製品側（GstSharp.Net バインディング）が**名前で読む**ライブラリの一覧（MinGW 命名）。
+    ///
+    /// <para>
+    /// 正本は GstSharp.Net リポジトリの <c>Core/Interop/NativeNames.cs</c> と、
+    /// このアプリが参照するバインディングアセンブリが登録するモジュール集合
+    /// （GLib / GObject / GModule / Gst / GstBase / GstApp。Video / Audio / Pbutils は
+    /// 参照していないので要求されない）。名前空間はアプリ側に無いので、
+    /// <b>パッケージの版を上げたら NativeNames.cs と突き合わせてここを更新する</b>こと
+    /// ── ずれてもビルドもテストも落ちず、同梱配布の実行時にだけ壊れる
+    /// （このファイルの存在理由そのもの）。アプリ自身の生 P/Invoke
+    /// （GstIntrospect / DebugLogEx）は論理名 "Gst"/"GLib"/"GObject" で
+    /// 同じ表に解決されるので、この一覧の部分集合である。
+    /// </para>
     /// </summary>
-    private static string[] FileNamesNamedByProduct()
-    {
-        string resolver = File.ReadAllText(
-            RepositoryFiles.At("src", "GStreamer.GstSharpNet", "ImportResolver.cs"));
-        string locator = File.ReadAllText(
-            RepositoryFiles.At("src", "GStreamer.GstSharpNet", "GStreamerRuntimeLocator.cs"));
-
-        string[] names =
-        [
-            .. Regex.Matches(resolver, @"const string Windows\w*\s*=\s*""([^""]+\.dll)""")
-                .Select(m => m.Groups[1].Value),
-            .. Regex.Matches(locator, @"const string \w*LibraryFileName\s*=\s*""([^""]+\.dll)""")
-                .Select(m => m.Groups[1].Value),
-        ];
-
-        Assert.True(names.Length >= 3,
-            "ImportResolver / GStreamerRuntimeLocator からライブラリ名を読めなかった"
-            + $"（{names.Length} 件）。定数の書き方が変わったなら、この検査も直すこと。");
-        return [.. names.Distinct()];
-    }
+    private static readonly string[] FileNamesNamedByProduct =
+    [
+        "libglib-2.0-0.dll",
+        "libgobject-2.0-0.dll",
+        "libgmodule-2.0-0.dll",
+        "libgstreamer-1.0-0.dll",
+        "libgstbase-1.0-0.dll",
+        "libgstapp-1.0-0.dll",
+    ];
 
     /// <summary>
     /// <b>種の一覧が、製品が名前で読むライブラリと過不足なく一致すること。</b>
@@ -95,7 +95,7 @@ public class RuntimeClosureSeedSyncTests
             .Where(s => !BundledTools.Contains(s, StringComparer.OrdinalIgnoreCase))];
 
         Assert.Equal(
-            [.. FileNamesNamedByProduct().Order(StringComparer.Ordinal)],
+            [.. FileNamesNamedByProduct.Order(StringComparer.Ordinal)],
             [.. seedFiles.Distinct().Order(StringComparer.Ordinal)]);
     }
 

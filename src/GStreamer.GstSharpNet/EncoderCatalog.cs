@@ -276,13 +276,20 @@ public static class EncoderCatalog
 
     /// <summary>
     /// 実際に GStreamer へ問い合わせるプローブ。
-    /// <c>Gst.Functions.Init</c> より前に呼ぶと失敗しうるため例外を握りつぶして false を返す。
+    /// 初期化前（<c>Controller.StaticInitialize</c> 完了前）は GStreamer に触らず false を返す
+    /// ── GstSharp.Net では初期化前のバインディング呼び出しは例外で済まず、
+    /// **ネイティブローダーが自力プローブで見つけた根を勝手にピンしてしまう**。
+    /// 後から <c>NativeSearchPath</c> 付きで走る初期化が InvalidOperationException になるか、
+    /// 選んだはずの根と黙って食い違う。例外の握りつぶしは想定外の失敗への保険として残す。
     /// </summary>
     public static bool ProbeWithGStreamer(string factoryName)
     {
+        if (!DebugLogEx.IsGstInitialized)
+            return false;
         try
         {
-            using var factory = Gst.ElementFactory.Find(factoryName);
+            // ファクトリは interned な GObject ラッパーなので破棄しない。
+            var factory = Gst.ElementFactory.Find(factoryName);
             return factory is not null;
         }
         catch
@@ -296,7 +303,7 @@ public static class EncoderCatalog
 
     /// <summary>
     /// 全候補の存在を1回だけ確認し、結果を返す（<see cref="LastProbe"/> にも保持する）。
-    /// <c>Controller.StaticInitialize()</c> の末尾（<c>Gst.Functions.Init</c> の後）から呼ぶ。
+    /// <c>Controller.StaticInitialize()</c> の末尾（GStreamer 初期化の後）から呼ぶ。
     /// ログ出力は行わない ── 出力先の決定は呼び出し側の責務とする。
     /// </summary>
     public static EncoderProbeReport Probe(Func<string, bool>? probe = null)

@@ -133,15 +133,19 @@ if ($SeedPlugins) {
     }
 }
 
-# Named from managed code -- keep in step with ImportResolver.cs and
-# GStreamerRuntimeLocator.cs -- plus the two tools shipped on purpose:
+# Named from managed code -- the modules the GstSharp.Net binding loads by name
+# (source of truth: NativeNames.cs in the GstSharp.Net repo, MinGW column,
+# restricted to the assemblies this app references: GLib/GObject/GModule/Gst/
+# GstBase/GstApp) -- plus the two tools shipped on purpose:
 # gst-inspect-1.0.exe for Verify-GpuEncoders.ps1 and gst-launch-1.0.exe for
 # stand-alone pipeline repros on a user's machine. RuntimeClosureSeedSyncTests (L1)
 # pins this list.
 $namedSeeds = @(
     'bin/libgstreamer-1.0-0.dll',
-    'bin/libgstvideo-1.0-0.dll',
+    'bin/libgstbase-1.0-0.dll',
+    'bin/libgstapp-1.0-0.dll',
     'bin/libgobject-2.0-0.dll',
+    'bin/libgmodule-2.0-0.dll',
     'bin/libglib-2.0-0.dll',
     'bin/gst-inspect-1.0.exe',
     'bin/gst-launch-1.0.exe'

@@ -1,4 +1,5 @@
 ﻿using Gst;
+using GObject = Gst.GObject; // 既存の GObject.Object 修飾名をそのまま生かす
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
@@ -13,13 +14,23 @@ namespace ProcessRecorderApp.GStreamer;
 
 public static partial class DebugLogEx
 {
-    [LibraryImport(ImportResolver.Library)]
+    // GstSharp.Net preview1 には DebugCategory を**作る**公開 API が無い
+    // （_gst_debug_category_new は GIR に載らない実エクスポートで、公開 DebugCategory の
+    //   コンストラクタは internal）。それまでの間だけ、生成と custom カテゴリでのログ出力を
+    //   生の P/Invoke で行う。preview2 受け入れ文書 §4.4。
+    // 論理名 "Gst" は Controller.StaticInitialize が登録するリゾルバ経由で、
+    // バインディングがピンしたのと同じ DLL へ解決される。
+    [LibraryImport("Gst", StringMarshalling = StringMarshalling.Utf8)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    private static partial IntPtr _gst_debug_category_new([MarshalAs(UnmanagedType.LPUTF8Str)] string name, uint color, [MarshalAs(UnmanagedType.LPUTF8Str)] string description);
-    public static DebugCategory DebugCategoryNew(string name, uint color, string description)
-        => new(new Gst.Internal.DebugCategoryOwnedHandle(_gst_debug_category_new(name, color, description)));
+    private static partial IntPtr _gst_debug_category_new(string name, uint color, string description);
 
-    private static DebugCategory? _debugCategory;
+    [LibraryImport("Gst", StringMarshalling = StringMarshalling.Utf8)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    private static partial void gst_debug_log_literal(IntPtr category, DebugLevel level,
+        string file, string function, int line, IntPtr @object, string message);
+
+    // 生ポインタのまま持つ（GStreamer 側が同名カテゴリを重複させないので、競合しても実害なし）。
+    private static IntPtr _debugCategory;
     public static void Log(DebugLevel level, string? message,
         GObject.Object? @object = null,
         [CallerFilePath] string file = "",
@@ -28,31 +39,37 @@ public static partial class DebugLogEx
     {
         // 自クラスの不変条件（IsGstInitialized を見ずにネイティブへ触らない）をここでも守る。
         // catch 節から呼ばれやすい API なので、初期化前の呼び出しで診断のためのログが
-        // DllNotFoundException となって起動ごと落とす形にしない（TrySetThreshold と同じ扱い）。
+        // ローダーに勝手な根をピンさせて Controller.StaticInitialize を巻き添えにする形に
+        // しない（TrySetThreshold と同じ扱い。カテゴリ生成自体もネイティブ呼び出し）。
         if (!IsGstInitialized)
             return;
 
-        _debugCategory ??= DebugCategoryNew("myapp", 0, "My application");
-        Functions.DebugLogLiteral(_debugCategory!, level, file, function, line, @object, message ?? "");
+        if (_debugCategory == IntPtr.Zero)
+            _debugCategory = _gst_debug_category_new("myapp", 0, "My application");
+        gst_debug_log_literal(_debugCategory, level, file, function, line,
+            @object?.Handle ?? IntPtr.Zero, message ?? "");
     }
 
     /// <summary>
-    /// <c>Gst.Functions.Init</c> が済んだか。<see cref="Controller.StaticInitialize"/> だけが立てる。
+    /// GstSharp.Net の初期化（<c>Initialize</c> ＝ ネイティブのロードと <c>gst_init</c>）が
+    /// 済んだか。<see cref="Controller.StaticInitialize"/> だけが立てる。
     ///
     /// <para>
-    /// <b>これを見ずに GStreamer のネイティブを呼んではいけない。</b>
-    /// <c>AppSettings</c> は <c>Gst.Functions.Init</c> より前に読み込まれ
+    /// <b>これを見ずに GStreamer のネイティブ（<c>Gst.*</c> 全般）を呼んではいけない。</b>
+    /// <c>AppSettings</c> は初期化より前に読み込まれ
     /// （<c>Program.cs</c> で <c>AppSettings.Default</c> → <c>Controller.StaticInitialize()</c> の順）、
-    /// その逆シリアル化の setter からここへ来る。PATH の組み立てと
-    /// <c>DllImportResolver</c> の登録より前にネイティブへ触ると、
-    /// 「設定を入れた人だけ起動しなくなる」形で落ちる。
+    /// その逆シリアル化の setter からここへ来る。初期化前にバインディングへ触ると
+    /// 例外にはならず、**ローダーが自力プローブで見つけた根を先にピンしてしまう**
+    /// ── 後から <c>NativeSearchPath</c> 付きで呼ぶ <c>Initialize</c> が
+    /// InvalidOperationException になるか、選んだはずの根と黙って食い違う。
+    /// 「もう DllNotFoundException にならないから」とこのゲートを外してはいけない。
     /// </para>
     /// </summary>
     internal static volatile bool IsGstInitialized;
 
     /// <summary>
     /// <c>GST_DEBUG</c> 相当のしきい値を<b>今すぐ</b>適用する（<c>AppSettings.GstDebug</c> のミラー）。
-    /// 適用したら true、まだ <c>Gst.Functions.Init</c> 前で何もしなかったら false。
+    /// 適用したら true、まだ初期化前で何もしなかったら false。
     ///
     /// <para>
     /// <b>起動時の反映はここではなく環境変数が担当する</b>
@@ -68,11 +85,11 @@ public static partial class DebugLogEx
             return false;
 
         // 既定でデバッグが有効かどうかに寄りかからず、明示的に有効化する。
-        Functions.DebugSetActive(true);
+        Gst.Global.DebugSetActive(true);
 
         // reset: true は「既定へ戻してから list を適用する」。空文字は
         // parse_debug_list が何もしないので、**空欄＝既定へ戻す**が自然に成り立つ。
-        Functions.DebugSetThresholdFromString(value ?? "", true);
+        Gst.Global.DebugSetThresholdFromString(value ?? "", true);
 
         Components.ActivityLog.Info("gst.debug", $"threshold='{value}'");
         return true;
@@ -93,7 +110,7 @@ public static partial class DebugLogEx
     {
         ArgumentNullException.ThrowIfNull(bin);
 
-        string dot = Functions.DebugBinToDotData(bin, DebugGraphDetails.All);
+        string dot = Gst.Global.DebugBinToDotData(bin, DebugGraphDetails.All);
         string path = Path.Combine(directory, BuildDotFileName(timestamp, name));
         Directory.CreateDirectory(directory);
 

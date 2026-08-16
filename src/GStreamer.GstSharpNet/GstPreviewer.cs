@@ -1,4 +1,6 @@
 ﻿using Gst;
+using GstApp = Gst.App;      // 既存の GstApp.AppSrc 修飾名をそのまま生かす
+using GObject = Gst.GObject; // 既存の GObject.Object 修飾名をそのまま生かす
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -59,7 +61,7 @@ namespace ProcessRecorderApp.GStreamer
                 const string PipelineStr =
                     "appsrc format=time name=src ! queue ! d3d12swapchainsink name=sink sync=false";
 
-                _pipeline = (Pipeline)Functions.ParseLaunch(PipelineStr);
+                _pipeline = (Pipeline)Global.ParseLaunch(PipelineStr);
                 _appSrc = (GstApp.AppSrc)_pipeline.GetByName("src")!;
                 _sink = _pipeline.GetByName("sink")!;
 
@@ -85,7 +87,13 @@ namespace ProcessRecorderApp.GStreamer
         /// ISwapChainPanelNative.SetSwapChain に渡す。まだ生成されていなければ 0。
         /// </summary>
         public nint GetSwapChainHandle()
-            => _sink is null ? 0 : _sink.GetPointerProperty("swapchain");
+        {
+            if (_sink is null)
+                return 0;
+            // Value は所有ラッパーなので必ず破棄する。
+            using var v = _sink.GetProperty("swapchain");
+            return v.GetPointer();
+        }
 
         /// <summary>
         /// スワップチェーンの解像度を更新する（SwapChainPanel のサイズ追従用）。
@@ -96,7 +104,7 @@ namespace ProcessRecorderApp.GStreamer
         {
             if (_sink is null || width <= 0 || height <= 0)
                 return;
-            _sink.EmitResize((uint)width, (uint)height);
+            _sink.EmitSignal("resize", (uint)width, (uint)height);
         }
 
         /// <summary>
@@ -113,7 +121,8 @@ namespace ProcessRecorderApp.GStreamer
 
             // **毎フレームは読まない。** サイズが分かるまでの数フレームだけで足りる
             // （解像度が変わるのはパイプラインを組み直したときで、そのとき Close→Initialize と
-            //  ResetVideoSize を通る）。毎フレーム読むと、その回数だけ下の借用参照を触ることになる。
+            //  ResetVideoSize を通る）。毎フレーム読むと、その回数だけ caps／structure の
+            //  ラッパー生成と解放（参照の増減・Boxed コピー）が入る。
             if (_videoWidth <= 0)
                 UpdateVideoSize(sample);
 
@@ -144,16 +153,18 @@ namespace ProcessRecorderApp.GStreamer
         /// </summary>
         private void UpdateVideoSize(Sample sample)
         {
-            // **破棄しない。** gst_sample_get_caps() は transfer none で、caps を所有するのは
-            // サンプルの側である ── using を付けると借り物の参照を解放することになり、
-            // まだ使われている caps が落ちる。毎フレーム通る経路だったので影響が出やすく、
-            // **自動復帰のあとプレビューがカタつく**という形で実機に現れた
-            // （パイプラインを組み直すと直るのは、caps が作り直されるため）。
-            // 既存の 2 箇所（EventRecorder / ContinuousRecorder）も破棄していない。
-            var caps = sample.GetCaps();
-            var structure = caps?.GetStructure(0);
-            if (structure is null
-                || !structure.GetInt("width", out int width)
+            // **必ず破棄する。** GstSharp.Net のラッパーは自分の参照を自分で持つ ──
+            // GetCaps() はネイティブ caps への参照を 1 本増やして返すので、using で
+            // 解放されるのは**こちらの分だけ**で、サンプルが持つ caps は落ちない。
+            // （GirCore 時代に「破棄すると自動復帰のあとプレビューがカタつく」となったのは、
+            //  transfer none の借用参照を解放していたため。所有規約が逆転したので、
+            //  いまは破棄しない方が漏れになる。EventRecorder / ContinuousRecorder も同じ。）
+            // GetStructure(0) も Boxed の**所有コピー**を返すので破棄する。
+            using var caps = sample.GetCaps();
+            if (caps is null)
+                return;
+            using var structure = caps.GetStructure(0);
+            if (!structure.GetInt("width", out int width)
                 || !structure.GetInt("height", out int height)
                 || width <= 0 || height <= 0)
             {
@@ -206,21 +217,24 @@ namespace ProcessRecorderApp.GStreamer
 
             // 1 周あたりの取り出しは有界にする ── 洪水の最中に無界だと、Close の
             // Join(5000) に間に合わない（EventRecorder.DrainBus と同じ理由）。
-            for (int i = 0; i < 32 && bus.TimedPopFiltered(0, MessageType.Error) is { } msg; i++)
+            for (int i = 0; i < 32 && bus.TimedPopFiltered(ClockTime.Zero, MessageType.Error) is { } msg; i++)
             {
                 using (msg)
                 {
                     if (_busErrorLogged)
                         continue;
 
-                    msg.ParseError(out var gerror, out var debug);
-                    string? message;
-                    using (gerror)
-                        message = gerror.Message;
-                    Components.ActivityLog.Error("preview.error", $"{message} debug={debug}");
+                    // ParseError は GError を管理例外 (GException) へ写して返す。
+                    // ネイティブ側の解放はバインディングが済ませるので、破棄する物は無い。
+                    var (gerror, debug) = msg.ParseError();
+                    Components.ActivityLog.Error("preview.error", $"{gerror.Message} debug={debug}");
                     _busErrorLogged = true;
                 }
             }
+
+            // GMainLoop が無いので、GObject ファイナライザが積んだ解放は
+            // ここ（バスポーリングの周期）で消化する。
+            GstSharp.DrainPendingReleases();
         }
 
 
@@ -269,9 +283,11 @@ namespace ProcessRecorderApp.GStreamer
                 : (string[])[];
 
         /// <summary>
-        /// パイプラインを解放する。破棄したフィールドは null 化して冪等にしてある
-        /// （<see cref="Initialize"/> の失敗時にも catch から呼ばれるため、
-        ///  二重解放を防ぐ必要がある）。
+        /// パイプラインを解放する。フィールドは null 化して冪等にしてある
+        /// （<see cref="Initialize"/> の失敗時にも catch から呼ばれるため）。
+        /// appsrc / sink / bus は interned な GObject ラッパーで破棄しない（null 化のみ）。
+        /// パイプラインだけは、このクラスが作った所有物として <c>SetState(Null)</c> の後に
+        /// Dispose する（公認の「作った側が畳む」ケース）。
         /// </summary>
         public void Close()
         {
@@ -279,11 +295,8 @@ namespace ProcessRecorderApp.GStreamer
             // 面が無くなるので表示サイズも未知へ戻す（補助線を消すため）。
             ResetVideoSize();
             _pipeline?.SetState(State.Null);
-            _appSrc?.Dispose();
             _appSrc = null;
-            _sink?.Dispose();
             _sink = null;
-            _bus?.Dispose();
             _bus = null;
             _pipeline?.Dispose();
             _pipeline = null;

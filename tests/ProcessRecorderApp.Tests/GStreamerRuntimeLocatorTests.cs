@@ -11,10 +11,12 @@ namespace ProcessRecorderApp.Tests;
 /// （<see cref="GStreamerRuntimeLocator"/> の純粋関数部分）。
 ///
 /// <para>
-/// ここが守るのは2つ。<b>優先順位</b>（元の PATH → 環境変数 → レジストリ →
-/// MSYS2 → 同梱物）と、<b>選んだ1件だけを PATH の先頭に置くこと</b>。
-/// 後者は「候補を全部繋ぐと gstreamer と glib が別の根から来る」混成を防ぐためで、
-/// 繋ぐ実装に戻すとここが落ちる。
+/// ここが守るのは<b>優先順位</b>（元の PATH → 環境変数 → レジストリ →
+/// MSYS2 → 同梱物）と、<b>1件だけを選ぶこと</b>。選んだ根は
+/// <c>GstSharpOptions.NativeSearchPath</c> として GstSharp.Net へ渡り、
+/// バインディングが全モジュールを固定ディレクトリから絶対パスでロードする
+/// ── 「gstreamer と glib が別の根から来る」混成の防止はバインディング側の
+/// 固定（pin）が担う（PATH の組み立てはアプリの仕事ではなくなった）。
 /// </para>
 ///
 /// <para>
@@ -142,55 +144,6 @@ public class GStreamerRuntimeLocatorTests
     {
         Assert.Null(GStreamerRuntimeLocator.Select(
             (string[])[@"C:\windows"], AllCandidates(), _ => false));
-    }
-
-    [Fact]
-    public void ComposePath_PutsOnlyTheChosenDirectoryInFront()
-    {
-        // **この1件が混成を防いでいる。** 候補を全部繋ぐ実装に戻すとここが落ちる
-        // ── 依存 DLL（libglib-2.0-0.dll）は PATH の順で解決されるので、
-        // 選ばなかった候補が前に残っていると別の根から取られる。
-        var candidates = AllCandidates();
-        var chosen = candidates.Single(c => c.Source == GStreamerRuntimeLocator.SourceBundled);
-
-        string composed = GStreamerRuntimeLocator.ComposePath(@"C:\windows;C:\msys64\ucrt64\bin", candidates, chosen);
-
-        Assert.Equal(@"C:\app\runtimes\win-x64\bin;C:\windows;C:\msys64\ucrt64\bin", composed);
-        Assert.DoesNotContain(@"C:\gst-env\bin", composed, StringComparison.Ordinal);
-        Assert.DoesNotContain(@"C:\gst-reg\bin", composed, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void ComposePath_KeepsTheOriginalPathAheadOfEverythingWhenNothingWasChosen()
-    {
-        // 選べなかったときだけ全候補を末尾に繋ぐ。元の PATH を壊さず、
-        // 失敗の出方を「本体が見つからない」に保つため。
-        string composed = GStreamerRuntimeLocator.ComposePath(@"C:\windows", AllCandidates(), chosen: null);
-
-        Assert.Equal(
-            @"C:\windows;C:\gst-env\bin;C:\gst-reg\bin;C:\msys64\ucrt64\bin;C:\app\runtimes\win-x64\bin",
-            composed);
-    }
-
-    [Fact]
-    public void ComposePath_DoesNotEmitAStraySeparatorWhenThereIsNoOriginalPath()
-    {
-        var candidates = AllCandidates();
-        var chosen = candidates[0];
-
-        Assert.Equal(@"C:\gst-env\bin", GStreamerRuntimeLocator.ComposePath(null, candidates, chosen));
-        Assert.Equal(@"C:\gst-env\bin", GStreamerRuntimeLocator.ComposePath("", candidates, chosen));
-        Assert.Equal(
-            @"C:\gst-env\bin;C:\gst-reg\bin;C:\msys64\ucrt64\bin;C:\app\runtimes\win-x64\bin",
-            GStreamerRuntimeLocator.ComposePath(null, candidates, chosen: null));
-    }
-
-    [Fact]
-    public void ComposePath_OfNothingAtAllIsTheOriginalPath()
-    {
-        Assert.Equal(@"C:\windows",
-            GStreamerRuntimeLocator.ComposePath(
-                @"C:\windows", (GStreamerRuntimeCandidate[])[], chosen: null));
     }
 
     [Fact]
