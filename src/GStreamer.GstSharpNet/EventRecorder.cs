@@ -631,6 +631,39 @@ public partial class EventRecorder : ObservableObject, IDisposable
             ? "d3d12download ! videoconvert ! "
             : "";
 
+        // **RGB を YUV へ変換する構成でだけ colorimetry を固定する。**
+        //
+        // 画面キャプチャは BGRA を `colorimetry=sRGB` で出す（実測: d3d12screencapturesrc の
+        // src caps は `format=BGRA, colorimetry=sRGB`）。固定しないと出力の colorimetry を
+        // d3d12convert が自分で決め、**transfer は sRGB のまま**（mp4 の colr と SPS VUI では
+        // transfer=13）、**行列は機械依存**になる ── 実測: WARP では 1920x1080 でも
+        // `2:4:7:1`（BT.601）、GPU 実機の録画は BT.709。画素そのものはスタジオレンジで
+        // 正しい（白 Y=235）が、映像では使われない transfer=13 が付いたファイルは
+        // 再生側が 16-235 の展開をせず、**白が灰色**・黒が浮いた低コントラストになる。
+        // bt709（`2:3:5:1`）を固定しても**画素値は 1 バイトも変わらない**
+        // （実測: `2:3:7:1` と同一 ── transfer だけの違いではガンマ変換は入らない）。
+        //
+        // **入力が既に YUV のときは固定してはいけない。** d3d12convert は YUV→YUV では
+        // 行列を変換せず**タグだけ書き換える**（実測: BT.601 の画素値のまま bt709 と名乗る）
+        // ── カメラ（`mfvideosrc` の NV12 / YUY2）で逆向きの嘘になる。
+        // 同じ場面で `videoconvert` は実際に変換する（実測）ので、System 経路は事情が違う。
+        //
+        // **SD は BT.601 にする。** 行列を大きさで決めるのは映像の慣例で、GStreamer 自身の
+        // 既定もそこで分かれる（実測: videotestsrc の NV12 は 576 本まで BT.601、
+        // 577 本から BT.709 の画素値を出す）── タグを読まずに大きさで決める再生系が
+        // 居る以上、慣例から外れた組み合わせを名乗らない方が安全である。
+        // 別名（`bt709` / `bt601`）で書くのも同じ理由で、**素性の知れた組み合わせ**
+        // （DXGI の色空間にも ISO の値にもそのまま対応がある）から外れないようにしている。
+        string colorimetry = SourceOutputsRgb(srcPipeline)
+            ? ConvertsToStandardDefinition(srcPipeline, pinnedResolution)
+                ? ", colorimetry=bt601"
+                : ", colorimetry=bt709"
+            : "";
+
+        // System 経路には変換段の出力 caps が無いので、`videoconvert` の後ろへ capsfilter を置く。
+        // **形式は書かない**（下の `EventRecordingType.System` のコメント）。
+        string systemColorimetry = colorimetry.Length == 0 ? "" : $"video/x-raw{colorimetry} ! ";
+
         // **tee の手前の幅・高さの固定。** 常時録画の枝で拡縮するときだけ効かせる。
         // これが無いと、枝の capsfilter が要求する小さい大きさを手前の d3d12convert が
         // 吸収して**プレビューとイベント録画まで縮む** ── ソースの caps を固定していても
@@ -679,8 +712,17 @@ public partial class EventRecorder : ObservableObject, IDisposable
                     // 固定された形式のまま流れる ── **必要なのは tee/queue より後、
                     // エンコーダーの直前**である。「重複しているから」と消さないこと。
                     //
-                    // **capsfilter を後ろに付けてもいけない。** 形式を決めずに
+                    // **形式を書いた capsfilter を後ろに付けてもいけない。** 形式を決めずに
                     // 交渉させることが、まさにこの不具合を直している点である。
+                    //
+                    // **colorimetry だけを書く capsfilter は別**（`{systemColorimetry}`）。
+                    // 形式を空けたままなので交渉を妨げず、`videoconvert` は要求された行列へ
+                    // **実際に変換する**（実測。`d3d12convert` の YUV→YUV と違う）。
+                    // 素の `video/x-raw`（＝システムメモリ）で書いてよいのは、System の候補が
+                    // `x264enc` / `openh264enc` / `mfh264enc` の 3 つで、いずれも
+                    // **システムメモリの YUV しか受けない**ため ── `videoconvert` の出力は
+                    // どのみちシステムメモリで、往復は増えない。手動指定で GPU メモリを受ける
+                    // エンコーダーを選んだ場合は CPU 経路に倒れるが、**色は正しいまま**である。
                     //
                     // 実際に踏んだ失敗（GPU 実機・同梱構成）:
                     // `Type=System` の自動選択が `mfh264enc` を選べず `recorder.init fail`。
@@ -696,10 +738,10 @@ public partial class EventRecorder : ObservableObject, IDisposable
                     EventRecordingType.System => $""""
                                 dwriteclockoverlay time-format="%Y-%m-%d %H:%M:%S" auto-resize=false font-family=Arial font-size=36 !
                                 tee name=t ! {PreviewQueue} ! appsink max-buffers=1 drop=true sync=false name=preview t. ! queue !
-                                videoconvert ! {encoder}
+                                videoconvert ! {systemColorimetry}{encoder}
                                 """",
                     EventRecordingType.D3d12 => $""""
-                                d3d12upload ! d3d12convert ! video/x-raw(memory:D3D12Memory), format=NV12{pinned} !
+                                d3d12upload ! d3d12convert ! video/x-raw(memory:D3D12Memory), format=NV12{colorimetry}{pinned} !
                                 dwriteclockoverlay time-format="%Y-%m-%d %H:%M:%S" auto-resize=false font-family=Arial font-size=36 !
                                 tee name=t ! {PreviewQueue} ! d3d12download ! video/x-raw(memory:SystemMemory) ! appsink max-buffers=1 drop=true sync=false name=preview t. ! queue !
                                 {download}{encoder}
@@ -711,6 +753,65 @@ public partial class EventRecorder : ObservableObject, IDisposable
                 appsink name=sink sync=false
                 """
             + (continuousBranch.Length == 0 ? "" : "\n" + continuousBranch);
+    }
+
+    /// <summary>RGB の画素形式（<see cref="SourceOutputsRgb"/> の判定表）。</summary>
+    private static readonly HashSet<string> RgbSourceFormats = new(StringComparer.Ordinal)
+    {
+        "RGBA", "BGRA", "RGBx", "BGRx", "xRGB", "xBGR", "ARGB", "ABGR", "RGB", "BGR",
+    };
+
+    /// <summary>
+    /// ソースが RGB の画素を出すか ── <see cref="BuildSinkPipeline"/> の変換段が
+    /// RGB→YUV を行う構成かどうかの判定。
+    ///
+    /// <para>
+    /// caps に画素形式が書かれていればそれで決め、無いときは<b>要素名で決める</b>
+    /// ── 画面キャプチャの caps は解像度と framerate しか持たない
+    /// （<see cref="SrcPipelineBuilder"/> のカタログ）が、要素は必ず BGRA を出す。
+    /// </para>
+    /// <para>
+    /// <b>判らないものを RGB 扱いしない。</b> 誤って YUV へ colorimetry を付けると
+    /// d3d12convert は画素を変換せずタグだけ書き換えるので、いままでどおり
+    /// d3d12convert に決めさせる方が安全である。
+    /// </para>
+    /// </summary>
+    private static bool SourceOutputsRgb(string? srcPipeline)
+    {
+        var parsed = SrcPipelineBuilder.Parse(srcPipeline);
+        return parsed.CapsFields.TryGetValue("format", out string? format)
+            ? RgbSourceFormats.Contains(format)
+            : parsed.SourceElement is "d3d12screencapturesrc" or "d3d11screencapturesrc";
+    }
+
+    /// <summary>
+    /// SD と HD の境目（この本数までが SD）。
+    ///
+    /// <para>
+    /// GStreamer 自身の既定と同じ値 ── 実測: <c>videotestsrc</c> の NV12 は
+    /// 576 本まで BT.601、577 本から BT.709 の画素値を出す。
+    /// </para>
+    /// </summary>
+    private const int StandardDefinitionMaxHeight = 576;
+
+    /// <summary>
+    /// 変換段の出力が SD か ── <b>大きさが判らないときは false</b>（HD 扱い）。
+    ///
+    /// <para>
+    /// 画面キャプチャの caps は解像度を持たない構成が既定で、そのときの実体は
+    /// モニターの実寸である ── 576 本以下の画面は無いので HD 扱いでよい。
+    /// </para>
+    /// </summary>
+    private static bool ConvertsToStandardDefinition(string? srcPipeline, string pinnedResolution)
+    {
+        // tee の手前を固定しているなら、それが変換段の出力の大きさそのもの。
+        if (ContinuousBranch.TryParseResolution(pinnedResolution, out _, out int pinnedHeight))
+            return pinnedHeight <= StandardDefinitionMaxHeight;
+
+        return SrcPipelineBuilder.Parse(srcPipeline).CapsFields.TryGetValue("height", out string? height)
+            && int.TryParse(height, System.Globalization.CultureInfo.InvariantCulture, out int parsed)
+            && parsed > 0
+            && parsed <= StandardDefinitionMaxHeight;
     }
 
     /// <summary>

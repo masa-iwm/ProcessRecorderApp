@@ -377,6 +377,125 @@ public class BuildSinkPipelineTests
         Assert.DoesNotContain("leaky", encoderBranch);
     }
 
+    /// <summary>
+    /// <b>RGB のソースでは変換段の colorimetry を固定する。</b>
+    ///
+    /// <para>
+    /// 固定しないと d3d12convert が出力の colorimetry を自分で決め、画面キャプチャの
+    /// <c>sRGB</c> から transfer=sRGB を引き継いだまま（mp4 では transfer=13）、
+    /// 行列だけ機械依存で選ぶ ── 実測: WARP は 1920x1080 でも BT.601、GPU 実機は BT.709。
+    /// 画素は正しいスタジオレンジ（白 Y=235）なのに、再生側が 16-235 を展開せず
+    /// <b>白が灰色</b>になる録画ができあがる。
+    /// </para>
+    /// <para>
+    /// <b>画面キャプチャの caps には画素形式が無い</b>（解像度と framerate だけ）ので、
+    /// 判定は要素名まで見ないと通らない。ここが縛っているのはその経路である。
+    /// </para>
+    /// </summary>
+    [Theory]
+    [InlineData("d3d12screencapturesrc monitor-index=0 ! video/x-raw(memory:D3D12Memory), framerate=30/1")]
+    [InlineData("d3d11screencapturesrc ! video/x-raw(memory:D3D11Memory), framerate=30/1")]
+    [InlineData("mfvideosrc device-index=0 ! video/x-raw, format=BGRA, width=1920, height=1080, framerate=30/1")]
+    public void D3d12_WithAnRgbSource_PinsTheColorimetryOfTheConverter(string src)
+    {
+        string p = EventRecorder.BuildSinkPipeline(
+            EventRecordingType.D3d12, src, "x264enc", needsSystemMemory: false);
+
+        Assert.Contains("format=NV12, colorimetry=bt709", p, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// <b>SD は BT.601 を名乗る。</b> 行列を大きさで決めるのは映像の慣例で、
+    /// GStreamer 自身の既定も 576 本を境に分かれる（実測: <c>videotestsrc</c> の NV12 は
+    /// 576 本まで BT.601、577 本から BT.709 の画素値）── タグを読まずに大きさで
+    /// 決める再生系が居るので、そこから外れた組み合わせを名乗らない。
+    ///
+    /// <para>
+    /// 大きさは <c>tee</c> の手前の固定（<c>pinnedResolution</c>）→ ソースの caps の順で見る。
+    /// <b>どちらも無ければ HD 扱い</b>（画面キャプチャの既定の構成がこれで、実体はモニターの実寸）。
+    /// </para>
+    /// </summary>
+    [Theory]
+    [InlineData("d3d12screencapturesrc ! video/x-raw(memory:D3D12Memory), width=720, height=480, framerate=30/1", "", "bt601")]
+    [InlineData("d3d12screencapturesrc ! video/x-raw(memory:D3D12Memory), width=1024, height=576, framerate=30/1", "", "bt601")]
+    [InlineData("d3d12screencapturesrc ! video/x-raw(memory:D3D12Memory), width=1024, height=577, framerate=30/1", "", "bt709")]
+    [InlineData("d3d12screencapturesrc ! video/x-raw(memory:D3D12Memory), framerate=30/1", "", "bt709")]
+    [InlineData("d3d12screencapturesrc ! video/x-raw(memory:D3D12Memory), framerate=30/1", "640x480", "bt601")]
+    [InlineData("d3d12screencapturesrc ! video/x-raw(memory:D3D12Memory), width=720, height=480, framerate=30/1", "1920x1080", "bt709")]
+    public void D3d12_WithAnRgbSource_PicksTheMatrixByHeight(string src, string pinnedResolution, string expected)
+    {
+        string p = EventRecorder.BuildSinkPipeline(
+            EventRecordingType.D3d12, src, "x264enc", needsSystemMemory: false,
+            continuousBranch: "", pinnedResolution: pinnedResolution);
+
+        Assert.Contains("format=NV12, colorimetry=" + expected, p, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// <b>入力が既に YUV のときは固定しない。</b>
+    ///
+    /// <para>
+    /// d3d12convert は YUV→YUV では行列を変換せず<b>タグだけ書き換える</b>
+    /// （実測: BT.601 の画素値のまま bt709 と名乗る）── カメラの NV12 / YUY2 に
+    /// bt709 を付けると、画面キャプチャで直したのと同じ嘘を逆向きに作ることになる。
+    /// </para>
+    /// </summary>
+    [Theory]
+    [InlineData("mfvideosrc device-index=0 ! video/x-raw, format=NV12, width=1920, height=1080, framerate=30/1")]
+    [InlineData("d3d12testsrc is-live=true ! video/x-raw(memory:D3D12Memory), format=NV12, width=1280, height=720")]
+    [InlineData("videotestsrc is-live=true")]
+    public void D3d12_WithAYuvSource_LeavesTheColorimetryToTheConverter(string src)
+    {
+        string p = EventRecorder.BuildSinkPipeline(
+            EventRecordingType.D3d12, src, "x264enc", needsSystemMemory: false);
+
+        Assert.DoesNotContain("colorimetry", p, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// <b>System 経路でも RGB ソースなら colorimetry を固定する。</b>
+    ///
+    /// <para>
+    /// こちらには変換段の出力 caps が無く、RGB→YUV は <c>videoconvert</c> が行う。
+    /// 固定しないと画面キャプチャの <c>sRGB</c> から transfer=sRGB を引き継いだままになり
+    /// （mp4 では transfer=13）、D3d12 経路で直したのと同じ「白が灰色」の録画ができる
+    /// ── <c>d3d11screencapturesrc</c> ＋ <c>Type=System</c> は
+    /// <c>show-cursor</c> の逃げ道として文書化された構成なので、ここも塞ぐ。
+    /// </para>
+    /// <para>
+    /// <b>形式は書かない。</b> 形式まで固定すると、それを受けないエンコーダーで
+    /// リンクに失敗する（<c>System_AlwaysConvertsBeforeTheEncoder</c> が守っている性質）。
+    /// </para>
+    /// </summary>
+    [Theory]
+    [InlineData("d3d11screencapturesrc ! video/x-raw(memory:D3D11Memory), framerate=30/1", "bt709")]
+    [InlineData("d3d11screencapturesrc ! video/x-raw(memory:D3D11Memory), width=720, height=480, framerate=30/1", "bt601")]
+    [InlineData("mfvideosrc device-index=0 ! video/x-raw, format=BGRA, width=1920, height=1080", "bt709")]
+    public void System_WithAnRgbSource_PinsTheColorimetryAfterTheConverter(string src, string expected)
+    {
+        string p = EventRecorder.BuildSinkPipeline(
+            EventRecordingType.System, src, "x264enc", needsSystemMemory: true);
+
+        Assert.Contains(
+            "videoconvert ! video/x-raw, colorimetry=" + expected + " ! x264enc", p, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// <b>System 経路でも、入力が既に YUV なら固定しない。</b>
+    /// D3d12 経路と同じ判断 ── 大きさで行列を決める慣例から外れた組み合わせを名乗らせない。
+    /// </summary>
+    [Theory]
+    [InlineData("mfvideosrc device-index=0 ! video/x-raw, format=NV12, width=1920, height=1080")]
+    [InlineData("videotestsrc is-live=true")]
+    public void System_WithAYuvSource_LeavesTheEncoderBranchUnchanged(string src)
+    {
+        string p = EventRecorder.BuildSinkPipeline(
+            EventRecordingType.System, src, "x264enc", needsSystemMemory: true);
+
+        Assert.Contains("videoconvert ! x264enc", p, StringComparison.Ordinal);
+        Assert.DoesNotContain("colorimetry", p, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void System_UsesTheGivenEncoderAndNeverInsertsD3d12Download()
     {
