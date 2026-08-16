@@ -15,10 +15,10 @@ namespace ProcessRecorderApp.GStreamer;
 /// 返すので、呼び出し側が <c>Dispose</c> する）。
 /// </para>
 /// <para>
-/// スレッド契約は <c>EventRecorder</c> の従来のまま: 書き込み（<see cref="Enqueue"/> /
-/// <see cref="Evict"/>）は pull スレッド専有、<see cref="DrainAll"/> は pull スレッドを
-/// Join した後の <c>CloseCore</c>、列挙は pull スレッド（<c>ConcurrentQueue</c> の列挙は
-/// その時点のスナップショット）。
+/// スレッド契約: 書き込み（<see cref="Enqueue"/> / <see cref="Evict"/>）と列挙は
+/// 録画側の <c>appsink</c> コールバック専有（<c>ConcurrentQueue</c> の列挙はその時点の
+/// スナップショット）、<see cref="DrainAll"/> は <c>CloseCore</c> が
+/// <b>quiesce（sink パイプラインの <c>Null</c> 化＝実行中のコールバックの復帰待ち）の後</b>に呼ぶ。
 /// </para>
 /// </summary>
 public sealed partial class RecordingRingBuffer<T> : IEnumerable<(ulong Pts, T Item)>

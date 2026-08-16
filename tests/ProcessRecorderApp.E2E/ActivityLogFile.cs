@@ -34,6 +34,11 @@ public static class ActivityLogFile
         "gst.encoder selected",
         "gst.encoder fallback-from",
         "gst.encoder candidate-failed",
+        // バインディングの診断（Controller.StaticInitialize が購読する）。
+        // 基底型のラッパーで包んだ／ネイティブのコールバック境界で例外を捕捉した。
+        // 製品側のコールバックは自前で例外を握るので、通常は 1 件も出ない。
+        "gst.typefallback",
+        "gst.callback",
         "recorder.init ok",
         "recorder.init fail",
         "recorder.error",

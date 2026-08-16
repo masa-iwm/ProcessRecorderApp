@@ -35,7 +35,8 @@ internal sealed class BusMessageThrottle
     private int _suppressed;
 
     /// <summary>
-    /// 内部状態の直列化。<see cref="Observe"/> は pull スレッドから、<see cref="Flush"/> は
+    /// 内部状態の直列化。<see cref="Observe"/> は GStreamer のストリーミングスレッド
+    /// （バスの sync-message ハンドラ・<c>appsink</c> のコールバック）から、<see cref="Flush"/> は
     /// <c>StartCore</c>（UI/CLI スレッド・<c>_stateLock</c> 下）と停止タスク（プールスレッド）
     /// からも呼ばれる ── 無同期だと <c>repeated=N</c> の件数が失われたり二重計上されたりして、
     /// 洪水を畳んでも件数は失わないというこの仕組みの存在意義（診断の正確さ）を静かに損なう。

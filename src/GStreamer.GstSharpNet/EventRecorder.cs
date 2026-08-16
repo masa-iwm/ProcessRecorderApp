@@ -301,9 +301,15 @@ public partial class EventRecorder : ObservableObject, IDisposable
     /// 原因の切り分けができなくなる。
     /// </para>
     /// <para>
-    /// <b>このプロパティは専用スレッドから変更される。</b> 購読側（VM）は
+    /// <b>このプロパティは GStreamer のストリーミングスレッド</b>（バスの sync-message
+    /// ハンドラ・<c>appsink</c> のコールバック）<b>やプールスレッド</b>（停止の排出）
+    /// <b>から変更される。</b> 購読側（VM）は
     /// UI スレッドへマーシャリングすること ── <c>GstEventRecorderViewModel.Model_PropertyChanged</c>
     /// がそれを行っている。
+    /// </para>
+    /// <para>
+    /// 書き込みは<b>参照の代入だけ</b>で、前の値を壊さない ── 複数のスレッドが同時に書いた
+    /// ときは「最後に書いた者が勝つ」。UI が出すのは最新の 1 件でよいので、これで足りる。
     /// </para>
     /// </summary>
     [ObservableProperty]
@@ -1181,12 +1187,6 @@ public partial class EventRecorder : ObservableObject, IDisposable
             _appSrc = (GstApp.AppSrc)_srcPipeline.GetByName("src")!;
             _mux = _srcPipeline.GetByName("mux")!;
             _file = _srcPipeline.GetByName("file")!;
-#if false
-        _sinkBus.OnSyncMessage += OnBusSyncMessage;
-        _sinkBus.OnMessage += OnBusMessage;
-        _srcBus.OnSyncMessage += OnBusSyncMessage;
-        _srcBus.OnMessage += OnBusMessage;
-#endif
 
             if (_sinkPipeline.SetState(State.Playing) == StateChangeReturn.Failure)
                 throw new InvalidOperationException("ERROR: pipeline doesn't want to play.");
@@ -3084,77 +3084,6 @@ public partial class EventRecorder : ObservableObject, IDisposable
             return "unknown";
         }
     }
-
-#if false
-    private void OnBusSyncMessage(Bus sender, Bus.SyncMessageSignalArgs e)
-    {
-        var message = e.Message;
-        switch (message.Type)
-        {
-            case MessageType.Error:
-                {
-                    /* dump graph on error */
-                    var pipeline = sender.Parent as Bin;
-                    if (pipeline is not null)
-                        Functions.DebugBinToDotFileWithTs(pipeline, DebugGraphDetails.All, $"{nameof(GstEventRecorder)}.{pipeline.Name ?? "unknown"}.error");
-
-                    message.ParseError(out var err, out var debug);
-                    using (err)
-                    {
-                        using var src = message.Handle.GetSrc() == 0 ? null : Gst.Object.NewFromPointer(message.Handle.GetSrc(), false);
-                        if (src is not null)
-                            Console.Error.WriteLine($"ERROR: from element {src.Name}: {err.Message}");
-                        else
-                            Console.Error.WriteLine($"ERROR: {err.Message}");
-                        Console.Error.WriteLine($"Additional debug info:\n{debug}");
-                    }
-                    break;
-                }
-            default:
-                break;
-        }
-    }
-
-    private void OnBusMessage(Bus sender, Bus.MessageSignalArgs e)
-    {
-        var message = e.Message;
-        switch (message.Type)
-        {
-            case MessageType.Info:
-                {
-                    using var src = message.Handle.GetSrc() == 0 ? null : Gst.Object.NewFromPointer(message.Handle.GetSrc(), false);
-                    var name = src?.GetPathString();
-
-                    // gst_message_parse_info には GstSharp.Net（preview1）の束縛が無い
-                    // （preview2 取り込み予定）。ここは無効化済みの参考コードなので、
-                    // Info の中身は読まない。
-                }
-                break;
-            case MessageType.Warning:
-                {
-                    using var src = message.Handle.GetSrc() == 0 ? null : Gst.Object.NewFromPointer(message.Handle.GetSrc(), false);
-                    var name = src?.GetPathString();
-
-                    /* dump graph on warning */
-                    var pipeline = sender.Parent as Bin;
-                    if (pipeline is not null)
-                        Functions.DebugBinToDotFileWithTs(pipeline, DebugGraphDetails.All, $"{nameof(GstEventRecorder)}.{pipeline.Name ?? "unknown"}.warning");
-
-                    message.ParseWarning(out var gerror, out var debug);
-                    using (gerror)
-                    {
-                        Console.Error.WriteLine($"WARNING: from element {name}: {gerror.Message}");
-                        if (debug is not null)
-                            Console.Error.WriteLine($"Additional debug info:\n{debug}");
-                    }
-                }
-                break;
-            default:
-                break;
-        }
-    }
-#endif
-
 
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     protected static void Log(DebugLevel level, string message,

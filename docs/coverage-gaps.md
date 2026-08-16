@@ -265,9 +265,10 @@ UIA からは分からない。自動で守られているのは**幾何の規�
 
 ### プレビューの実行時障害の観測（`preview.error`）
 
-`Previewer.DrainBusErrors` はバスの Error を汲んで `preview.error` を残すが、**この経路を
-自動で踏ませる手段が無い**（D3D デバイスロスト等を設定だけで起こせない。`NativeSwapChainPanel`
-の `SetSwapChain` 失敗も同様）。プレビューは WARP でも成立してしまうため、E2E で観測できるのは
+`Previewer` のバスの sync-message ハンドラ（`SubscribeBus`）は Error を `preview.error` に
+残すが、**この経路を自動で踏ませる手段が無い**（D3D デバイスロスト等を設定だけで起こせない。
+`NativeSwapChainPanel` の `SetSwapChain` 失敗も同様）。
+プレビューは WARP でも成立してしまうため、E2E で観測できるのは
 `PreviewPlaceholderTests` の「プレビューが無くても録画は続く」までである。ここを触ったら、
 記録が消えていないかをソースで確認すること（無記録に戻すと「プレビューだけ黙って固まる」に戻る）。
 

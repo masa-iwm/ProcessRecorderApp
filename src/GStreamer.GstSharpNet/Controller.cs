@@ -85,7 +85,8 @@ namespace ProcessRecorderApp.GStreamer
         /// プレビュー面（<see cref="Previewer"/> のパイプライン／スワップチェーン）の排他。
         ///
         /// プレビュー面はページ寿命（<c>MainPage</c> の Loaded/Unloaded）で初期化・破棄される一方、
-        /// <see cref="GstEventRecorder_Preview"/> は各レコーダーの プレビュー取り出しスレッドから走る。
+        /// <see cref="GstEventRecorder_Preview"/> は各レコーダーのプレビュー枝の <c>appsink</c>
+        /// コールバック（＝枝のストリーミングスレッド）から走る。
         /// 無保護だと <c>PushSample</c> 実行中に <c>appsrc</c> が破棄されてネイティブクラッシュするため、
         /// プレビュー面に触る全メンバをこのロックで直列化する。
         /// </summary>

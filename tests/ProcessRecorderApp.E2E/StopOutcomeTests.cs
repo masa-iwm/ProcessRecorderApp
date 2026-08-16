@@ -57,7 +57,7 @@ public sealed class StopOutcomeTests(PublishedApp app, ITestOutputHelper output)
     /// <para>
     /// <b>症状は設定だけで作れる。</b> <c>num-buffers</c> でソースを終わらせると、
     /// 初期化は成功したまま供給が止まる。製品側では事前バッファの排出が
-    /// 「<c>TryPullSample</c> が実を返したとき」にしか走らないため、
+    /// 「<c>appsink</c> のコールバックがサンプルを取り出したとき」にしか走らないため、
     /// リングバッファに溜まっていた分すら押し込まれず、<b>MP4 は中身無しで確定する</b>
     /// ── 排出そのものは綺麗に終わる（EOS も返り moov も書かれる）ので、
     /// この信号が無いと <b>終了コード 0 ＋ 空のファイル</b>になる。

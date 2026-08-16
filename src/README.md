@@ -116,10 +116,18 @@ GStreamer が使われる」という取り違えもここから起きる（ど�
 - **srcパイプライン**（録画中のみ稼働）:
   `appsrc name=src ! h264parse ! mp4mux faststart=true name=mux ! filesink name=file`
 
-`PullSampleProc`（バックグラウンドスレッド）が sink パイプラインの `appsink` から
-エンコード済み H.264 バッファを取り出し、PTS付きで `ConcurrentQueue` の**リングバッファ**へ
-積み続ける。`BufferDuration`（既定 `10_000` ms、`EventRecorderSettings.BufferDuration`）より
+sink パイプラインの `appsink` に取り付けた **`new-sample` コールバック**
+（`SetSimpleCallbacks(onNewSample:)`）がエンコード済み H.264 バッファを取り出し、
+PTS付きで `ConcurrentQueue` の**リングバッファ**へ積み続ける。
+`BufferDuration`（既定 `10_000` ms、`EventRecorderSettings.BufferDuration`）より
 古いバッファは随時破棄する。
+
+> **コールバックは枝のストリーミングスレッドで走る**（サンプルを取り出す専用スレッドは
+> 1 本も持たない）。中では `TryPullSample(0)` で**空になるまで**汲み、空でも
+> `FlowReturn.Ok` を返す ── `appsink` は 1 render につき 1 回しか呼ばないので、
+> 1 回 1 枚にすると取りこぼし、`Eos` を返すと枝がそこで止まる。
+> 例外も漏らさない（トランポリンが `FlowReturn.Error` へ変換し、サンプル 1 枚の失敗で
+> パイプラインごとエラー停止する）。
 
 録画開始（`IsRecording = true`）の**最初の1回だけ**、リングバッファ全体を直近のIフレームから
 `appsrc`（srcパイプライン）へ流し込むことで、「録画開始前」の映像を含んだ MP4 が生成される
@@ -154,7 +162,7 @@ NVIDIA 機の `nvh264enc` で実際に発生し、本対応で解消すること
 
 #### `appsrc` のキャップスは最初のサンプルから設定する
 
-`PullSampleProc` は最初のサンプルを取り出した時点で、`sample.GetCaps()`（＝sink 側で
+録画側のコールバックは最初のサンプルを取り出した時点で、`sample.GetCaps()`（＝sink 側で
 **実際にネゴシエートされた**キャップス）を `appsrc` に設定する（1回だけ）。
 
 これを行わないと、`h264parse` は H.264 エレメンタリストリームの框組み
@@ -580,8 +588,10 @@ COM 経路は動かせない（[docs/coverage-gaps.md](../docs/coverage-gaps.md)
 
 ### エラー時の自動リスタート
 
-`PullSampleProc` は sink パイプラインの Bus を監視し、`MessageType.Error` を検知すると
-エラー元の要素（`_errorSinkSrc`）を `State.Ready` にして復帰を予約する（`ScheduleRestart`）。
+sink パイプラインのバスを購読しているハンドラ（`HandleBusMessage`）は `MessageType.Error` を
+検知すると、エラー元の要素（`_errorSinkSrc`）を `State.Ready` にして復帰を予約する
+（`ScheduleRestart`）。**`Ready` への遷移はプールスレッドへ逃がす** ── ハンドラは post 元＝
+当の要素のストリーミングスレッドで走るので、インラインで落とすと自スレッドの復帰を待って固まる。
 復帰は `RestartLoopAsync` が `RestartPolicy` に従って実行し、間隔は **5s → 10s → 30s → 60s
 で頭打ち**、3回連続で失敗したらパイプラインごと `Initialize()` し直す（詳細は「自動復帰」の節）。
 画面キャプチャ対象モニタの切断など、ソース側の一時的な異常からの自動復帰を狙ったもの。
@@ -916,10 +926,11 @@ L3 の `PreviewFullScreenTests.FullScreen_DoesNotOverwriteTheSavedWindowSize` �
   走ったときに破棄済みビジュアルツリー上で `ContentDialog` を出そうとする。
 - `Controller` のプレビュー面 4 メンバ（`InitializePreview` / `ShutdownPreview` /
   `GetSwapChainHandle` / `ResizeSwapChain`）はいずれも**冪等**で、`_previewGate` ロックで保護する。
-  `GstEventRecorder_Preview` は各レコーダーの `_pullPreviewThread` 上で走り、`ShutdownPreview` は
+  `GstEventRecorder_Preview` は各レコーダーのプレビュー枝の `appsink` コールバック
+  （＝枝のストリーミングスレッド）上で走り、`ShutdownPreview` は
   UI スレッドで走るため、無保護だと `PushSample` 実行中に `appsrc` が破棄されてネイティブクラッシュする。
   プレビュー投入側は `Monitor.TryEnter` を使い、初期化／破棄と競合したフレームは待たずに捨てる
-  （レコーダーのプレビュースレッドをブロックしない）。
+  （プレビュー枝のストリーミングスレッドをブロックしない）。
 - `InitializePreview()` は**失敗しても例外を投げずログのみ**とし、ウィンドウは開いたまま続行する
   （WARP などプレビューが成立しない環境で、録画という中核機能を止めないため）。
 
@@ -1839,13 +1850,15 @@ GPU テクスチャになるため**アクセシブルテキストが 1 つも�
 | `gst.encoder selected` | INFO | `EventRecorder.Initialize` | 実際に採用されたエンコーダーとメモリ要件・失敗した試行数 |
 | `gst.encoder candidate-failed` | WARN | 同上 | 候補が落ちた理由（要素が無い／リンク不可／未知のプロパティ） |
 | `gst.encoder fallback-from` | WARN | 同上 | フォールバックが起きた場合の全失敗の一覧 |
+| `gst.typefallback` | INFO | `Controller.StaticInitialize`（診断の購読） | バインディングがネイティブのインスタンスを基底型のラッパーで包んだ（`instance=` / `wrapped-as=`）。型が未登録である兆候で、`msg.Src is BaseSrc` のような型判定が黙って外れる原因になる |
+| `gst.callback` | ERROR | 同上 | ネイティブのコールバック境界で捕捉された未処理例外（`GstSharp.UnhandledCallbackException`）。`appsink` の `new-sample` とバスの sync-message ハンドラは自前で例外を握るので、ここに出るのは**その握りをすり抜けたもの**だけ ── コールバックの中の障害はここにしか現れない |
 | `recorder.init ok` / `recorder.init fail` | INFO / ERROR | `GstControllerViewModel.AddRecorderFor` | レコーダーの初期化結果 |
 | `recording.start` / `recording.start fail` | INFO / ERROR | `EventRecorder.Start` | レコーダー名と**解決済み**ファイル名 |
 | `recording.stop` | INFO | `EventRecorder.StopDrainAndFinalize` | レコーダー名・ファイル名・経過ミリ秒・`result=ok｜timeout｜error` |
 | `recording.stop timeout` / `recording.stop error` | ERROR | 同上 | 排出が上限内に終わらなかった／排出中にエラーが出た場合の詳細 |
 | `recording.stop empty` | ERROR | 同上 | 1フレームも mux されず MP4 にメディアデータが無い（`samplesSeen` / `samplesPushed` / `srcState` で原因を切り分ける。終了コード 16 の根拠） |
 | `recording.stop slow` | WARN | `EventRecorder.Close` の待ち | 進行中の排出が上限＋余裕の中で終わらず、src パイプラインを破棄せずに手放した |
-| `recorder.leak` | WARN | `EventRecorder.Close` | ネイティブを安全に破棄できず、解放を諦めた（クラッシュ回避のための意図的なリーク）。原因は 2 つ ── **排出中の src パイプライン**（`abandonedStop`）と、**上限内に降りなかった pull スレッド**（この場合は sink 側も破棄しない。`SetState(Null)` だけは必ず実行する） |
+| `recorder.leak` | WARN | `EventRecorder.Close` | ネイティブを安全に破棄できず、解放を諦めた（クラッシュ回避のための意図的なリーク）。原因は 3 つ ── **排出中の src パイプライン**（`abandonedStop`）、**上限内に `NULL` へ降りなかった sink パイプライン**（quiesce の失敗。この場合はコールバックの解除もリングバッファの解放も行わない）、**予算内に片付かなかった常時録画**（排出中のセグメントを置いたまま先へ進む）。いずれの場合も `SetState(Null)` だけは必ず実行する |
 | `recording.aborted` | ERROR | `EventRecorder.HandleBusMessage` | 録画中に src 側バスがエラーを報告したため録画を中止した |
 | `recorder.error` | ERROR | `EventRecorder.HandleBusMessage` | **両方のバス**の `Error`（バス名・要素名・メッセージ・debug 情報） |
 | `recorder.warning` | WARN | 同上 | 両方のバスの `Warning`。連続する同一内容は畳んで `repeated=N` を添える |
@@ -1855,15 +1868,15 @@ GPU テクスチャになるため**アクセシブルテキストが 1 つも�
 | `continuous.start` | INFO | `ContinuousRecorder.OpenSegment` | 常時録画のセグメントを開いた（ファイル名・通し番号・分割間隔） |
 | `continuous.finalize` | INFO | `ContinuousRecorder.FinalizeSegment` | セグメントを確定させた（`result=ok｜timeout｜error`） |
 | `continuous.finalize backlog` | WARN | `ContinuousRecorder.WaitForFinalizers` | 排出中のセグメントが上限に達したまま予算内に片付かなかった |
-| `continuous.overshoot` | WARN | `ContinuousRecorder.Proc` | 分割点でキーフレームが来ず、セグメントが設定値を大きく超えた（原因はほぼ GOP 長。1セグメントにつき1行） |
+| `continuous.overshoot` | WARN | `ContinuousRecorder.OnContSample` | 分割点でキーフレームが来ず、セグメントが設定値を大きく超えた（原因はほぼ GOP 長。1セグメントにつき1行） |
 | `continuous.error` | ERROR / WARN | `ContinuousRecorder` ／ `EventRecorder.CloseCore` | 常時録画側の障害（最初のフレームが来ない・排出の失敗・PTS の巻き戻し・押し込みの拒否）。**`recorder.error` とは別にする** ── 常時録画の障害でイベント録画の状態表示を汚さないため |
 | `continuous.stop` | INFO | `ContinuousRecorder.Close` | 常時録画を止めた（書いたセグメント数） |
-| `continuous.leak` | WARN | 同上 | 常時録画の pull スレッドが上限内に降りず、書き出しパイプラインの解放を諦めた（`recorder.leak` と同じ規律） |
+| `continuous.leak` | WARN | 同上 | 進行中のサンプル処理が上限内に抜けず、最後のセグメントの確定と書き出しパイプラインの解放を諦めた（`recorder.leak` と同じ規律。quiesce が成功していれば起こらない） |
 | `log.terminal` | INFO / WARN | `LogTerminalView` | Log 画面のターミナルが起きた（`ready renderer=webgl｜dom`）／WebView2 を諦めてリスト表示に落ちた（`fallback=list`）。**どちらのレンダラーで描いているかは画面から見分けが付かない**ので、ここが唯一の観測点になる |
 | `log.file error` | ERROR | `Program.Main`（`ApplyLogFile`） | `DebugLogFile` を開けなかった（切断されたドライブ・権限など）。保存は諦めて捕捉は継続する ── 投げると未処理例外ハンドラの購読前なので、不正なパス1つで常駐ワーカーが起動できなくなる |
 | `gst.debug` | INFO | `DebugLogEx.TrySetThreshold` | `GstDebug` の変更を実行中に適用した（`threshold='...'`）。適用先は GStreamer の内部状態だけで画面にもファイルにも痕跡が残らないので、ここが唯一の観測点になる |
 | `gst.dot` | INFO / ERROR | `MainPageViewModel.SaveDebugGraphs` ／ `Controller.WriteDebugGraphs` | Log 画面の「グラフを保存」の結果（`dir='...' files=N`）／個々のパイプラインの書き出し失敗 |
-| `preview.error` | ERROR | `Previewer.DrainBusErrors`／`NativeSwapChainPanel.SetPanelSwapChain` | プレビューパイプラインの実行時障害（D3D デバイスロスト等。1 パイプラインにつき 1 行）と、スワップチェーンのパネルへのバインド失敗。録画は止めない方針のため復帰は試みない ── ここが「プレビューだけ黙って固まった／黒いまま」の唯一の観測点になる |
+| `preview.error` | ERROR | `Previewer` のバスのハンドラ（`SubscribeBus`）／`NativeSwapChainPanel.SetPanelSwapChain` | プレビューパイプラインの実行時障害（D3D デバイスロスト等。1 パイプラインにつき 1 行）と、スワップチェーンのパネルへのバインド失敗。録画は止めない方針のため復帰は試みない ── ここが「プレビューだけ黙って固まった／黒いまま」の唯一の観測点になる |
 | `variables.duplicate-key` | WARN | `TemplateVariableViewModel.OnKeyChanged` | Variables 画面で既存の行と重複するキーを入力したため、元のキーへ差し戻した（重複を許すと既存の値を空文字で潰し、片方の削除で実体まで消える） |
 | `settings.load` | ERROR | `AppSettings.ReportLoadFailure` | settings.json を読めず既定値へ倒れた（読めなかったファイルは `.bad` へ退避） |
 | `settings.seed` | INFO | `AppSettings.ReportSeedUsed` | 保存先に settings.json が無く、**実行ファイルの隣の settings.json を既定設定（種）として読んだ**。無記録だと「設定した覚えのない初期値で始まった」ことを追えない |
@@ -1888,24 +1901,71 @@ CLI 出力を汚染するため有効にしてはいけない。
 
 ## バスメッセージの処理とレコーダーの健全性
 
-`EventRecorder` は `GMainLoop` を持たない（＝bus watch のシグナルは発火しない）ため、
-バスは `_pullSampleThread` から**ポーリング**して読む。`#if false` に残っている
-`Bus.OnMessage` / `OnSyncMessage` は**復活させてはいけない** ── 実行中のメインループに
-紐づく bus watch からしか発火しないため。
+バスは **sync-message で購読する**（`EventRecorder.SubscribeBus`）。**ポーリングは行わず、
+バスを汲むためのスレッドも持たない。**
 
-### どちらのバスを、誰が、何のフィルタで読むか
+**`Bus.Message` / `AddWatch` は使えない。** どちらも `GMainLoop` からメッセージを配送する
+仕組みで、このアプリはメインループを回していないので 1 件も発火しない。メインループ無しで
+push 型に受けられるのは sync-message だけである。
 
-| バス | 読み手 | フィルタ | 備考 |
-|---|---|---|---|
-| `_sinkBus`（常時稼働） | `PullSampleProc` → `DrainBuses` | `Error｜Warning｜Eos` | EOS を待つ者がいないので Eos も拾う |
-| `_srcBus`（録画中のみ） | `PullSampleProc` → `DrainBuses` | `Error｜Warning` | **Eos を含めない** |
-| `_srcBus`（停止処理中） | `StopDrainAndFinalize` | `Eos｜Error` | `_srcBusOwnedByStop` の間、pull 側は src バスに触らない |
+### どのバスを、いつ購読するか
 
-**この分担は必須。** 停止処理は EOS を送ってから `Eos｜Error` を待つが、pull ループが
-同じバスを汲んでいると**その Eos / Error を先に取ってしまい**、停止側は上限まで待たされる。
-実際に「録画中に src エラー → 中止」の経路でこれを踏み、停止スレッドが1本ハングしたまま
-`recording.stop` が出ず MP4 も確定しなかった。最も検出したい状況で必ず踏む競合なので、
-`_srcBusOwnedByStop` によるフラグでの排他を外さないこと。
+| バス | 購読 | 解除 |
+|---|---|---|
+| `_sinkBus`（常時稼働） | `InitializeWith`（`PLAYING` 到達後・1 回だけ） | `CloseCore` |
+| `_srcBus`（録画中のみ稼働） | 同上（gate は **sink の** `PLAYING` 到達） | 同上 |
+| 常時録画のセグメント | `ContinuousRecorder.OpenSegment`（`NULL` 状態のうちに） | `FinalizeSegment` |
+| プレビュー | `Previewer.Initialize`（`PLAYING` へ上げる前） | `Close` |
+
+- **録画のたびに掛け直さない。** `GstPipeline` は READY→NULL でバスを flushing 化する
+  （`auto-flush-bus` 既定 true）ので、停止中の src バスには post が届かず残骸も掃除される。
+- **sink / src の購読は `PLAYING` 到達より後**に置く ── エンコーダー候補のフォールバックで
+  落ちた候補のメッセージが `recorder.error` として残らない挙動を、この位置で保っている。
+- `EnableSyncMessageEmission` は refcount なので、解除は必ず `DisableSyncMessageEmission` と
+  対で行う。解除の鍵はバスのラッパー実体そのものなので、**参照を落とす前に外す**。
+
+### 取り付けの窓と、キューに残る残骸
+
+`gst_bus_post` は **「sync-message を発火 → その後キューへ積む」**の順で動く
+（`gstbus.c` で確認済み）。ここから 2 つのことが従う。
+
+- **取り付け前に来た分は自分で汲む。** `SubscribeBus` は `_busLock` の下で
+  「Enable →`+=`→ 溜まっていた分を `Pop` で汲み切る」をひとまとめに行う。ロック中に汲めるのは
+  取り付け前の残り物だけで、ロック待ちの新着は必ずハンドラが受ける ── 重複も取りこぼしも出ない。
+- **ハンドラの中で `Pop` して捨てるのが安全。** 発火はキュー投入より前なので、
+  いま処理しているメッセージは絶対に取らない（まだ積まれていない）。キューに居るのは処理済みの
+  残骸だけである。汲まないとキューが際限なく伸びる（GstBus のキューは無制限）。
+  `Pop` の戻りは所有権つきなので必ず解放する。
+
+### ハンドラの中でしてはいけないこと
+
+ハンドラは **post 元＝当の要素のストリーミングスレッド**で走る。したがって
+
+- **`SetState` をインラインで呼ばない**（自スレッドの復帰を待って固まる）。障害要素を
+  `Ready` へ落とす復帰の予約は `Task.Run` へ逃がす。
+- **`_stateLock` を取らない・`Join` / `Wait` をしない。** 取ってよいのは `_busLock` だけで、
+  ロック順序は `_stateLock` → `_busLock` → `_restartLock` の一方向のみ。
+- **例外を漏らさない**（ここはネイティブのトランポリンの中）。すり抜けたものは
+  `gst.callback` に残る。
+
+### 待ち手はバスを汲まない
+
+停止の排出（`StopDrainAndFinalize`）と常時録画のセグメント確定（`FinalizeSegment`）は、
+EOS を送ったあと `TaskCompletionSource` を**待つだけ**で、自分ではバスに触らない。
+完了させるのは当のバスの sync-message ハンドラである（`_stopDrain` / `SegmentWriter.Drain`。
+**武装は `EndOfStream()` より前** ── 後にすると EOS より先に届く Error を取りこぼす）。
+
+**読み手をハンドラ 1 つに保つこと。** 同じバスに読み手が 2 人いると、待ち手が欲しい
+`Eos` / `Error` をもう一方が先に取ってしまい、待ち手は上限まで待たされる。実際に
+「録画中に src エラー → 中止」の経路でこれを踏み、**停止スレッドが 1 本ハングしたまま
+`recording.stop` が出ず MP4 も確定しなかった**。最も検出したい状況で必ず踏む競合なので、
+停止側・確定側にバスを汲ませる形へ戻さないこと。
+
+- 武装中の src バスの `Error` は、ハンドラでは報告しない ── 報告は停止側の
+  `recording.stop error` 1 箇所だけにする（両方から出すと同じ障害が `recorder.error` /
+  `recording.aborted` と二重に出て、E2E の件数の表明が壊れる）。
+- 武装していない src バスの `Eos` は黙って捨てる（`recorder.eos` は sink バス専用の印で、
+  停止のたびに出るものではない）。
 
 ### 洪水対策
 
@@ -1916,13 +1976,19 @@ CLI 出力を汚染するため有効にしてはいけない。
 連続する同一内容を畳み、`repeated=N` を添えて報告する。
 `MaxSuppressedInARow` 件ごとに1行出して沈黙し続けないようにしてある。
 
-またバスは1周につき**空になるまで**汲む。GstBus のキューは既定で無制限なので、
-1周1件だと洪水時に 10 件/秒しか抜けずキューが際限なく積み上がる。
+洪水でも**取りこぼしは起きない** ── ハンドラは post 1 件につき 1 回呼ばれる。畳むのは
+`activity.log` の行だけで、件数は `repeated=N` に残る。
+`Observe` は GStreamer のストリーミングスレッドから、`Flush` は停止・破棄の経路から
+呼ばれるため、`BusMessageThrottle` は自前のロックで内部状態を直列化する
+（常時録画の `pts-rewind` / `push-rejected` も同じ仕組みをサンプルのコールバックから使う）。
 
 ### 停止の有界化
 
 排出待ちは `AppSettings.StopFinalizeTimeoutMs`（既定 5000ms）で有界。
-無限待ち（`CLOCK_TIME_NONE`）にすると、mux が詰まったとき呼び出しスレッドごと永久にハングする。
+無限待ちにすると、mux が詰まったとき呼び出しスレッドごと永久にハングする。
+待つのは sync-message ハンドラが完了させる `TaskCompletionSource` で、**同期の `Wait` で待つ**
+── `await` にすると継続がストリーミングスレッドでインライン実行され、`finally` の
+`SetState(Null)` が自スレッドで走って固まる。
 タイムアウトしても `SetState(Null)` は `finally` で必ず実行する ──
 実測では、その結果として排出が完了しなかったケースでも `moov` まで書かれた MP4 が残った。
 **ランチャーの結果待ち（60秒）に近づけないこと**（超えると終了コード 2 が出始める。目安 50000 以下）。
@@ -1939,11 +2005,14 @@ CLI 出力を汚染するため有効にしてはいけない。
 
 `Initialize` / `Start` / `Stop` / `Close` は `_stateLock` で直列化する
 （UI スレッド・プールスレッド・CLI 経路の複数から呼ばれるため）。
-**pull ループはこのロックを取らない** ── `Close()` はロックを保持したまま `Join(5000)`
-するため、pull 側が同じロックを待つとデッドロックする。pull 側は
-`volatile` フィールド（`_isAlive` / `_IsRecording` / `_srcBusOwnedByStop`）の読みだけで回す。
+**`appsink` のコールバックとバスのハンドラはこのロックを取らない** ── `Close()` はロックを
+保持したまま sink パイプラインを `NULL` へ落とし、**実行中のコールバックの復帰を待つ**
+（`CloseCore` の quiesce）。コールバック側が同じロックを待った瞬間にデッドロックする。
+コールバックは `volatile` フィールド（`_isAlive` / `_IsRecording`）の読みだけで回し、
+ハンドラが取ってよいのは `_busLock` だけ。
 
-`LastError` は専用スレッドから変更されるため、購読側は UI スレッドへマーシャリングする
+`LastError` は GStreamer のストリーミングスレッドから変更されるため、購読側は UI スレッドへ
+マーシャリングする
 （`GstEventRecorderViewModel.Model_PropertyChanged` が `HasThreadAccess` の高速パス付きで行う）。
 
 ### 自動復帰
