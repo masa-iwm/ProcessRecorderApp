@@ -320,11 +320,11 @@ public partial class EventRecorder : ObservableObject, IDisposable
     /// これまで同期が一切無かった。
     ///
     /// <para>
-    /// <b>sink の <c>appsink</c> コールバックと <c>PullPreviewProc</c> のループは
+    /// <b>sink と preview の <c>appsink</c> コールバック、および常時録画の pull スレッドは
     /// このロックを取らない。</b> <see cref="Close"/> はロックを保持したまま
     /// sink パイプラインを <c>Null</c> へ落として<b>実行中のコールバックの復帰を待ち</b>
-    /// （<see cref="CloseCore"/> の quiesce）、そのあと preview の pull スレッドを
-    /// <c>Join(5000)</c> する ── どちらも同じロックを待つ側に回った瞬間にデッドロックする。
+    /// （<see cref="CloseCore"/> の quiesce）、そのあと常時録画の停止を待つ
+    /// ── どちらも同じロックを待つ側に回った瞬間にデッドロックする。
     /// コールバックと pull 側は volatile フィールド（<see cref="_isAlive"/> /
     /// <see cref="_IsRecording"/>）の読みだけで回すこと。
     /// </para>
@@ -1256,12 +1256,33 @@ public partial class EventRecorder : ObservableObject, IDisposable
                 return FlowReturn.Ok;
             });
 
-            _pullPreviewThread = new(PullPreviewProc)
+            // プレビュー枝も同じ形で受ける。**サンプルはハンドラを抜けた時点で破棄される**
+            // ので、購読側（Preview イベント）は同期で消費し切ること。
+            _previewSink?.SetSimpleCallbacks(onNewSample: sink =>
             {
-                IsBackground = true
-            };
+                // 例外を漏らさない（sink 側と同じ理由 ── トランポリンが FlowReturn.Error へ
+                // 変換して枝が止まる）。
+                try
+                {
+                    if (!_isAlive)
+                        return FlowReturn.Ok;
 
-            _pullPreviewThread?.Start();
+                    // 1 render につき 1 回しか呼ばれないので、取り付け前に溜まった分も
+                    // ここで吸い切る（sink 側と同じドレイン形）。
+                    while (sink!.TryPullSample(ClockTime.Zero) is { } sample)
+                    {
+                        using (sample)
+                            OnPreview(sample);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Log(DebugLevel.Error, $"GstEventRecorder preview callback failed!\n{ex}");
+                }
+
+                // 空プルでも Ok（Eos を返すと枝が止まる）。
+                return FlowReturn.Ok;
+            });
 
             ActualType = Type;
             ActualSrcPipeline = SrcPipeline;
@@ -1592,16 +1613,16 @@ public partial class EventRecorder : ObservableObject, IDisposable
             ActualContinuousEncodingProperties = null;
             ContinuousLastError = null;
 
-            // **押し込みの継続条件を先に倒す。** コールバックの早期 return と
-            // preview の pull ループの終了条件はこれ 1 本で、quiesce より前に倒すことで
-            // 「これから来るサンプルは触らない」を先に立てる。
+            // **押し込みの継続条件を先に倒す。** サンプルのコールバック（sink / preview）の
+            // 早期 return と常時録画の pull ループの終了条件はこれ 1 本で、quiesce より前に
+            // 倒すことで「これから来るサンプルは触らない」を先に立てる。
             _isAlive = false;
 
             // **quiesce: sink パイプラインを Null へ落として、コールバックを退去させる。**
             // Null への遷移は appsink をフラッシュしてストリーミングスレッドを止める
             // ── GStreamer は実行中の onNewSample が返るまで待つので、これが返れば
             // 「もう誰もサンプルを押し込んでいない・リングを触っていない」が保証される。
-            // pull スレッド（preview / 常時録画）にとっても、ブロックしている
+            // 常時録画の pull スレッドにとっても、ブロックしている
             // TryPullSample を返させる唯一の信号である。
             //
             // **SetState(Null) は必ず呼ぶ。** 呼ばなければキャプチャとエンコードが
@@ -1659,12 +1680,6 @@ public partial class EventRecorder : ObservableObject, IDisposable
             bool continuousStopped = continuousClose is null
                 || continuousClose.Wait(StopFinalizeTimeoutMs + StopFinalizeSlackMs);
 
-            // preview の pull スレッドも同じ ── quiesce 後は TryPullSample が即 null を
-            // 返すので、_isAlive=false と合わせて 1 周回で降りる。
-            bool pullStopped = _pullPreviewThread?.Join(5000) ?? true;
-            pullStopped &= continuousStopped;
-            _pullPreviewThread = null;
-
             // 抑制されたまま残っている sink 側の件数を取りこぼさない
             // （src 側は StopDrainAndFinalize の finally が畳む）。
             FlushThrottles(_sinkThrottles, "sink");
@@ -1702,7 +1717,7 @@ public partial class EventRecorder : ObservableObject, IDisposable
             string? leaked =
                 abandonedStop ? "the src pipeline was still draining; leaked instead of disposed"
                 : !quiesced ? "the sink pipeline did not reach NULL in time; leaked the pipelines instead of disposing them"
-                : !pullStopped ? "the preview/continuous pull threads did not stop in time; leaked the sink pipeline instead of disposing it"
+                : !continuousStopped ? "the continuous pull thread did not stop in time; leaked the sink pipeline instead of disposing it"
                 : null;
             if (leaked is not null)
                 Components.ActivityLog.Warn("recorder.leak", $"recorder='{Name}' {leaked}");
@@ -1744,7 +1759,9 @@ public partial class EventRecorder : ObservableObject, IDisposable
             }
 
             // sink パイプライン側（SetState(Null) は手順の先頭の quiesce で済んでいる）
-            if (!quiesced || !pullStopped)
+            // 常時録画の pull スレッドが降りていない場合も Dispose しない ──
+            // あちらは _continuousSink（この sink パイプラインの要素）を読み続けている。
+            if (!quiesced || !continuousStopped)
             {
                 // 実行中のコールバック、または TryPullSample が sink 側ネイティブを
                 // まだ触っている可能性がある。パイプラインを Dispose せず参照だけ落とす
@@ -1766,6 +1783,7 @@ public partial class EventRecorder : ObservableObject, IDisposable
                 // 「個別のデリゲートを渡す版（全省略）」の両方に当てはまり、
                 // 後者へ解決されると「1 つも指定が無い」として実行時に弾かれる。
                 _appSink?.SetSimpleCallbacks((GstApp.AppSinkSimpleCallbacks?)null);
+                _previewSink?.SetSimpleCallbacks((GstApp.AppSinkSimpleCallbacks?)null);
 
                 // 要素（appsink 群）とバスはインターンされた GObject ラッパーなので
                 // Dispose しない。Dispose するのはこのコードが作ったパイプラインだけ。
@@ -1803,7 +1821,8 @@ public partial class EventRecorder : ObservableObject, IDisposable
     /// <c>recorder.leak</c> を残して「Dispose もコールバックの解除もしない」へ倒す。
     /// </para>
     /// <para>
-    /// 値は pull スレッドの <c>Join</c> と同じ 5 秒。健全なパイプラインの
+    /// 値は常時録画の pull スレッドの <c>Join</c>（<c>ContinuousRecorder.JoinTimeoutMs</c>）と
+    /// 同じ 5 秒。健全なパイプラインの
     /// <c>Null</c> 化はミリ秒で終わり、掛かるのは要素が固まっている場合だけである。
     /// </para>
     /// </summary>
@@ -2541,28 +2560,20 @@ public partial class EventRecorder : ObservableObject, IDisposable
         return true;
     }
 
-    private Thread? _pullPreviewThread;
-
-    private void PullPreviewProc()
-    {
-        while (_isAlive)
-        {
-            try
-            {
-                using var sample = _previewSink?.TryPullSample(ClockTime.FromMilliseconds(100));
-                if (sample is null)
-                    continue;
-
-                OnPreview(sample);
-            }
-            catch (Exception ex)
-            {
-                Log(DebugLevel.Error, $"GstEventRecorder.PullPreviewProc failed!\n{ex}", _sinkPipeline);
-            }
-        }
-    }
-
-
+    /// <summary>
+    /// プレビュー用のサンプルが取れたときに発火する。
+    ///
+    /// <para>
+    /// <b>発火するのはプレビュー枝のストリーミングスレッド</b>（<c>appsink</c> の
+    /// コールバック）で、<b>サンプルはハンドラを抜けた時点で破棄される</b>
+    /// ── 購読側はその場で同期に消費し切ること（後で使うなら自前で複製する）。
+    /// </para>
+    /// <para>
+    /// <b>購読側はブロックしてはいけない。</b> ここで待つとプレビュー枝の
+    /// ストリーミングスレッドがそのぶん止まる。<c>Controller.GstEventRecorder_Preview</c> は
+    /// <c>Monitor.TryEnter</c> で「取れなければ待たずに捨てる」形にしてある。
+    /// </para>
+    /// </summary>
     public event EventHandler<PreviewEventArgs>? Preview;
 
     protected virtual void OnPreview(Sample sample)

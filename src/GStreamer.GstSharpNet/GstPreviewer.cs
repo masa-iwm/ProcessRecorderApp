@@ -17,8 +17,16 @@ namespace ProcessRecorderApp.GStreamer
         private Element? _sink;
         private Bus? _bus;
 
-        /// <summary>実行時障害を記録済みか（1パイプラインにつき1行に抑える）。</summary>
-        private bool _busErrorLogged;
+        /// <summary>
+        /// 実行時障害を記録済みか（1パイプラインにつき1行に抑える）。0=未記録 / 1=記録済み。
+        /// <b>複数のストリーミングスレッドから同時に来うる</b>ので
+        /// <c>Interlocked</c> で 1 回に絞る（sync-message ハンドラは post 元の
+        /// ストリーミングスレッドで走る）。
+        /// </summary>
+        private int _busErrorLogged;
+
+        /// <summary>バスの sync-message ハンドラ（<c>-=</c> に同一の実体が要るので保持する）。</summary>
+        private EventHandler<Bus.SyncMessageSignalArgs>? _busHandler;
 
         /// <summary>直近に通知した表示サイズ（変化したときだけ通知するための控え）。</summary>
         private int _videoWidth;
@@ -34,7 +42,8 @@ namespace ProcessRecorderApp.GStreamer
         /// <b>パネルの大きさだけでは映像が実際に出ている範囲が分からない</b>。
         /// </para>
         /// <para>
-        /// <b>発火するのはプレビュー用スレッド</b>（<c>PushSample</c> の呼び出し元）。
+        /// <b>発火するのは <c>PushSample</c> の呼び出し元</b>
+        /// （レコーダーのプレビュー枝のストリーミングスレッド）。
         /// UI へ反映する側が <c>DispatcherQueue</c> で移すこと。
         /// </para>
         /// </summary>
@@ -65,10 +74,13 @@ namespace ProcessRecorderApp.GStreamer
                 _appSrc = (GstApp.AppSrc)_pipeline.GetByName("src")!;
                 _sink = _pipeline.GetByName("sink")!;
 
-                // bus watch（OnMessage）は使えない ── GMainLoop が無いので発火しない
-                // （EventRecorder と同じ理由）。PushSample の周期でポーリングして汲む。
                 _bus = _pipeline.GetBus();
-                _busErrorLogged = false;
+                _busErrorLogged = 0;
+
+                // **購読は PLAYING より前・NULL 状態のうちに。** まだ誰も post しないので
+                // 取り付けと汲み切りを直列化するゲート（EventRecorder.SubscribeBus）は要らない
+                // （ContinuousRecorder.SubscribeSegment と同じ理由）。
+                SubscribeBus(_bus);
 
                 if (_pipeline.SetState(State.Playing) == StateChangeReturn.Failure)
                     throw new InvalidOperationException("ERROR: pipeline doesn't want to play.");
@@ -109,15 +121,14 @@ namespace ProcessRecorderApp.GStreamer
 
         /// <summary>
         /// プレビュー用パイプラインへフレームを供給する。
-        /// 未初期化／破棄済みの場合は黙って捨てる（呼び出し元はレコーダーのプレビュースレッドであり、
+        /// 未初期化／破棄済みの場合は黙って捨てる（呼び出し元はレコーダーの<b>プレビュー枝の
+        /// ストリーミングスレッド</b>（<c>appsink</c> のコールバック）であり、
         /// 画面遷移に伴う破棄と競合しうるため、例外にせず no-op とする）。
         /// </summary>
         public void PushSample(Sample sample)
         {
             if (!_isInitialized || _appSrc is null)
                 return;
-
-            DrainBusErrors();
 
             // **毎フレームは読まない。** サイズが分かるまでの数フレームだけで足りる
             // （解像度が変わるのはパイプラインを組み直したときで、そのとき Close→Initialize と
@@ -201,46 +212,59 @@ namespace ProcessRecorderApp.GStreamer
         }
 
         /// <summary>
-        /// バスの Error を汲んで記録する。プレビューの失敗は録画を止めない方針のため
-        /// 復帰は試みないが、無記録だと「プレビューだけ黙って固まり、activity.log に
-        /// 何も残らない」── レコーダー側が DrainBuses で塞いでいる「静かに壊れる」
-        /// クラスの穴がこちらにだけ残る。記録は 1 パイプラインにつき 1 行
-        /// （エラー後のパイプラインは死んでおり、以後のメッセージに追加情報は無い。
-        /// GstBus のキューは無制限なので、汲むこと自体は続ける）。
+        /// バスを sync-message で購読する。<b>拾うのは Error だけ</b> ──
+        /// プレビューの失敗は録画を止めない方針なので復帰は試みないが、無記録だと
+        /// 「プレビューだけ黙って固まり、activity.log に何も残らない」になる。
+        /// 記録は 1 パイプラインにつき 1 行（エラー後のパイプラインは死んでおり、
+        /// 以後のメッセージに追加情報は無い）。
+        ///
+        /// <para>
+        /// <b><c>Bus.Message</c> / <c>AddWatch</c> は使えない</b> ── どちらも GMainLoop から
+        /// 配送されるが、このアプリは GMainLoop を回していないので発火しない。
+        /// メインループ無しで push 型に受けられるのは sync-message だけである
+        /// （<c>EventRecorder.SubscribeBus</c> と同じ理由）。
+        /// </para>
+        /// <para>
+        /// <b>残骸の回収が要る。</b> <c>gst_bus_post</c> は sync-message を発火してから
+        /// キューへ積むので、汲まなければパイプラインの寿命ぶんキューが伸び続ける
+        /// （GstBus のキューは無制限）。キューに居るのは発火が済んだメッセージだけなので、
+        /// 種別を問わず捨ててよい。
+        /// </para>
         /// </summary>
-        private void DrainBusErrors()
+        private void SubscribeBus(Bus bus)
         {
-            // ローカルへ 1 回読む（Close は UI スレッドから走り、ここはプレビュースレッド）。
-            var bus = _bus;
-            if (bus is null)
-                return;
-
-            // 1 周あたりの取り出しは有界にする ── 洪水の最中に無界だと、Close の
-            // Join(5000) に間に合わない（EventRecorder.DrainBus と同じ理由）。
-            for (int i = 0; i < 32 && bus.TimedPopFiltered(ClockTime.Zero, MessageType.Error) is { } msg; i++)
+            void Handler(object? sender, Bus.SyncMessageSignalArgs args)
             {
-                using (msg)
+                // 例外を漏らさない（ここはネイティブのトランポリンの中）。
+                try
                 {
-                    if (_busErrorLogged)
-                        continue;
+                    // args.Message はハンドラの実行中だけ有効なので Dispose しない。
+                    var msg = args.Message;
+                    if (msg.Type == MessageType.Error
+                        && System.Threading.Interlocked.Exchange(ref _busErrorLogged, 1) == 0)
+                    {
+                        // ParseError は GError を管理例外 (GException) へ写して返す。
+                        // ネイティブ側の解放はバインディングが済ませるので、破棄する物は無い。
+                        var (gerror, debug) = msg.ParseError();
+                        Components.ActivityLog.Error("preview.error", $"{gerror.Message} debug={debug}");
+                    }
 
-                    // ParseError は GError を管理例外 (GException) へ写して返す。
-                    // ネイティブ側の解放はバインディングが済ませるので、破棄する物は無い。
-                    var (gerror, debug) = msg.ParseError();
-                    Components.ActivityLog.Error("preview.error", $"{gerror.Message} debug={debug}");
-                    _busErrorLogged = true;
+                    // Pop の戻りは所有権つきなので必ず解放する。
+                    while (bus.Pop() is { } stale)
+                        stale.Dispose();
+                }
+                catch (Exception ex)
+                {
+                    // activity.log には出さない（preview.error は 1 行に絞る対象）。
+                    Log(DebugLevel.Error, $"the preview sync-message handler failed!\n{ex}");
                 }
             }
 
-            // GMainLoop が無いので、GObject ファイナライザが積んだ解放は
-            // ここ（バスポーリングの周期）で消化する。
-            GstSharp.DrainPendingReleases();
+            EventHandler<Bus.SyncMessageSignalArgs> handler = Handler;
+            _busHandler = handler;
+            bus.EnableSyncMessageEmission();
+            bus.SyncMessage += handler;
         }
-
-
-// bus watch（Bus.OnMessage）で書いてはいけない ── 実行中の GMainLoop に紐づく
-        // bus watch からしか発火しない（EventRecorder の DrainBuses と同じ理由）。
-        // 実行時障害の観測は DrainBusErrors のポーリングで行う。
 
 
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
@@ -288,12 +312,24 @@ namespace ProcessRecorderApp.GStreamer
         /// appsrc / sink / bus は interned な GObject ラッパーで破棄しない（null 化のみ）。
         /// パイプラインだけは、このクラスが作った所有物として <c>SetState(Null)</c> の後に
         /// Dispose する（公認の「作った側が畳む」ケース）。
+        ///
+        /// <para>
+        /// <b>バスの購読は状態を動かす前に外す。</b> <c>EnableSyncMessageEmission</c> は
+        /// refcount なので、<c>-=</c> と <c>Disable</c> は購読が成立していたときだけ
+        /// 対で呼ぶ（未初期化のまま呼ばれる経路があるため、ハンドラの有無で判定する）。
+        /// </para>
         /// </summary>
         public void Close()
         {
             _isInitialized = false;
             // 面が無くなるので表示サイズも未知へ戻す（補助線を消すため）。
             ResetVideoSize();
+            if (_bus is { } bus && _busHandler is { } handler)
+            {
+                bus.SyncMessage -= handler;
+                bus.DisableSyncMessageEmission();
+            }
+            _busHandler = null;
             _pipeline?.SetState(State.Null);
             _appSrc = null;
             _sink = null;
