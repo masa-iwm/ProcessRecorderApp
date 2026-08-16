@@ -13,8 +13,8 @@
 #   ── これはエンコーダーの自動フォールバックが効いていることの実証にもなる。
 #
 #   **GStreamer はリポジトリに同梱していない**（runtimes/ はサイズが大きいためリポジトリには置かない）。
-#   ランナーでは MSYS2(UCRT64) 版を pacman で入れ、アプリ側の
-#   GStreamerRuntimeLocator がそれを見つける。**gst-plugins-ugly は必須**
+#   ランナーでは MSYS2(UCRT64) 版を pacman で入れ、GstSharp.Net のローダーが
+#   それを見つける（PATH の走査が最優先の段）。**gst-plugins-ugly は必須**
 #   ── 上記のとおりフィクスチャが x264enc を明示指定しており、抜けると openh264enc へ
 #   落ちる。openh264 の bitrate は bit/sec で x264 の kbit/sec と桁が違うため、
 #   生成サイズの前提（StopSynchronicityTests の 20MB 下限など）が丸ごとずれる。
@@ -192,8 +192,8 @@ jobs:
             mingw-w64-ucrt-x86_64-gst-plugins-ugly
 
       # **展開先はランナー任せなので `C:\msys64` を決め打ちしない。**
-      # アプリ側の既定の探索場所（`%SystemDrive%\msys64`）とは限らないため、
-      # ここで明示的に PATH へ載せる ── GStreamerRuntimeLocator の候補1（元の PATH）に効く。
+      # ローダーが見る既定の MSYS2 の場所（`%SystemDrive%\msys64`）とは限らないため、
+      # ここで明示的に PATH へ載せる ── 解決順で最優先の段（元の PATH の走査）に効く。
       #
       # ここで落としておく。E2E まで持ち越すと、原因が「GStreamer が無い」なのか
       # 製品の不具合なのかの切り分けに数十分かかる。

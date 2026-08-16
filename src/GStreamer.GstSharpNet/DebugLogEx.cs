@@ -7,30 +7,17 @@ using System.Collections.ObjectModel;
 using System.IO;
 using System.Linq;
 using System.Runtime.CompilerServices;
-using System.Runtime.InteropServices;
 using System.Text;
 
 namespace ProcessRecorderApp.GStreamer;
 
-public static partial class DebugLogEx
+public static class DebugLogEx
 {
-    // GstSharp.Net preview1 には DebugCategory を**作る**公開 API が無い
-    // （_gst_debug_category_new は GIR に載らない実エクスポートで、公開 DebugCategory の
-    //   コンストラクタは internal）。それまでの間だけ、生成と custom カテゴリでのログ出力を
-    //   生の P/Invoke で行う。preview2 受け入れ文書 §4.4。
-    // 論理名 "Gst" は Controller.StaticInitialize が登録するリゾルバ経由で、
-    // バインディングがピンしたのと同じ DLL へ解決される。
-    [LibraryImport("Gst", StringMarshalling = StringMarshalling.Utf8)]
-    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    private static partial IntPtr _gst_debug_category_new(string name, uint color, string description);
-
-    [LibraryImport("Gst", StringMarshalling = StringMarshalling.Utf8)]
-    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
-    private static partial void gst_debug_log_literal(IntPtr category, DebugLevel level,
-        string file, string function, int line, IntPtr @object, string message);
-
-    // 生ポインタのまま持つ（GStreamer 側が同名カテゴリを重複させないので、競合しても実害なし）。
-    private static IntPtr _debugCategory;
+    // カテゴリの生成とログ出力は GstSharp.Net の DebugCategory.New / Log を使う
+    // （preview2 で入ったので、生の P/Invoke 対は不要になった）。
+    // カスタムカテゴリは初回呼び出しで作って使い回す（GStreamer 側が同名カテゴリを
+    // 重複させないので、競合して 2 回作っても実害なし）。
+    private static DebugCategory? _debugCategory;
     public static void Log(DebugLevel level, string? message,
         GObject.Object? @object = null,
         [CallerFilePath] string file = "",
@@ -44,10 +31,8 @@ public static partial class DebugLogEx
         if (!IsGstInitialized)
             return;
 
-        if (_debugCategory == IntPtr.Zero)
-            _debugCategory = _gst_debug_category_new("myapp", 0, "My application");
-        gst_debug_log_literal(_debugCategory, level, file, function, line,
-            @object?.Handle ?? IntPtr.Zero, message ?? "");
+        _debugCategory ??= DebugCategory.New("myapp", 0, "My application");
+        _debugCategory.Log(level, message ?? "", @object, file, function, line);
     }
 
     /// <summary>
@@ -59,9 +44,9 @@ public static partial class DebugLogEx
     /// <c>AppSettings</c> は初期化より前に読み込まれ
     /// （<c>Program.cs</c> で <c>AppSettings.Default</c> → <c>Controller.StaticInitialize()</c> の順）、
     /// その逆シリアル化の setter からここへ来る。初期化前にバインディングへ触ると
-    /// 例外にはならず、**ローダーが自力プローブで見つけた根を先にピンしてしまう**
-    /// ── 後から <c>NativeSearchPath</c> 付きで呼ぶ <c>Initialize</c> が
-    /// InvalidOperationException になるか、選んだはずの根と黙って食い違う。
+    /// 例外にはならず、**ローダーがその場でネイティブを解決してピンしてしまう**
+    /// ── <c>gst_init</c> より前に GStreamer を呼ぶことになり、
+    /// <c>gst.runtime</c> に残る解決結果も本来の初期化のものではなくなる。
     /// 「もう DllNotFoundException にならないから」とこのゲートを外してはいけない。
     /// </para>
     /// </summary>

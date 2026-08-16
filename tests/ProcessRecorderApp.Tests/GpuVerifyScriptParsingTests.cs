@@ -31,15 +31,17 @@ public class GpuVerifyScriptParsingTests
 
     /// <summary>
     /// 実機で採取した本物の1行（`C:\src\_scratch\n3\gst with space` に置いた
-    /// ランタイムを読ませたときのもの）。<b>空白を含む値の後ろに別のフィールドが続く</b>
-    /// という、この欠陥がまさに壊れる形になっている。
+    /// ランタイムを読ませたときのもの。段の名前はバインディングの
+    /// <c>GstInstallOrigin</c> のもの）。<b>空白を含む値の後ろに別のフィールドが続く</b>
+    /// という、この欠陥がまさに壊れる形になっている。行末の <c>source=</c> は
+    /// <b>空白を含む自由文</b>なので、そこまで飲み込まないことも同時に固定する。
     /// </summary>
     private const string RealLineWithSpaces =
-        @"2026-07-31 22:48:57.422 INFO gst.runtime selected=PATH "
+        @"2026-07-31 22:48:57.422 INFO gst.runtime selected=PathDirectory flavor=MinGW "
         + @"dir=C:\src\_scratch\n3\gst with space\bin "
         + @"core=C:\src\_scratch\n3\gst with space\bin\libgstreamer-1.0-0.dll "
         + @"glib=C:\src\_scratch\n3\gst with space\bin\libglib-2.0-0.dll "
-        + @"mixed=False candidates=[registry:GStreamer-MinGW=C:\Users\x\bin, bundled=C:\y\bin]";
+        + @"mixed=False source=a directory of the PATH environment variable";
 
     /// <summary><c>$script:GstRuntimeFieldPattern = '...'</c> を取り出す。</summary>
     private static Regex PatternFromScript()
@@ -72,9 +74,10 @@ public class GpuVerifyScriptParsingTests
     [Fact]
     public void TheDefaultInstallLocationIsReadWhole()
     {
-        string line = @"2026-07-31 10:00:00.000 INFO gst.runtime selected=PATH "
+        string line = @"2026-07-31 10:00:00.000 INFO gst.runtime selected=DefaultInstallDirectory flavor=MinGW "
             + @"dir=C:\Program Files\gstreamer\1.0\mingw_x86_64\bin "
-            + @"core=C:\Program Files\gstreamer\1.0\mingw_x86_64\bin\libgstreamer-1.0-0.dll mixed=False";
+            + @"core=C:\Program Files\gstreamer\1.0\mingw_x86_64\bin\libgstreamer-1.0-0.dll "
+            + @"mixed=False source=the default install directory of the official installer";
 
         Match m = PatternFromScript().Match(line);
 
@@ -91,12 +94,32 @@ public class GpuVerifyScriptParsingTests
     [Fact]
     public void APathWithoutSpacesStillReadsTheSameWay()
     {
-        string line = @"2026-07-31 10:00:00.000 INFO gst.runtime selected=bundled "
-            + @"dir=D:\app\runtimes\win-x64\bin core=D:\app\runtimes\win-x64\bin\libgstreamer-1.0-0.dll mixed=False";
+        string line = @"2026-07-31 10:00:00.000 INFO gst.runtime selected=BundledRuntime flavor=Msvc "
+            + @"dir=D:\app\runtimes\win-x64\bin core=D:\app\runtimes\win-x64\bin\gstreamer-1.0-0.dll "
+            + @"mixed=False source=the runtime tree shipped next to the application";
 
         Match m = PatternFromScript().Match(line);
 
         Assert.True(m.Success, "空白の無いパスの行から dir= を読めない。");
         Assert.Equal(@"D:\app\runtimes\win-x64\bin", m.Groups[1].Value.Trim());
+    }
+
+    /// <summary>
+    /// <b>ディレクトリを固定しない段（ベアネーム）の <c>dir=(search-path)</c> も丸ごと読めること。</b>
+    /// スクリプト側はこの値を「読めなかった」と取り違えてはいけない
+    /// ── 取り違えると、正しく読めた行に対して「行を読み違えた」という警告を出す
+    /// （このファイルが防いでいる偽の警告と同じ性質の事故）。
+    /// </summary>
+    [Fact]
+    public void TheBareNameStageIsReadAsAWholeToken()
+    {
+        string line = @"2026-07-31 10:00:00.000 INFO gst.runtime selected=ProcessSearchPath flavor=(none) "
+            + @"dir=(search-path) core=C:\Windows\System32\gstreamer-1.0-0.dll glib=(not loaded) "
+            + @"mixed=unknown source=a plain file name handed to the operating system loader";
+
+        Match m = PatternFromScript().Match(line);
+
+        Assert.True(m.Success, "dir=(search-path) の行から dir= を読めない。");
+        Assert.Equal("(search-path)", m.Groups[1].Value.Trim());
     }
 }

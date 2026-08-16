@@ -37,7 +37,7 @@
 | コマンドライン解析 | **System.CommandLine 2.0.10**（MIT License）による解析（後述） |
 | 常駐ワーカーでの処理失敗をランチャーの終了コードで識別 | 名前付き **EventWaitHandle** + **MemoryMappedFile** による結果通知（後述） |
 | Variables 画面のキー/値グリッド | **WinUI.TableView 1.4.1**（MIT License） |
-| 録画・プレビューエンジン | **GstSharp.Net**（`GstSharp.Net` / `GstSharp.Net.App` / `GstSharp.Net.Base` 1.28.0-preview.1、GStreamer の .NET バインディング。GitHub Packages から取得する。後述「パッケージの取得元」） |
+| 録画・プレビューエンジン | **GstSharp.Net**（`GstSharp.Net` / `GstSharp.Net.App` / `GstSharp.Net.Base` 1.28.0-preview.2、GStreamer の .NET バインディング。GitHub Packages から取得する。後述「パッケージの取得元」） |
 | en-US / ja-JP ローカライズ（OS表示言語に自動追従） | MRT Core（`.resw` + `resources.pri`）+ `x:Uid` + `Components/Localization.cs`（後述） |
 
 ---
@@ -51,54 +51,56 @@
 
 `Controller.StaticInitialize()`（`Program.Main` の常駐ワーカー初期化コールバックから呼ばれる）が、
 
-- GStreamer ネイティブ一式の在り処を決め、`GstSharpOptions.NativeSearchPath` として
-  バインディングへ渡す（下記「GStreamer の解決経路」）
-- アプリ自身の生 P/Invoke が使う論理名（`"Gst"` / `"GLib"` / `"GObject"`）を、
-  バインディングがピンしたのと同じ DLL へ解決させる
-  （`Gst.Interop.NativeLoader.EnsureRegistered`）
-- `Gst.App.GstApp.Initialize(options)`（ネイティブのロード + `gst_init` + App 型の登録）と
+- `Gst.App.GstApp.Initialize()`（ネイティブのロード + `gst_init` + App 型の登録）と
   `Gst.Base.GstBase.Initialize()`（`BaseSrc` 等の決定的な型登録）を呼ぶ
 - **どこからロードされたか**を `activity.log` の `gst.runtime` に1行残す
 
 ことで、GStreamer ネイティブライブラリをロードできるようにしている。
+**在り処を決めるのはアプリではなくバインディングである**（下記）。
 
-#### GStreamer の解決経路（`GStreamerRuntimeLocator.cs`）
+#### GStreamer の解決経路（GstSharp.Net のローダー）
 
-配布形態が同梱・非同梱の2種類あるため、同梱物の決め打ちはできない。次の優先順で探す。
+配布形態が同梱・非同梱の2種類あるため、同梱物の決め打ちはできない。
+**探索・ロード・混成の防止はすべて GstSharp.Net の `Gst.Interop.NativeLoader` が持つ**
+── アプリ側のロケーターは無く、`Initialize()` にディレクトリも渡さない。
+段は `Gst.Interop.GstInstallOrigin` の列挙子そのもので、上から順に試し、
+本体を見つけた最初の段が勝つ。
 
-1. 元の `PATH` に既に入っているディレクトリ
-2. `%GSTREAMER_1_0_ROOT_MINGW_X86_64%\bin`
-3. レジストリのアンインストール情報から見つけた GStreamer(MinGW) の `bin`
-4. MSYS2 の `ucrt64\bin`（レジストリ →`%SystemDrive%\msys64` →`%LOCALAPPDATA%\Programs\msys64`）
-5. 同梱物 `<exe>\runtimes\{RID}\bin`
+| 段（`gst.runtime` の `selected=`） | 何を見るか |
+|---|---|
+| `ConfiguredSearchPath` | アプリが明示的に渡したディレクトリ。**本アプリは渡さない**ので選ばれない |
+| `PathDirectory` | 元の `PATH` を順に走査し、本体を持つ最初のディレクトリ |
+| `EnvironmentVariable` | `%GSTREAMER_1_0_ROOT_*%`（公式インストーラが設定する） |
+| `Registry` | アンインストール情報から見つけた公式インストール |
+| `DefaultInstallDirectory` | 公式インストーラの既定の導入先（ユーザー単位・機械単位） |
+| `Msys2` | MSYS2 の MinGW ツリー |
+| `BundledRuntime` | 同梱物 `<exe>\runtimes\{RID}\bin` |
+| `ProcessSearchPath` | 最後の手段。ベアネームで OS のローダーに任せる（**ディレクトリを固定しない**） |
 
-3 が要るのは、**GStreamer(MinGW) をユーザー単位でインストールするとインストーラが
-環境変数も `PATH` も設定しない**ため（1.28.6 で実測）。2 だけに頼ると
-「入れたのに見つからない」になる。
+**`PATH` が最優先である意味**: 実行前に `PATH` へ置いた GStreamer は、レジストリに載った
+インストールや同梱物より必ず優先される ── CI が MSYS2 の `ucrt64\bin` を `GITHUB_PATH` へ
+足すだけで狙ったランタイムを踏めるのはこのためで、逆に「同梱物を配ったのに開発機の
+GStreamer が使われる」という取り違えもここから起きる（どちらだったかは `gst.runtime` に出る）。
+`Registry` / `DefaultInstallDirectory` が要るのは、**GStreamer をユーザー単位で
+インストールするとインストーラが環境変数も `PATH` も設定しない**ため（1.28.6 で実測）。
 
 **候補を全部 `PATH` に繋いではいけない。** 依存 DLL（`libglib-2.0-0.dll` 等）は
 「読み込み元 DLL のあるディレクトリ」ではなく `PATH` の順で解決されるため、繋ぐと
 「gstreamer は同梱物・glib は MSYS2」のような**混成**が起こりうる（症状はプラグインが
-黙って blacklist されること）。そこで**最初に `libgstreamer-1.0-0.dll` を持っていた候補
-1件だけ**を選ぶ。優先順位は上のまま保たれ、かつ依存 DLL も同じ根から取れる。
-
-**役割分担: ロケーターは根を選ぶだけで、実際のロードは GstSharp.Net が行う。**
-選んだ根は `GstSharpOptions.NativeSearchPath` としてバインディングへ渡り、
-バインディングが各モジュールを**その根から絶対パスで**ロードし、プラグインの依存解決の
-ためにその `bin` を自分で `PATH` の先頭へ足す。最初にロードした根への固定（ピン）も
-バインディング側にあるので、**アプリは `PATH` を組み立てない**。
-その代わり、`Initialize` より前に `Gst.*` の API を1つでも呼ぶとローダーが自分で
-プローブして別の根をピンし、あとからの `Initialize(options)` が
-`InvalidOperationException` で落ちる（初期化より前に走りうる経路は
+黙って blacklist されること）。ローダーは**勝った段のディレクトリ1つだけ**をピンし、
+各モジュールを**そこから絶対パスで**ロードする。プラグインの依存解決のためにその `bin` を
+`PATH` の先頭へ足すのもローダー側なので、**アプリは `PATH` を組み立てない**。
+その代わり、`Initialize()` より前に `Gst.*` の API を1つでも呼ぶと、その呼び出しが
+`gst_init` より前にネイティブを解決してピンしてしまう（初期化より前に走りうる経路は
 `DebugLogEx.IsGstInitialized` で塞いである）。
 
-**公式 MSVC 版の GStreamer はこの候補探索からは選ばれない。** 候補の確認に使うのは
-`libgstreamer-1.0-0.dll`（MinGW 命名）で、MSVC 版は `gstreamer-1.0-0.dll` と名前が違う。
-ただしここで何も選べなかった場合（`NativeSearchPath` が null）は、GstSharp.Net 自身の
-プローブ（レジストリ／既定ディレクトリ）が MSVC 版も見つけられる。どちらが勝ったかは
-`gst.runtime` の `loaderFlavor` で分かる。
+**MSVC 版も MinGW 版と同じように選ばれる。** ファイル名は MinGW 版が
+`libgstreamer-1.0-0.dll`、MSVC 版が `gstreamer-1.0-0.dll` と違うが、ローダーは両方の命名を
+知っているので、どの段でも・**同梱物 `runtimes\{RID}\bin` でも** MSVC 版を読める。
+どちらを読んだかは `gst.runtime` の `flavor=`（`MinGW` / `Msvc`）で分かる。
 
-初期化に失敗したときは `activity.log` に **ERROR の `gst.runtime`**（探した候補と例外）を
+初期化に失敗したときは `activity.log` に **ERROR の `gst.runtime`**（ローダーが実際に試した
+パスと例外）を
 **MessageBox より先に**書く。この MessageBox はモーダルで、常駐ワーカーはメッセージループに
 入る前にそこで止まる ── 誰も押さなければ `app.start` の1行しか残らない。
 また `StaticInitialize` は `new App()` より前に走るので、`App.LogException` の
@@ -236,14 +238,18 @@ tee name=t
 > 選択肢は接続モニターの**物理ピクセル**（`GstIntrospect.GetMonitorResolutions`。
 > `monitor-index` が選ばれていればそのモニターの値が先頭に出る）。
 >
-> **並びは DXGI の `EnumAdapters1` × `EnumOutputs` を平坦化した順**で、これは
-> `d3d12screencapturesrc` が `monitor-index` を解く走査そのものである。
-> `EnumDisplayDevices` / `EnumDisplayMonitors` の順で代用すると、アダプターが
-> 複数ある機械で番号がずれる。
+> **列挙は `d3d12screencapturedeviceprovider` に任せる**（自前の DXGI 走査は持たない）。
+> 並びはプラグイン自身が `EnumAdapters1` × `EnumOutputs` を平坦化した順で、これは
+> `d3d12screencapturesrc` が `monitor-index` を解く走査そのものである
+> （`d3d11screencapturesrc` も同じ並び）。**読めなかったモニターも空文字で席を残す**
+> ── 詰めると以降の番号が1つずつずれ、直そうとしている取り違えを作ってしまう。
 >
-> **大きさは `EnumDisplaySettings` で取る。** キャプチャ側も同じ値を使う。
-> `GetMonitorInfo` の `rcMonitor` や `DXGI_OUTPUT_DESC.DesktopCoordinates` は
-> DPI 仮想化の影響を受け、実際に出る大きさと食い違う（175% の機械で 2194x1234 と 3840x2160）。
+> **大きさはデバイスの caps（`width` / `height`）が運ぶ。** キャプチャ側がこれから出す
+> 大きさそのものなので、**プロセスの DPI 認識に依存しない** ── 自前の Win32
+> （`EnumDisplaySettings` / `GetMonitorInfo`）で取っていた頃の DPI 仮想化の罠は
+> 経路ごと無くなった。デバイスの properties の `desktop.coordinates` で代用しては
+> いけない ── あちらが仮想化された値の方である（175% の機械で 2194x1234 と 3840x2160。
+> 物理ピクセルを持つのは `display.coordinates`）。
 
 > **`show-cursor=true` はプロセスごと落としうる（上流の欠陥）。**
 > カーソル形状を組み立てる `PtrInfo::BuildTexture` の中で `abort()` に至る。
@@ -536,9 +542,13 @@ COM 経路は動かせない（[docs/coverage-gaps.md](../docs/coverage-gaps.md)
   カタログ定義のプロパティしか通さないので、**パイプライン編集ダイアログを一度開いて OK した
   時点で黙って落ちる**（そしてカメラ設定が効かなくなる）。
   値の選択肢は `GstIntrospect.GetVideoSourceDevices()` の `Path`。
-  `gst_device_get_properties` が返す `GstStructure*` は transfer full で、
-  **解放は `gst_structure_free`**（`gst_mini_object_unref` ではない ── `GstStructure` は
-  MiniObject ではないので、取り違えるとカメラのある機械でだけヒープが壊れる）。
+  **列挙は `DeviceProviderFactory.GetByName("mfdeviceprovider")` を直接使う**
+  ── `DeviceMonitor` は `ksvideosrc` など他のプロバイダーも列挙するので同じカメラが重複し、
+  `mfvideosrc` の `device-index` の並びとも揃わない。`device-path` はデバイスの properties の
+  `device.path`（`mfdeviceprovider` が付けるキー）から読む。**所有権はバインディングが持つ**
+  ── `GList` は要素を控えてからスパインを解放する経路で扱われ、`Caps` / `Structure` は
+  破棄すべき所有オブジェクトとして返る（GirCore でカメラのある機械だけヒープが壊れていた
+  経路は GstSharp.Net preview.2 で解消済み）。
 - **適用は `InitializeCore` の末尾（PLAYING 到達後）に 1 回。** ここに置くのは、UI からの
   `Initialize()` だけでなく**自動復帰のエスカレーションでも設定が戻る**ようにするため。
   ソースが `mfvideosrc` でない／設定が空なら**デバイスを開きもせずに戻る**
@@ -1822,7 +1832,7 @@ GPU テクスチャになるため**アクセシブルテキストが 1 つも�
 | `app.start` | INFO | `Program.Main`（ワーカー分岐） | pid とデータディレクトリ |
 | `app.exit` | INFO | `Program.Main`（`StartResidentWorker` から復帰後） | pid と終了コード |
 | `app.error` | ERROR | `App.LogException`（未処理例外の3ハンドラ）／`SingleInstanceManager.HandleActivation`（コマンド処理の予期しない例外。終了コード 99 と対で残る） | 発生源と例外の全文 |
-| `gst.runtime` | INFO / **ERROR** | `Controller.StaticInitialize` | 実際にロードされた本体と GLib のパス（`libgstreamer-1.0-0.dll` / `gstreamer-1.0-0.dll` のどちらの命名でも探す）、採用した候補、混成の有無、末尾にバインディングがピンした `loaderDir=` / `loaderFlavor=`。1回のみ。初期化に失敗した場合は ERROR で、探した候補と例外の全文が付く |
+| `gst.runtime` | INFO / **ERROR** | `Controller.StaticInitialize` | ローダーが勝った段（`selected=`。`GstInstallOrigin` の名前）・系統（`flavor=`。`MinGW` / `Msvc`）・ピンしたディレクトリ（`dir=`。ベアネームで解決した段では `(search-path)`）・実際にロードされた本体と GLib のパス（`core=` / `glib=`。どちらの命名でも探す）・混成の有無（`mixed=`）、末尾に人間向けの出所説明（`source=`）。**`source=` は空白を含む自由文なので必ず末尾に置く** ── 途中に置くと「次のフィールド名まで」で値を切る読み手（`RuntimeResolutionTests.Field` と `tools/Verify-GpuEncoders.ps1`）が壊れる。1回のみ。初期化に失敗した場合は ERROR で、ローダーが実際に試したパス（`attemptedPaths=[...]`）と例外の全文が付く |
 | `cleanup.run` | INFO | `RecordingCleanupScheduler` | 古い mp4 の自動削除の結果（保存先・削除数・解放バイト数・削除したフォルダー数・失敗数）。**何もしなかった周回は出さない** |
 | `cleanup.error` | WARN | 同上 | 削除できなかった理由（1件1行・上限あり）。ロック中のファイルなど |
 | `gst.encoders` | INFO | `Controller.StaticInitialize` | プローブ結果（存在/欠落と候補順）。1回のみ |

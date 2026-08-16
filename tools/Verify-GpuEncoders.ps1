@@ -84,18 +84,39 @@ if (-not (Test-Path $exe)) {
     throw "ProcessRecorderApp.exe not found under '$PublishDir'. Run 'dotnet publish -p:PublishProfile=win-x64-aot' first, or pass -PublishDir."
 }
 
+# Does this directory hold a GStreamer core library, under either naming?
+# MinGW: libgstreamer-1.0-0.dll   MSVC: gstreamer-1.0-0.dll
+function Test-GStreamerBin {
+    param([string] $Directory)
+
+    if (-not $Directory) { return $false }
+    foreach ($name in @('libgstreamer-1.0-0.dll', 'gstreamer-1.0-0.dll')) {
+        if (Test-Path (Join-Path $Directory $name)) { return $true }
+    }
+    return $false
+}
+
 # GStreamer is not assumed to sit next to the exe: a published app may be using an
-# installed GStreamer (MinGW), an MSYS2 UCRT64 install, or a bundled copy. Approximate
-# the order the app itself uses (GStreamerRuntimeLocator) -- the relative priority of the
-# GStreamer(MinGW) and MSYS2 registry entries is not exactly the app's, and any mismatch
-# is detected at run time by Verify-BinMatchesTheAppsChoice.
+# installed GStreamer (MinGW or MSVC), an MSYS2 UCRT64 install, or a bundled copy.
+#
+# The app no longer searches by itself: resolution belongs entirely to the GstSharp.Net
+# binding, whose stages are (in order) a search path configured by the application, a
+# directory of PATH, GSTREAMER_1_0_ROOT_*, a registry uninstall entry, the installers'
+# default directories, MSYS2, the bundled runtimes\<rid>\bin, and finally the bare file
+# name handed to the OS loader. What follows only APPROXIMATES that walk -- the exact
+# relative order of the registry / default-directory / MSYS2 stages is not reproduced
+# here, and any mismatch is detected at run time by Verify-BinMatchesTheAppsChoice.
+#
+# Both file namings are probed: MinGW ships libgstreamer-1.0-0.dll and MSVC ships
+# gstreamer-1.0-0.dll, and the binding takes either -- looking only for the MinGW name
+# would report an MSVC runtime (including a bundled MSVC one) as "not found".
 function Find-GStreamerBin {
     param([string] $PublishDir)
 
     $candidates = @()
 
-    # PATH FIRST -- this is the app's highest-priority candidate (GStreamerRuntimeLocator.Select
-    # walks PATH in order and takes the first directory holding libgstreamer-1.0-0.dll).
+    # PATH FIRST -- this is the binding's highest-priority stage in practice (it walks PATH
+    # in order and pins the first directory holding the GStreamer library).
     #
     # Skipping PATH here would have two consequences, and the second is the dangerous one:
     #   1. A GStreamer that is only on PATH would be reported as "not found".
@@ -110,8 +131,9 @@ function Find-GStreamerBin {
     $envRoot = $env:GSTREAMER_1_0_ROOT_MINGW_X86_64
     if ($envRoot) { $candidates += (Join-Path $envRoot 'bin') }
 
-    # The MinGW installer does not set the environment variable for a per-user install,
-    # so look the install up the way the app does.
+    # The installer does not set the environment variable for a per-user install, so look
+    # the install up the way the binding does. The flavor is not filtered on: an MSVC
+    # install is resolvable too, and the file-name probe below decides.
     $uninstall = @(
         'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
         'HKCU:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*',
@@ -120,7 +142,7 @@ function Find-GStreamerBin {
     foreach ($pattern in $uninstall) {
         $entries = @(Get-ItemProperty $pattern -ErrorAction SilentlyContinue |
                      Where-Object { $_.PSObject.Properties['DisplayName'] -and
-                                    $_.DisplayName -like 'GStreamer*' -and $_.DisplayName -like '*MinGW*' -and
+                                    $_.DisplayName -like 'GStreamer*' -and
                                     $_.PSObject.Properties['InstallLocation'] -and $_.InstallLocation })
         foreach ($e in $entries) { $candidates += (Join-Path $e.InstallLocation.TrimEnd('\', '/') 'bin') }
 
@@ -133,7 +155,7 @@ function Find-GStreamerBin {
     $candidates += (Join-Path $PublishDir 'runtimes\win-x64\bin')
 
     foreach ($c in $candidates) {
-        if (Test-Path (Join-Path $c 'libgstreamer-1.0-0.dll')) { return $c }
+        if (Test-GStreamerBin $c) { return $c }
     }
     return $null
 }
@@ -349,7 +371,8 @@ function Get-EncoderLogLines {
 # is, and every warning it prints that way is false.
 #
 # So: read up to the next 'name=' token instead. This is the same rule the L2 test uses
-# (RuntimeResolutionTests.Field) -- the line is 'selected=.. dir=.. core=.. glib=.. mixed=..'.
+# (RuntimeResolutionTests.Field) -- the line is
+# 'selected=.. flavor=.. dir=.. core=.. glib=.. mixed=.. source=<free text>'.
 # GpuVerifyScriptParsingTests (L1) pulls this very expression out of this file and runs it
 # against a path with spaces -- PowerShell and .NET share the regex engine, so the rule is
 # not written down twice.
@@ -364,6 +387,12 @@ function Get-AppResolvedGstDir {
     if ($line -notmatch $script:GstRuntimeFieldPattern) { return $null }
 
     $dir = $matches[1].Trim()
+
+    # The last stage of the binding's search pins no directory at all: the library was
+    # handed to the OS loader as a bare file name. That is a correctly parsed line with
+    # nothing to compare against, so return quietly -- warning about it here would claim
+    # the line was read wrong when it was read right.
+    if ($dir -eq '(search-path)') { return $null }
 
     # A value that is not a directory means the line was parsed wrong, not that the app
     # loaded something odd. Say which one it is -- a wrong "MISMATCH" sends the reader
@@ -412,8 +441,9 @@ function Test-BundledRuntimeWasExercised {
     param([string] $PublishDirectory, [switch] $Quiet)
 
     $bundled = Join-Path $PublishDirectory 'runtimes\win-x64\bin'
-    if (-not (Test-Path (Join-Path $bundled 'libgstreamer-1.0-0.dll'))) {
+    if (-not (Test-GStreamerBin $bundled)) {
         # Non-bundled publish: it is supposed to resolve GStreamer from somewhere else.
+        # Either naming counts as bundled -- the tree may carry the MSVC flavor.
         return $null
     }
 

@@ -25,10 +25,13 @@ dotnet test  tests/ProcessRecorderApp.E2E   -c Release       # L2 + L3（発行�
 ```
 
 > **GStreamer はリポジトリに同梱していない。** L2/L3 を回すには実機に
-> **GStreamer(MinGW)** か **MSYS2(UCRT64)** が入っている必要がある ──
-> アプリが起動時に自力で探す（`GStreamerRuntimeLocator`。
-> src/README.md の「GStreamer の解決経路」）。
+> **GStreamer(MinGW / MSVC)** か **MSYS2(UCRT64)** が入っている必要がある ──
+> 起動時に探すのは**アプリではなくバインディング**（GstSharp.Net のローダー。
+> 段の一覧は src/README.md の「GStreamer の解決経路」）。
 > どこから読まれたかは `activity.log` の `gst.runtime` に出る。
+> **段の組み立てそのもの（純粋関数としての優先順位）を検査する L1 はこのリポジトリには無い**
+> ── バインディング側の `NativeInstallPlannerTests` が担う。こちらが見るのは
+> 「この実機で実際にどこからロードされたか」だけ（L2 の `RuntimeResolutionTests`）。
 > 同梱版を作るときだけ `tools/Fetch-GStreamerRuntime.ps1` で展開してから
 > `-p:BundleGStreamerRuntime=true` で発行する。
 >

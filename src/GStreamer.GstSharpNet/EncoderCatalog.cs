@@ -278,9 +278,9 @@ public static class EncoderCatalog
     /// 実際に GStreamer へ問い合わせるプローブ。
     /// 初期化前（<c>Controller.StaticInitialize</c> 完了前）は GStreamer に触らず false を返す
     /// ── GstSharp.Net では初期化前のバインディング呼び出しは例外で済まず、
-    /// **ネイティブローダーが自力プローブで見つけた根を勝手にピンしてしまう**。
-    /// 後から <c>NativeSearchPath</c> 付きで走る初期化が InvalidOperationException になるか、
-    /// 選んだはずの根と黙って食い違う。例外の握りつぶしは想定外の失敗への保険として残す。
+    /// **ネイティブライブラリのロードだけが先に走り、<c>gst_init</c> 前の GStreamer を
+    /// 呼ぶことになる**（要素ファクトリの登録が済んでいないので、答えも信用できない）。
+    /// 例外の握りつぶしは想定外の失敗への保険として残す。
     /// </summary>
     public static bool ProbeWithGStreamer(string factoryName)
     {

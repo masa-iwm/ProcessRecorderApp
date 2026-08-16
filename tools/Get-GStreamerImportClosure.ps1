@@ -15,7 +15,7 @@
       * the libraries named from managed code: the module set the GstSharp.Net binding
         registers (libgstreamer-1.0-0.dll, libgstbase-1.0-0.dll, libgstapp-1.0-0.dll,
         libgobject-2.0-0.dll, libgmodule-2.0-0.dll, libglib-2.0-0.dll). The app's own
-        P/Invokes and GStreamerRuntimeLocator name a subset of the same libraries
+        code names no GStreamer library any more: the binding is the only one that does
       * bin/gst-inspect-1.0.exe, which tools/Verify-GpuEncoders.ps1 runs out of the
         bundled tree during the real-machine check
       * bin/gst-launch-1.0.exe, shipped so that a pipeline can be reproduced stand-alone

@@ -4,7 +4,7 @@
 **配布形態によらず入る Web アセット**の一覧です。
 
 - **非同梱配布には適用されません。** あちらは GStreamer を同梱せず、利用者が別途
-  インストールしたものを実行時に解決します（`GStreamerRuntimeLocator`）。
+  インストールしたものを、GstSharp.Net のローダーが実行時に解決します。
 - 本体（ProcessRecorderApp）のライセンスは [`license.txt`](license.txt)（MIT）です。
   **MIT はこのアプリのコードに対するもので、同梱物には及びません。**
 
@@ -94,7 +94,7 @@
    ── GstSharp.Net バインディングが登録するモジュール集合
    （`libgstreamer-1.0-0.dll` / `libgstbase-1.0-0.dll` / `libgstapp-1.0-0.dll` /
    `libgobject-2.0-0.dll` / `libgmodule-2.0-0.dll` / `libglib-2.0-0.dll`。
-   アプリ自身の生 P/Invoke と `GStreamerRuntimeLocator` が読む名前もこの部分集合）。
+   GStreamer を名前で読むのはバインディングだけで、アプリ側にはもう無い）。
    加えて `tools/Verify-GpuEncoders.ps1` が実行する `gst-inspect-1.0.exe` と、
    利用者の機械でパイプラインを単体再現するための `gst-launch-1.0.exe`
 3. そこから **PE のインポートを再帰的に辿って閉包を取る**
@@ -300,8 +300,8 @@ Cisco のロイヤリティフリー枠は「**Cisco が公開しているバイ
   URL で記載**。改変した `libgstd3d12.dll` は、そのソースと
   `patches/` のパッチを合わせたものが対応するソース
 - **利用者が DLL を差し替えられる状態を保つこと** ── 現状そうなっています。
-  `GStreamerRuntimeLocator` は PATH・環境変数・レジストリ・MSYS2 を同梱物より
-  **優先**するので、利用者は自分のビルドに差し替えられます
+  GstSharp.Net のローダーは PATH・環境変数・レジストリ・既定の導入先・MSYS2 を
+  同梱物より**優先**するので、利用者は自分のビルドに差し替えられます
 - **各ライセンス文を同梱すること** ── **対応済み**（`licenses/third-party/`。
   ただし下記「4.」の限界がある）
 

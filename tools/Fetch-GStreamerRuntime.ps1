@@ -33,7 +33,8 @@
     .github/workflows/release.yml compares the packaged output against.
 
     You do NOT need this for day-to-day development. Install GStreamer (MinGW) or MSYS2
-    (UCRT64) instead and the app finds it -- see GStreamerRuntimeLocator.
+    (UCRT64) instead and the GstSharp.Net loader finds it -- see the resolution stages in
+    src/README.md.
 
     The destination is emptied before unpacking. Merging into a half-populated tree is
     how a build ends up shipping a mix of two GStreamer versions.

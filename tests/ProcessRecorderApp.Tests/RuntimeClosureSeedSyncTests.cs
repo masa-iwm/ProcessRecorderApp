@@ -68,9 +68,9 @@ public class RuntimeClosureSeedSyncTests
     /// 参照していないので要求されない）。名前空間はアプリ側に無いので、
     /// <b>パッケージの版を上げたら NativeNames.cs と突き合わせてここを更新する</b>こと
     /// ── ずれてもビルドもテストも落ちず、同梱配布の実行時にだけ壊れる
-    /// （このファイルの存在理由そのもの）。アプリ自身の生 P/Invoke
-    /// （GstIntrospect / DebugLogEx）は論理名 "Gst"/"GLib"/"GObject" で
-    /// 同じ表に解決されるので、この一覧の部分集合である。
+    /// （このファイルの存在理由そのもの）。<b>GStreamer を名前で読むのはバインディングだけ</b>
+    /// である ── アプリに GStreamer の生 P/Invoke は残っていないので、
+    /// この一覧に足すものはアプリ側には無い。
     /// </para>
     /// </summary>
     private static readonly string[] FileNamesNamedByProduct =
