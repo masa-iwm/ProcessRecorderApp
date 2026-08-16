@@ -262,10 +262,10 @@ public partial class EventRecorder : ObservableObject, IDisposable
     public partial string? LastFilename { get; private set; }
 
     /// <summary>
-    /// 録画中フラグ（<c>_pullSampleThread</c> が毎周回で読む）。
+    /// 録画中フラグ（sink の <c>appsink</c> コールバックがサンプルごとに読む）。
     /// <see cref="IsRecording"/> は UI 通知用のミラーで、こちらが実体。
     /// <b>volatile は必須</b> ── 書くのは UI スレッド（<see cref="Start"/> /
-    /// <see cref="Stop"/>）、読むのは専用スレッドで、ロックを介さない。
+    /// <see cref="Stop"/>）、読むのはストリーミングスレッドで、ロックを介さない。
     /// </summary>
     volatile bool _IsRecording;
     [ObservableProperty]
@@ -320,11 +320,17 @@ public partial class EventRecorder : ObservableObject, IDisposable
     /// これまで同期が一切無かった。
     ///
     /// <para>
-    /// <b><c>PullSampleProc</c> / <c>PullPreviewProc</c> のループはこのロックを取らない。</b>
-    /// <see cref="Close"/> はロックを保持したまま <c>Join(5000)</c> するため、
-    /// pull ループが同じロックを待つとデッドロックする。
-    /// pull 側は volatile フィールド（<see cref="_isAlive"/> / <see cref="_IsRecording"/>）の
-    /// 読みだけで回すこと。
+    /// <b>sink の <c>appsink</c> コールバックと <c>PullPreviewProc</c> のループは
+    /// このロックを取らない。</b> <see cref="Close"/> はロックを保持したまま
+    /// sink パイプラインを <c>Null</c> へ落として<b>実行中のコールバックの復帰を待ち</b>
+    /// （<see cref="CloseCore"/> の quiesce）、そのあと preview の pull スレッドを
+    /// <c>Join(5000)</c> する ── どちらも同じロックを待つ側に回った瞬間にデッドロックする。
+    /// コールバックと pull 側は volatile フィールド（<see cref="_isAlive"/> /
+    /// <see cref="_IsRecording"/>）の読みだけで回すこと。
+    /// </para>
+    /// <para>
+    /// <b>ロック順序は <c>_stateLock</c> → <see cref="_busLock"/> → <c>_restartLock</c> の
+    /// 一方向のみ</b>（逆向きの辺は無い ── <see cref="_busLock"/> の doc を参照）。
     /// </para>
     /// <para>
     /// <b>バスの sync-message ハンドラもこのロックを取らない。</b>
@@ -1201,14 +1207,54 @@ public partial class EventRecorder : ObservableObject, IDisposable
             // appsrc のキャップスはここでは設定しない。_appSink.GetCaps() は appsink に
             // 設定された（テンプレート由来の、しばしば ANY な）キャップスであって、
             // 実際にネゴシエートされた結果ではないため。
-            // PullSampleProc が最初のサンプルの sample.GetCaps() から設定する。
+            // ProcessRecordSample が最初のサンプルの sample.GetCaps() から設定する。
 
             _isAlive = true;
 
-            _pullSampleThread = new(PullSampleProc)
+            // **サンプルを跨ぐ状態はセッションごとに new してクロージャへ渡す。**
+            // フィールドに置くと、再初期化のたびに前セッションの caps 設定済み・
+            // I フレーム検出・開始 PTS が持ち越され、作り直したパイプラインの最初の録画が
+            // 古い基準で押し込まれる（RecordSampleState の doc を参照）。
+            var recordState = new RecordSampleState(_recordingSession);
+            _appSink?.SetSimpleCallbacks(onNewSample: sink =>
             {
-                IsBackground = true
-            };
+                // **例外を漏らさない。** トランポリンは抜けた例外を FlowReturn.Error へ
+                // 変換するので、漏らすとパイプラインがエラー停止する ── サンプル 1 枚の
+                // 失敗で録画そのものを落とさない（握ってログし、次のサンプルへ進む）。
+                try
+                {
+                    // teardown 中は押し込まない。CloseCore は _isAlive を倒してから
+                    // quiesce（sink パイプラインの Null 化）に入る。
+                    if (!_isAlive)
+                        return FlowReturn.Ok;
+
+                    // **1 プルでは足りない。** appsink は 1 render につき 1 回しか呼ばないので、
+                    // 取り付け前（PLAYING 到達〜ここ）に溜まった分は初回に吸い切らないと、
+                    // そのぶんの遅延が定常的に残り続ける。
+                    int drained = 0;
+                    while (sink!.TryPullSample(ClockTime.Zero) is { } sample)
+                    {
+                        using (sample)
+                            ProcessRecordSample(sample, recordState);
+                        drained++;
+                    }
+
+                    // 取り付け窓に溜まる枚数の実測用。GST_DEBUG が未設定なら何も出ない。
+                    if (!recordState.FirstDrainLogged)
+                    {
+                        recordState.FirstDrainLogged = true;
+                        Log(DebugLevel.Info, $"the first sink callback drained {drained} sample(s)");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Log(DebugLevel.Error, $"GstEventRecorder sink callback failed!\n{ex}");
+                }
+
+                // **空プルでも Ok を返す。** Eos を返すと枝が止まる
+                // （1 コールバック 1 プルの例をドレイン形へ写してはいけない）。
+                return FlowReturn.Ok;
+            });
 
             _pullPreviewThread = new(PullPreviewProc)
             {
@@ -1216,7 +1262,6 @@ public partial class EventRecorder : ObservableObject, IDisposable
             };
 
             _pullPreviewThread?.Start();
-            _pullSampleThread?.Start();
 
             ActualType = Type;
             ActualSrcPipeline = SrcPipeline;
@@ -1547,6 +1592,30 @@ public partial class EventRecorder : ObservableObject, IDisposable
             ActualContinuousEncodingProperties = null;
             ContinuousLastError = null;
 
+            // **押し込みの継続条件を先に倒す。** コールバックの早期 return と
+            // preview の pull ループの終了条件はこれ 1 本で、quiesce より前に倒すことで
+            // 「これから来るサンプルは触らない」を先に立てる。
+            _isAlive = false;
+
+            // **quiesce: sink パイプラインを Null へ落として、コールバックを退去させる。**
+            // Null への遷移は appsink をフラッシュしてストリーミングスレッドを止める
+            // ── GStreamer は実行中の onNewSample が返るまで待つので、これが返れば
+            // 「もう誰もサンプルを押し込んでいない・リングを触っていない」が保証される。
+            // pull スレッド（preview / 常時録画）にとっても、ブロックしている
+            // TryPullSample を返させる唯一の信号である。
+            //
+            // **SetState(Null) は必ず呼ぶ。** 呼ばなければキャプチャとエンコードが
+            // 誰にも管理されないまま走り続ける。有界にするのは**待ちだけ**で、
+            // 呼び出しそのものはプールスレッドでそのまま続行させる。
+            // **ラムダにはフィールドではなくローカルを捕まえさせる** ── 待ちを諦めた側は
+            // このあと _sinkPipeline を null 化するので、フィールドを読ませると
+            // 「タスクがまだ走り出していなければ SetState が実行されない」になる。
+            System.Diagnostics.Debug.Assert(!Monitor.IsEntered(_busLock), "SetState must not run under _busLock");
+            var quiescing = _sinkPipeline;
+            bool quiesced = quiescing is null
+                || System.Threading.Tasks.Task.Run(() => quiescing.SetState(State.Null))
+                    .Wait(SinkQuiesceTimeoutMs);
+
             // **常時録画の確定はイベント側の排出と並行に走らせる。**
             // 直列にすると停止の予算（MaxAdvisedStopFinalizeTimeoutMs + StopFinalizeSlackMs
             //  < ランチャーの結果待ち）が崩れ、stop-recording がタイムアウトを返し始める。
@@ -1584,20 +1653,25 @@ public partial class EventRecorder : ObservableObject, IDisposable
             // パイプラインへ SetState したり Initialize() を呼んだりする。
             CancelPendingRestart();
 
-            // 常時録画のスレッドが降りるまで sink 側を壊してはいけない（cont appsink を読んでいる）。
+            // **常時録画のスレッドが降りるまで sink 側を Dispose してはいけない**
+            // （cont appsink を読んでいる）。quiesce で TryPullSample は即 null を返すように
+            // なっているので、通常はすぐ降りる。
             bool continuousStopped = continuousClose is null
                 || continuousClose.Wait(StopFinalizeTimeoutMs + StopFinalizeSlackMs);
 
-            _isAlive = false;
+            // preview の pull スレッドも同じ ── quiesce 後は TryPullSample が即 null を
+            // 返すので、_isAlive=false と合わせて 1 周回で降りる。
             bool pullStopped = _pullPreviewThread?.Join(5000) ?? true;
-            pullStopped &= _pullSampleThread?.Join(5000) ?? true;
             pullStopped &= continuousStopped;
             _pullPreviewThread = null;
-            _pullSampleThread = null;
 
-            // **バスの購読はパイプラインを落とす前に外す。** 残したまま Null へ落とすと、
-            // 遷移中に出た Error がストリーミングスレッドでハンドラを起こし、
-            // 破棄の途中で ScheduleRestart が積まれる。
+            // 抑制されたまま残っている sink 側の件数を取りこぼさない
+            // （src 側は StopDrainAndFinalize の finally が畳む）。
+            FlushThrottles(_sinkThrottles, "sink");
+
+            // **バスの購読はここで外す。** sink はもう Null なので、遷移中に出た Error は
+            // 既に購読中のハンドラが受けており、ScheduleRestart が積まれていることがある
+            // ── だから直後にもう一度 CancelPendingRestart を掛ける。
             // 参照を落とす前に外すこと ── 解除の鍵はバスのラッパー実体そのもの。
             UnsubscribeBus(_srcBus, _srcBusHandler);
             _srcBusHandler = null;
@@ -1613,28 +1687,38 @@ public partial class EventRecorder : ObservableObject, IDisposable
             // リングバッファは**必ず空にする**（このインスタンスは次のセッションへ引き継がれる）。
             // 残すと前セッションの映像が次の事前バッファの先頭に混ざり、保持バイト数も
             // 持ち越されてサイズ基準の退避予算が狂う。
-            // 解放するかどうかだけが pull の停止しだい ── 降りていないスレッドが
-            // まだ要素を触っている可能性があるので、その場合は参照を落とすに留める
+            // 解放するかどうかだけが quiesce しだい ── リングを触るのはサンプルの
+            // コールバックだけなので、退去を確認できていなければ参照を落とすに留める
             // （パイプラインと同じ「リークするが落ちはしない」規律）。
             foreach (var b in _ringBuffer.DrainAll())
             {
-                if (pullStopped)
+                if (quiesced)
                     b.Dispose();
             }
 
+            // **諦めた理由は 1 行にまとめて 1 回だけ書く。** 触っている者ごとに
+            // 壊してはいけない対象が違う（下の 2 つの分岐）ので、判定は別々に行うが、
+            // 記録が複数行に割れると「1 回の Close で何を諦めたか」が読めなくなる。
+            string? leaked =
+                abandonedStop ? "the src pipeline was still draining; leaked instead of disposed"
+                : !quiesced ? "the sink pipeline did not reach NULL in time; leaked the pipelines instead of disposing them"
+                : !pullStopped ? "the preview/continuous pull threads did not stop in time; leaked the sink pipeline instead of disposing it"
+                : null;
+            if (leaked is not null)
+                Components.ActivityLog.Warn("recorder.leak", $"recorder='{Name}' {leaked}");
+
             // src パイプライン側
-            if (abandonedStop || !pullStopped)
+            //
+            // コールバックは _appSrc へ押し込むので、quiesce できていなければ
+            // src 側もまだ触られている可能性がある（preview / 常時録画は src を触らない）。
+            if (abandonedStop || !quiesced)
             {
-                // 排出タスク（abandonedStop）または pull スレッドがまだ
+                // 排出タスク（abandonedStop）またはサンプルのコールバックがまだ
                 // _srcPipeline / _appSrc / _srcBus を触っている可能性がある。
                 // ここでパイプラインを Dispose すると使用中のネイティブオブジェクトを壊す
                 // （＝クラッシュ）。Dispose せず参照だけ落とす ── リークするが落ちはしない
-                // （排出の abandonedStop と同じ規律を pull スレッド側にも適用する）。
+                // （排出の abandonedStop と同じ規律を quiesce の失敗にも適用する）。
                 // 要素・バスはインターンされた GObject ラッパーで、どの経路でも Dispose しない。
-                Components.ActivityLog.Warn("recorder.leak",
-                    $"recorder='{Name}' " + (abandonedStop
-                        ? "the src pipeline was still draining; leaked instead of disposed"
-                        : "the pull threads did not stop in time; leaked the pipelines instead of disposing them"));
                 _file = null;
                 _mux = null;
                 _appSrc = null;
@@ -1659,18 +1743,13 @@ public partial class EventRecorder : ObservableObject, IDisposable
                 _errorSinkSrc = null;
             }
 
-            // sink パイプライン側
-            //
-            // **SetState(Null) は pull が降りていなくても必ず実行する。** これは appsink を
-            // フラッシュして、孤児スレッドがブロックしている TryPullSample を返させる
-            // 唯一の信号であり、止めなければキャプチャとエンコードが誰にも管理されないまま
-            // 走り続ける。状態遷移はスレッドセーフで、Dispose とは別物。
-            System.Diagnostics.Debug.Assert(!Monitor.IsEntered(_busLock), "SetState must not run under _busLock");
-            _sinkPipeline?.SetState(State.Null);
-            if (!pullStopped)
+            // sink パイプライン側（SetState(Null) は手順の先頭の quiesce で済んでいる）
+            if (!quiesced || !pullStopped)
             {
-                // TryPullSample が sink 側ネイティブをまだ触っている可能性があるので、
-                // パイプラインも Dispose せず参照だけ落とす（recorder.leak は上で記録済み）。
+                // 実行中のコールバック、または TryPullSample が sink 側ネイティブを
+                // まだ触っている可能性がある。パイプラインを Dispose せず参照だけ落とす
+                // （recorder.leak は上で記録済み）。**コールバックも外さない** ──
+                // 解除は実行中のコールバックと競合しうる（バスの購読と同じ規律）。
                 _previewSink = null;
                 _appSink = null;
                 _continuousSink = null;
@@ -1679,6 +1758,15 @@ public partial class EventRecorder : ObservableObject, IDisposable
             }
             else
             {
+                // **コールバックは明示的に外す。** GCHandle を解放するのは
+                // 「sink がコールバックの組を手放したとき」だけで、null を渡すのが
+                // その決定的な解放点である（放置するとクロージャが捕まえた
+                // RecordSampleState ごと、パイプラインの寿命を超えて残る）。
+                // **型を書いて渡す** ── 素の null は「組を渡す版」と
+                // 「個別のデリゲートを渡す版（全省略）」の両方に当てはまり、
+                // 後者へ解決されると「1 つも指定が無い」として実行時に弾かれる。
+                _appSink?.SetSimpleCallbacks((GstApp.AppSinkSimpleCallbacks?)null);
+
                 // 要素（appsink 群）とバスはインターンされた GObject ラッパーなので
                 // Dispose しない。Dispose するのはこのコードが作ったパイプラインだけ。
                 _previewSink = null;
@@ -1688,6 +1776,13 @@ public partial class EventRecorder : ObservableObject, IDisposable
                 _sinkPipeline?.Dispose();
                 _sinkPipeline = null;
             }
+
+            // GObject ラッパーのファイナライザが積んだ解放要求を消化する。
+            // このアプリは GMainLoop を回さないので、誰かが呼ばなければ溜まったままになる。
+            // 定常状態ではラッパーを取得するたび（サンプルのプル）に排水されるので、
+            // 明示的に呼ぶ必要があるのはここ ── 最後の Close のあとは
+            // ラッパーを取得する者がいなくなる。
+            global::GstSharp.DrainPendingReleases();
         }
         finally
         {
@@ -1698,11 +1793,27 @@ public partial class EventRecorder : ObservableObject, IDisposable
     /// <summary>Close() の再入防止フラグ。</summary>
     private bool _closing;
 
+    /// <summary>
+    /// <see cref="CloseCore"/> の quiesce（sink パイプラインの <c>Null</c> 化）を待つ上限(ms)。
+    ///
+    /// <para>
+    /// <b>上限が掛かるのは待ちだけで、<c>SetState(Null)</c> の呼び出しそのものは
+    /// 諦めない。</b> 呼ばなければキャプチャとエンコードが誰にも管理されないまま走り続ける
+    /// ので、待ち切れなかった場合はプールスレッドに続行させ、こちらは
+    /// <c>recorder.leak</c> を残して「Dispose もコールバックの解除もしない」へ倒す。
+    /// </para>
+    /// <para>
+    /// 値は pull スレッドの <c>Join</c> と同じ 5 秒。健全なパイプラインの
+    /// <c>Null</c> 化はミリ秒で終わり、掛かるのは要素が固まっている場合だけである。
+    /// </para>
+    /// </summary>
+    private const int SinkQuiesceTimeoutMs = 5000;
 
     /// <summary>
-    /// pull スレッドの継続条件。<b>volatile は必須</b> ── <see cref="Close"/> はこれを
-    /// false にしてから <c>Join(5000)</c> する。可視性が保証されないと Join が
-    /// タイムアウトするまで返らず、破棄が 10 秒（2スレッド分）遅れる。
+    /// sink の <c>appsink</c> コールバックと preview の pull ループの継続条件。
+    /// <b>volatile は必須</b> ── <see cref="CloseCore"/> はこれを false にしてから
+    /// quiesce と <c>Join(5000)</c> へ進む。可視性が保証されないと、コールバックが
+    /// teardown 中も押し込みを続け、Join もタイムアウトするまで返らない。
     /// </summary>
     private volatile bool _isAlive = true;
 
@@ -1720,182 +1831,221 @@ public partial class EventRecorder : ObservableObject, IDisposable
     private const ulong MaxRingBufferBytes = 512UL * 1024 * 1024;
 
 
-    private Thread? _pullSampleThread;
-
-    private void PullSampleProc()
+    /// <summary>
+    /// sink の <c>appsink</c> コールバックがサンプルを跨いで持つ状態。
+    ///
+    /// <para>
+    /// <b>フィールドにせず <see cref="InitializeWith"/> ごとに <c>new</c> して
+    /// クロージャへ捕まえさせる。</b> <see cref="EventRecorder"/> のインスタンスは
+    /// 再初期化を跨いで生き続けるので、フィールドに置くと前セッションの
+    /// 「caps 設定済み」「I フレーム検出済み」「開始 PTS」がそのまま持ち越され、
+    /// 作り直したパイプラインの最初の録画が古い基準で押し込まれる
+    /// ── 持ち越さないことを規律ではなく構造で保証する。
+    /// </para>
+    /// <para>
+    /// <b>同期は要らない。</b> 触るのはこの <c>appsink</c> のストリーミングスレッド 1 本だけで
+    /// （上流は <c>h264parse</c> 1 本）、そのスレッドが退去したことは
+    /// <see cref="CloseCore"/> の quiesce が保証する。
+    /// </para>
+    /// </summary>
+    /// <param name="session">
+    /// 生成時点の <see cref="_recordingSession"/>。<b>0 で始めてはいけない</b> ──
+    /// 再初期化したときに「新しい録画が始まった」と誤検出し、録画していないのに
+    /// リングバッファ全体を押し込む。
+    /// </param>
+    private sealed class RecordSampleState(int session)
     {
-        int lastSeenSession = _recordingSession;
-        ulong startPts = 0;
-        bool isIframeFound = false;
+        /// <summary>
+        /// src パイプライン（<c>appsrc ! h264parse ! mp4mux ! filesink</c>）の appsrc に
+        /// キャップスを設定したか。未設定だと h264parse は H.264 エレメンタリストリームの
+        /// 框組み（stream-format / alignment）を typefind で推測するしかない。
+        /// 推測が外れると全 NAL が "broken/invalid nal ... will be dropped" として捨てられ、
+        /// <b>エラーにはならないまま</b>中身の無い MP4 が出来上がる（実機の nvh264enc で観測）。
+        /// sink 側で実際にネゴシエートされたキャップスを渡して推測をやめさせる。
+        /// </summary>
+        public bool AppSrcCapsSet { get; set; }
 
-        // src パイプライン（appsrc ! h264parse ! mp4mux ! filesink）の appsrc にキャップスを
-        // 設定したか。未設定だと h264parse は H.264 エレメンタリストリームの框組み
-        // （stream-format / alignment）を typefind で推測するしかない。
-        // 推測が外れると全 NAL が "broken/invalid nal ... will be dropped" として捨てられ、
-        // **エラーにはならないまま**中身の無い MP4 が出来上がる（実機の nvh264enc で観測）。
-        // sink 側で実際にネゴシエートされたキャップスを渡して推測をやめさせる。
-        bool appSrcCapsSet = false;
-        // **所有権: buffer は消費しない（リング所有のまま借りる）。** 押し込むのは
-        // ここで作る複製 ── 旧実装の MakeWritable も、リングが参照を持つ共有バッファでは
-        // 必ず複製を作ってから押し込んでいた（コストは同一）。リングの項目を消費しない
-        // ことで、停止→即開始の次セッションが同じ事前バッファ窓をそのまま再押し込みできる。
-        void PushRecordBuffer(ulong bufferPts, Gst.Buffer buffer)
+        /// <summary>いま書いている録画ファイルの起点 PTS（最初の I フレームで決まる）。</summary>
+        public ulong StartPts { get; set; }
+
+        /// <summary>この録画で最初の I フレームを見つけたか。</summary>
+        public bool IsIframeFound { get; set; }
+
+        /// <summary>最後に見た録画セッションの世代（<see cref="_recordingSession"/>）。</summary>
+        public int LastSeenSession { get; set; } = session;
+
+        /// <summary>
+        /// 初回のドレイン枚数を記録したか（取り付け窓 ── <c>PLAYING</c> 到達から
+        /// コールバック取り付けまでに appsink へ溜まる枚数の実測用。1 回だけ出す）。
+        /// </summary>
+        public bool FirstDrainLogged { get; set; }
+    }
+
+    /// <summary>
+    /// sink の <c>appsink</c> から取り出したサンプル 1 枚を処理する
+    /// （リングへ複製を積み、録画中なら appsrc へ押し込む）。
+    ///
+    /// <para>
+    /// <b>ストリーミングスレッドで走る。</b> ここから <c>_stateLock</c> を取っては
+    /// ならず、<c>SetState</c> も <c>Join</c> / <c>Wait</c> も呼んではならない ──
+    /// <see cref="CloseCore"/> は <c>_stateLock</c> を保持したまま sink パイプラインを
+    /// <c>Null</c> へ落とし、<b>実行中のこのメソッドが返るのを待つ</b>（quiesce）ので、
+    /// ここで待つ側に回ると即デッドロックする。
+    /// </para>
+    /// <para>
+    /// 触ってよいのは volatile フィールド（<see cref="_isAlive"/> /
+    /// <see cref="_IsRecording"/> / <see cref="_recordingSession"/>）と、
+    /// ネイティブのパイプライン・リングバッファ・<c>ActivityLog</c> だけ。
+    /// </para>
+    /// </summary>
+    private void ProcessRecordSample(Sample sample, RecordSampleState state)
+    {
+        // 最初のサンプルで appsrc のキャップスを確定させる。
+        // ここで設定するのは「バッファが1つも流れる前」に src パイプラインを
+        // 構成しておくため（録画開始時はリングバッファの古いバッファから押し込むが、
+        // H.264 エレメンタリストリームで解像度も不変なのでキャップスは同一）。
+        // 途中で SetCaps すると下流の再ネゴシエーションが起きるので一度だけ。
+        if (!state.AppSrcCapsSet)
         {
-            if (!isIframeFound)
+            // sample.GetCaps() のラッパーは同じネイティブ caps への参照を自前で
+            // 1本持つ。Dispose が返すのはその1本だけで、sample 側の caps は残る。
+            using var negotiated = sample.GetCaps();
+            if (negotiated is not null)
             {
-                if (buffer.HasFlags(BufferFlags.DeltaUnit))
-                    return;
-                else
-                {
-                    startPts = bufferPts;
-                    isIframeFound = true;
-                }
+                // SetCaps は caps を複製する。渡したラッパーの所有はこちらのまま。
+                _appSrc?.SetCaps(negotiated);
+                state.AppSrcCapsSet = true;
+                // GetStructure(0) は所有するコピー（Boxed）を返すので解放する。
+                // ログには従来どおり構造体名だけを出す
+                // （実際のキャップス全体は GST_DEBUG のネゴシエーションログに出る）。
+                using var structure = negotiated.GetStructure(0);
+                Log(DebugLevel.Info,
+                    $"appsrc caps set from the negotiated sink caps ({structure.GetName()})");
             }
-            // PTS の巻き戻り（ソースの再起動）。符号なし減算のまま押し込むと約 2^64 ns 級の
-            // PTS が mux へ渡り、当該録画のタイムスタンプが壊れる ── 退避側
-            // （RecordingRingBuffer）と同じ「巻き戻りは起こる」前提を押し込み側にも適用し、
-            // 次の I フレームから始点を取り直す。
-            if (bufferPts < startPts)
+        }
+
+        using var buffer = sample.GetBuffer();
+        if (buffer is null)
+            return;
+
+        // リングのキーは ulong(ns) のまま（押し込み時に ClockTime へ組み直す）。
+        var pts = buffer.Pts.IsNone
+            ? (ulong)(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() * 1_000_000)
+            : buffer.Pts.Nanoseconds;
+
+        // gst_buffer_copy 相当（GST_BUFFER_COPY_ALL・全域）。null は複製の失敗。
+        var copy = buffer.CopyRegion(BufferCopy.All, 0, nuint.MaxValue);
+        if (copy is null)
+        {
+            Log(DebugLevel.Error, "gst_buffer_copy_region failed; dropping this sample");
+            return;
+        }
+
+        // 録画中もリングへ溜め続ける（所有権はリングへ移り、解放は退避か
+        // CloseCore の DrainAll が行う）── 停止→即開始の次セッションが
+        // 「直前の録画中」も含めた事前バッファ窓をそのまま再押し込みできる。
+        // PushRecordBuffer はリングの項目を消費せず複製を送るので、
+        // リングに残したままで安全。
+        _ringBuffer.Enqueue(pts, copy, copy.GetSize());
+
+        // 退避条件（時間・サイズの2本立て）と「直近の1件は必ず残す」ガードは
+        // RecordingRingBuffer.Evict にあり、L1 が守っている。
+        // 退避したバッファの解放（ネイティブ）はここで行う。
+        ulong bufferDurationNs = (ulong)Math.Max(0, BufferDuration) * 1_000_000UL;
+        foreach (var evicted in _ringBuffer.Evict(pts, bufferDurationNs, MaxRingBufferBytes))
+            evicted.Dispose();
+
+        if (_IsRecording)
+        {
+            // **「サンプルが見えた」はここで数える。** この行に到達している＝
+            // appsink が実を返している＝エンコーダーが動いている。
+            // 逆に、ソースが EOS で終わっていると**コールバックそのものが呼ばれない**ので、
+            // **この下の事前バッファの排出も一度も走らない**
+            // ── 押し込みが 0 のまま録画が「成功」する経路（「587 バイトの空 MP4」の症状）。
+            System.Threading.Interlocked.Increment(ref _samplesSeenWhileRecording);
+
+            int session = _recordingSession;
+            if (session != state.LastSeenSession)
             {
-                // 黙って捨てない（押し込みの拒否と同じ扱い）。同一内容が続くので畳む。
-                var (emitRewind, rewindRepeated) = _srcThrottles.Warning.Observe("pts-rewind");
-                if (emitRewind)
-                {
-                    string repeated = 0 < rewindRepeated ? $" repeated={rewindRepeated}" : "";
-                    Components.ActivityLog.Warn("recorder.warning",
-                        $"recorder='{Name}' bus=src element='(pts)' the source timestamp went backwards; "
-                        + $"waiting for the next I-frame{repeated}");
-                }
-                isIframeFound = false;
-                return;
+                // 新しい録画セッションの最初のサンプル。前セッションの I フレーム検出と
+                // StartPts を持ち越さず、リングバッファ全体（今 Enqueue した copy を
+                // 含む）を押し込む。フラグの false→true 遷移ではなく世代で検出する
+                // 理由は _recordingSession の doc を参照。
+                state.LastSeenSession = session;
+                state.IsIframeFound = false;
+                foreach (var (bufferPts, b) in _ringBuffer)
+                    PushRecordBuffer(bufferPts, b, state);
             }
-            // gst_buffer_copy 相当（メタデータ複製・メモリは参照共有）。複製は参照1本の
-            // 単独所有なので、MakeWritable なしで PTS/DTS を直接書ける。
-            // PushBuffer はネイティブの所有権ごと引き取りラッパーも自ら Dispose する ──
-            // using は押し込めなかった経路（appsrc 不在）の後始末で、PushBuffer 後の
-            // 二重 Dispose は冪等なので無害。
-            using var buf = buffer.CopyRegion(BufferCopy.All, 0, nuint.MaxValue);
-            if (buf is null)
-            {
-                Log(DebugLevel.Warning, "gst_buffer_copy_region failed; dropping one record buffer");
-                return;
-            }
-            buf.SetPts(ClockTime.FromNanoseconds(bufferPts - startPts));
-            buf.SetDts(ClockTime.None);
-            // **数えるのは appsrc が受理した押し込みだけ。** PushBuffer は EOS 後は Eos、
-            // 未始動なら Flushing を返してバッファを受け取らない。拒否も数えると
-            // 「pushed が 0 でないのに MP4 は空」が成立し、停止時の空検出
-            // （pushed==0 → result=empty → 終了コード 16）を素通りする。
-            var flow = _appSrc?.PushBuffer(buf);
-            if (flow == FlowReturn.Ok)
-                System.Threading.Interlocked.Increment(ref _samplesPushed);
             else
-                Log(DebugLevel.Warning, $"appsrc rejected a buffer: {flow?.ToString() ?? "(no appsrc)"}");
+                PushRecordBuffer(pts, copy, state);
         }
-        while (_isAlive)
+        else
+            state.IsIframeFound = false;
+    }
+
+    /// <summary>
+    /// バッファ 1 本を src パイプラインの <c>appsrc</c> へ押し込む。
+    ///
+    /// <para>
+    /// <b>所有権: <paramref name="buffer"/> は消費しない（リング所有のまま借りる）。</b>
+    /// 押し込むのはここで作る複製 ── 旧実装の <c>MakeWritable</c> も、リングが参照を持つ
+    /// 共有バッファでは必ず複製を作ってから押し込んでいた（コストは同一）。
+    /// リングの項目を消費しないことで、停止→即開始の次セッションが同じ事前バッファ窓を
+    /// そのまま再押し込みできる。
+    /// </para>
+    /// </summary>
+    private void PushRecordBuffer(ulong bufferPts, Gst.Buffer buffer, RecordSampleState state)
+    {
+        if (!state.IsIframeFound)
         {
-            try
+            if (buffer.HasFlags(BufferFlags.DeltaUnit))
+                return;
+            else
             {
-                // GObject ラッパーのファイナライザが積んだ解放要求を消化する。
-                // このアプリは GMainLoop を回さないので、ここで消化しないと誰も消化しない
-                // ── バスは sync-message で受けるようになったので、定常の排水点はここだけ。
-                global::GstSharp.DrainPendingReleases();
-
-                using var sample = _appSink?.TryPullSample(ClockTime.FromMilliseconds(100));
-                if (sample is null)
-                    continue;
-
-                // 最初のサンプルで appsrc のキャップスを確定させる。
-                // ここで設定するのは「バッファが1つも流れる前」に src パイプラインを
-                // 構成しておくため（録画開始時はリングバッファの古いバッファから押し込むが、
-                // H.264 エレメンタリストリームで解像度も不変なのでキャップスは同一）。
-                // 途中で SetCaps すると下流の再ネゴシエーションが起きるので一度だけ。
-                if (!appSrcCapsSet)
-                {
-                    // sample.GetCaps() のラッパーは同じネイティブ caps への参照を自前で
-                    // 1本持つ。Dispose が返すのはその1本だけで、sample 側の caps は残る。
-                    using var negotiated = sample.GetCaps();
-                    if (negotiated is not null)
-                    {
-                        // SetCaps は caps を複製する。渡したラッパーの所有はこちらのまま。
-                        _appSrc?.SetCaps(negotiated);
-                        appSrcCapsSet = true;
-                        // GetStructure(0) は所有するコピー（Boxed）を返すので解放する。
-                        // ログには従来どおり構造体名だけを出す
-                        // （実際のキャップス全体は GST_DEBUG のネゴシエーションログに出る）。
-                        using var structure = negotiated.GetStructure(0);
-                        Log(DebugLevel.Info,
-                            $"appsrc caps set from the negotiated sink caps ({structure.GetName()})");
-                    }
-                }
-
-                using var buffer = sample.GetBuffer();
-                if (buffer is null)
-                    continue;
-
-                // リングのキーは ulong(ns) のまま（押し込み時に ClockTime へ組み直す）。
-                var pts = buffer.Pts.IsNone
-                    ? (ulong)(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() * 1_000_000)
-                    : buffer.Pts.Nanoseconds;
-
-                // gst_buffer_copy 相当（GST_BUFFER_COPY_ALL・全域）。null は複製の失敗。
-                var copy = buffer.CopyRegion(BufferCopy.All, 0, nuint.MaxValue);
-                if (copy is null)
-                {
-                    Log(DebugLevel.Error, "gst_buffer_copy_region failed; dropping this sample");
-                    continue;
-                }
-
-                // 録画中もリングへ溜め続ける（所有権はリングへ移り、解放は退避か
-                // CloseCore の DrainAll が行う）── 停止→即開始の次セッションが
-                // 「直前の録画中」も含めた事前バッファ窓をそのまま再押し込みできる。
-                // PushRecordBuffer はリングの項目を消費せず複製を送るので、
-                // リングに残したままで安全。
-                _ringBuffer.Enqueue(pts, copy, copy.GetSize());
-
-                // 退避条件（時間・サイズの2本立て）と「直近の1件は必ず残す」ガードは
-                // RecordingRingBuffer.Evict にあり、L1 が守っている。
-                // 退避したバッファの解放（ネイティブ）はここで行う。
-                ulong bufferDurationNs = (ulong)Math.Max(0, BufferDuration) * 1_000_000UL;
-                foreach (var evicted in _ringBuffer.Evict(pts, bufferDurationNs, MaxRingBufferBytes))
-                    evicted.Dispose();
-
-                if (_IsRecording)
-                {
-                    // **「サンプルが見えた」はここで数える。** この行に到達している＝
-                    // TryPullSample が実を返している＝エンコーダーが動いている。
-                    // 逆に、ソースが EOS で終わっていると上の `sample is null` で
-                    // continue し続けるので、**この下の事前バッファの排出も一度も走らない**
-                    // ── 押し込みが 0 のまま録画が「成功」する経路（「587 バイトの空 MP4」の症状）。
-                    System.Threading.Interlocked.Increment(ref _samplesSeenWhileRecording);
-
-                    int session = _recordingSession;
-                    if (session != lastSeenSession)
-                    {
-                        // 新しい録画セッションの最初の周回。前セッションの I フレーム検出と
-                        // startPts を持ち越さず、リングバッファ全体（今 Enqueue した copy を
-                        // 含む）を押し込む。フラグの false→true 遷移ではなく世代で検出する
-                        // 理由は _recordingSession の doc を参照。
-                        lastSeenSession = session;
-                        isIframeFound = false;
-                        foreach (var (bufferPts, b) in _ringBuffer)
-                            PushRecordBuffer(bufferPts, b);
-                    }
-                    else
-                        PushRecordBuffer(pts, copy);
-                }
-                else
-                    isIframeFound = false;
-            }
-            catch (Exception ex)
-            {
-                Log(DebugLevel.Error, $"GstEventRecorder.PullSampleProc failed!\n{ex}", _sinkPipeline);
+                state.StartPts = bufferPts;
+                state.IsIframeFound = true;
             }
         }
-
-        // 抑制されたまま残っている件数を取りこぼさない
-        FlushThrottles(_sinkThrottles, "sink");
-        FlushThrottles(_srcThrottles, "src");
+        // PTS の巻き戻り（ソースの再起動）。符号なし減算のまま押し込むと約 2^64 ns 級の
+        // PTS が mux へ渡り、当該録画のタイムスタンプが壊れる ── 退避側
+        // （RecordingRingBuffer）と同じ「巻き戻りは起こる」前提を押し込み側にも適用し、
+        // 次の I フレームから始点を取り直す。
+        if (bufferPts < state.StartPts)
+        {
+            // 黙って捨てない（押し込みの拒否と同じ扱い）。同一内容が続くので畳む。
+            var (emitRewind, rewindRepeated) = _srcThrottles.Warning.Observe("pts-rewind");
+            if (emitRewind)
+            {
+                string repeated = 0 < rewindRepeated ? $" repeated={rewindRepeated}" : "";
+                Components.ActivityLog.Warn("recorder.warning",
+                    $"recorder='{Name}' bus=src element='(pts)' the source timestamp went backwards; "
+                    + $"waiting for the next I-frame{repeated}");
+            }
+            state.IsIframeFound = false;
+            return;
+        }
+        // gst_buffer_copy 相当（メタデータ複製・メモリは参照共有）。複製は参照1本の
+        // 単独所有なので、MakeWritable なしで PTS/DTS を直接書ける。
+        // PushBuffer はネイティブの所有権ごと引き取りラッパーも自ら Dispose する ──
+        // using は押し込めなかった経路（appsrc 不在）の後始末で、PushBuffer 後の
+        // 二重 Dispose は冪等なので無害。
+        using var buf = buffer.CopyRegion(BufferCopy.All, 0, nuint.MaxValue);
+        if (buf is null)
+        {
+            Log(DebugLevel.Warning, "gst_buffer_copy_region failed; dropping one record buffer");
+            return;
+        }
+        buf.SetPts(ClockTime.FromNanoseconds(bufferPts - state.StartPts));
+        buf.SetDts(ClockTime.None);
+        // **数えるのは appsrc が受理した押し込みだけ。** PushBuffer は EOS 後は Eos、
+        // 未始動なら Flushing を返してバッファを受け取らない。拒否も数えると
+        // 「pushed が 0 でないのに MP4 は空」が成立し、停止時の空検出
+        // （pushed==0 → result=empty → 終了コード 16）を素通りする。
+        var flow = _appSrc?.PushBuffer(buf);
+        if (flow == FlowReturn.Ok)
+            System.Threading.Interlocked.Increment(ref _samplesPushed);
+        else
+            Log(DebugLevel.Warning, $"appsrc rejected a buffer: {flow?.ToString() ?? "(no appsrc)"}");
     }
 
     /// <summary>連続して抑制されていた件数を最後に1行だけ吐き出す。</summary>
@@ -2545,12 +2695,12 @@ public partial class EventRecorder : ObservableObject, IDisposable
 
         // **計測のリセットは _IsRecording を立てる「前」に行う。**
         // 数えるのは _IsRecording が真の間だけなので、この順序なら
-        // 取り出しスレッドと競合しない（逆順だと、立てた直後に数えた分を消しうる）。
+        // サンプルのコールバックと競合しない（逆順だと、立てた直後に数えた分を消しうる）。
         _samplesSeenWhileRecording = 0;
         _samplesPushed = 0;
         LastStopOutcome = RecordingStopOutcome.Ok;
 
-        // 世代も _IsRecording より前に進める ── pull スレッドは _IsRecording（volatile）を
+        // 世代も _IsRecording より前に進める ── コールバックは _IsRecording（volatile）を
         // 見てから世代を読むので、この順序なら「録画中なのに世代が古いまま」は観測されない。
         _recordingSession++;
 
@@ -2590,12 +2740,13 @@ public partial class EventRecorder : ObservableObject, IDisposable
 
     /// <summary>
     /// 録画セッションの世代。<see cref="StartCore"/>（<c>_stateLock</c> 下）だけが増やし、
-    /// pull スレッドは値の変化で「新しい録画が始まった」を検出して事前バッファを押し込む。
+    /// sink の <c>appsink</c> コールバックは値の変化で「新しい録画が始まった」を検出して
+    /// 事前バッファを押し込む。
     /// フラグ（<c>_IsRecording</c>）の false→true 遷移では代用できない ──
-    /// 停止（排出完了まで）→開始が pull 1 周回（サンプル 1 枚の間隔）以内に完了すると、
-    /// pull スレッドは false の周回を一度も観測しないまま次のサンプルで true を見るため
-    /// 遷移自体が消え、事前バッファの排出が走らず、前セッションの startPts を引き継いだ
-    /// PTS で押し込んでしまう。
+    /// 停止（排出完了まで）→開始がサンプル 1 枚の間隔以内に完了すると、
+    /// コールバックは false のサンプルを一度も観測しないまま次のサンプルで true を見るため
+    /// 遷移自体が消え、事前バッファの排出が走らず、前セッションの <c>StartPts</c> を
+    /// 引き継いだ PTS で押し込んでしまう。
     /// </summary>
     private volatile int _recordingSession;
 
