@@ -1230,20 +1230,13 @@ public partial class EventRecorder : ObservableObject, IDisposable
 
                     // **1 プルでは足りない。** appsink は 1 render につき 1 回しか呼ばないので、
                     // 取り付け前（PLAYING 到達〜ここ）に溜まった分は初回に吸い切らないと、
-                    // そのぶんの遅延が定常的に残り続ける。
-                    int drained = 0;
+                    // そのぶんの遅延が定常的に残り続ける。実測（videotestsrc 320x240/15fps）:
+                    // 初回コールバックが吸うのは、プロセス最初のパイプラインで 4〜6 枚
+                    // （プラグイン読み込みで窓が延びる）、以降のパイプラインでは 2 枚。
                     while (sink!.TryPullSample(ClockTime.Zero) is { } sample)
                     {
                         using (sample)
                             ProcessRecordSample(sample, recordState);
-                        drained++;
-                    }
-
-                    // 取り付け窓に溜まる枚数の実測用。GST_DEBUG が未設定なら何も出ない。
-                    if (!recordState.FirstDrainLogged)
-                    {
-                        recordState.FirstDrainLogged = true;
-                        Log(DebugLevel.Info, $"the first sink callback drained {drained} sample(s)");
                     }
                 }
                 catch (Exception ex)
@@ -1901,12 +1894,6 @@ public partial class EventRecorder : ObservableObject, IDisposable
 
         /// <summary>最後に見た録画セッションの世代（<see cref="_recordingSession"/>）。</summary>
         public int LastSeenSession { get; set; } = session;
-
-        /// <summary>
-        /// 初回のドレイン枚数を記録したか（取り付け窓 ── <c>PLAYING</c> 到達から
-        /// コールバック取り付けまでに appsink へ溜まる枚数の実測用。1 回だけ出す）。
-        /// </summary>
-        public bool FirstDrainLogged { get; set; }
     }
 
     /// <summary>
