@@ -265,7 +265,7 @@ UIA からは分からない。自動で守られているのは**幾何の規�
 
 ### プレビューの実行時障害の観測（`preview.error`）
 
-`Previewer` のバスの sync-message ハンドラ（`SubscribeBus`）は Error を `preview.error` に
+`Previewer` のバスの同期ハンドラ（`SubscribeBus`）は Error を `preview.error` に
 残すが、**この経路を自動で踏ませる手段が無い**（D3D デバイスロスト等を設定だけで起こせない。
 `NativeSwapChainPanel` の `SetSwapChain` 失敗も同様）。
 プレビューは WARP でも成立してしまうため、E2E で観測できるのは

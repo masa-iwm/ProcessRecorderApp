@@ -62,7 +62,7 @@ namespace ProcessRecorderApp.ViewModels
         /// <para>
         /// <b>UI スレッドへマーシャリングする。</b> <c>EventRecorder.LastError</c> があるため、
         /// <c>PropertyChanged</c> は GStreamer のストリーミングスレッド
-        /// （バスの sync-message ハンドラ・<c>appsink</c> のコールバック）やプールスレッド
+        /// （バスの同期ハンドラ・<c>appsink</c> のコールバック）やプールスレッド
         /// （停止の排出）からも発火する。ここで直接 VM のプロパティを触ると、
         /// バインドされた UI 要素をワーカースレッドから更新して落ちる。
         /// </para>

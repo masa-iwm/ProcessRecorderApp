@@ -133,7 +133,7 @@ internal sealed partial class ContinuousRecorder : IDisposable
 
     /// <summary>
     /// セグメントの排出待ちが受け取る結果。<b>ラッパーではなく写した値を運ぶ</b> ──
-    /// sync-message の <c>Message</c> はハンドラの実行中しか有効でない。
+    /// <c>Message</c> のラッパーはハンドラの実行中しか有効でない。
     /// </summary>
     private readonly record struct SegmentDrainResult(StopDrainSignal Signal, string? ErrorMessage, string? Debug);
 
@@ -141,9 +141,10 @@ internal sealed partial class ContinuousRecorder : IDisposable
     /// 書き出し中のセグメント 1 本ぶんの状態。
     ///
     /// <para>
-    /// <b>排出は sync-message で受ける。</b> このアプリは GMainLoop を回さないので
-    /// <c>Bus.Message</c> / <c>AddWatch</c> は発火しない。バスをポーリングしない代わりに、
-    /// セグメントの寿命の間もキューを空に保つ責任がハンドラ側にある。
+    /// <b>排出はバスの同期ハンドラで受ける。</b> このアプリは GMainLoop を回さないので
+    /// <c>Bus.Message</c> / <c>AddWatch</c> は発火しない。購読より後に post された
+    /// メッセージはキューに入らない（配送も破棄もバインディングが行う）ので、
+    /// セグメントの寿命の間もキューは伸びない。
     /// </para>
     /// <para>
     /// <b><see cref="Drain"/> はセグメントを開いた時点で武装する</b>
@@ -163,8 +164,8 @@ internal sealed partial class ContinuousRecorder : IDisposable
         public System.Threading.Tasks.TaskCompletionSource<SegmentDrainResult> Drain { get; } =
             new(System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously);
 
-        /// <summary>バスの sync-message ハンドラ（<c>-=</c> に同一の実体が要るので保持する）。</summary>
-        public EventHandler<Gst.Bus.SyncMessageSignalArgs>? Handler { get; set; }
+        /// <summary>バスの購読（<c>Dispose</c> が同期ハンドラを外す）。未購読なら null。</summary>
+        public IDisposable? Subscription { get; set; }
     }
 
     public ContinuousRecorder(
@@ -481,9 +482,8 @@ internal sealed partial class ContinuousRecorder : IDisposable
             // 畳まないとネイティブのパイプラインがキーフレームごとに積み上がる。
             // bus/src/file はインターンされた GObject ラッパーなので Dispose しない
             // ── 自前で作ったパイプラインだけを Null に落としてから Dispose する。
-            // 購読は Dispose より前に外す（Enable は refcount なので Disable と対で）。
-            if (writer is not null)
-                UnsubscribeSegment(writer);
+            // 購読はパイプラインの Dispose より前に外す。
+            writer?.Subscription?.Dispose();
             pipeline.SetState(State.Null);
             pipeline.Dispose();
             throw;
@@ -527,14 +527,17 @@ internal sealed partial class ContinuousRecorder : IDisposable
     }
 
     /// <summary>
-    /// セグメントのバスを sync-message で購読する。
-    /// <b>ハンドラがするのは「排出待ちの完了」と「残骸の回収」だけ</b>
+    /// セグメントのバスを <c>Bus.SubscribeSyncDrop</c> で購読する。
+    /// <b>ハンドラがするのは排出待ちの完了だけ</b>
     /// ── <c>continuous.error</c> の報告は <see cref="FinalizeSegment"/> 1 箇所に置く。
     ///
     /// <para>
-    /// <b>残骸の回収が要る。</b> <c>gst_bus_post</c> は sync-message を発火してから
-    /// キューへ積むので、汲まなければセグメントの寿命ぶんキューが伸び続ける。
-    /// キューに居るのは処理済みのメッセージだけなので、捨ててよい。
+    /// 購読より後に post されたメッセージはキューに入らない（配送も破棄もバインディングが
+    /// 行う）。ここは <c>NULL</c> 状態のうちに購読するのでバックログも無く、汲み切りは要らない。
+    /// </para>
+    /// <para>
+    /// <b>ハンドラから例外を漏らしてはいけない。</b> 漏れた例外はバインディングが捕捉して
+    /// <c>Pass</c> に倒すので、そのメッセージは誰も汲まないキューへ積まれる。
     /// </para>
     /// </summary>
     private void SubscribeSegment(SegmentWriter writer)
@@ -542,13 +545,14 @@ internal sealed partial class ContinuousRecorder : IDisposable
         if (writer.Bus is not { } bus)
             return;
 
-        void Handler(object? sender, Gst.Bus.SyncMessageSignalArgs args)
+        writer.Subscription = bus.SubscribeSyncDrop((_, message) =>
         {
-            // 例外を漏らさない（ここはネイティブのトランポリンの中）。
             try
             {
-                // args.Message はハンドラの実行中だけ有効なので Dispose しない。
-                var msg = args.Message;
+                // メッセージのラッパーはハンドラの実行中だけ有効なので Dispose しない。
+                if (message is not { } msg)
+                    return;
+
                 switch (msg.Type)
                 {
                     case MessageType.Eos:
@@ -564,37 +568,14 @@ internal sealed partial class ContinuousRecorder : IDisposable
                             break;
                         }
                 }
-
-                // Pop の戻りは所有権つきなので必ず解放する。
-                while (bus.Pop() is { } stale)
-                    stale.Dispose();
             }
             catch (Exception ex)
             {
                 // activity.log には出さない（報告は FinalizeSegment の担当）。
                 DebugLogEx.Log(DebugLevel.Error,
-                    $"the continuous segment writer sync-message handler failed!\n{ex}");
+                    $"the continuous segment writer bus handler failed!\n{ex}");
             }
-        }
-
-        EventHandler<Gst.Bus.SyncMessageSignalArgs> handler = Handler;
-        writer.Handler = handler;
-        bus.EnableSyncMessageEmission();
-        bus.SyncMessage += handler;
-    }
-
-    /// <summary>
-    /// セグメントのバスの購読を解除する
-    /// （<c>EnableSyncMessageEmission</c> は refcount なので Disable と対で呼ぶ）。
-    /// </summary>
-    private static void UnsubscribeSegment(SegmentWriter writer)
-    {
-        if (writer.Bus is not { } bus || writer.Handler is not { } handler)
-            return;
-
-        writer.Handler = null;
-        bus.SyncMessage -= handler;
-        bus.DisableSyncMessageEmission();
+        });
     }
 
     /// <summary>
@@ -611,7 +592,7 @@ internal sealed partial class ContinuousRecorder : IDisposable
         {
             writer.Src?.EndOfStream();
 
-            // **同期の Wait にする（await にしない）。** 完了させるのは sync-message
+            // **同期の Wait にする（await にしない）。** 完了させるのはバスの同期
             // ハンドラ＝当のパイプラインのストリーミングスレッドなので、継続がそこで
             // インライン実行されると finally の SetState(Null) が自スレッドで走って固まる。
             SegmentDrainResult drained = writer.Drain.Task.Wait(Math.Max(0, timeoutMs))
@@ -645,8 +626,8 @@ internal sealed partial class ContinuousRecorder : IDisposable
         {
             // bus/src はインターンされた GObject ラッパーなので Dispose しない。
             // 自前で作ったパイプラインだけは Null に落としてから Dispose する。
-            // 購読は Dispose より前に外す（Enable は refcount なので Disable と対で）。
-            UnsubscribeSegment(writer);
+            // 購読はパイプラインの Dispose より前に外す。
+            writer.Subscription?.Dispose();
             writer.Pipeline.SetState(State.Null);
             writer.Pipeline.Dispose();
             Components.ActivityLog.Info("continuous.finalize",

@@ -20,13 +20,13 @@ namespace ProcessRecorderApp.GStreamer
         /// <summary>
         /// 実行時障害を記録済みか（1パイプラインにつき1行に抑える）。0=未記録 / 1=記録済み。
         /// <b>複数のストリーミングスレッドから同時に来うる</b>ので
-        /// <c>Interlocked</c> で 1 回に絞る（sync-message ハンドラは post 元の
+        /// <c>Interlocked</c> で 1 回に絞る（バスの同期ハンドラは post 元の
         /// ストリーミングスレッドで走る）。
         /// </summary>
         private int _busErrorLogged;
 
-        /// <summary>バスの sync-message ハンドラ（<c>-=</c> に同一の実体が要るので保持する）。</summary>
-        private EventHandler<Bus.SyncMessageSignalArgs>? _busHandler;
+        /// <summary>バスの購読（<c>Dispose</c> が同期ハンドラを外す）。未購読なら null。</summary>
+        private IDisposable? _busSubscription;
 
         /// <summary>直近に通知した表示サイズ（変化したときだけ通知するための控え）。</summary>
         private int _videoWidth;
@@ -212,7 +212,7 @@ namespace ProcessRecorderApp.GStreamer
         }
 
         /// <summary>
-        /// バスを sync-message で購読する。<b>拾うのは Error だけ</b> ──
+        /// バスを <c>Bus.SubscribeSyncDrop</c> で購読する。<b>拾うのは Error だけ</b> ──
         /// プレビューの失敗は録画を止めない方針なので復帰は試みないが、無記録だと
         /// 「プレビューだけ黙って固まり、activity.log に何も残らない」になる。
         /// 記録は 1 パイプラインにつき 1 行（エラー後のパイプラインは死んでおり、
@@ -221,25 +221,28 @@ namespace ProcessRecorderApp.GStreamer
         /// <para>
         /// <b><c>Bus.Message</c> / <c>AddWatch</c> は使えない</b> ── どちらも GMainLoop から
         /// 配送されるが、このアプリは GMainLoop を回していないので発火しない。
-        /// メインループ無しで push 型に受けられるのは sync-message だけである
+        /// メインループ無しで push 型に受けられるのは、バスの同期ハンドラだけである
         /// （<c>EventRecorder.SubscribeBus</c> と同じ理由）。
         /// </para>
         /// <para>
-        /// <b>残骸の回収が要る。</b> <c>gst_bus_post</c> は sync-message を発火してから
-        /// キューへ積むので、汲まなければパイプラインの寿命ぶんキューが伸び続ける
-        /// （GstBus のキューは無制限）。キューに居るのは発火が済んだメッセージだけなので、
-        /// 種別を問わず捨ててよい。
+        /// 購読より後に post されたメッセージはキューに入らない（配送も破棄もバインディングが
+        /// 行う）ので、パイプラインの寿命の間もキューは伸びない。
+        /// </para>
+        /// <para>
+        /// <b>ハンドラから例外を漏らしてはいけない。</b> 漏れた例外はバインディングが捕捉して
+        /// <c>Pass</c> に倒すので、そのメッセージは誰も汲まないキューへ積まれる。
         /// </para>
         /// </summary>
         private void SubscribeBus(Bus bus)
         {
-            void Handler(object? sender, Bus.SyncMessageSignalArgs args)
+            _busSubscription = bus.SubscribeSyncDrop((_, message) =>
             {
-                // 例外を漏らさない（ここはネイティブのトランポリンの中）。
                 try
                 {
-                    // args.Message はハンドラの実行中だけ有効なので Dispose しない。
-                    var msg = args.Message;
+                    // メッセージのラッパーはハンドラの実行中だけ有効なので Dispose しない。
+                    if (message is not { } msg)
+                        return;
+
                     if (msg.Type == MessageType.Error
                         && System.Threading.Interlocked.Exchange(ref _busErrorLogged, 1) == 0)
                     {
@@ -248,22 +251,13 @@ namespace ProcessRecorderApp.GStreamer
                         var (gerror, debug) = msg.ParseError();
                         Components.ActivityLog.Error("preview.error", $"{gerror.Message} debug={debug}");
                     }
-
-                    // Pop の戻りは所有権つきなので必ず解放する。
-                    while (bus.Pop() is { } stale)
-                        stale.Dispose();
                 }
                 catch (Exception ex)
                 {
                     // activity.log には出さない（preview.error は 1 行に絞る対象）。
-                    Log(DebugLevel.Error, $"the preview sync-message handler failed!\n{ex}");
+                    Log(DebugLevel.Error, $"the preview bus handler failed!\n{ex}");
                 }
-            }
-
-            EventHandler<Bus.SyncMessageSignalArgs> handler = Handler;
-            _busHandler = handler;
-            bus.EnableSyncMessageEmission();
-            bus.SyncMessage += handler;
+            });
         }
 
 
@@ -314,9 +308,8 @@ namespace ProcessRecorderApp.GStreamer
         /// Dispose する（公認の「作った側が畳む」ケース）。
         ///
         /// <para>
-        /// <b>バスの購読は状態を動かす前に外す。</b> <c>EnableSyncMessageEmission</c> は
-        /// refcount なので、<c>-=</c> と <c>Disable</c> は購読が成立していたときだけ
-        /// 対で呼ぶ（未初期化のまま呼ばれる経路があるため、ハンドラの有無で判定する）。
+        /// <b>バスの購読は状態を動かす前に外す。</b> 購読の <c>Dispose</c> は冪等で、
+        /// 未初期化のまま呼ばれる経路（購読が無い）でも安全である。
         /// </para>
         /// </summary>
         public void Close()
@@ -324,12 +317,8 @@ namespace ProcessRecorderApp.GStreamer
             _isInitialized = false;
             // 面が無くなるので表示サイズも未知へ戻す（補助線を消すため）。
             ResetVideoSize();
-            if (_bus is { } bus && _busHandler is { } handler)
-            {
-                bus.SyncMessage -= handler;
-                bus.DisableSyncMessageEmission();
-            }
-            _busHandler = null;
+            _busSubscription?.Dispose();
+            _busSubscription = null;
             _pipeline?.SetState(State.Null);
             _appSrc = null;
             _sink = null;

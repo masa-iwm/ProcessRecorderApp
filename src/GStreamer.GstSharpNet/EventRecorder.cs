@@ -301,8 +301,8 @@ public partial class EventRecorder : ObservableObject, IDisposable
     /// 原因の切り分けができなくなる。
     /// </para>
     /// <para>
-    /// <b>このプロパティは GStreamer のストリーミングスレッド</b>（バスの sync-message
-    /// ハンドラ・<c>appsink</c> のコールバック）<b>やプールスレッド</b>（停止の排出）
+    /// <b>このプロパティは GStreamer のストリーミングスレッド</b>（バスの同期ハンドラ・
+    /// <c>appsink</c> のコールバック）<b>やプールスレッド</b>（停止の排出）
     /// <b>から変更される。</b> 購読側（VM）は
     /// UI スレッドへマーシャリングすること ── <c>GstEventRecorderViewModel.Model_PropertyChanged</c>
     /// がそれを行っている。
@@ -339,7 +339,7 @@ public partial class EventRecorder : ObservableObject, IDisposable
     /// 一方向のみ</b>（逆向きの辺は無い ── <see cref="_busLock"/> の doc を参照）。
     /// </para>
     /// <para>
-    /// <b>バスの sync-message ハンドラもこのロックを取らない。</b>
+    /// <b>バスの同期ハンドラもこのロックを取らない。</b>
     /// ハンドラはメッセージを post した要素自身のストリーミングスレッドで走るので、
     /// ここで <c>_stateLock</c> を待つと、そのロックを保持している <see cref="Close"/> の
     /// <c>SetState(Null)</c>（当の要素の停止を待つ）と組んでデッドロックする。
@@ -355,7 +355,7 @@ public partial class EventRecorder : ObservableObject, IDisposable
     private readonly object _stateLock = new();
 
     /// <summary>
-    /// バスの sync-message ハンドラの直列化と、購読の取り付けゲートを兼ねるロック。
+    /// バスの同期ハンドラの直列化と、購読の取り付けゲートを兼ねるロック。
     ///
     /// <para>
     /// <b>ロック順序は <c>_stateLock</c> → <see cref="_busLock"/> → <c>_restartLock</c> の
@@ -371,32 +371,32 @@ public partial class EventRecorder : ObservableObject, IDisposable
     /// 状態遷移が要るときはプールスレッドへ逃がすこと。
     /// </para>
     /// <para>
-    /// <b>取り付けのゲートでもある。</b> <c>gst_bus_post</c> は sync-message を発火してから
-    /// キューへ積むので、このロックの下で「購読 → キューの汲み切り」を行えば、
-    /// 汲み切ったバックログとロック待ちの新着は重複も取りこぼしもしない。
+    /// <b>取り付けのゲートでもある。</b> 購読より後に post されたメッセージはキューに入らない
+    /// （配送も破棄もバインディングが行う）ので、このロックの下で「購読 → キューの汲み切り」を
+    /// 行えば、汲み切る対象は購読前のバックログだけになる。
     /// </para>
     /// </summary>
     private readonly object _busLock = new();
 
     /// <summary>
-    /// sink バスの sync-message ハンドラ（<c>-=</c> に同一のデリゲート実体が要るので保持する）。
-    /// 未購読なら <see langword="null"/>。
+    /// sink バスの購読（<c>Bus.SubscribeSyncDrop</c> の戻り値。<c>Dispose</c> がバスの
+    /// 同期ハンドラを外す）。未購読なら <see langword="null"/>。
     /// </summary>
-    private EventHandler<Bus.SyncMessageSignalArgs>? _sinkBusHandler;
+    private IDisposable? _sinkBusSubscription;
 
-    /// <summary>src バスの sync-message ハンドラ（<see cref="_sinkBusHandler"/> と同じ理由で保持する）。</summary>
-    private EventHandler<Bus.SyncMessageSignalArgs>? _srcBusHandler;
+    /// <summary>src バスの購読（<see cref="_sinkBusSubscription"/> と同じ）。</summary>
+    private IDisposable? _srcBusSubscription;
 
     /// <summary>
     /// 停止の排出待ちが受け取る結果。<b>ラッパーではなく写した値を運ぶ</b> ──
-    /// sync-message の <c>Message</c> はハンドラの実行中しか有効でないので、
+    /// <c>Message</c> のラッパーはハンドラの実行中しか有効でないので、
     /// <c>ParseError</c> のマネージド値（Dispose 不要）だけを取り出して渡す。
     /// </summary>
     private readonly record struct StopDrainResult(StopDrainSignal Signal, string? ErrorMessage, string? Debug);
 
     /// <summary>
     /// 停止の排出待ち（<see cref="StopDrainAndFinalize"/> が武装し、src バスの
-    /// sync-message ハンドラが完了させる）。武装していなければ <see langword="null"/>。
+    /// 同期ハンドラが完了させる）。武装していなければ <see langword="null"/>。
     ///
     /// <para>
     /// <b>読み書きは必ず <see cref="_busLock"/> の下で行う。</b> 武装は
@@ -1195,14 +1195,13 @@ public partial class EventRecorder : ObservableObject, IDisposable
 
             // **バスの購読はここで 1 回だけ。** src 側は録画中しか動かないが、
             // GstPipeline は READY→NULL でバスを flushing 化する（auto-flush-bus 既定 true）ので、
-            // 停止中の src バスには post が届かず残骸も掃除される ── 録画のたびに
-            // 掛け直す必要は無い。
+            // 停止中の src バスには post が届かない ── 録画のたびに掛け直す必要は無い。
             // **PLAYING 到達より後に置く。** 候補フォールバックで落ちた候補のメッセージが
             // recorder.error として残らない現行の挙動をここで保つ。
             if (_sinkBus is { } sinkBus)
-                _sinkBusHandler = SubscribeBus(sinkBus, "sink", _sinkThrottles);
+                _sinkBusSubscription = SubscribeBus(sinkBus, "sink", _sinkThrottles);
             if (_srcBus is { } srcBus)
-                _srcBusHandler = SubscribeBus(srcBus, "src", _srcThrottles);
+                _srcBusSubscription = SubscribeBus(srcBus, "src", _srcThrottles);
 
             // appsrc のキャップスはここでは設定しない。_appSink.GetCaps() は appsink に
             // 設定された（テンプレート由来の、しばしば ANY な）キャップスであって、
@@ -1685,11 +1684,13 @@ public partial class EventRecorder : ObservableObject, IDisposable
             // **バスの購読はここで外す。** sink はもう Null なので、遷移中に出た Error は
             // 既に購読中のハンドラが受けており、ScheduleRestart が積まれていることがある
             // ── だから直後にもう一度 CancelPendingRestart を掛ける。
-            // 参照を落とす前に外すこと ── 解除の鍵はバスのラッパー実体そのもの。
-            UnsubscribeBus(_srcBus, _srcBusHandler);
-            _srcBusHandler = null;
-            UnsubscribeBus(_sinkBus, _sinkBusHandler);
-            _sinkBusHandler = null;
+            // **_busLock を保持せずに外すこと** ── 解除そのものはバスのロックの下で行われるので
+            // 実行中のハンドラと競合しないが、解除が返った時点で走り出していたハンドラは
+            // まだ走っている（そのハンドラは _busLock を取る）。
+            _srcBusSubscription?.Dispose();
+            _srcBusSubscription = null;
+            _sinkBusSubscription?.Dispose();
+            _sinkBusSubscription = null;
 
             // 購読を外すまでの間にハンドラが新しい復帰を積んでいることがある
             // ── 上の CancelPendingRestart はそれを知らない。ここでもう一度畳む。
@@ -2089,61 +2090,50 @@ public partial class EventRecorder : ObservableObject, IDisposable
     }
 
     /// <summary>
-    /// 1 本のバスを sync-message で購読し、取り付け直前までに溜まっていた分を汲み切る。
-    /// 返り値は解除に使うハンドラ（<c>-=</c> には同一のデリゲート実体が要る）。
+    /// 1 本のバスを <c>Bus.SubscribeSyncDrop</c> で購読し、取り付け直前までに
+    /// 溜まっていた分を汲み切る。返り値は解除に使う購読（<c>Dispose</c> で外す）。
     ///
     /// <para>
     /// <b>このアプリでは <c>Bus.Message</c> / <c>AddWatch</c> は使えない</b>
     /// ── どちらも GMainLoop から配送されるが、GMainLoop を回していないので発火しない。
-    /// メインループ無しで push 型に受けられるのは sync-message だけである。
+    /// メインループ無しで push 型に受けられるのは、バスの同期ハンドラだけである。
     /// </para>
     /// <para>
-    /// <b>取り付けと汲み切りを <see cref="_busLock"/> の下でまとめて行う。</b>
-    /// <c>gst_bus_post</c> は「sync-message を発火 → その後キューへ積む」の順なので、
-    /// ロック中に汲めるのは取り付け前の残り物だけ、ロック待ちの新着は必ずハンドラが受ける
-    /// ── 重複も取りこぼしも生じない。
+    /// <b>購読より後に post されたメッセージはキューに入らない。</b> 配送してから捨てる
+    /// までをバインディングが行う（<c>Drop</c> の所有権の始末込み）ので、キューは伸びない。
+    /// 汲み切りが要るのは購読前のバックログだけで、それを <see cref="_busLock"/> の下で
+    /// 購読と続けて行う。
     /// </para>
     /// <para>
-    /// <c>EnableSyncMessageEmission</c> は refcount なので、解除では必ず
-    /// <c>DisableSyncMessageEmission</c> と対にすること（<see cref="UnsubscribeBus"/>）。
+    /// <b>ハンドラから例外を漏らしてはいけない。</b> 漏れた例外はバインディングが捕捉して
+    /// <c>Pass</c> に倒すので、そのメッセージは誰も汲まないキューへ積まれる。
     /// </para>
     /// </summary>
-    private EventHandler<Bus.SyncMessageSignalArgs> SubscribeBus(Bus bus, string busName, BusThrottles throttles)
+    private IDisposable SubscribeBus(Bus bus, string busName, BusThrottles throttles)
     {
-        void Handler(object? sender, Bus.SyncMessageSignalArgs args)
-        {
-            // **例外を漏らさない。** ここはネイティブのトランポリンの中であり、
-            // 抜けた例外は GStreamer 側へ持ち出せない。
-            try
-            {
-                lock (_busLock)
-                {
-                    // args.Message はハンドラの実行中だけ有効（バインディングが破棄する）。
-                    // Dispose してはいけない。
-                    HandleBusMessage(args.Message, busName, throttles);
-
-                    // **残骸の回収。** 発火はキュー投入より前なので、キューに居るのは
-                    // 既に別の発火で処理し終えたメッセージだけ。汲んで捨てないと
-                    // キューが際限なく伸びる（GstBus のキューは無制限）。
-                    // Pop の戻りは所有権つきなので必ず解放する。
-                    while (bus.Pop() is { } stale)
-                        stale.Dispose();
-                }
-            }
-            catch (Exception ex)
-            {
-                Log(DebugLevel.Error, $"GstEventRecorder sync-message handler failed! bus={busName}\n{ex}");
-            }
-        }
-
-        EventHandler<Bus.SyncMessageSignalArgs> handler = Handler;
         lock (_busLock)
         {
-            bus.EnableSyncMessageEmission();
-            bus.SyncMessage += handler;
+            IDisposable subscription = bus.SubscribeSyncDrop((_, message) =>
+            {
+                try
+                {
+                    // メッセージのラッパーはハンドラの実行中だけ有効（バインディングが破棄する）。
+                    // Dispose してはいけない。
+                    if (message is not { } msg)
+                        return;
+
+                    lock (_busLock)
+                        HandleBusMessage(msg, busName, throttles);
+                }
+                catch (Exception ex)
+                {
+                    Log(DebugLevel.Error, $"GstEventRecorder bus handler failed! bus={busName}\n{ex}");
+                }
+            });
 
             try
             {
+                // Pop の戻りは所有権つきなので必ず解放する。
                 while (bus.Pop() is { } backlog)
                 {
                     using (backlog)
@@ -2156,22 +2146,9 @@ public partial class EventRecorder : ObservableObject, IDisposable
                 // （購読は成立しているので、以後のメッセージは受けられる）。
                 Log(DebugLevel.Error, $"GstEventRecorder bus backlog failed! bus={busName}\n{ex}");
             }
+
+            return subscription;
         }
-        return handler;
-    }
-
-    /// <summary>
-    /// バスの購読を解除する。<b><see cref="_busLock"/> を保持せずに呼ぶこと</b>
-    /// ── 解除は実行中のハンドラと競合しうる。
-    /// <c>EnableSyncMessageEmission</c> は refcount なので Disable と対で呼ぶ。
-    /// </summary>
-    private static void UnsubscribeBus(Bus? bus, EventHandler<Bus.SyncMessageSignalArgs>? handler)
-    {
-        if (bus is null || handler is null)
-            return;
-
-        bus.SyncMessage -= handler;
-        bus.DisableSyncMessageEmission();
     }
 
     /// <summary>
@@ -2936,7 +2913,7 @@ public partial class EventRecorder : ObservableObject, IDisposable
     /// </para>
     /// <para>
     /// <b>待ちは同期の <c>Wait</c> にする（<c>await</c> にしない）。</b>
-    /// 完了させるのは src バスの sync-message ハンドラ＝当のパイプラインの
+    /// 完了させるのは src バスの同期ハンドラ＝当のパイプラインの
     /// ストリーミングスレッドなので、継続がそこでインライン実行されると
     /// <c>finally</c> の <c>SetState(Null)</c> が自スレッドで走って固まる。
     /// </para>

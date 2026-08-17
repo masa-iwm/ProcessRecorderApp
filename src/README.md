@@ -1851,7 +1851,7 @@ GPU テクスチャになるため**アクセシブルテキストが 1 つも�
 | `gst.encoder candidate-failed` | WARN | 同上 | 候補が落ちた理由（要素が無い／リンク不可／未知のプロパティ） |
 | `gst.encoder fallback-from` | WARN | 同上 | フォールバックが起きた場合の全失敗の一覧 |
 | `gst.typefallback` | INFO | `Controller.StaticInitialize`（診断の購読） | バインディングがネイティブのインスタンスを基底型のラッパーで包んだ（`instance=` / `wrapped-as=`）。型が未登録である兆候で、`msg.Src is BaseSrc` のような型判定が黙って外れる原因になる |
-| `gst.callback` | ERROR | 同上 | ネイティブのコールバック境界で捕捉された未処理例外（`GstSharp.UnhandledCallbackException`）。`appsink` の `new-sample` とバスの sync-message ハンドラは自前で例外を握るので、ここに出るのは**その握りをすり抜けたもの**だけ ── コールバックの中の障害はここにしか現れない |
+| `gst.callback` | ERROR | 同上 | ネイティブのコールバック境界で捕捉された未処理例外（`GstSharp.UnhandledCallbackException`）。`appsink` の `new-sample` とバスの同期ハンドラは自前で例外を握るので、ここに出るのは**その握りをすり抜けたもの**だけ ── コールバックの中の障害はここにしか現れない |
 | `recorder.init ok` / `recorder.init fail` | INFO / ERROR | `GstControllerViewModel.AddRecorderFor` | レコーダーの初期化結果 |
 | `recording.start` / `recording.start fail` | INFO / ERROR | `EventRecorder.Start` | レコーダー名と**解決済み**ファイル名 |
 | `recording.stop` | INFO | `EventRecorder.StopDrainAndFinalize` | レコーダー名・ファイル名・経過ミリ秒・`result=ok｜timeout｜error` |
@@ -1901,12 +1901,12 @@ CLI 出力を汚染するため有効にしてはいけない。
 
 ## バスメッセージの処理とレコーダーの健全性
 
-バスは **sync-message で購読する**（`EventRecorder.SubscribeBus`）。**ポーリングは行わず、
-バスを汲むためのスレッドも持たない。**
+バスは **`Bus.SubscribeSyncDrop` で購読する**（`EventRecorder.SubscribeBus`）。**ポーリングは
+行わず、バスを汲むためのスレッドも持たない。**
 
 **`Bus.Message` / `AddWatch` は使えない。** どちらも `GMainLoop` からメッセージを配送する
 仕組みで、このアプリはメインループを回していないので 1 件も発火しない。メインループ無しで
-push 型に受けられるのは sync-message だけである。
+push 型に受けられるのは、バスの同期ハンドラだけである。
 
 ### どのバスを、いつ購読するか
 
@@ -1917,25 +1917,30 @@ push 型に受けられるのは sync-message だけである。
 | 常時録画のセグメント | `ContinuousRecorder.OpenSegment`（`NULL` 状態のうちに） | `FinalizeSegment` |
 | プレビュー | `Previewer.Initialize`（`PLAYING` へ上げる前） | `Close` |
 
+解除はどれも購読（`SubscribeSyncDrop` が返す `IDisposable`）の `Dispose` である。
+
 - **録画のたびに掛け直さない。** `GstPipeline` は READY→NULL でバスを flushing 化する
-  （`auto-flush-bus` 既定 true）ので、停止中の src バスには post が届かず残骸も掃除される。
+  （`auto-flush-bus` 既定 true）ので、停止中の src バスには post が届かない。
 - **sink / src の購読は `PLAYING` 到達より後**に置く ── エンコーダー候補のフォールバックで
   落ちた候補のメッセージが `recorder.error` として残らない挙動を、この位置で保っている。
-- `EnableSyncMessageEmission` は refcount なので、解除は必ず `DisableSyncMessageEmission` と
-  対で行う。解除の鍵はバスのラッパー実体そのものなので、**参照を落とす前に外す**。
+- **1 本のバスが持てる同期ハンドラは 1 つ**で、購読は先に載っていたものを黙って置き換える。
+  `Dispose` はそのとき載っているハンドラを外すだけ（前のものは戻らない）なので、
+  同じバスを二重に購読しないこと。
+- 購読は `Bus` のラッパーを強参照で持ち、`Dispose` は冪等。**フィールドを null 化する前に
+  `Dispose` する**規律は残すが、解除の成否はフィールドに依存しない。
+- **解除は `_busLock` を保持せずに行う。** 解除そのものはバスのロックの下で行われるので
+  実行中のハンドラと競合しないが、解除が返った時点で走り出していたハンドラはまだ走っている
+  （`CloseCore` が解除の直後にもう一度 `CancelPendingRestart` を掛けるのはそのため）。
 
-### 取り付けの窓と、キューに残る残骸
+### キューは伸びない（配送 → Drop → 解放）
 
-`gst_bus_post` は **「sync-message を発火 → その後キューへ積む」**の順で動く
-（`gstbus.c` で確認済み）。ここから 2 つのことが従う。
+購読より後に post されたメッセージは**キューに入らない**。バインディングがハンドラへ配送し、
+`GST_BUS_DROP` を返して poster の参照まで落とす ── アプリ側に残骸の回収は要らない。
 
-- **取り付け前に来た分は自分で汲む。** `SubscribeBus` は `_busLock` の下で
-  「Enable →`+=`→ 溜まっていた分を `Pop` で汲み切る」をひとまとめに行う。ロック中に汲めるのは
-  取り付け前の残り物だけで、ロック待ちの新着は必ずハンドラが受ける ── 重複も取りこぼしも出ない。
-- **ハンドラの中で `Pop` して捨てるのが安全。** 発火はキュー投入より前なので、
-  いま処理しているメッセージは絶対に取らない（まだ積まれていない）。キューに居るのは処理済みの
-  残骸だけである。汲まないとキューが際限なく伸びる（GstBus のキューは無制限）。
-  `Pop` の戻りは所有権つきなので必ず解放する。
+- **汲み切りが要るのは購読前のバックログだけ。** sink / src は `PLAYING` 到達後に購読するので、
+  それ以前に post された分がキューに残っている。`SubscribeBus` は `_busLock` の下で
+  「購読 → `Pop` で汲み切る」を続けて行う（`Pop` の戻りは所有権つきなので必ず解放する）。
+- 常時録画のセグメントとプレビューは `NULL` 状態で購読するのでバックログが無く、汲み切りもしない。
 
 ### ハンドラの中でしてはいけないこと
 
@@ -1945,14 +1950,15 @@ push 型に受けられるのは sync-message だけである。
   `Ready` へ落とす復帰の予約は `Task.Run` へ逃がす。
 - **`_stateLock` を取らない・`Join` / `Wait` をしない。** 取ってよいのは `_busLock` だけで、
   ロック順序は `_stateLock` → `_busLock` → `_restartLock` の一方向のみ。
-- **例外を漏らさない**（ここはネイティブのトランポリンの中）。すり抜けたものは
-  `gst.callback` に残る。
+- **例外を漏らさない**（ここはネイティブのトランポリンの中）。漏れた例外はバインディングが
+  捕捉して `Pass` に倒すので、**そのメッセージは誰も汲まないキューへ積まれる**。
+  自前の catch をすり抜けたものは `gst.callback` に残る。
 
 ### 待ち手はバスを汲まない
 
 停止の排出（`StopDrainAndFinalize`）と常時録画のセグメント確定（`FinalizeSegment`）は、
 EOS を送ったあと `TaskCompletionSource` を**待つだけ**で、自分ではバスに触らない。
-完了させるのは当のバスの sync-message ハンドラである（`_stopDrain` / `SegmentWriter.Drain`。
+完了させるのは当のバスの同期ハンドラである（`_stopDrain` / `SegmentWriter.Drain`。
 **武装は `EndOfStream()` より前** ── 後にすると EOS より先に届く Error を取りこぼす）。
 
 **読み手をハンドラ 1 つに保つこと。** 同じバスに読み手が 2 人いると、待ち手が欲しい
@@ -1986,7 +1992,7 @@ EOS を送ったあと `TaskCompletionSource` を**待つだけ**で、自分で
 
 排出待ちは `AppSettings.StopFinalizeTimeoutMs`（既定 5000ms）で有界。
 無限待ちにすると、mux が詰まったとき呼び出しスレッドごと永久にハングする。
-待つのは sync-message ハンドラが完了させる `TaskCompletionSource` で、**同期の `Wait` で待つ**
+待つのはバスの同期ハンドラが完了させる `TaskCompletionSource` で、**同期の `Wait` で待つ**
 ── `await` にすると継続がストリーミングスレッドでインライン実行され、`finally` の
 `SetState(Null)` が自スレッドで走って固まる。
 タイムアウトしても `SetState(Null)` は `finally` で必ず実行する ──
