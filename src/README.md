@@ -37,7 +37,7 @@
 | コマンドライン解析 | **System.CommandLine 2.0.10**（MIT License）による解析（後述） |
 | 常駐ワーカーでの処理失敗をランチャーの終了コードで識別 | 名前付き **EventWaitHandle** + **MemoryMappedFile** による結果通知（後述） |
 | Variables 画面のキー/値グリッド | **WinUI.TableView 1.4.1**（MIT License） |
-| 録画・プレビューエンジン | **GstSharp.Net**（`GstSharp.Net` / `GstSharp.Net.App` / `GstSharp.Net.Base` 1.28.0-preview.5、GStreamer の .NET バインディング。nuget.org から取得する。後述「パッケージの取得元」） |
+| 録画・プレビューエンジン | **GstSharp.Net**（`GstSharp.Net` / `GstSharp.Net.App` / `GstSharp.Net.Base` 1.28.0、GStreamer の .NET バインディング。nuget.org から取得する。後述「パッケージの取得元」） |
 | en-US / ja-JP ローカライズ（OS表示言語に自動追従） | MRT Core（`.resw` + `resources.pri`）+ `x:Uid` + `Components/Localization.cs`（後述） |
 
 ---
