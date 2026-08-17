@@ -196,7 +196,7 @@ Pre-built packages are on the
 [Releases page](https://github.com/masa-iwm/ProcessRecorderApp/releases). Each release
 carries three zip files; unpack one and run `ProcessRecorderApp.exe` — nothing is installed.
 
-- `ProcessRecorderApp-<version>-win-x64-gstreamer.zip` — **bundled (MinGW)**: ships the
+- `ProcessRecorderApp-<version>-win-x64-gstreamer-mingw.zip` — **bundled (MinGW)**: ships the
   GStreamer runtime the app needs (LGPL components only; the inventory is in
   [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)). Works on its own, with no
   prerequisites. **Start here if you are unsure.**

@@ -22,7 +22,7 @@
     The unpacked bundled build (the folder that has runtimes\win-x64 under it).
 
 .EXAMPLE
-    .\Verify-NvD3d11Memory.ps1 -PublishDir D:\...\ProcessRecorderApp-v0.1.0-preview.6-win-x64-gstreamer
+    .\Verify-NvD3d11Memory.ps1 -PublishDir D:\...\ProcessRecorderApp-v0.1.0-preview.6-win-x64-gstreamer-mingw
 #>
 [CmdletBinding()]
 param(

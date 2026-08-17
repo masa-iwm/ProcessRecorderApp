@@ -10,7 +10,7 @@
 # 3形態:
 #   - 非同梱     （`ProcessRecorderApp-<tag>-win-x64.zip`）
 #       利用者側に GStreamer(MinGW/MSVC) か MSYS2(UCRT64) が要る。軽い。
-#   - 同梱 MinGW （`ProcessRecorderApp-<tag>-win-x64-gstreamer.zip`）
+#   - 同梱 MinGW （`ProcessRecorderApp-<tag>-win-x64-gstreamer-mingw.zip`）
 #       削減した runtimes（46 ファイル・49.9MB）を同梱する。**自己完結** ──
 #       libstdc++ / libgcc / libwinpthread も入る。
 #   - 同梱 MSVC  （`ProcessRecorderApp-<tag>-win-x64-gstreamer-msvc.zip`）
@@ -161,7 +161,7 @@ jobs:
       - name: Package (with GStreamer MinGW)
         run: |
           $dir = 'src/ProcessRecorderApp/bin/Release/win-x64/publish/bundled'
-          Compress-Archive -Path "$dir/*" -DestinationPath "artifacts/ProcessRecorderApp-$env:PKG_REF-win-x64-gstreamer.zip"
+          Compress-Archive -Path "$dir/*" -DestinationPath "artifacts/ProcessRecorderApp-$env:PKG_REF-win-x64-gstreamer-mingw.zip"
 
       # --- 同梱 MSVC ------------------------------------------------------
       - name: Fetch the bundled GStreamer runtime (MSVC)

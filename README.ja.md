@@ -185,7 +185,7 @@ if errorlevel 1 echo 録画の開始に失敗しました
 各リリースに zip が3種類あり、展開して `ProcessRecorderApp.exe` を実行するだけです
 （何もインストールしません）。
 
-- `ProcessRecorderApp-<バージョン>-win-x64-gstreamer.zip` — **同梱版（MinGW）**: アプリに
+- `ProcessRecorderApp-<バージョン>-win-x64-gstreamer-mingw.zip` — **同梱版（MinGW）**: アプリに
   必要な GStreamer ランタイムを同梱しています（LGPL 構成のみ。内訳は
   [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)）。前提条件なしで単体で動きます。
   **迷ったらこれ。**

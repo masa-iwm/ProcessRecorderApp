@@ -28,7 +28,7 @@ CI は2つのワークフローに分かれる。`build.yml` は push のたび�
 トリガーは `v*` タグの push と `workflow_dispatch`。`build.yml` と分けるのは、同梱用の GStreamer ランタイムを毎回取得するため push のたびに走らせる価値が無いから。**発行は Native AOT（`win-x64-aot`。`build.yml` の AOT ジョブと同じ形態）で、配布するのは AOT 版のみ** ── selfcontained(ReadyToRun) は CI の検証用で配布しない。**3つの zip** を作る（同梱ランタイムは MinGW 版と MSVC 版の2形態あり、どちらも配る）:
 
 - 非同梱（`ProcessRecorderApp-<tag>-win-x64.zip`）── 利用者側に GStreamer(MinGW/MSVC) か MSYS2(UCRT64) が要る。軽い。
-- 同梱 MinGW（`ProcessRecorderApp-<tag>-win-x64-gstreamer.zip`）── 削減済み runtimes（46 ファイル・49.9MB）を同梱する。**自己完結**（libstdc++ / libgcc / libwinpthread も入る）。
+- 同梱 MinGW（`ProcessRecorderApp-<tag>-win-x64-gstreamer-mingw.zip`）── 削減済み runtimes（46 ファイル・49.9MB）を同梱する。**自己完結**（libstdc++ / libgcc / libwinpthread も入る）。
 - 同梱 MSVC（`ProcessRecorderApp-<tag>-win-x64-gstreamer-msvc.zip`）── 同じ選択の MSVC ビルド（44 ファイル・24.6MB）。小さく、`capture-api`（WGC）が使えるが、**利用者の機械に VC++ 再頒布可能パッケージが要る**（`msvcp140` / `vcruntime140` / `vcruntime140_1` は同梱しない）。
 
 同梱版はどちらも x264 と libav を含まないので GPL を持ち込まず、openh264 も特許の都合で含まない。同梱構成の `Type=System` は `mfh264enc` に落ちる。
