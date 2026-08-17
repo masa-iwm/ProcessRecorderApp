@@ -91,8 +91,8 @@ public static partial class GstIntrospect
                 return false;
             try
             {
-                // 要素は所有する GObject なので破棄する（GST0001 が見張っている）。
-                using Element? element = ElementFactory.Make(factoryName, name: null);
+                // 要素は GObject ラッパーなので Dispose しない（解放はファイナライザ経由）。
+                Element? element = ElementFactory.Make(factoryName, name: null);
                 if (element is null)
                     return false;
 

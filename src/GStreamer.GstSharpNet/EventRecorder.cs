@@ -1777,15 +1777,13 @@ public partial class EventRecorder : ObservableObject, IDisposable
             else
             {
                 // **コールバックは明示的に外す。** GCHandle を解放するのは
-                // 「sink がコールバックの組を手放したとき」だけで、null を渡すのが
+                // 「sink がコールバックの組を手放したとき」だけで、ClearSimpleCallbacks が
                 // その決定的な解放点である（放置するとクロージャが捕まえた
                 // RecordSampleState ごと、パイプラインの寿命を超えて残る）。
-                // **型を書いて渡す** ── 素の null は「組を渡す版」と
-                // 「個別のデリゲートを渡す版（全省略）」の両方に当てはまり、
-                // 後者へ解決されると「1 つも指定が無い」として実行時に弾かれる。
-                _appSink?.SetSimpleCallbacks((GstApp.AppSinkSimpleCallbacks?)null);
-                _previewSink?.SetSimpleCallbacks((GstApp.AppSinkSimpleCallbacks?)null);
-                _continuousSink?.SetSimpleCallbacks((GstApp.AppSinkSimpleCallbacks?)null);
+                // 外したあとの sink はシグナル経路へ戻る。
+                _appSink?.ClearSimpleCallbacks();
+                _previewSink?.ClearSimpleCallbacks();
+                _continuousSink?.ClearSimpleCallbacks();
 
                 // 要素（appsink 群）とバスはインターンされた GObject ラッパーなので
                 // Dispose しない。Dispose するのはこのコードが作ったパイプラインだけ。
