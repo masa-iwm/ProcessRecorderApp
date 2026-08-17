@@ -57,19 +57,11 @@ concurrency:
 # 未記載のスコープは none になる）。
 permissions:
   contents: read
-  packages: read
 
 env:
   DOTNET_NOLOGO: 'true'
   DOTNET_CLI_TELEMETRY_OPTOUT: 'true'
   DOTNET_SKIP_FIRST_TIME_EXPERIENCE: 'true'
-  # GstSharp.Net* は GitHub Packages（masa-iwm、private）から復元する。
-  # nuget.config のソース key `github` と対で解決される（NuGet の規約）。
-  # 値の形式は Username=...;Password=...（Password に GITHUB_TOKEN）。
-  # GITHUB_TOKEN で読めるのは、パッケージ側（GstSharp.Net リポジトリの各パッケージ）が
-  # このリポジトリへ Actions アクセスを許可している場合だけ ── 401 (NU1301) になったら
-  # まずそちらの設定を確認する。
-  NuGetPackageSourceCredentials_github: Username=masa-iwm;Password=${{ secrets.GITHUB_TOKEN }}
 
 jobs:
   build-and-test:

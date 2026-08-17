@@ -37,10 +37,10 @@
     <PackageVersion Include="CommunityToolkit.WinUI.Controls.LayoutTransformControl" Version="8.2.251219" />
     <PackageVersion Include="CommunityToolkit.WinUI.Controls.Sizers" Version="8.2.251219" />
 
-    <!-- GStreamer / CLI（GstSharp.Net は GitHub Packages から。nuget.config を参照） -->
-    <PackageVersion Include="GstSharp.Net" Version="1.28.0-preview.4" />
-    <PackageVersion Include="GstSharp.Net.App" Version="1.28.0-preview.4" />
-    <PackageVersion Include="GstSharp.Net.Base" Version="1.28.0-preview.4" />
+    <!-- GStreamer / CLI（GstSharp.Net は nuget.org から。prerelease なので版は明示する） -->
+    <PackageVersion Include="GstSharp.Net" Version="1.28.0-preview.5" />
+    <PackageVersion Include="GstSharp.Net.App" Version="1.28.0-preview.5" />
+    <PackageVersion Include="GstSharp.Net.Base" Version="1.28.0-preview.5" />
     <PackageVersion Include="System.CommandLine" Version="2.0.10" />
 
     <!-- UIA トリガ（0.x のあいだは公開 API が動くので、上げるときは使用面を確かめる） -->

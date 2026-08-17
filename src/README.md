@@ -37,7 +37,7 @@
 | コマンドライン解析 | **System.CommandLine 2.0.10**（MIT License）による解析（後述） |
 | 常駐ワーカーでの処理失敗をランチャーの終了コードで識別 | 名前付き **EventWaitHandle** + **MemoryMappedFile** による結果通知（後述） |
 | Variables 画面のキー/値グリッド | **WinUI.TableView 1.4.1**（MIT License） |
-| 録画・プレビューエンジン | **GstSharp.Net**（`GstSharp.Net` / `GstSharp.Net.App` / `GstSharp.Net.Base` 1.28.0-preview.4、GStreamer の .NET バインディング。GitHub Packages から取得する。後述「パッケージの取得元」） |
+| 録画・プレビューエンジン | **GstSharp.Net**（`GstSharp.Net` / `GstSharp.Net.App` / `GstSharp.Net.Base` 1.28.0-preview.5、GStreamer の .NET バインディング。nuget.org から取得する。後述「パッケージの取得元」） |
 | en-US / ja-JP ローカライズ（OS表示言語に自動追従） | MRT Core（`.resw` + `resources.pri`）+ `x:Uid` + `Components/Localization.cs`（後述） |
 
 ---
@@ -2204,20 +2204,17 @@ error APPX0002: Task 'WinAppSdkExpandPriContent' failed. Could not find file
 
 ### パッケージの取得元
 
-取得元は **nuget.org と GitHub Packages（masa-iwm）の 2 つ**で、リポジトリルートの
-`nuget.config` が固定する。`<clear />` でマシン/ユーザー設定のソースを遮断する
-── 手元にだけ登録されたフィードから同名パッケージが解決されると、CI と手元で
-別の中身をビルドしうるため。
+取得元は **nuget.org 1 つ**で、リポジトリルートの `nuget.config` が固定する。
+`<clear />` でマシン/ユーザー設定のソースを遮断する ── 手元にだけ登録された
+フィードから同名パッケージが解決されると、CI と手元で別の中身をビルドしうるため。
 
-- **GitHub Packages から取るのは `GstSharp.Net*` だけ**（録画エンジンのバインディング）。
-  それ以外（`UiaTrigger.Core` / `UiaTrigger.Picker.WinUI` を含む）は nuget.org。
-  振り分けの正本は `packageSourceMapping` で、**複数ソース＋パッケージ版の集中管理
-  （次項）ではマッピングが無いと `NU1507` になる**。
-- **GitHub Packages は public パッケージでも復元に認証が要る。** 資格情報は
-  `nuget.config` には書かず、ソース key と対になる環境変数
-  `NuGetPackageSourceCredentials_github`（`Username=masa-iwm;Password=<トークン>`）で渡す。
-  トークンには `read:packages` スコープが要る。CI は `build.yml` が `GITHUB_TOKEN` で
-  同じ環境変数を組み立てる。手順と 401（`NU1301`）の切り分けは `nuget.config` のコメント。
+- **復元に認証は要らない。** `GstSharp.Net*`（録画エンジンのバインディング）も
+  `UiaTrigger.*` も nuget.org 発行なので、資格情報の受け渡しは手元にも CI にも無い。
+- 振り分けの正本は `packageSourceMapping` で、**パッケージ版の集中管理（次項）では
+  マッピングが無いと `NU1507` になる**。`GstSharp.Net*` は `*` と別に書いてあるが、
+  取得元を明示して残すためのもので解決結果は変わらない。
+- `GstSharp.Net*` は prerelease なので、版は `Directory.Packages.props` に明示する
+  （`--prerelease` 無しの `dotnet add package` では拾われない）。
 
 ### パッケージ版の集中管理
 

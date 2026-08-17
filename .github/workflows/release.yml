@@ -46,13 +46,6 @@ env:
   DOTNET_NOLOGO: 'true'
   DOTNET_CLI_TELEMETRY_OPTOUT: 'true'
   DOTNET_SKIP_FIRST_TIME_EXPERIENCE: 'true'
-  # GstSharp.Net* は GitHub Packages（masa-iwm、private）から復元する。
-  # nuget.config のソース key `github` と対で解決される（NuGet の規約）。
-  # **build.yml と対で必要**（あちらの同名の env と同じ値）── 取得元を
-  # GitHub Packages へ替えたときにこちらだけ直っておらず、restore が 401 で落ちた。
-  # このワークフローはタグを打つまで流れないので、**片方だけ直しても
-  # 次のリリースまで気付けない**。
-  NuGetPackageSourceCredentials_github: Username=masa-iwm;Password=${{ secrets.GITHUB_TOKEN }}
   # 同梱用ランタイムの置き場。形態ごとに Release アセット（prerelease）として上げてある。
   # tools/Fetch-GStreamerRuntime.ps1 の $assets と揃えること（更新手順は docs/runtime-update.md）。
   # 中身は licenses/third-party/COMPONENTS*.tsv が正本で、下の検証がそれと突き合わせる。
@@ -67,8 +60,7 @@ jobs:
     # AOT のネイティブリンクを3回（非同梱・同梱 MinGW・同梱 MSVC）行うため、厚めに取る。
     timeout-minutes: 120
     permissions:
-      contents: write     # Release にアセットを添付するため
-      packages: read      # GstSharp.Net* を GitHub Packages から復元するため
+      contents: write     # Release にアセットを添付するため（同梱ランタイムの取得もこれで足りる）
 
     steps:
       - name: Check out
