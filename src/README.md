@@ -37,7 +37,7 @@
 | コマンドライン解析 | **System.CommandLine 2.0.10**（MIT License）による解析（後述） |
 | 常駐ワーカーでの処理失敗をランチャーの終了コードで識別 | 名前付き **EventWaitHandle** + **MemoryMappedFile** による結果通知（後述） |
 | Variables 画面のキー/値グリッド | **WinUI.TableView 1.4.1**（MIT License） |
-| 録画・プレビューエンジン | **GstSharp.Net**（`GstSharp.Net` / `GstSharp.Net.App` / `GstSharp.Net.Base` 1.28.0-preview.3、GStreamer の .NET バインディング。GitHub Packages から取得する。後述「パッケージの取得元」） |
+| 録画・プレビューエンジン | **GstSharp.Net**（`GstSharp.Net` / `GstSharp.Net.App` / `GstSharp.Net.Base` 1.28.0-preview.4、GStreamer の .NET バインディング。GitHub Packages から取得する。後述「パッケージの取得元」） |
 | en-US / ja-JP ローカライズ（OS表示言語に自動追従） | MRT Core（`.resw` + `resources.pri`）+ `x:Uid` + `Components/Localization.cs`（後述） |
 
 ---
@@ -1923,9 +1923,9 @@ push 型に受けられるのは、バスの同期ハンドラだけである。
   （`auto-flush-bus` 既定 true）ので、停止中の src バスには post が届かない。
 - **sink / src の購読は `PLAYING` 到達より後**に置く ── エンコーダー候補のフォールバックで
   落ちた候補のメッセージが `recorder.error` として残らない挙動を、この位置で保っている。
-- **1 本のバスが持てる同期ハンドラは 1 つ**で、購読は先に載っていたものを黙って置き換える。
-  `Dispose` はそのとき載っているハンドラを外すだけ（前のものは戻らない）なので、
-  同じバスを二重に購読しないこと。
+- **1 本のバスが持てる同期ハンドラは 1 つ**で、生きた購読があるバスへの 2 本目の購読は
+  `InvalidOperationException` になる（`Dispose` 後の再購読は通る）。このアプリは
+  1 バス 1 購読なので、この例外に当たる経路は無い。
 - 購読は `Bus` のラッパーを強参照で持ち、`Dispose` は冪等。**フィールドを null 化する前に
   `Dispose` する**規律は残すが、解除の成否はフィールドに依存しない。
 - **解除は `_busLock` を保持せずに行う。** 解除そのものはバスのロックの下で行われるので
@@ -1951,7 +1951,9 @@ push 型に受けられるのは、バスの同期ハンドラだけである。
 - **`_stateLock` を取らない・`Join` / `Wait` をしない。** 取ってよいのは `_busLock` だけで、
   ロック順序は `_stateLock` → `_busLock` → `_restartLock` の一方向のみ。
 - **例外を漏らさない**（ここはネイティブのトランポリンの中）。漏れた例外はバインディングが
-  捕捉して `Pass` に倒すので、**そのメッセージは誰も汲まないキューへ積まれる**。
+  捕捉し、メッセージは所有権の後始末込みで `Drop` される（キューは伸びない）が、
+  **その 1 件は分類も記録も排出待ちの完了もされずに終わる**。ハンドラが自前で catch
+  するのはそのためで、1 件の失敗で以後のメッセージまで落とさない。
   自前の catch をすり抜けたものは `gst.callback` に残る。
 
 ### 待ち手はバスを汲まない

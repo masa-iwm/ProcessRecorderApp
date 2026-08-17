@@ -1232,7 +1232,7 @@ public partial class EventRecorder : ObservableObject, IDisposable
                     // そのぶんの遅延が定常的に残り続ける。実測（videotestsrc 320x240/15fps）:
                     // 初回コールバックが吸うのは、プロセス最初のパイプラインで 4〜6 枚
                     // （プラグイン読み込みで窓が延びる）、以降のパイプラインでは 2 枚。
-                    while (sink!.TryPullSample(ClockTime.Zero) is { } sample)
+                    while (sink.TryPullSample(ClockTime.Zero) is { } sample)
                     {
                         using (sample)
                             ProcessRecordSample(sample, recordState);
@@ -1261,7 +1261,7 @@ public partial class EventRecorder : ObservableObject, IDisposable
 
                     // 1 render につき 1 回しか呼ばれないので、取り付け前に溜まった分も
                     // ここで吸い切る（sink 側と同じドレイン形）。
-                    while (sink!.TryPullSample(ClockTime.Zero) is { } sample)
+                    while (sink.TryPullSample(ClockTime.Zero) is { } sample)
                     {
                         using (sample)
                             OnPreview(sample);
@@ -2105,8 +2105,10 @@ public partial class EventRecorder : ObservableObject, IDisposable
     /// 購読と続けて行う。
     /// </para>
     /// <para>
-    /// <b>ハンドラから例外を漏らしてはいけない。</b> 漏れた例外はバインディングが捕捉して
-    /// <c>Pass</c> に倒すので、そのメッセージは誰も汲まないキューへ積まれる。
+    /// <b>ハンドラの中で捕まえる。</b> 例外を漏らしてもメッセージは <c>Drop</c> され
+    /// （所有権の後始末込み）キューは伸びないが、漏らした 1 件は分類も記録も
+    /// <see cref="_stopDrain"/> の完了もされずに終わる ── 1 件の失敗で以後の
+    /// メッセージまで落とさないために、ここで握ってログし次の 1 件へ進む。
     /// </para>
     /// </summary>
     private IDisposable SubscribeBus(Bus bus, string busName, BusThrottles throttles)
@@ -2119,11 +2121,8 @@ public partial class EventRecorder : ObservableObject, IDisposable
                 {
                     // メッセージのラッパーはハンドラの実行中だけ有効（バインディングが破棄する）。
                     // Dispose してはいけない。
-                    if (message is not { } msg)
-                        return;
-
                     lock (_busLock)
-                        HandleBusMessage(msg, busName, throttles);
+                        HandleBusMessage(message, busName, throttles);
                 }
                 catch (Exception ex)
                 {

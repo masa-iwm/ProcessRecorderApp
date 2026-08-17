@@ -229,8 +229,9 @@ namespace ProcessRecorderApp.GStreamer
         /// 行う）ので、パイプラインの寿命の間もキューは伸びない。
         /// </para>
         /// <para>
-        /// <b>ハンドラから例外を漏らしてはいけない。</b> 漏れた例外はバインディングが捕捉して
-        /// <c>Pass</c> に倒すので、そのメッセージは誰も汲まないキューへ積まれる。
+        /// <b>ハンドラの中で捕まえる。</b> 例外を漏らしてもメッセージは <c>Drop</c> され
+        /// （所有権の後始末込み）キューは伸びないが、漏らした 1 件は記録されずに終わる
+        /// ── 1 件の失敗で以後のメッセージまで落とさないために、ここで握って次の 1 件へ進む。
         /// </para>
         /// </summary>
         private void SubscribeBus(Bus bus)
@@ -240,15 +241,12 @@ namespace ProcessRecorderApp.GStreamer
                 try
                 {
                     // メッセージのラッパーはハンドラの実行中だけ有効なので Dispose しない。
-                    if (message is not { } msg)
-                        return;
-
-                    if (msg.Type == MessageType.Error
+                    if (message.Type == MessageType.Error
                         && System.Threading.Interlocked.Exchange(ref _busErrorLogged, 1) == 0)
                     {
                         // ParseError は GError を管理例外 (GException) へ写して返す。
                         // ネイティブ側の解放はバインディングが済ませるので、破棄する物は無い。
-                        var (gerror, debug) = msg.ParseError();
+                        var (gerror, debug) = message.ParseError();
                         Components.ActivityLog.Error("preview.error", $"{gerror.Message} debug={debug}");
                     }
                 }

@@ -214,7 +214,7 @@ internal sealed partial class ContinuousRecorder : IDisposable
 
                 // **1 プルでは足りない。** appsink は 1 render につき 1 回しか呼ばないので、
                 // 取り付け前に溜まった分は初回に吸い切る（sink / preview の枝と同じ形）。
-                while (sink!.TryPullSample(ClockTime.Zero) is { } sample)
+                while (sink.TryPullSample(ClockTime.Zero) is { } sample)
                 {
                     using (sample)
                     {
@@ -536,8 +536,11 @@ internal sealed partial class ContinuousRecorder : IDisposable
     /// 行う）。ここは <c>NULL</c> 状態のうちに購読するのでバックログも無く、汲み切りは要らない。
     /// </para>
     /// <para>
-    /// <b>ハンドラから例外を漏らしてはいけない。</b> 漏れた例外はバインディングが捕捉して
-    /// <c>Pass</c> に倒すので、そのメッセージは誰も汲まないキューへ積まれる。
+    /// <b>ハンドラの中で捕まえる。</b> 例外を漏らしてもメッセージは <c>Drop</c> され
+    /// （所有権の後始末込み）キューは伸びないが、漏らした 1 件の
+    /// <see cref="SegmentWriter.Drain"/> の完了は失われ、<see cref="FinalizeSegment"/> は
+    /// 上限まで待たされる ── 1 件の失敗で以後のメッセージまで落とさないために、
+    /// ここで握って次の 1 件へ進む。
     /// </para>
     /// </summary>
     private void SubscribeSegment(SegmentWriter writer)
@@ -550,10 +553,7 @@ internal sealed partial class ContinuousRecorder : IDisposable
             try
             {
                 // メッセージのラッパーはハンドラの実行中だけ有効なので Dispose しない。
-                if (message is not { } msg)
-                    return;
-
-                switch (msg.Type)
+                switch (message.Type)
                 {
                     case MessageType.Eos:
                         writer.Drain.TrySetResult(new(StopDrainSignal.Eos, null, null));
@@ -563,7 +563,7 @@ internal sealed partial class ContinuousRecorder : IDisposable
                         {
                             // ParseError はネイティブ側のメモリをすべてバインディングが解放した上で
                             // GException（ただの managed 例外オブジェクト）を返すので、Dispose は不要。
-                            var (gerror, debug) = msg.ParseError();
+                            var (gerror, debug) = message.ParseError();
                             writer.Drain.TrySetResult(new(StopDrainSignal.Error, gerror.Message, debug));
                             break;
                         }
