@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 
 namespace ProcessRecorderApp.GStreamer;
 
@@ -21,6 +21,10 @@ namespace ProcessRecorderApp.GStreamer;
 ///   <item>ただし <see cref="EscalateAfterAttempts"/> 回続けて失敗したら、
 ///     要素単位の再 Playing ではなく <c>Initialize()</c> によるパイプライン再生成へ切り替える
 ///     ── デバイスが別のキャップスで戻ってきた場合、要素を Playing にし直すだけでは復帰できない。</item>
+///   <item><b>間隔は上限であって、待ち切る義務ではない。</b> デバイスの到着を観測したら
+///     <see cref="SettleAfterArrivalMs"/> だけ置いて即座に試す
+///     （<c>DeviceArrivalWatcher</c>）。<b>試行回数の数え方は変えない</b> ──
+///     早く起きた回も通常の 1 回として数え、エスカレーションの基準もそのまま使う。</item>
 /// </list>
 /// </para>
 /// </summary>
@@ -47,4 +51,36 @@ internal static class RestartPolicy
     /// <paramref name="attempt"/> 回目の失敗の後、パイプライン再生成へ切り替えるべきか。
     /// </summary>
     public static bool ShouldEscalate(int attempt) => EscalateAfterAttempts <= attempt;
+
+    /// <summary>
+    /// バックオフ表の頭打ちの値(ms)。<see cref="DelayForAttempt"/> が最終的に返す値と
+    /// 同じであることを L1 が縛る。パイプライン再生成だけを待つ連鎖
+    /// （<c>rebuildOnly</c>）の間隔はこれを使う ── そちらは要素単位の再開を試さないので、
+    /// 短い間隔で回しても得るものが無い。
+    /// </summary>
+    public const int MaxDelayMs = 60_000;
+
+    /// <summary>
+    /// デバイスの到着を観測してから実際に試すまでに置く「落ち着き待ち」(ms)。
+    ///
+    /// <para>
+    /// <b>列挙に出た＝開けるとは限らない。</b> USB カメラのデバイスインターフェイスの
+    /// 到着通知はドライバが使える状態になる前に飛びうるし、ディスプレイの再構成は
+    /// <c>WM_DISPLAYCHANGE</c> の時点ではまだ途中でありうる。0 にすると、
+    /// 到着のたびに確実に失敗する試行を 1 回消費することになる。
+    /// </para>
+    /// </summary>
+    public const int EarlyWakeSettleMs = 1_000;
+
+    /// <summary>
+    /// デバイスの到着で待ちを打ち切るとき、そこからさらに何 ms 待つか。
+    ///
+    /// <para>
+    /// <b>元の待ち時間を超えない。</b> 到着が遅く（<paramref name="elapsedMs"/> が
+    /// <paramref name="fullDelayMs"/> に近い）来た場合に落ち着き待ちを足すと、
+    /// 「早期復帰」が本来より遅くなってしまう。
+    /// </para>
+    /// </summary>
+    public static int SettleAfterArrivalMs(int fullDelayMs, int elapsedMs)
+        => Math.Clamp(EarlyWakeSettleMs, 0, Math.Max(0, fullDelayMs - elapsedMs));
 }

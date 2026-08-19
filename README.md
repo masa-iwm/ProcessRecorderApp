@@ -1,4 +1,4 @@
-# ProcessRecorderApp
+﻿# ProcessRecorderApp
 
 English | [日本語](README.ja.md)
 
@@ -38,7 +38,10 @@ goes away.
   picker that captures elements on screen (powered by the
   [UiaTrigger](https://github.com/masa-iwm/UiaTrigger) library).
 - **Automatic recovery from errors** — if the video source fails, recording is restarted
-  automatically after a delay.
+  automatically after a delay. For a camera or a screen capture the app also watches for the
+  device coming back, so unplugging and replugging it recovers within about a second instead of
+  waiting out the delay — and a recorder that could not start at all because its device was
+  missing starts as soon as the device appears.
 
 ## Usage
 

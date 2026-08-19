@@ -337,6 +337,8 @@ public partial class EventRecorder : ObservableObject, IDisposable
     /// <para>
     /// <b>ロック順序は <c>_stateLock</c> → <see cref="_busLock"/> → <c>_restartLock</c> の
     /// 一方向のみ</b>（逆向きの辺は無い ── <see cref="_busLock"/> の doc を参照）。
+    /// <c>DeviceArrivalWatcher</c> のロックは<b>葉</b>で、この 3 本のどれを保持したままでも
+    /// 取らない（取得は復帰連鎖の先頭＝プールスレッドに限る）。
     /// </para>
     /// <para>
     /// <b>バスの同期ハンドラもこのロックを取らない。</b>
@@ -1005,8 +1007,47 @@ public partial class EventRecorder : ObservableObject, IDisposable
     /// </summary>
     public void Initialize()
     {
-        lock (_stateLock)
-            InitializeCore();
+        try
+        {
+            lock (_stateLock)
+                InitializeCore();
+        }
+        catch
+        {
+            // **失敗しても復帰の芽を残す。** ここを素通りさせると
+            // 「パイプラインもバスも無い＝二度とエラーが飛ばない」状態になり、
+            // デバイスを挿し直しても永久に何も起きない。到達経路は 3 つあり、
+            // どれも同じ症状になる ── 起動時にカメラが無い（AddRecorderFor）、
+            // 復帰のエスカレーションがデバイス不在のまま作り直そうとした、
+            // パイプライン編集ダイアログでの再初期化。
+            TryScheduleDeviceRebuild();
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// 初期化に失敗したとき、<b>デバイスの到着で作り直す</b>連鎖を張る。
+    ///
+    /// <para>
+    /// <b>種別の付く映像源に限る。</b> パイプライン文字列の打ち間違い（テストソースや
+    /// 未知の要素）を 60 秒ごとに永久に再試行しても得るものが無い ──
+    /// 戻ってくるものが無いからである。
+    /// </para>
+    /// <para>
+    /// <b><c>_stateLock</c> を保持しないところから呼ぶこと。</b> <see cref="Initialize"/> の
+    /// <c>catch</c> は <c>lock</c> ブロックの外なので、この条件を満たしている。
+    /// </para>
+    /// </summary>
+    private void TryScheduleDeviceRebuild()
+    {
+        if (_disposedValue)
+            return;
+
+        string? element = SrcPipelineBuilder.Parse(ActualSrcPipeline ?? SrcPipeline).SourceElement;
+        if (DeviceKindRules.ForElement(element) == DeviceKind.None)
+            return;
+
+        ScheduleRestart(element ?? "?", rebuildOnly: true);
     }
 
     private void InitializeCore()
@@ -2329,6 +2370,18 @@ public partial class EventRecorder : ObservableObject, IDisposable
     private int _restartRefusals;
 
     /// <summary>
+    /// パイプラインを組めないまま作り直しを繰り返す連鎖（<c>rebuildOnly</c>）のログを畳む。
+    ///
+    /// <para>
+    /// <b>この連鎖は成功するまで終わらない。</b> デバイスが二度と戻らない構成
+    /// （挿さないカメラ・打ち間違えたパイプライン）では 60 秒ごとに失敗し続けるので、
+    /// 素で書くと 1 日あたり数千行になり、<b>1MB のローテーションで
+    /// 本当に見たい履歴が押し出される</b>。畳んでも件数は <c>repeated=N</c> に残る。
+    /// </para>
+    /// </summary>
+    private readonly BusMessageThrottle _rebuildThrottle = new();
+
+    /// <summary>
     /// ソース障害からの自動復帰を予約する。
     ///
     /// <para>
@@ -2337,11 +2390,17 @@ public partial class EventRecorder : ObservableObject, IDisposable
     /// （<see cref="RestartPolicy"/> の注記を参照）。
     /// </para>
     /// </summary>
-    private void ScheduleRestart(string elementName)
+    private void ScheduleRestart(string elementName, bool rebuildOnly = false)
     {
         lock (_restartLock)
         {
-            if (_restartCts is not null)
+            // **キャンセル済みの予約は空き枠として扱う。** CancelPendingRestart は
+            // Cancel してから 2 秒だけ待つので、古い連鎖が Initialize() の中で
+            // _stateLock を待って詰まっていると、キャンセル済みの _restartCts が
+            // 残ったまま戻る ── そこで「already scheduled」と断ると、
+            // **連鎖が 1 本も無い状態**（＝直したはずの詰みそのもの）になる。
+            // 上書きは安全である ── 古い連鎖の finally は ReferenceEquals でしか消さない。
+            if (_restartCts is { IsCancellationRequested: false })
             {
                 // 既に予約済み。ここで積まないことが、復帰試行の並走を防ぐ要点そのもの。
                 // **記録は予約1回につき1行だけ。** 壊れた要素は毎フレームのように
@@ -2368,7 +2427,7 @@ public partial class EventRecorder : ObservableObject, IDisposable
             // ならず、「試行回数は無制限」が成立するのもエラーを出し続けるソースだけになる
             // ── 「モニタを抜く＝エラーを数件出して以後は沈黙」というソースでは
             // 1回目の失敗で永久に止まる。ループ1本なら間隔も「諦めない」も仕様どおりになる。
-            _restartTask = System.Threading.Tasks.Task.Run(() => RestartLoopAsync(elementName, cts));
+            _restartTask = System.Threading.Tasks.Task.Run(() => RestartLoopAsync(elementName, cts, rebuildOnly));
         }
     }
 
@@ -2377,25 +2436,67 @@ public partial class EventRecorder : ObservableObject, IDisposable
     /// <see cref="RestartPolicy"/> の間隔で試行し続ける。
     /// 新しいエラーの到着に依存しない ── 一度だけエラーを出して沈黙するソース
     /// （ケーブルを抜いたモニタ）でも最後まで進む。
+    ///
+    /// <para>
+    /// <b>間隔は上限であって、待ち切る義務ではない。</b> 監視できる映像源
+    /// （カメラ・画面キャプチャ）なら、デバイスの到着を観測した時点で待ちを打ち切る
+    /// （<c>DeviceArrivalWatcher</c>）。<b>試行回数の数え方は変えない</b> ──
+    /// 早く起きた回も通常の 1 回として数える。
+    /// </para>
+    /// <para>
+    /// <paramref name="rebuildOnly"/> は<b>パイプラインがそもそも組めていない</b>連鎖。
+    /// 要素単位の再開は対象が無いので飛ばし、<see cref="Initialize"/> だけを
+    /// <see cref="RestartPolicy.MaxDelayMs"/> 間隔（＋到着で早期）で試す。
+    /// この連鎖が無いと、初期化に失敗した時点でエラーの出所ごと消えて
+    /// <b>デバイスを挿し直しても永久に復帰しない</b>。
+    /// </para>
     /// </summary>
-    private async System.Threading.Tasks.Task RestartLoopAsync(string elementName, CancellationTokenSource cts)
+    private async System.Threading.Tasks.Task RestartLoopAsync(
+        string elementName, CancellationTokenSource cts, bool rebuildOnly)
     {
+        // **監視の取得はここ（プールスレッド）で行う。** ScheduleRestart は _busLock を
+        // 保持したストリーミングスレッドから呼ばれるので、そこでネイティブの
+        // DeviceProvider.Start を呼んではいけない。解放は using が全出口で行う。
+        DeviceKind kind = DeviceKindRules.Classify(ActualSrcPipeline ?? SrcPipeline);
+        using IDisposable watch = DeviceArrivalWatcher.Instance.Acquire(kind);
+        bool watched = DeviceArrivalWatcher.IsWatched(kind);
+        // watch= はデバイスの種別が付くときだけ出す。テスト注入だけが有効な
+        // DeviceKind.None の連鎖で "watch=none" と書くと、ログを読む側に
+        // 「監視しているのに none」という読み方をさせてしまう。
+        string watchTag = kind != DeviceKind.None ? $" watch={DeviceKindRules.LogName(kind)}" : "";
+
         try
         {
             int attempt = 0;
+            long seenArrival = DeviceArrivalWatcher.Instance.CurrentGeneration(kind);
             while (!cts.IsCancellationRequested)
             {
                 attempt++;
-                int delayMs = RestartPolicy.DelayForAttempt(attempt);
+                int delayMs = rebuildOnly ? RestartPolicy.MaxDelayMs : RestartPolicy.DelayForAttempt(attempt);
                 Components.ActivityLog.Info("recorder.restart",
-                    $"recorder='{Name}' element='{elementName}' attempt={attempt} scheduled in {delayMs}ms");
+                    $"recorder='{Name}' element='{elementName}' attempt={attempt} scheduled in {delayMs}ms{watchTag}");
 
-                await System.Threading.Tasks.Task.Delay(delayMs, cts.Token);
+                bool early = await WaitForRetrySlotAsync(kind, watched, seenArrival, delayMs, cts.Token);
+                // **キーは reason= と分ける。** エスカレーションの行は既に
+                // reason=eos を持っており、同じキーを重ねると
+                // "reason=eos reason=device-arrival" という読めない行になる
+                // ── 「なぜ作り直すか」と「なぜ今起きたか」は別の情報である。
+                string wake = early ? " wake=device-arrival" : "";
 
                 // Close() 中なら、破棄済みのパイプラインに触る前にここで降りる。
                 // _isAlive では代用できない ── 通常の Initialize() 待ちでも false になる。
-                if (cts.IsCancellationRequested || !_isAlive)
+                if (cts.IsCancellationRequested || _disposedValue)
                     return;
+
+                // **rebuildOnly では _isAlive を見ない。** あちらはパイプラインが無い状態が
+                // 定常で _isAlive は false のままであり、触る先も Initialize() だけである。
+                if (!rebuildOnly && !_isAlive)
+                    return;
+
+                // **次の待ちの基準をここで取り直す。** これより後に来た到着は
+                // 「この試行より後の到着」なので、次の待ちを即座に起こしてよい
+                // ── 取り直さないと、復帰を試している最中に挿し直された場合を取りこぼす。
+                seenArrival = DeviceArrivalWatcher.Instance.CurrentGeneration(kind);
 
                 int refused = _restartRefusals;
                 string suppressed = 0 < refused ? $" suppressedErrors={refused}" : "";
@@ -2404,13 +2505,13 @@ public partial class EventRecorder : ObservableObject, IDisposable
                 // **EOS を受けていたら要素単位では戻らない。** 試行を重ねても同じなので、
                 // 最初からパイプラインごと作り直す ── ここを飛ばすと、復帰は result=ok と
                 // 報告されるのに映像だけが崩れたままになる（実機のカメラ抜き差しで観測）。
-                bool mustRebuild = _sinkSawEos;
+                bool mustRebuild = rebuildOnly || _sinkSawEos;
 
                 if (!mustRebuild && RestartSinkSrc())
                 {
                     _restartAttempt = 0;
                     Components.ActivityLog.Info("recorder.restart",
-                        $"recorder='{Name}' element='{elementName}' attempt={attempt} result=ok{suppressed}");
+                        $"recorder='{Name}' element='{elementName}' attempt={attempt} result=ok{wake}{suppressed}");
                     return;
                 }
 
@@ -2418,7 +2519,7 @@ public partial class EventRecorder : ObservableObject, IDisposable
                 {
                     _restartAttempt = attempt;
                     Components.ActivityLog.Warn("recorder.restart",
-                        $"recorder='{Name}' element='{elementName}' attempt={attempt} result=failed{suppressed}");
+                        $"recorder='{Name}' element='{elementName}' attempt={attempt} result=failed{wake}{suppressed}");
 
                     if (!RestartPolicy.ShouldEscalate(attempt))
                         continue;   // まだ諦めない。次の間隔で再試行する
@@ -2429,10 +2530,22 @@ public partial class EventRecorder : ObservableObject, IDisposable
                 if (cts.IsCancellationRequested)
                     return;
 
-                Components.ActivityLog.Warn("recorder.restart",
-                    mustRebuild
-                        ? $"recorder='{Name}' escalating to a full pipeline rebuild reason=eos"
-                        : $"recorder='{Name}' escalating to a full pipeline rebuild after {attempt} failed attempts");
+                // 作り直しだけを繰り返す連鎖は終わりが無いので畳む。
+                // エスカレーションは1つの連鎖につき1回きりなので畳まない。
+                (bool emitRebuild, int rebuildRepeated) = rebuildOnly
+                    ? _rebuildThrottle.Observe($"rebuild {elementName}")
+                    : (true, 0);
+                string rebuildRepeatedTag = 0 < rebuildRepeated ? $" repeated={rebuildRepeated}" : "";
+
+                if (emitRebuild)
+                {
+                    Components.ActivityLog.Warn("recorder.restart",
+                        rebuildOnly
+                            ? $"recorder='{Name}' retrying the pipeline rebuild attempt={attempt}{wake}{rebuildRepeatedTag}"
+                            : mustRebuild
+                                ? $"recorder='{Name}' escalating to a full pipeline rebuild reason=eos{wake}"
+                                : $"recorder='{Name}' escalating to a full pipeline rebuild after {attempt} failed attempts{wake}");
+                }
                 _restartAttempt = 0;
 
                 // 再生成へ進む前に、連鎖の所有権を自分で畳む。Initialize() は Close() 経由で
@@ -2451,11 +2564,20 @@ public partial class EventRecorder : ObservableObject, IDisposable
                 try
                 {
                     Initialize();
-                    Components.ActivityLog.Info("recorder.restart", $"recorder='{Name}' rebuild result=ok");
+                    // **成功は必ず出す。** 畳んだ抑制もここで解いて、次の障害を1行目から見せる。
+                    _rebuildThrottle.Flush();
+                    Components.ActivityLog.Info("recorder.restart", $"recorder='{Name}' rebuild result=ok{wake}");
                 }
                 catch (Exception ex)
                 {
-                    Components.ActivityLog.Error("recorder.restart", $"recorder='{Name}' rebuild result=failed {ex.Message}");
+                    // **ここで諦めない。** Initialize() は失敗時に自分で次の連鎖
+                    // （rebuildOnly）を張るので、デバイスが戻ってくればそちらが作り直す。
+                    // 所有権は既に畳んであるため、その予約は拒否されない。
+                    if (emitRebuild)
+                    {
+                        Components.ActivityLog.Error("recorder.restart",
+                            $"recorder='{Name}' rebuild result=failed {ex.Message}{rebuildRepeatedTag}");
+                    }
                 }
                 return;
             }
@@ -2471,6 +2593,51 @@ public partial class EventRecorder : ObservableObject, IDisposable
             }
             cts.Dispose();
         }
+    }
+
+    /// <summary>
+    /// 次の試行までの待ち。タイマーと<b>デバイスの到着</b>の早い方で返る。
+    /// 到着で返ったときだけ true。
+    ///
+    /// <para>
+    /// 到着で返った場合は <see cref="RestartPolicy.SettleAfterArrivalMs"/> だけ置いてから返す
+    /// ── <b>列挙に出た＝開けるとは限らない</b>ため。置く時間は元の待ちを超えない。
+    /// </para>
+    /// <para>
+    /// キャンセルを運ぶのはタイマー側だけである。到着側の札はキャンセルされないので、
+    /// <c>WhenAny</c> がタイマーを返したときに<b>それを await して</b>
+    /// <see cref="OperationCanceledException"/> を表に出す。
+    /// </para>
+    /// </summary>
+    private static async System.Threading.Tasks.Task<bool> WaitForRetrySlotAsync(
+        DeviceKind kind, bool watched, long seenArrival, int delayMs, CancellationToken token)
+    {
+        var timer = System.Threading.Tasks.Task.Delay(delayMs, token);
+        if (!watched)
+        {
+            await timer;
+            return false;
+        }
+
+        System.Threading.Tasks.Task arrival =
+            DeviceArrivalWatcher.Instance.WaitForArrivalAsync(kind, seenArrival);
+
+        var elapsed = System.Diagnostics.Stopwatch.StartNew();
+        System.Threading.Tasks.Task finished =
+            await System.Threading.Tasks.Task.WhenAny(arrival, timer);
+
+        if (!ReferenceEquals(finished, arrival))
+        {
+            await timer;
+            return false;
+        }
+
+        int settleMs = RestartPolicy.SettleAfterArrivalMs(
+            delayMs, (int)Math.Min(elapsed.ElapsedMilliseconds, int.MaxValue));
+        if (0 < settleMs)
+            await System.Threading.Tasks.Task.Delay(settleMs, token);
+
+        return true;
     }
 
     private readonly object _restartLock = new();

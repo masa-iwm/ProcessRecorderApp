@@ -1,4 +1,4 @@
-using ProcessRecorderApp.GStreamer;
+﻿using ProcessRecorderApp.GStreamer;
 using Xunit;
 
 namespace ProcessRecorderApp.Tests;
@@ -65,4 +65,48 @@ public class RestartPolicyTests
         Assert.True(RestartPolicy.ShouldEscalate(RestartPolicy.EscalateAfterAttempts));
         Assert.True(RestartPolicy.ShouldEscalate(RestartPolicy.EscalateAfterAttempts + 10));
     }
+
+    // ---- デバイス到着による早期復帰 ----
+
+    /// <summary>
+    /// <see cref="RestartPolicy.MaxDelayMs"/> は<b>バックオフ表の頭打ちと同じ値</b>であること。
+    /// パイプラインを組めていない連鎖（<c>rebuildOnly</c>）はこちらを間隔に使うので、
+    /// 表だけを伸ばすと 2 つの間隔が黙って食い違う。
+    /// </summary>
+    [Fact]
+    public void MaxDelay_MatchesTheCapOfTheBackoffTable()
+        => Assert.Equal(RestartPolicy.MaxDelayMs, RestartPolicy.DelayForAttempt(int.MaxValue));
+
+    /// <summary>
+    /// 落ち着き待ちは 0 であってはならない ── <b>列挙に出た＝開けるとは限らない</b>ので、
+    /// 到着の瞬間に試すと確実に失敗する試行を 1 回消費する。
+    /// </summary>
+    [Fact]
+    public void TheSettleAfterArrival_IsNotZero()
+        => Assert.True(0 < RestartPolicy.EarlyWakeSettleMs);
+
+    [Fact]
+    public void AnEarlyArrival_GetsTheFullSettle()
+        => Assert.Equal(
+            RestartPolicy.EarlyWakeSettleMs,
+            RestartPolicy.SettleAfterArrivalMs(fullDelayMs: 5_000, elapsedMs: 200));
+
+    /// <summary>
+    /// <b>元の待ちを超えない。</b> 到着が待ちの終わり際に来たときに落ち着き待ちを丸ごと足すと、
+    /// 「早期復帰」が待ち切るより遅くなる ── 早めるための仕組みが遅らせる側に回る。
+    /// </summary>
+    [Theory]
+    [InlineData(5_000, 4_500, 500)]
+    [InlineData(5_000, 5_000, 0)]
+    [InlineData(5_000, 6_000, 0)]       // 計測の揺れで超えることがある
+    [InlineData(600, 0, 600)]           // 元の待ちが落ち着き待ちより短い
+    public void TheSettle_NeverPushesPastTheOriginalDelay(int fullDelayMs, int elapsedMs, int expected)
+        => Assert.Equal(expected, RestartPolicy.SettleAfterArrivalMs(fullDelayMs, elapsedMs));
+
+    [Theory]
+    [InlineData(0, 0)]
+    [InlineData(-1, 0)]
+    [InlineData(int.MinValue, int.MaxValue)]
+    public void TheSettle_IsNeverNegative(int fullDelayMs, int elapsedMs)
+        => Assert.True(0 <= RestartPolicy.SettleAfterArrivalMs(fullDelayMs, elapsedMs));
 }

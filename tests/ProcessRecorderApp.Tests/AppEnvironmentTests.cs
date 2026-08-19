@@ -1,4 +1,4 @@
-using ProcessRecorderApp.Components;
+﻿using ProcessRecorderApp.Components;
 using Xunit;
 
 namespace ProcessRecorderApp.Tests;
@@ -99,5 +99,44 @@ public class AppEnvironmentTests
         Assert.Equal("PROCESSRECORDERAPP_KEY_PREFIX", AppEnvironment.KeyPrefixVariable);
         Assert.Equal("PROCESSRECORDERAPP_LANG", AppEnvironment.LanguageVariable);
         Assert.Equal("PROCESSRECORDERAPP_MIRROR_STDERR", AppEnvironment.MirrorToOriginalStdErrVariable);
+        Assert.Equal("PROCESSRECORDERAPP_TEST_DEVICE_ARRIVAL", AppEnvironment.TestDeviceArrivalVariable);
+    }
+
+    // ---- デバイス到着の注入（テスト専用） ----
+
+    [Theory]
+    [InlineData("1")]
+    [InlineData("true")]
+    [InlineData("True")]
+    [InlineData("TRUE")]
+    public void TestDeviceArrival_IsEnabledByTheAcceptedSpellings(string value)
+        => Assert.True(AppEnvironment.ResolveTestDeviceArrivalEnabled(value));
+
+    /// <summary>
+    /// <b>既定は無効でなければならない。</b> 有効なままだと、通常起動のアプリが
+    /// 名前付きイベントを作って待ち続ける ── 製品の挙動が「テストのための分岐」で変わる。
+    /// </summary>
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("0")]
+    [InlineData("false")]
+    [InlineData("yes")]
+    [InlineData(" 1")]
+    public void TestDeviceArrival_IsOffForAnythingElse(string? value)
+        => Assert.False(AppEnvironment.ResolveTestDeviceArrivalEnabled(value));
+
+    /// <summary>
+    /// 注入に使う名前付きイベントは<b>キー接頭辞で隔離されている</b>こと。
+    /// 隔離されていないと、並行して走る E2E のインスタンス同士が互いの復帰を起こし合い、
+    /// 「早期に起きた」という表明が自分のシグナルによるものだと言えなくなる。
+    /// </summary>
+    [Fact]
+    public void TheInjectionEventName_CarriesTheKeyPrefix()
+    {
+        Assert.Equal("Test-1234-DeviceArrival", AppEnvironment.ResolveTestDeviceArrivalEventName("Test-1234"));
+        Assert.NotEqual(
+            AppEnvironment.ResolveTestDeviceArrivalEventName("Test-1"),
+            AppEnvironment.ResolveTestDeviceArrivalEventName("Test-2"));
     }
 }

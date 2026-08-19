@@ -1,4 +1,4 @@
-# ProcessRecorderApp: 実装ドキュメント
+﻿# ProcessRecorderApp: 実装ドキュメント
 
 本ドキュメントは `src/` 配下のソリューション全体（5プロジェクト）を対象とした、実装者向けの
 技術資料です。アプリの機能・使い方については、ルートの
@@ -595,6 +595,11 @@ sink パイプラインのバスを購読しているハンドラ（`HandleBusMe
 復帰は `RestartLoopAsync` が `RestartPolicy` に従って実行し、間隔は **5s → 10s → 30s → 60s
 で頭打ち**、3回連続で失敗したらパイプラインごと `Initialize()` し直す（詳細は「自動復帰」の節）。
 画面キャプチャ対象モニタの切断など、ソース側の一時的な異常からの自動復帰を狙ったもの。
+
+**間隔は上限であって、待ち切る義務ではない。** 映像源がカメラ（`mfvideosrc`）か画面キャプチャなら、
+`DeviceArrivalWatcher` がデバイスプロバイダのホットプラグ通知を購読し、
+**デバイスが戻ってきた時点で待ちを打ち切る**（`RestartPolicy.EarlyWakeSettleMs` だけ置いてから試す）。
+判定は `DeviceKindRules`、監視できない構成ではタイマーだけの挙動へ縮退する。
 
 ### ファイル名テンプレート（`FormatFilename`）
 
@@ -1863,7 +1868,9 @@ GPU テクスチャになるため**アクセシブルテキストが 1 つも�
 | `recorder.error` | ERROR | `EventRecorder.HandleBusMessage` | **両方のバス**の `Error`（バス名・要素名・メッセージ・debug 情報） |
 | `recorder.warning` | WARN | 同上 | 両方のバスの `Warning`。連続する同一内容は畳んで `repeated=N` を添える |
 | `recorder.eos` | INFO | 同上 | sink 側バスの `Eos` |
-| `recorder.restart` | INFO / WARN | 同上／`RestartSinkSrc` | 自動復帰の予約と、その結果（`ok` / `failed`） |
+| `recorder.restart` | INFO / WARN | 同上／`RestartSinkSrc` | 自動復帰の予約と、その結果（`ok` / `failed`）。監視できる映像源なら `watch=camera｜monitor` が付き、デバイスの到着で待ちを打ち切った回は `wake=device-arrival` が付く |
+| `device.watch` | INFO / WARN | `DeviceArrivalWatcher` | デバイス到着の監視を張った／止めた（`kind=` と `provider=`）。WARN は**監視できない**構成（プロバイダが無い・`CanMonitor()` が false・起動に失敗）で、タイマーだけの復帰へ縮退したことを意味する |
+| `device.arrive` | INFO | 同上 | デバイスプロバイダが到着（`device-added` / `device-changed`）を報告した。連続する同一内容は畳んで `repeated=N` を添える |
 | `recorder.continuous-init ok` / `recorder.continuous-init fail` | INFO / WARN | `EventRecorder.StartContinuous` ／ `InitializeCore` ／ `InitializeWith` | 常時録画の枝を組めた（エンコーダー・fps・解像度・分割間隔）／組めなかったので**枝だけ落とした**（イベント録画は無事＝隔離契約）。**上書きだけを捨てた場合も同じ名前で出す**（読めないフレームレート・上流が固定されていないのに指定された解像度）── どちらも「設定が黙って効いていない」という同じ事故だからである |
 | `continuous.start` | INFO | `ContinuousRecorder.OpenSegment` | 常時録画のセグメントを開いた（ファイル名・通し番号・分割間隔） |
 | `continuous.finalize` | INFO | `ContinuousRecorder.FinalizeSegment` | セグメントを確定させた（`result=ok｜timeout｜error`） |
@@ -2046,6 +2053,32 @@ EOS を送ったあと `TaskCompletionSource` を**待つだけ**で、自分で
 - 障害要素が**ソース以外でも必ず予約する**。ソースに限定すると、エンコーダーが壊れた
   場合に何も起きず毎フレームのエラーを出し続ける。
   要素単位で戻せない障害は、エスカレーションでパイプラインごと作り直すのが唯一の手段。
+- **デバイスの到着で待ちを打ち切る。** 監視は復帰待ちのあいだだけ
+  （`DeviceArrivalWatcher.Acquire` の参照カウント）で、**プロバイダを永続的に started に
+  してはいけない** ── `gst_device_provider_get_devices` は started の間だけキャッシュを返し、
+  抜き差しの後は probe の順とずれるので、`GstIntrospect.GetMonitorResolutions` の
+  `monitor-index` と解像度の対応が壊れる。取得はプールスレッド（連鎖の先頭）で行う
+  ── `ScheduleRestart` は `_busLock` を保持したストリーミングスレッドで走るので、
+  そこでネイティブのデバイス列挙を走らせてはいけない。
+  **試行回数の数え方は変えない** ── 早く起きた回も通常の 1 回として数える。
+  起きた理由は `wake=device-arrival` として記録する（`reason=` は
+  「なぜ作り直すか」に使っているので別のキーにする）。
+- **落ち着き待ちを置く**（`RestartPolicy.SettleAfterArrivalMs`）。列挙に出た＝開けるとは
+  限らない ── デバイスインターフェイスの到着通知はドライバが使える状態になる前に飛びうるし、
+  ディスプレイの再構成は `WM_DISPLAYCHANGE` の時点ではまだ途中でありうる。
+  置く時間は**元の待ちを超えない**（超えると「早期復帰」が待ち切るより遅くなる）。
+- **`Initialize()` が失敗しても連鎖を絶やさない。** 失敗した時点では
+  パイプラインもバスも無い＝**二度とエラーが飛ばない**ので、そこで諦めると
+  デバイスを挿し直しても永久に復帰しない。`Initialize()` の `catch` が
+  `TryScheduleDeviceRebuild` で「作り直しだけを試す連鎖」（`rebuildOnly`）を張る
+  ── 間隔は `RestartPolicy.MaxDelayMs`（60 秒）＋デバイス到着で早期。
+  対象は**種別の付く映像源に限る**（テストソースや打ち間違いのパイプラインを
+  永久に再試行しても、戻ってくるものが無い）。この経路は
+  「起動時にカメラが無い」「デバイス不在のままエスカレーションした」の両方を同時に直す。
+  `ScheduleRestart` は**キャンセル済みの `_restartCts` を空き枠として扱う**
+  ── `CancelPendingRestart` は 2 秒で諦めるので、古い連鎖が `Initialize()` の中で
+  `_stateLock` を待っているとキャンセル済みの予約が残る。そこで拒否すると
+  **連鎖が 1 本も無い状態**になり、直したはずの詰みが戻る。
 - `Close()` は保留中の復帰を**先にキャンセル**して有界待ちする。放置すると最大60秒後に
   破棄済みのパイプラインへ `SetState` したり `Initialize()` を呼んだりする。
   復帰タスクは `Initialize()` の中で `_stateLock` を取るため、
@@ -2105,6 +2138,7 @@ API は `StopAsync()`（完了を表す `Task` を返す）/ `Stop()`（fire-and
 | `PROCESSRECORDERAPP_KEY_PREFIX` | 単一インスタンス制御に使う名前付き Mutex / EventWaitHandle / MemoryMappedFile / `AppInstance` キーの接頭辞を差し替える | テスト実行中に開発者の常駐インスタンスが居ると、テストのコマンドがそちらへ転送される（逆にテストの常駐ワーカーが開発者の操作を奪う） |
 | `PROCESSRECORDERAPP_LANG` | 表示言語を BCP-47 タグで強制する（**`Microsoft.Windows.Globalization`**`.ApplicationLanguages.PrimaryLanguageOverride`）。`Program.Main` の先頭、リソース解決より前に適用する。不正なタグは警告を出して無視する | OS の表示言語を切り替えないと ja-JP / en-US / フォールバック（例: de-DE）の各経路を検証できない。GitHub ランナーは en-US 固定なので ja-JP が永久に未検証になる |
 | `PROCESSRECORDERAPP_MIRROR_STDERR` | `1`/`true` で、捕捉した標準出力・標準エラーを差し替え前の標準エラーへも複写する（`StandardStreamRedirector`） | 標準ストリームを捕捉へ差し替えた後は、外からプロセスを起動した側が出力を1行も受け取れず、E2E ハーネスが診断を失う |
+| `PROCESSRECORDERAPP_TEST_DEVICE_ARRIVAL` | `1`/`true` で、名前付きイベント `{キー接頭辞}-DeviceArrival` のシグナルを**デバイスの到着として扱う**（`DeviceArrivalWatcher`）。実際のデバイスプロバイダには一切触れない | 開発機にも CI にも**カメラが無く、モニタの抜き差しもできない**ので、「到着で復帰の待ちを打ち切る」経路がどのテスト層でも1行も実行されない |
 
 > **`Windows.Globalization` ではなく `Microsoft.Windows.Globalization` を使うこと。**
 > 前者（OS 側の WinRT API）は**パッケージ ID を要求する**ため、アンパッケージ配布の

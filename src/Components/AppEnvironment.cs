@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.IO;
 
 namespace ProcessRecorderApp.Components;
@@ -19,6 +19,10 @@ namespace ProcessRecorderApp.Components;
 ///     （逆にテストの常駐ワーカーが開発者の操作を奪う）ため、テストごとに隔離する。</item>
 ///   <item><see cref="LanguageVariable"/> ──
 ///     表示言語の強制。OS の表示言語を切り替えずに en-US / ja-JP / フォールバックを検証する。</item>
+///   <item><see cref="TestDeviceArrivalVariable"/> ──
+///     デバイス到着シグナルの外部注入。カメラの抜き差しもモニタの抜き差しも
+///     自動テストからは起こせないので、これが無いと「到着で復帰が早まる」経路を
+///     一度も実行できない。</item>
 /// </list>
 /// </summary>
 public static class AppEnvironment
@@ -52,6 +56,24 @@ public static class AppEnvironment
     /// </para>
     /// </summary>
     public const string MirrorToOriginalStdErrVariable = "PROCESSRECORDERAPP_MIRROR_STDERR";
+
+    /// <summary>
+    /// デバイス到着の外部注入を有効にする環境変数名（<c>1</c> / <c>true</c> で有効）。
+    ///
+    /// <para>
+    /// <b>自動テストのためだけに存在する。</b> 有効なとき、録画エンジンは
+    /// <see cref="TestDeviceArrivalEventName"/> の名前付きイベントを待ち、
+    /// シグナルを「デバイスが戻ってきた」として扱う。
+    /// <b>本物のデバイスプロバイダには影響しない</b> ── 注入は購読とは別の経路で、
+    /// プロバイダを開始も停止もしない。
+    /// </para>
+    /// <para>
+    /// これが無いと、早期復帰の経路は<b>どのテスト層でも 1 行も実行されない</b>
+    /// ── 開発機にも CI にもカメラが無く、モニタの抜き差しもできないため
+    /// （docs/coverage-gaps.md「デバイス到着の監視」）。
+    /// </para>
+    /// </summary>
+    public const string TestDeviceArrivalVariable = "PROCESSRECORDERAPP_TEST_DEVICE_ARRIVAL";
 
     /// <summary>上書きが無い場合の単一インスタンスキー接頭辞。</summary>
     public const string DefaultKeyPrefix = nameof(ProcessRecorderApp);
@@ -93,4 +115,35 @@ public static class AppEnvironment
     /// <see cref="DataDirectory"/> 配下のファイルパスを組み立てる。ディレクトリは作成しない。
     /// </summary>
     public static string GetDataFilePath(string fileName) => Path.Combine(DataDirectory, fileName);
+
+    private static readonly Lazy<bool> _testDeviceArrival = new(() => ResolveTestDeviceArrivalEnabled(
+        Environment.GetEnvironmentVariable(TestDeviceArrivalVariable)));
+
+    /// <summary>
+    /// デバイス到着の外部注入が有効か（<see cref="TestDeviceArrivalVariable"/>）。
+    /// プロセス起動後に環境変数を変えても反映されない（1度だけ解決する）。
+    /// </summary>
+    public static bool TestDeviceArrivalEnabled => _testDeviceArrival.Value;
+
+    /// <summary>
+    /// デバイス到着の注入に使う名前付きイベントの名前。
+    /// <b><see cref="KeyPrefix"/> を含める</b> ── 含めないと、並行して走る E2E の
+    /// インスタンス同士が互いの復帰を起こし合う。
+    /// </summary>
+    public static string TestDeviceArrivalEventName => ResolveTestDeviceArrivalEventName(KeyPrefix);
+
+    /// <summary>
+    /// <see cref="TestDeviceArrivalEnabled"/> の解決規則（テストのために純粋関数として分離）。
+    /// 受け付けるのは <c>1</c> と <c>true</c>（大文字小文字を問わない）だけ。
+    /// </summary>
+    public static bool ResolveTestDeviceArrivalEnabled(string? overrideValue)
+        => overrideValue is not null
+           && (overrideValue.Equals("1", StringComparison.Ordinal)
+               || overrideValue.Equals("true", StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// <see cref="TestDeviceArrivalEventName"/> の組み立て規則（テストのために純粋関数として分離）。
+    /// </summary>
+    public static string ResolveTestDeviceArrivalEventName(string keyPrefix)
+        => keyPrefix + "-DeviceArrival";
 }

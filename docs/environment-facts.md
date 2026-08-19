@@ -1,4 +1,4 @@
-# 環境と実装の背景事実
+﻿# 環境と実装の背景事実
 
 このファイルは、環境・外部要素（GStreamer / Windows / PowerShell）に関する恒久的な事実をまとめる。いずれも実装・テストの形を決めている制約であり、「なぜこう書いてあるか」の根拠がここにある。同じ事実の多くは実装側のコメント（`src/GStreamer.GstSharpNet/EventRecorder.cs`、`src/SingleInstance/SingleInstanceManager.Launcher.cs`、`tools/` の検証スクリプトなど）にも書かれている。同じ事実を二重に持っている前提で、片方を直したらもう片方も直すこと。
 
@@ -25,6 +25,30 @@
 - **`d3d12screencapturesrc` の `monitor-index` は DXGI の `EnumAdapters1` × `EnumOutputs` を平坦化した順**（上流 `gst_d3d12_screen_capture_find_nth_monitor`。プラグインの輸入表に `EnumDisplayMonitors` は無く `CreateDXGIFactory1` がある）。`GetDesc` / `GetMonitorInfoW` に失敗した出力だけを**数えずに**飛ばす。`EnumDisplayDevices` や `EnumDisplayMonitors` の順で代用すると、アダプターが複数ある機械で番号がずれる。**アプリはこの走査を自前で持たない** ── 同じ並びは `d3d12screencapturedeviceprovider` が返すデバイスの順で得られる（`GstIntrospect.GetMonitorResolutions`。読めなかったモニターは**空文字で席を残す**）。
 - **モニターの物理ピクセルはデバイスの caps（`width` / `height`）から取る。** `d3d12screencapturedeviceprovider` が返す各デバイスの caps は、そのモニターをキャプチャしたときに実際に出る大きさなので、**プロセスの DPI 認識に依存しない**（上流 `gst_d3d12_dxgi_capture_open` は `EnumDisplaySettings` の `dmPelsWidth` / `dmPelsHeight` から大きさを決める ── caps はその結果である）。**デバイスの properties の `desktop.coordinates` で代用してはいけない** ── そちらが DPI 仮想化された値で、キャプチャが実際に出す大きさと食い違う（175% スケーリングの機械で 2194x1234 と 3840x2160。物理ピクセルを持つのは `display.coordinates`）。自前で `EnumDisplaySettings` / `GetMonitorInfo` を叩いていた頃に要った `MONITORINFOEXW` / `DEVMODE` の blittable 化（`LibraryImport` は `ByValTStr` を含む構造体を扱えない ── SYSLIB1051）も、経路ごと不要になった。
 - **GStreamer のデバイスプロバイダの列挙は、バインディングの経路で行う。** `gst_device_provider_get_devices` が返す `GList` の要素をマネージドのラッパーで包む経路は、GirCore ではメモリを壊した（`Device.NewFromPointer` で実測）。GstSharp.Net は**要素ポインタを全部控えてからスパインを解放し、そのあとで包む**（`GListMarshal.CollectAndFreeSpine`）ので preview.2 では解消済み（実測: 再列挙 200 回で安定）── 生の C API を自前で叩く必要はもう無い。ただし**列挙結果が空の機械では何も起きない**という性質は変わらないので、カメラの無い CI と開発機が緑でも、この経路の変更は利用者の機械でだけ壊れうる。
+- **デバイスの到着通知は、上流のデバイスプロバイダが既に持っている。** アプリ側に隠しウィンドウも
+  メッセージポンプも要らない。`mfdeviceprovider` は `start`/`stop` を実装し、自前のスレッドと
+  自前の隠しウィンドウで `RegisterDeviceNotificationW(DBT_DEVTYP_DEVICEINTERFACE,
+  KSCATEGORY_CAPTURE)` を張る（`sys/mediafoundation/gstwin32devicewatcher.cpp`）。
+  `d3d12screencapturedeviceprovider` は `MonitorNotificationManager` が自前の
+  メッセージポンプスレッドを持ち、`WM_DISPLAYCHANGE` で再 probe する
+  （`sys/d3d12/gstd3d12screencapturedevice.cpp`。**このスレッドはシングルトンで、
+  `GstIntrospect.GetMonitorResolutions` が既に生成している**）。どちらも差分を
+  `device-added` / `device-removed` / `device-changed` としてプロバイダのバスへ post する。
+  **`d3d11screencapturedeviceprovider` は `probe` しか実装していない**ので通知を一切出さない
+  ── 実装しているかどうかは `gst_device_provider_can_monitor`（＝`klass->start != NULL`）で訊ける。
+  したがって画面キャプチャの監視は、レコーダーが D3D11 でも **D3D12 のプロバイダで行う**。
+- **`gst_device_provider_start` は参照カウント式**（`gstdeviceprovider.c` の `started_count`）で、
+  同じプロセスの別の利用者と入れ子にできる（`Stop` は同じ回数呼ぶ）。ただし
+  **started の間は `gst_device_provider_get_devices` の意味が変わる** ── stopped なら
+  その場で probe した順、started なら**プロバイダのキャッシュ**を返し、
+  後から足されたデバイスは末尾に付く。したがって抜き差しの後は
+  `gst_d3d12_screen_capture_find_nth_monitor` の順（＝`monitor-index` の順）とずれる。
+  **プロバイダを永続的に started にしてはいけない** ── `GetMonitorResolutions` の
+  index と解像度の対応が壊れる。`DeviceArrivalWatcher` が復帰待ちのあいだだけ握るのはこのため。
+  なお `gst_device_provider_device_changed` はリストの要素を**その場で置換**するので順序を保つ。
+- **`Start()` は、現に在るデバイス全部について `device-added` を post する。** 到着を待つ用途では
+  起動時の偽の到着になるので、**Start を済ませてから購読し、キューに溜まった分を捨てる**。
+  `Stop()` はバスを flushing にしてキューを捨てる（Start/Stop を対で回す短い利用では溜まらない）。
 - **`video/x-raw(memory:SystemMemory)` を capsfilter で書くと、それ自体が GPU→CPU の往復を強制する**。フィーチャは明示同士でしか一致しないので `memory:D3D11Memory` とは折り合わない。NVIDIA 実機の実測（`tools/Verify-NvD3d11Memory.ps1`）: `nvd3d11h264enc` の sink caps は `video/x-raw(memory:D3D11Memory)` と素の `video/x-raw` だけで **D3D12Memory は受けない**（`d3d12download` は必須）が、capsfilter を外せば `d3d12download` の src もエンコーダーの sink も `memory:D3D11Memory` で折り合う。**`videoconvert` の caps は `video/x-raw(ANY)`** なので間に入っても交渉を妨げず、形式変換が要るときだけ働く（実測: 同じ形で `openh264enc` 相手なら NV12 → I420、`x264enc` / `mfh264enc` なら素の `video/x-raw` の NV12 で折り合う）。**プレビューの `appsink` の手前だけは固定が要る** ── あちらは CPU から読むのが目的なので、交渉に任せると GPU メモリのまま渡りうる。
 - **`d3d11screencapturesrc` は拡縮できない**。caps でモニターの実寸以外を要求すると `Internal data stream error` になり **1 フレームも流れない**（実測: 3840x2160 の画面へ 1024x768 を要求）。**任意の大きさを名乗る `d3d12screencapturesrc` とはここが違う** ── あちらは小さい値を要求されると黙って縮む。実寸（`GstIntrospect.GetMonitorResolutions`）を固定する分には問題がなく、その上で `d3d12convert` 側で縮めるのも通る（実測: 3840x2160 固定 ＋ tee の枝 960x540）。`monitor-index` の並びは D3D12 版と同一（上流 `gst_d3d11_screen_capture_find_nth_monitor` も `EnumAdapters1` × `EnumOutputs` の平坦化）。
 - **`video/x-raw(memory:D3D11Memory)` は録画種別の両方で通る**（実測）。`Type=D3d12` は `d3d12upload` の sink caps に D3D11Memory があり、`Type=System` は D3D11 のメモリが CPU からマップできるので `dwriteclockoverlay ! videoconvert` がそのまま受ける。だから D3D11 の画面キャプチャは、D3D12 版と違って**種別との組み合わせで初期化に失敗しない**。
