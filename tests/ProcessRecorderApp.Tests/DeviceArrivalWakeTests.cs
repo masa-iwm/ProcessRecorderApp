@@ -97,6 +97,29 @@ public class DeviceArrivalWakeTests
     }
 
     /// <summary>
+    /// 早期ウェイクの回数に上限が掛かっていること。
+    ///
+    /// <para>
+    /// <b>外しても何も赤くならない。</b> 復帰は動くし、むしろ速く見える ──
+    /// 壊れ方は「モニターの再構成のような到着の連打で、まだ落ち着いていない機械へ
+    /// パイプライン全再生成を掛ける」という、ログを読まないと分からない形である。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void TheEarlyWakes_AreCapped()
+    {
+        string body = SourceMethodBody.Extract(EventRecorderSource, RestartLoopSignature);
+
+        Assert.True(
+            SourceMethodBody.ContainsCode(body, "RestartPolicy.MayWakeEarly("),
+            "復帰ループが早期ウェイクの回数を数えなくなっている。"
+            + Environment.NewLine
+            + "上限が無いと、到着の連打だけでエスカレーションの予算（3 回）が数秒で尽き、"
+            + Environment.NewLine
+            + "本来 45 秒かけて見極めるはずの判断を数秒で下すようになる。");
+    }
+
+    /// <summary>
     /// <b>初期化の失敗が復帰の芽を残すこと。</b> これが消えると、パイプラインもバスも無い
     /// 状態＝<b>二度とエラーが飛ばない状態</b>で連鎖が終わり、デバイスを挿し直しても
     /// 永久に復帰しなくなる（この機能の前は実際にそうなっていた）。

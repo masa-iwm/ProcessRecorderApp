@@ -73,6 +73,29 @@ internal static class RestartPolicy
     public const int EarlyWakeSettleMs = 1_000;
 
     /// <summary>
+    /// 1 本の連鎖のあいだに、デバイスの到着で待ちを打ち切ってよい回数。
+    ///
+    /// <para>
+    /// <b><see cref="EscalateAfterAttempts"/> より小さくすること。</b> 同じにすると、
+    /// 到着の連打だけでエスカレーションの予算を使い切れてしまう ──
+    /// 本来 5s + 10s + 30s の 45 秒に散っていた 3 回が数秒で尽き、
+    /// <b>まだ落ち着いていない機械へパイプライン全再生成を掛ける</b>ことになる。
+    /// ここが 2 なら、最後の 1 回は必ずバックオフを待ち切る。
+    /// </para>
+    /// <para>
+    /// 作り直しだけの連鎖（<c>rebuildOnly</c>）は 1 周につき待ちが 1 回しか無いので、
+    /// この上限には触れない（周回の間隔は上の <see cref="MaxDelayMs"/> が決める）。
+    /// </para>
+    /// </summary>
+    public const int MaxEarlyWakesPerChain = 2;
+
+    /// <summary>
+    /// これまでに <paramref name="earlyWakesUsed"/> 回 早期に起きた連鎖が、
+    /// もう一度早期に起きてよいか。
+    /// </summary>
+    public static bool MayWakeEarly(int earlyWakesUsed) => earlyWakesUsed < MaxEarlyWakesPerChain;
+
+    /// <summary>
     /// デバイスの到着で待ちを打ち切るとき、そこからさらに何 ms 待つか。
     ///
     /// <para>

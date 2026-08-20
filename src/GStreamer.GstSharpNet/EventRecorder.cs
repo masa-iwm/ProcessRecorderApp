@@ -2507,6 +2507,7 @@ public partial class EventRecorder : ObservableObject, IDisposable
         try
         {
             int attempt = 0;
+            int earlyWakes = 0;
             long seenArrival = DeviceArrivalWatcher.Instance.CurrentGeneration(kind);
             while (!cts.IsCancellationRequested)
             {
@@ -2519,7 +2520,17 @@ public partial class EventRecorder : ObservableObject, IDisposable
                         $"recorder='{Name}' element='{elementName}' {counter} scheduled in {delayMs}ms{watchTag}");
                 }
 
-                bool early = await WaitForRetrySlotAsync(kind, watched, seenArrival, delayMs, cts.Token);
+                // **到着で打ち切れる回数には上限がある。** 上限を外すと、モニターの
+                // 再構成のような連打だけでエスカレーションの予算（3 回）が数秒で尽き、
+                // まだ落ち着いていない機械へパイプライン全再生成を掛けることになる。
+                bool mayWakeEarly = watched && RestartPolicy.MayWakeEarly(earlyWakes);
+                bool early = await WaitForRetrySlotAsync(kind, mayWakeEarly, seenArrival, delayMs, cts.Token);
+                if (early && !RestartPolicy.MayWakeEarly(++earlyWakes))
+                {
+                    // 1 連鎖につき 1 行だけ。以後はバックオフを待ち切る。
+                    Components.ActivityLog.Info("recorder.restart",
+                        $"recorder='{Name}' element='{elementName}' early wakes exhausted ({earlyWakes}); waiting out the backoff");
+                }
                 // **キーは reason= と分ける。** エスカレーションの行は既に
                 // reason=eos を持っており、同じキーを重ねると
                 // "reason=eos reason=device-arrival" という読めない行になる

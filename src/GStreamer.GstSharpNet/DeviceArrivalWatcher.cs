@@ -47,6 +47,9 @@ namespace ProcessRecorderApp.GStreamer;
 ///     <b>バスの同期ハンドラが取るのはこちらだけ</b>で、内側は
 ///     「世代を進めて待ち手を起こす」しかしない。</item>
 /// </list>
+/// <b>到着は束ねてから起こす。</b> 1 件ごとに起こすと、モニターの再構成のような
+/// 連打で「まだ途中の状態」を何度も試すことになる（<see cref="ArrivalQuietMs"/>）。
+///
 /// <b>分けてあることが要点である。</b> 1 本にすると、<c>Stop()</c>
 /// （プロバイダのスレッドの join を含む）をロックの下で呼んでいるあいだに、
 /// そのスレッドが同期ハンドラから同じロックを待って<b>デッドロックする</b>。
@@ -68,6 +71,25 @@ internal sealed partial class DeviceArrivalWatcher
     /// </para>
     /// </summary>
     public const int ProviderLingerMs = 5_000;
+
+    /// <summary>
+    /// 到着が途切れてから実際に待ち手を起こすまでの静穏時間(ms)。
+    ///
+    /// <para>
+    /// <b>連打を 1 回にまとめるためにある。</b> モニターの抜き差し・解像度変更・
+    /// RDP の再接続はいずれも <c>WM_DISPLAYCHANGE</c> を数回続けて起こし、
+    /// プロバイダはそのたびに再 probe して差分を post する。1 件ごとに起こすと、
+    /// <b>まだ再構成の途中で復帰を試す</b>ことになり、しかも失敗の試行だけが積み上がる。
+    /// </para>
+    /// </summary>
+    public const int ArrivalQuietMs = 500;
+
+    /// <summary>
+    /// 束ねを打ち切る上限(ms)。<b>静穏だけに頼ると飢える</b> ──
+    /// 静穏時間より短い間隔で到着が続く限り、いつまでも起こさないことになる。
+    /// 最初の 1 件からこの時間が経ったら、まだ騒がしくても起こす。
+    /// </summary>
+    public const int ArrivalMaxDeferMs = 3_000;
 
     private static readonly IDisposable _noScope = new NullScope();
 
@@ -129,6 +151,15 @@ internal sealed partial class DeviceArrivalWatcher
 
         /// <summary>プロバイダが無い、または通知を出せないと分かった。以後は試さない。</summary>
         public bool Unavailable;
+
+        /// <summary>束ねている最中の最初の到着の時刻。<b><c>_signalLock</c> の下でだけ触る。</b></summary>
+        public long BurstStartedTicks;
+
+        /// <summary>束ねている最中の直近の到着の時刻。<b><c>_signalLock</c> の下でだけ触る。</b></summary>
+        public long LastArrivalTicks;
+
+        /// <summary>束ねの待ちが走っているか。<b><c>_signalLock</c> の下でだけ触る。</b></summary>
+        public bool Coalescing;
     }
 
     /// <summary>
@@ -342,7 +373,7 @@ internal sealed partial class DeviceArrivalWatcher
                 $"kind={kindName} device='{deviceName}'{repeated}");
         }
 
-        SignalArrival(state.Kind);
+        NoteArrival(state.Kind);
     }
 
     /// <summary>
@@ -351,19 +382,86 @@ internal sealed partial class DeviceArrivalWatcher
     /// 走るので、<see cref="_lock"/>（ネイティブの <c>Start</c> / <c>Stop</c> を抱えている）を
     /// 待たせてはいけない。
     /// </summary>
-    private void SignalArrival(DeviceKind kind)
+    private void NoteArrival(DeviceKind kind)
     {
+        bool startCoalescing = false;
         lock (_signalLock)
         {
             KindState state = _kinds[(int)kind];
-            state.Generation++;
-            TaskCompletionSource previous = state.Arrival;
-            state.Arrival = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            long now = Environment.TickCount64;
+            state.LastArrivalTicks = now;
 
-            // RunContinuationsAsynchronously なので、待ち手の続き（SetState / Initialize）が
-            // このスレッド ── GStreamer のデバイス通知スレッド ── で走ることはない。
-            previous.TrySetResult();
+            if (!state.Coalescing)
+            {
+                state.BurstStartedTicks = now;
+                state.Coalescing = true;
+                startCoalescing = true;
+            }
         }
+
+        // 束ねの待ちはプールスレッドへ逃がす ── ここはプロバイダの通知スレッドである。
+        if (startCoalescing)
+            _ = CoalesceThenSignalAsync(kind);
+    }
+
+    /// <summary>
+    /// 束ねが落ち着くまで待ってから 1 回だけ起こす。
+    /// 待っているあいだに来た到着は、この 1 回に含まれる。
+    /// </summary>
+    private async Task CoalesceThenSignalAsync(DeviceKind kind)
+    {
+        try
+        {
+            while (true)
+            {
+                int waitMs;
+                lock (_signalLock)
+                {
+                    KindState state = _kinds[(int)kind];
+                    waitMs = CoalesceWaitMs(Environment.TickCount64, state.LastArrivalTicks, state.BurstStartedTicks);
+                    if (waitMs <= 0)
+                    {
+                        state.Coalescing = false;
+                        SignalArrivalLocked(state);
+                        return;
+                    }
+                }
+
+                await Task.Delay(waitMs).ConfigureAwait(false);
+            }
+        }
+        catch (Exception ex)
+        {
+            // 起こし損ねるとタイマーだけの復帰へ落ちる（＝この機能が無い状態）。
+            // 束ねの旗は必ず降ろす ── 降ろさないと以後の到着が一度も束ねを始めない。
+            lock (_signalLock)
+                _kinds[(int)kind].Coalescing = false;
+            DebugLogEx.Log(DebugLevel.Error, $"coalescing device arrivals failed! kind={DeviceKindRules.LogName(kind)}\n{ex}");
+        }
+    }
+
+    /// <summary>
+    /// 束ねをあと何 ms 待つか。0 以下なら今すぐ起こす。
+    /// <b>静穏（<see cref="ArrivalQuietMs"/>）と上限（<see cref="ArrivalMaxDeferMs"/>）の早い方</b>で切る。
+    /// </summary>
+    internal static int CoalesceWaitMs(long nowTicks, long lastArrivalTicks, long burstStartedTicks)
+    {
+        long quietLeft = lastArrivalTicks + ArrivalQuietMs - nowTicks;
+        long deferLeft = burstStartedTicks + ArrivalMaxDeferMs - nowTicks;
+        long wait = Math.Min(quietLeft, deferLeft);
+        return wait <= 0 ? 0 : (int)Math.Min(wait, ArrivalMaxDeferMs);
+    }
+
+    /// <summary><see cref="_signalLock"/> の下で呼ぶこと。</summary>
+    private static void SignalArrivalLocked(KindState state)
+    {
+        state.Generation++;
+        TaskCompletionSource previous = state.Arrival;
+        state.Arrival = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        // RunContinuationsAsynchronously なので、待ち手の続き（SetState / Initialize）が
+        // このスレッド ── GStreamer のデバイス通知スレッド ── で走ることはない。
+        previous.TrySetResult();
     }
 
     // ---- 解放 ----
@@ -484,8 +582,10 @@ internal sealed partial class DeviceArrivalWatcher
     private void SignalTestArrival()
     {
         Components.ActivityLog.Info("device.arrive", "kind=test injected");
+        // **束ねの経路をそのまま通す。** テスト専用の近道を作ると、
+        // E2E が測るのが本番と違う経路になる（束ねの遅れも測られなくなる）。
         for (int i = 0; i < _kinds.Length; i++)
-            SignalArrival((DeviceKind)i);
+            NoteArrival((DeviceKind)i);
     }
 
     private sealed partial class Scope(DeviceArrivalWatcher owner, DeviceKind kind) : IDisposable

@@ -109,4 +109,29 @@ public class RestartPolicyTests
     [InlineData(int.MinValue, int.MaxValue)]
     public void TheSettle_IsNeverNegative(int fullDelayMs, int elapsedMs)
         => Assert.True(0 <= RestartPolicy.SettleAfterArrivalMs(fullDelayMs, elapsedMs));
+
+    /// <summary>
+    /// <b>到着で打ち切れる回数は、エスカレーションの予算より必ず少ないこと。</b>
+    ///
+    /// <para>
+    /// 同じにすると、モニターの再構成のような到着の連打だけで予算を使い切れる ──
+    /// 本来 5s + 10s + 30s の 45 秒に散っていた 3 回が数秒で尽き、
+    /// <b>まだ落ち着いていない機械へパイプライン全再生成を掛ける</b>ことになる。
+    /// 少なくとも 1 回はバックオフを待ち切る、というのがこの不等式の意味である。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void EarlyWakes_CannotConsumeTheWholeEscalationBudget()
+        => Assert.True(RestartPolicy.MaxEarlyWakesPerChain < RestartPolicy.EscalateAfterAttempts,
+            "早期ウェイクの上限がエスカレーションの予算以上になっている。"
+            + "連打だけで全再生成へ跳べるようになる。");
+
+    [Fact]
+    public void EarlyWakes_AreAllowedUntilTheCap()
+    {
+        Assert.True(RestartPolicy.MayWakeEarly(0));
+        Assert.True(RestartPolicy.MayWakeEarly(RestartPolicy.MaxEarlyWakesPerChain - 1));
+        Assert.False(RestartPolicy.MayWakeEarly(RestartPolicy.MaxEarlyWakesPerChain));
+        Assert.False(RestartPolicy.MayWakeEarly(RestartPolicy.MaxEarlyWakesPerChain + 10));
+    }
 }
