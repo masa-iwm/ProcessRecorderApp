@@ -1,4 +1,4 @@
-﻿# ProcessRecorderApp
+# ProcessRecorderApp
 
 [English](README.md) | 日本語
 

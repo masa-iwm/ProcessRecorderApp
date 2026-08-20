@@ -1,4 +1,4 @@
-﻿using ProcessRecorderApp.Components;
+using ProcessRecorderApp.Components;
 using Xunit;
 
 namespace ProcessRecorderApp.Tests;

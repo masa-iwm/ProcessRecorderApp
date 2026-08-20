@@ -1,4 +1,4 @@
-﻿# 環境と実装の背景事実
+# 環境と実装の背景事実
 
 このファイルは、環境・外部要素（GStreamer / Windows / PowerShell）に関する恒久的な事実をまとめる。いずれも実装・テストの形を決めている制約であり、「なぜこう書いてあるか」の根拠がここにある。同じ事実の多くは実装側のコメント（`src/GStreamer.GstSharpNet/EventRecorder.cs`、`src/SingleInstance/SingleInstanceManager.Launcher.cs`、`tools/` の検証スクリプトなど）にも書かれている。同じ事実を二重に持っている前提で、片方を直したらもう片方も直すこと。
 

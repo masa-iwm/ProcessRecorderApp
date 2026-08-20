@@ -1,4 +1,4 @@
-﻿# ProcessRecorderApp: 実装ドキュメント
+# ProcessRecorderApp: 実装ドキュメント
 
 本ドキュメントは `src/` 配下のソリューション全体（5プロジェクト）を対象とした、実装者向けの
 技術資料です。アプリの機能・使い方については、ルートの
@@ -1868,7 +1868,7 @@ GPU テクスチャになるため**アクセシブルテキストが 1 つも�
 | `recorder.error` | ERROR | `EventRecorder.HandleBusMessage` | **両方のバス**の `Error`（バス名・要素名・メッセージ・debug 情報） |
 | `recorder.warning` | WARN | 同上 | 両方のバスの `Warning`。連続する同一内容は畳んで `repeated=N` を添える |
 | `recorder.eos` | INFO | 同上 | sink 側バスの `Eos` |
-| `recorder.restart` | INFO / WARN | 同上／`RestartSinkSrc` | 自動復帰の予約と、その結果（`ok` / `failed`）。監視できる映像源なら `watch=camera｜monitor` が付き、デバイスの到着で待ちを打ち切った回は `wake=device-arrival` が付く |
+| `recorder.restart` | INFO / WARN | 同上／`RestartSinkSrc` | 自動復帰の予約と、その結果（`ok` / `failed`）。監視できる映像源なら `watch=camera｜monitor` が付き、デバイスの到着で待ちを打ち切った回は `wake=device-arrival` が付く。**作り直しだけを試す連鎖は `attempt=` ではなく `round=`**（1 周ごとに新しい連鎖になるので `attempt` は常に 1 になる）で、待ちの案内は 1 周目と約 1 時間ごとにしか出さない（1 分に 1 行では `activity.log` を数日で使い切る） |
 | `device.watch` | INFO / WARN | `DeviceArrivalWatcher` | デバイス到着の監視を張った／止めた（`kind=` と `provider=`）。WARN は**監視できない**構成（プロバイダが無い・`CanMonitor()` が false・起動に失敗）で、タイマーだけの復帰へ縮退したことを意味する |
 | `device.arrive` | INFO | 同上 | デバイスプロバイダが到着（`device-added` / `device-changed`）を報告した。連続する同一内容は畳んで `repeated=N` を添える |
 | `recorder.continuous-init ok` / `recorder.continuous-init fail` | INFO / WARN | `EventRecorder.StartContinuous` ／ `InitializeCore` ／ `InitializeWith` | 常時録画の枝を組めた（エンコーダー・fps・解像度・分割間隔）／組めなかったので**枝だけ落とした**（イベント録画は無事＝隔離契約）。**上書きだけを捨てた場合も同じ名前で出す**（読めないフレームレート・上流が固定されていないのに指定された解像度）── どちらも「設定が黙って効いていない」という同じ事故だからである |

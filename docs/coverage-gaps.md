@@ -1,4 +1,4 @@
-﻿# 自動では守られていないもの
+# 自動では守られていないもの
 
 ここに挙げるのは「テストが無い」箇所ではなく、**退行を注入しても既存のどのテスト層でも検出できないことが確認済み**の箇所の一覧である（テスト層の呼び分け: L1＝ユニット／ソース静的検査、L2＝発行物の CLI を回す E2E、L3＝UIA 経由の GUI 自動テスト、L4＝ドキュメント整合検査）。プロパティ編集・画面切替・トレイ格納・正常終了パス・レコーダーの追加/改名/削除・パイプライン編集ダイアログ・表示言語のマトリクスは自動で守られている（トレイメニューの文言は `TrayMenuTests` が守るが CI の必須ゲート外なので、下の一覧に載せている）。ここに載っている箇所を触るときは、push が緑でも退行していないとは言えないので、各項目に書いた対応する手動確認を行うこと。
 
@@ -255,7 +255,7 @@ UIA からは分からない。自動で守られているのは**幾何の規�
 （`docs/gpu-verification.md` と同じ「実行＋レポート往復」でよい）:
 
 1. 録画中にカメラを抜く → `recorder.error` と
-   `device.watch kind=camera provider=mfdeviceprovider monitor=yes` が出る
+   `device.watch kind=camera provider='mfdeviceprovider' monitor=yes` が出る
 2. 挿し直す → `device.arrive kind=camera device='…'` が出て、
    `recorder.restart … wake=device-arrival` で復帰する（抜いてから 5 秒待たされない）
 3. **抜いたまま 2 分放置**してから挿す → 詰み状態（パイプラインもバスも無い）から
@@ -269,7 +269,7 @@ UIA からは分からない。自動で守られているのは**幾何の規�
    （理由は `docs/environment-facts.md`）。**復帰待ちのあいだだけずれうる**
    ── 復帰するか連鎖が終われば、リンガーの後にプロバイダを止めるので元へ戻る
 5. モニターの側も 1 回 ── 監視対象のモニターのケーブルを抜き差しして、
-   `device.watch kind=monitor provider=d3d12screencapturedeviceprovider monitor=yes` と
+   `device.watch kind=monitor provider='d3d12screencapturedeviceprovider' monitor=yes` と
    `wake=device-arrival` が出ること
 
 **利用者が別途入れた GStreamer に d3d12 プラグインが無い構成**も自動では踏めない

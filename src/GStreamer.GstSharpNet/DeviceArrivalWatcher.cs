@@ -37,10 +37,19 @@ namespace ProcessRecorderApp.GStreamer;
 /// </para>
 ///
 /// <para>
-/// <b><see cref="_lock"/> は葉である。</b> <c>_stateLock</c> / <c>_busLock</c> /
-/// <c>_restartLock</c> を保持したまま取らないこと。逆にこのロックの下から
-/// それらを取ることもない。バスの同期ハンドラはこのロックを取るので、
-/// 内側は「世代を進めて待ち手を起こす」だけに保つ。
+/// <b>ロックは 2 本に分かれている。</b> どちらも葉であり、<c>_stateLock</c> /
+/// <c>_busLock</c> / <c>_restartLock</c> を保持したまま取らないこと。逆にこれらの下から
+/// それらを取ることもない。
+/// <list type="bullet">
+///   <item><see cref="_lock"/> ── 購読・参照カウント・猶予の寿命管理。
+///     <b>ネイティブの <c>Start</c> / <c>Stop</c> をこの下で呼ぶ</b>。</item>
+///   <item><see cref="_signalLock"/> ── 世代と待ち札だけ。
+///     <b>バスの同期ハンドラが取るのはこちらだけ</b>で、内側は
+///     「世代を進めて待ち手を起こす」しかしない。</item>
+/// </list>
+/// <b>分けてあることが要点である。</b> 1 本にすると、<c>Stop()</c>
+/// （プロバイダのスレッドの join を含む）をロックの下で呼んでいるあいだに、
+/// そのスレッドが同期ハンドラから同じロックを待って<b>デッドロックする</b>。
 /// </para>
 /// </summary>
 internal sealed partial class DeviceArrivalWatcher
@@ -63,6 +72,14 @@ internal sealed partial class DeviceArrivalWatcher
     private static readonly IDisposable _noScope = new NullScope();
 
     private readonly object _lock = new();
+
+    /// <summary>
+    /// 世代と待ち札だけを守る。<b>バスの同期ハンドラが取るのはこちらだけ</b> ──
+    /// <see cref="_lock"/> と分けておかないと、<c>Stop()</c> を待っているスレッドと
+    /// 通知を配っているスレッドが互いを待ってデッドロックする。
+    /// </summary>
+    private readonly object _signalLock = new();
+
     private readonly KindState[] _kinds;
 
     private EventWaitHandle? _testEvent;
@@ -71,9 +88,9 @@ internal sealed partial class DeviceArrivalWatcher
 
     private DeviceArrivalWatcher()
     {
-        // 種別を足したときに配列の長さを直し忘れないよう、最後の要素から導く
+        // 種別を足したときに配列の長さを直し忘れないよう、列挙そのものから導く
         // （足りないと Acquire が IndexOutOfRange で落ち、復帰の連鎖が黙って死ぬ）。
-        _kinds = new KindState[(int)DeviceKind.Monitor + 1];
+        _kinds = new KindState[Enum.GetValues<DeviceKind>().Length];
         for (int i = 0; i < _kinds.Length; i++)
             _kinds[i] = new KindState { Kind = (DeviceKind)i };
     }
@@ -86,10 +103,16 @@ internal sealed partial class DeviceArrivalWatcher
         /// <summary>この種別の到着を待っている復帰連鎖の数。</summary>
         public int Holders;
 
-        /// <summary>到着のたびに 1 進む。待ち手はこれを控えて取りこぼしを防ぐ。</summary>
+        /// <summary>
+        /// 到着のたびに 1 進む。待ち手はこれを控えて取りこぼしを防ぐ。
+        /// <b><c>_signalLock</c> の下でだけ触る。</b>
+        /// </summary>
         public long Generation;
 
-        /// <summary>いまの待ち手を起こすための札。到着のたびに新しいものへ差し替える。</summary>
+        /// <summary>
+        /// いまの待ち手を起こすための札。到着のたびに新しいものへ差し替える。
+        /// <b><c>_signalLock</c> の下でだけ触る。</b>
+        /// </summary>
         public TaskCompletionSource Arrival = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         /// <summary>interned な GObject。<b>Dispose しない</b>（参照を落とすだけ）。</summary>
@@ -153,7 +176,7 @@ internal sealed partial class DeviceArrivalWatcher
     public long CurrentGeneration(DeviceKind kind)
     {
         EnsureTestInjection();
-        lock (_lock)
+        lock (_signalLock)
             return _kinds[(int)kind].Generation;
     }
 
@@ -171,7 +194,7 @@ internal sealed partial class DeviceArrivalWatcher
     public Task WaitForArrivalAsync(DeviceKind kind, long seenGeneration)
     {
         EnsureTestInjection();
-        lock (_lock)
+        lock (_signalLock)
         {
             KindState state = _kinds[(int)kind];
             return seenGeneration < state.Generation ? Task.CompletedTask : state.Arrival.Task;
@@ -192,12 +215,15 @@ internal sealed partial class DeviceArrivalWatcher
         {
             // gst_init より前に Gst.* を呼ぶと、ローダーがネイティブを解決して固定してしまう。
             // ここへ来るのは初期化前に復帰連鎖が動いた場合だけで、そのときはタイマーだけで復帰する。
-            state.Unavailable = true;
+            // **これは一時的な状態なので Unavailable を立てない** ── 立てると、その後
+            // gst_init が済んでも二度と監視を張らず、プロセスが終わるまで機能が消える。
             Components.ActivityLog.Warn("device.watch",
                 $"kind={kindName} GStreamer is not initialized yet; falling back to the timer only");
             return;
         }
 
+        DeviceProvider? started = null;
+        IDisposable? subscription = null;
         try
         {
             DeviceProvider? provider = DeviceProviderFactory.GetByName(providerName);
@@ -233,7 +259,12 @@ internal sealed partial class DeviceArrivalWatcher
                 return;
             }
 
-            IDisposable subscription = bus.SubscribeSyncDrop((_, message) =>
+            // Start は済んだ。ここから先で落ちたら**必ず止める** ──
+            // started のまま放置すると、この型が守っている
+            // 「永続的に握らない」（get_devices の並びが壊れる）を破ることになる。
+            started = provider;
+
+            subscription = bus.SubscribeSyncDrop((_, message) =>
             {
                 try { HandleProviderMessage(state, message); }
                 catch (Exception ex)
@@ -250,6 +281,7 @@ internal sealed partial class DeviceArrivalWatcher
 
             state.Provider = provider;
             state.Subscription = subscription;
+            started = null;     // 引き渡した。以後の後始末は StopLocked が行う
 
             Components.ActivityLog.Info("device.watch",
                 $"kind={kindName} provider='{providerName}' monitor=yes");
@@ -259,6 +291,23 @@ internal sealed partial class DeviceArrivalWatcher
             state.Unavailable = true;
             Components.ActivityLog.Warn("device.watch",
                 $"kind={kindName} provider='{providerName}' could not be watched: {ex.Message}");
+        }
+        finally
+        {
+            // 引き渡せなかった Start を巻き戻す（started が残っているのは失敗した場合だけ）。
+            if (started is not null)
+            {
+                try
+                {
+                    subscription?.Dispose();
+                    started.Stop();
+                }
+                catch (Exception ex)
+                {
+                    DebugLogEx.Log(DebugLevel.Error,
+                        $"rolling back the device provider failed! kind={kindName}\n{ex}");
+                }
+            }
         }
     }
 
@@ -296,9 +345,15 @@ internal sealed partial class DeviceArrivalWatcher
         SignalArrival(state.Kind);
     }
 
+    /// <summary>
+    /// 到着を 1 件記録して待ち手を起こす。
+    /// <b>取るのは <see cref="_signalLock"/> だけ</b> ── ここはプロバイダの通知スレッドで
+    /// 走るので、<see cref="_lock"/>（ネイティブの <c>Start</c> / <c>Stop</c> を抱えている）を
+    /// 待たせてはいけない。
+    /// </summary>
     private void SignalArrival(DeviceKind kind)
     {
-        lock (_lock)
+        lock (_signalLock)
         {
             KindState state = _kinds[(int)kind];
             state.Generation++;
@@ -373,9 +428,13 @@ internal sealed partial class DeviceArrivalWatcher
         // Dispose は「プロセス全体としてこのオブジェクトは終わり」を意味する
         // （GetBus が返す Bus も同じ理由で持ち続けない・破棄しない）。
         state.Provider = null;
-        state.Throttle.Flush();
 
-        Components.ActivityLog.Info("device.watch", $"kind={kindName} stopped");
+        // **畳んだ件数を落とさない。** 抑制したまま止めると「静かだった」のか
+        // 「連打を畳んでいた」のかが読めなくなる（BusMessageThrottle の存在意義）。
+        int suppressed = state.Throttle.Flush();
+        string repeated = 0 < suppressed ? $" repeated={suppressed}" : "";
+
+        Components.ActivityLog.Info("device.watch", $"kind={kindName} stopped{repeated}");
     }
 
     // ---- テスト専用の注入 ----

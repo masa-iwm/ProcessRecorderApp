@@ -2382,6 +2382,42 @@ public partial class EventRecorder : ObservableObject, IDisposable
     private readonly BusMessageThrottle _rebuildThrottle = new();
 
     /// <summary>
+    /// 同じ理由で作り直しに失敗し続ける行を畳む。
+    ///
+    /// <para>
+    /// <b><see cref="_rebuildThrottle"/> と別インスタンスにする。</b> あちらのキーは
+    /// 要素名だけなので、共有すると<b>失敗の理由が別のものへ変わっても沈黙したまま</b>になる
+    /// ── 「デバイスが無い」から「エンコーダーが無い」へ変わったことこそ読みたい情報である。
+    /// </para>
+    /// </summary>
+    private readonly BusMessageThrottle _rebuildFailThrottle = new();
+
+    /// <summary>
+    /// 作り直しだけを試す連鎖（<c>rebuildOnly</c>）が何周目かを跨いで数える。
+    ///
+    /// <para>
+    /// <b>1 周ごとに新しい連鎖になるので、ループ内の <c>attempt</c> では数えられない</b>
+    /// ── 失敗した <see cref="Initialize"/> が次の連鎖を張る作りなので、
+    /// <c>attempt</c> は常に 1 のままになり、ログを読む側が
+    /// 「1 回しか試していない」と読み違える。作り直しが成功したら 0 へ戻す。
+    /// </para>
+    /// </summary>
+    private int _rebuildRounds;
+
+    /// <summary>
+    /// 作り直し待ちの案内（<c>scheduled in ...</c>）を、何周に 1 回だけ出すか。
+    ///
+    /// <para>
+    /// <b>この行だけは畳めない</b> ── 待ちに入るたびに出るので、
+    /// デバイスが二度と戻らない構成では 1 分に 1 行、1 日で 1,400 行を超える。
+    /// <c>activity.log</c> は 1MB で世代 1 つのローテーションなので、
+    /// <b>これだけで数日ぶんの履歴が押し出される</b>。1 周目は必ず出し、
+    /// 以後は約 1 時間に 1 行だけ「まだ待っている」を残す。
+    /// </para>
+    /// </summary>
+    private const int RebuildWaitAnnounceEveryRounds = 60;
+
+    /// <summary>
     /// ソース障害からの自動復帰を予約する。
     ///
     /// <para>
@@ -2465,6 +2501,9 @@ public partial class EventRecorder : ObservableObject, IDisposable
         // 「監視しているのに none」という読み方をさせてしまう。
         string watchTag = kind != DeviceKind.None ? $" watch={DeviceKindRules.LogName(kind)}" : "";
 
+        // 作り直しだけの連鎖は 1 周で終わって次の連鎖へ渡すので、周回は連鎖を跨いで数える。
+        int round = rebuildOnly ? Interlocked.Increment(ref _rebuildRounds) : 0;
+
         try
         {
             int attempt = 0;
@@ -2473,8 +2512,12 @@ public partial class EventRecorder : ObservableObject, IDisposable
             {
                 attempt++;
                 int delayMs = rebuildOnly ? RestartPolicy.MaxDelayMs : RestartPolicy.DelayForAttempt(attempt);
-                Components.ActivityLog.Info("recorder.restart",
-                    $"recorder='{Name}' element='{elementName}' attempt={attempt} scheduled in {delayMs}ms{watchTag}");
+                if (!rebuildOnly || round == 1 || round % RebuildWaitAnnounceEveryRounds == 0)
+                {
+                    string counter = rebuildOnly ? $"round={round}" : $"attempt={attempt}";
+                    Components.ActivityLog.Info("recorder.restart",
+                        $"recorder='{Name}' element='{elementName}' {counter} scheduled in {delayMs}ms{watchTag}");
+                }
 
                 bool early = await WaitForRetrySlotAsync(kind, watched, seenArrival, delayMs, cts.Token);
                 // **キーは reason= と分ける。** エスカレーションの行は既に
@@ -2541,7 +2584,7 @@ public partial class EventRecorder : ObservableObject, IDisposable
                 {
                     Components.ActivityLog.Warn("recorder.restart",
                         rebuildOnly
-                            ? $"recorder='{Name}' retrying the pipeline rebuild attempt={attempt}{wake}{rebuildRepeatedTag}"
+                            ? $"recorder='{Name}' retrying the pipeline rebuild round={round}{wake}{rebuildRepeatedTag}"
                             : mustRebuild
                                 ? $"recorder='{Name}' escalating to a full pipeline rebuild reason=eos{wake}"
                                 : $"recorder='{Name}' escalating to a full pipeline rebuild after {attempt} failed attempts{wake}");
@@ -2565,18 +2608,31 @@ public partial class EventRecorder : ObservableObject, IDisposable
                 {
                     Initialize();
                     // **成功は必ず出す。** 畳んだ抑制もここで解いて、次の障害を1行目から見せる。
-                    _rebuildThrottle.Flush();
-                    Components.ActivityLog.Info("recorder.restart", $"recorder='{Name}' rebuild result=ok{wake}");
+                    // **畳んだ件数は捨てない** ── 捨てると「静かだった」と
+                    // 「何百回も失敗を畳んでいた」が同じ 1 行に見える。
+                    _rebuildRounds = 0;
+                    int flushed = _rebuildThrottle.Flush() + _rebuildFailThrottle.Flush();
+                    string flushedTag = 0 < flushed ? $" repeated={flushed}" : "";
+                    Components.ActivityLog.Info("recorder.restart",
+                        $"recorder='{Name}' rebuild result=ok{wake}{flushedTag}");
                 }
                 catch (Exception ex)
                 {
                     // **ここで諦めない。** Initialize() は失敗時に自分で次の連鎖
                     // （rebuildOnly）を張るので、デバイスが戻ってくればそちらが作り直す。
                     // 所有権は既に畳んであるため、その予約は拒否されない。
-                    if (emitRebuild)
+                    //
+                    // **失敗の行は理由そのもので畳む。** 上の rebuildOnly の畳みは
+                    // 要素名だけをキーにしているので、それに従わせると
+                    // 「原因が別のものへ変わった」が沈黙のまま流れてしまう。
+                    (bool emitFailure, int failureRepeated) = rebuildOnly
+                        ? _rebuildFailThrottle.Observe($"{elementName} {ex.Message}")
+                        : (true, 0);
+                    if (emitFailure)
                     {
+                        string failureRepeatedTag = 0 < failureRepeated ? $" repeated={failureRepeated}" : "";
                         Components.ActivityLog.Error("recorder.restart",
-                            $"recorder='{Name}' rebuild result=failed {ex.Message}{rebuildRepeatedTag}");
+                            $"recorder='{Name}' rebuild result=failed {ex.Message}{failureRepeatedTag}");
                     }
                 }
                 return;
@@ -3231,7 +3287,13 @@ public partial class EventRecorder : ObservableObject, IDisposable
         GC.SuppressFinalize(this);
     }
 
-    private bool _disposedValue;
+    /// <summary>
+    /// <b>volatile は必須</b> ── 立てるのは <see cref="Dispose(bool)"/>（UI/CLI スレッド）で、
+    /// 読むのは復帰の連鎖（プールスレッド。<c>RestartLoopAsync</c> と
+    /// <see cref="TryScheduleDeviceRebuild"/>）である。ロックを介さないので、
+    /// volatile が無いと破棄済みの検査が見えないまま作り直しへ進みうる。
+    /// </summary>
+    private volatile bool _disposedValue;
 
     protected virtual void Dispose(bool disposing)
     {

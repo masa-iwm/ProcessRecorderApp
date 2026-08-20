@@ -1,4 +1,4 @@
-﻿using System.Globalization;
+using System.Globalization;
 using System.Text;
 using System.Text.RegularExpressions;
 
@@ -89,7 +89,7 @@ public static class ActivityLogFile
         "preview.error",
         // デバイス到着の監視（復帰待ちのあいだだけプロバイダを started に保つ）と、
         // 観測した到着。到着で復帰の待ちを打ち切ったことは recorder.restart の
-        // reason=device-arrival に出る。
+        // wake=device-arrival に出る。
         "device.watch",
         "device.arrive",
         // 古い mp4 の自動削除（何もしなかった周回は出さない）。

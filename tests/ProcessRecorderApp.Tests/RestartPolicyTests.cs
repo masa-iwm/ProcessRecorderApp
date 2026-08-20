@@ -1,4 +1,4 @@
-﻿using ProcessRecorderApp.GStreamer;
+using ProcessRecorderApp.GStreamer;
 using Xunit;
 
 namespace ProcessRecorderApp.Tests;
