@@ -251,26 +251,35 @@ UIA からは分からない。自動で守られているのは**幾何の規�
   シグナルは `PROCESSRECORDERAPP_TEST_DEVICE_ARRIVAL` で外から起こしており、
   **実プロバイダには触れていない**。
 
-**カメラのある機械で AOT 発行物に対し 1 回、次を目で確かめること**
-（`docs/gpu-verification.md` と同じ「実行＋レポート往復」でよい）:
+**実機（カメラ・モニター 2 台・MSVC 同梱の AOT 発行物）で 1 度、全項目を通してある。**
+`wake=device-arrival` が出た＝到着で起きた、出ていない＝タイマーで起きた、で読み分ける。
+**この節に触れる変更をしたら、機種を問わず流し直すこと** ── 通知を出すのは上流の
+プロバイダとドライバであって、こちらの都合では動かない。
 
-1. 録画中にカメラを抜く → `recorder.error` と
-   `device.watch kind=camera provider='mfdeviceprovider' monitor=yes` が出る
-2. 挿し直す → `device.arrive kind=camera device='…'` が出て、
-   `recorder.restart … wake=device-arrival` で復帰する（抜いてから 5 秒待たされない）
-3. **抜いたまま 2 分放置**してから挿す → 詰み状態（パイプラインもバスも無い）から
-   `recorder.restart … retrying the pipeline rebuild … wake=device-arrival` →
-   `rebuild result=ok` で復帰すること。**ここが 60 秒の待ちだけで動いていないか**は
-   `wake=device-arrival` の有無で見分ける
-4. **抜き差しの後にデバイスの並びが壊れていないこと** ── パイプライン編集画面を開き、
-   `monitor-index` を切り替えて解像度が実体と一致すること、カメラの
-   `device-index` / `device-name` / `device-path` の組が実体と対応することを見る。
-   プロバイダを started に保ったままにすると、ここが静かにずれる
-   （理由は `docs/environment-facts.md`）。**復帰待ちのあいだだけずれうる**
-   ── 復帰するか連鎖が終われば、リンガーの後にプロバイダを止めるので元へ戻る
-5. モニターの側も 1 回 ── 監視対象のモニターのケーブルを抜き差しして、
-   `device.watch kind=monitor provider='d3d12screencapturedeviceprovider' monitor=yes` と
-   `wake=device-arrival` が出ること
+| 見たこと | 結果 |
+|---|---|
+| 抜いたときに監視が張られる | **確認** ── カメラ `device.watch kind=camera provider='mfdeviceprovider' monitor=yes`、モニター `kind=monitor provider='d3d12screencapturedeviceprovider' monitor=yes` |
+| 初期化に失敗しても連鎖が残る（詰みの解消） | **確認** ── `rebuild result=failed` の直後に `round=1 scheduled in 60000ms` が出て、次の周回で `rebuild result=ok repeated=1` に至った |
+| **モニターの到着で早期に起きる** | **確認** ── 到着 2 件（`EV2360` / `LG Ultra HD`）が 1ms 差で届き、**1.503 秒後**に `retrying the pipeline rebuild round=1 wake=device-arrival` → `rebuild result=ok wake=device-arrival`。束ね 500ms ＋ 落ち着き待ち 1000ms の設計値と一致し、60 秒の待ちを **約 52 秒短縮**した |
+| **カメラの到着で早期に起きる** | **確認** ── `device.arrive kind=camera` の **1.503 秒後**に `retrying the pipeline rebuild round=1 wake=device-arrival` → `rebuild result=ok wake=device-arrival`。モニターのときと**ミリ秒まで同じ遅れ**で、60 秒の待ちを **46.3 秒**短縮した |
+| 抜き差し後のデバイスの並び | **確認** ── 復帰後にパイプライン編集画面で見て、`monitor-index` と解像度、カメラの `device-index` / `device-name` / `device-path` の対応がいずれも実体と一致していた（監視は復帰待ちのあいだだけなので、見た時点ではプロバイダは既に停止している） |
+
+**`mfdeviceprovider` の到着通知は、物理的な抜き差しから数秒遅れる。** 別の回で
+「抜いてから約 10 秒後に挿す」を試すと `device.arrive` は**抜いてから 20.1 秒後**に出た。
+挿した時刻を計測していないので遅れの下限は確定できないが、**5 秒のバックオフでは
+まず間に合わない**ことは実測から言える ── 最初の 2 回はどちらも 5 秒／60 秒の待ちを
+待ち切ってタイマーで復帰し、`device.arrive` は `rebuild result=ok` の後に出ていた
+（0.918 秒後・0.902 秒後。当初はアプリ自身がカメラを開いたことによる自己誘発を疑ったが、
+**その仮説は取り下げる** ── 到着で確実に起きる回が観測できた以上、通知の遅れと
+再試行の時刻がたまたま近かったと読む方が実データに合う）。
+
+**だからタイマーの梯子は外せない。** 到着は「間に合えば早める」ものであって、
+復帰の唯一の駆動源ではない。60 秒の待ち（`rebuildOnly`）では通知が十分に間に合う。
+
+**復帰しても録画は再開しない。** 録画中にソースが死ぬと、エスカレーションの `Initialize()` が
+`Close()` を通るためその場で確定する（実測: `recording.stop … result=ok samplesPushed=211` ──
+**ファイルは壊れていない**）。作り直しの後、レコーダーは待機状態で戻る。
+**これはこの機能より前からの挙動で、今回変えていない。**
 
 **利用者が別途入れた GStreamer に d3d12 プラグインが無い構成**も自動では踏めない
 （開発機も CI もフル構成）。そのときは `device.watch … monitor=no` を出して
