@@ -607,6 +607,9 @@
   <data name="Src_MonitorIndex_Desc" xml:space="preserve">
     <value>キャプチャするモニターのインデックス</value>
   </data>
+  <data name="Src_MonitorDevicePath_Desc" xml:space="preserve">
+    <value>モニターを位置ではなく固有のデバイスパスで指定します。指定すると monitor-index より優先され、前のモニターを抜いても取り込む画面が入れ替わりません。パイプラインを組むときにアプリがハンドルへ解決するため、そのモニターがつながっていない場合は別の画面を録らずに初期化が失敗します。</value>
+  </data>
   <data name="Src_ShowCursor_Desc" xml:space="preserve">
     <value>マウスカーソルを含めるかどうか</value>
   </data>

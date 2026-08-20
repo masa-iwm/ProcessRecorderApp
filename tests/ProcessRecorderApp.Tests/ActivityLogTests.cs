@@ -5,6 +5,22 @@ using Xunit;
 namespace ProcessRecorderApp.Tests;
 
 /// <summary>
+/// <b><see cref="ActivityLog"/> へ実際に書き込みが起こるテストの置き場所。</b>
+///
+/// <para>
+/// 出力先は static な 1 つで、<see cref="ActivityLogTests"/> はそれを自分の一時ディレクトリへ
+/// 向けたうえで<b>行数を数える</b>。xunit は<b>クラスごとに別コレクション＝並走</b>なので、
+/// 製品コードを呼ぶだけで 1 行出るテスト（<c>GstIntrospect.GetMonitors</c> は
+/// <c>monitor.devices</c> を 0 台でも出す）が別クラスに居ると、その 1 行が数え上げに混ざる。
+/// <b>ログを出す製品コードを呼ぶ L1 テストは、このコレクションに入れること。</b>
+/// </para>
+/// </summary>
+public static class ActivityLogWriters
+{
+    public const string Name = "activity-log-writers";
+}
+
+/// <summary>
 /// <see cref="ActivityLog"/> の契約。
 ///
 /// このログの存在意義は「いつ録れて、いつ失敗したかがプロセス終了後も残る」ことなので、
@@ -17,6 +33,7 @@ namespace ProcessRecorderApp.Tests;
 /// <see cref="ActivityLog"/> は static な出力先を持つため、このクラスのテストは
 /// xunit の既定（同一クラス内は逐次実行）に依存している。
 /// </summary>
+[Collection(ActivityLogWriters.Name)]
 public class ActivityLogTests : IDisposable
 {
     private readonly string _dir = Path.Combine(

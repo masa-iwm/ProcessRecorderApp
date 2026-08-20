@@ -607,6 +607,9 @@
   <data name="Src_MonitorIndex_Desc" xml:space="preserve">
     <value>Index of the monitor to capture</value>
   </data>
+  <data name="Src_MonitorDevicePath_Desc" xml:space="preserve">
+    <value>Device path that identifies the monitor by hardware rather than by position. When set it takes precedence over monitor-index, so unplugging an earlier monitor no longer swaps the captured screen. The app resolves it to a handle when the pipeline is built; if the monitor is not connected, the recorder fails to initialize instead of capturing a different screen.</value>
+  </data>
   <data name="Src_ShowCursor_Desc" xml:space="preserve">
     <value>Whether to include the mouse cursor</value>
   </data>

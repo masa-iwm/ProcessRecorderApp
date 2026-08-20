@@ -22,7 +22,13 @@ namespace ProcessRecorderApp.Tests;
 /// <b>この検査はこの機械の実物を読む。</b> 値そのものは機械ごとに違うので固定できないが、
 /// <b>実寸としてありえない値でないこと</b>は形で確かめられる。
 /// </para>
+/// <para>
+/// <b>コレクションを指定しているのは並走を避けるため</b> ── 列挙は <c>monitor.devices</c> を
+/// 1 行出す（0 台でも出す）ので、<see cref="ActivityLogTests"/> と並走すると
+/// あちらの行数の数え上げに混ざる（<see cref="ActivityLogWriters"/>）。
+/// </para>
 /// </summary>
+[Collection(ActivityLogWriters.Name)]
 public class MonitorResolutionTests
 {
     [Fact]
@@ -52,5 +58,25 @@ public class MonitorResolutionTests
         // モニター数と一致すること（並びを monitor-index と突き合わせる前提が崩れていない）
         Assert.True(resolutions.Count <= GstIntrospect.GetMonitorCount(),
             $"モニター数 {GstIntrospect.GetMonitorCount()} より多い解像度が返っている: {resolutions.Count}");
+    }
+
+    /// <summary>
+    /// <b>列挙の経路は 1 本であること。</b> <see cref="GstIntrospect.GetMonitorResolutions"/> は
+    /// <see cref="GstIntrospect.GetMonitors"/> の射影で、<see cref="MonitorInfo.Index"/> は
+    /// 席の位置そのもの ── プロバイダーを 2 か所から起こすと、並び
+    /// （＝ <c>monitor-index</c> との対応）が経路ごとにずれうる。
+    /// </summary>
+    [Fact]
+    public void TheResolutions_AreAProjectionOfTheSingleEnumeration()
+    {
+        var monitors = GstIntrospect.GetMonitors();
+        var resolutions = GstIntrospect.GetMonitorResolutions();
+
+        Assert.Equal(monitors.Count, resolutions.Count);
+        for (int i = 0; i < monitors.Count; i++)
+        {
+            Assert.Equal(i, monitors[i].Index);
+            Assert.Equal(monitors[i].Resolution, resolutions[i]);
+        }
     }
 }

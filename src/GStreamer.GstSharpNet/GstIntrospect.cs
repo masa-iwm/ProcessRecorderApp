@@ -31,6 +31,41 @@ public sealed class VideoDeviceInfo
 }
 
 /// <summary>
+/// 画面キャプチャの対象となるモニター 1 台の情報。
+///
+/// <para>
+/// <b><see cref="Path"/> だけが再起動・抜き差しをまたいで安定している。</b>
+/// <see cref="Index"/> は並びの中の位置なので前のモニターを抜くと詰まり、
+/// <see cref="Handle"/> は実行時の <c>HMONITOR</c> なので保存できない。
+/// 設定に書けるのはパス、要素へ渡せるのはハンドル ── その橋渡しが
+/// <see cref="MonitorSelection"/> である。
+/// </para>
+/// </summary>
+public sealed class MonitorInfo
+{
+    /// <summary>
+    /// <c>d3d12screencapturesrc</c> / <c>d3d11screencapturesrc</c> の <c>monitor-index</c> と
+    /// 同じ並びでの位置（0 始まり）。
+    /// </summary>
+    public required int Index { get; init; }
+
+    /// <summary>
+    /// デバイスパス（<c>\\?\DISPLAY#...</c> の形）。物理モニター＋端子ごとに安定しており、
+    /// 上流自身が再 probe 後の同一性判定に使っている。読めなければ空。
+    /// </summary>
+    public string Path { get; init; } = "";
+
+    /// <summary>
+    /// <c>HMONITOR</c>（要素の <c>monitor-handle</c> に渡す値）。読めなければ 0。
+    /// <b>実行時のハンドルなので保存してはいけない</b> ── 保存するのは <see cref="Path"/> の方。
+    /// </summary>
+    public ulong Handle { get; init; }
+
+    /// <summary>物理ピクセルでの大きさ（例 <c>3840x2160</c>）。読めなければ空。</summary>
+    public string Resolution { get; init; } = "";
+}
+
+/// <summary>
 /// GStreamer / OS の実行時情報を取得するヘルパー。
 /// モニター数や Media Foundation ビデオ入力デバイスの一覧・対応 caps を、パイプラインビルダー UI の
 /// 動的な選択肢として提供する。GStreamer 初期化(<see cref="Controller.StaticInitialize"/>)後に呼ぶこと。
@@ -154,33 +189,113 @@ public static partial class GstIntrospect
     /// プロバイダーが無い・起動に失敗した・デバイスが 0 台のいずれでも空を返し、
     /// UI 側は自由入力へ倒れる（そういう機械では <c>d3d12screencapturesrc</c> 自体も動かない）。
     /// </para>
+    /// <para>
+    /// <b>列挙そのものは <see cref="GetMonitors"/> が 1 本で持ち、これはその射影である。</b>
+    /// </para>
     /// </summary>
     public static IReadOnlyList<string> GetMonitorResolutions()
     {
-        var result = new List<string>();
+        var monitors = GetMonitors();
+        var result = new List<string>(monitors.Count);
+        foreach (MonitorInfo monitor in monitors)
+            result.Add(monitor.Resolution);
+        return result;
+    }
+
+    /// <summary>
+    /// 接続されているモニターを <c>d3d12screencapturedeviceprovider</c> の並びで列挙する。
+    ///
+    /// <para>
+    /// <b>列挙の経路はここ 1 本だけにしてある。</b> <see cref="GetMonitorResolutions"/> は
+    /// この結果の射影である ── プロバイダーを 2 か所から Start/Stop すると、
+    /// 並び（＝ <c>monitor-index</c> との対応）が経路ごとにずれうる。
+    /// </para>
+    /// <para>
+    /// <b>読めなかったモニターも席を残す</b>（パスも大きさも空、ハンドルは 0）──
+    /// 詰めると以降の <c>monitor-index</c> が 1 つずつずれ、直そうとしている
+    /// 取り違えをそのまま作ってしまう。
+    /// </para>
+    /// <para>
+    /// プロバイダーが無い・起動に失敗した・デバイスが 0 台のいずれでも空を返す
+    /// （そういう機械では <c>d3d12screencapturesrc</c> 自体も動かない）。
+    /// </para>
+    /// </summary>
+    public static IReadOnlyList<MonitorInfo> GetMonitors()
+    {
+        var result = new List<MonitorInfo>();
         try
         {
             // プロバイダーもデバイスも interned な GObject（GStreamer 側が保持し続ける）なので
             // Dispose しない。
             DeviceProvider? provider = DeviceProviderFactory.GetByName("d3d12screencapturedeviceprovider");
-            if (provider is null || !provider.Start())
-                return result;
-
-            try
+            if (provider is not null && provider.Start())
             {
-                foreach (Device device in provider.GetDevices())
-                    result.Add(ReadMonitorSize(device));
-            }
-            finally
-            {
-                provider.Stop();
+                try
+                {
+                    int index = 0;
+                    foreach (Device device in provider.GetDevices())
+                    {
+                        result.Add(new MonitorInfo
+                        {
+                            Index = index++,
+                            Path = ReadDevicePath(device),
+                            Handle = ReadMonitorHandle(device),
+                            Resolution = ReadMonitorSize(device),
+                        });
+                    }
+                }
+                finally
+                {
+                    provider.Stop();
+                }
             }
         }
         catch
         {
             // 取得できなければ空を返し、UI 側は自由入力へフォールバックする
         }
+
+        // **DebugLogEx では見えない**（GST_DEBUG が未設定だと 1 行も出ない）ので
+        // activity.log へ出す ── カメラの `camera.devices` と同じ形。
+        // **0 台でも 1 行出す。** 「パスで指定したのに解決できない」ときに、
+        // 列挙そのものが空だったのか一致しなかっただけなのかは、この行でしか分からない。
+        int withPath = 0;
+        foreach (MonitorInfo monitor in result)
+        {
+            if (!string.IsNullOrEmpty(monitor.Path))
+                withPath++;
+        }
+        Components.ActivityLog.Info("monitor.devices", $"count={result.Count} withPath={withPath}");
         return result;
+    }
+
+    /// <summary>
+    /// モニターの <c>HMONITOR</c> を読む。読めなければ 0（＝ハンドルでは指定できない）。
+    ///
+    /// <para>
+    /// 大きさやパスと違い、これはデバイスの properties ではなく<b>デバイスの GObject
+    /// プロパティ</b>（<c>monitor-handle</c>、<c>guint64</c>）に在る ── 要素側の
+    /// <c>monitor-handle</c> と同じ綴り・同じ型で、プロバイダーが作った要素へ
+    /// 渡しているのもこの値である。
+    /// </para>
+    /// <para>
+    /// <see cref="Gst.GObject.Object.GetProperty"/> が返す <see cref="Gst.GObject.Value"/> は
+    /// 呼び出し側の所有物なので破棄する。プロパティを持たないビルドでは
+    /// <see cref="ArgumentException"/> になるが、そこは静かに 0 へ倒す
+    /// ── 呼び出し側（<see cref="MonitorSelection"/>）が縮退の道を持っている。
+    /// </para>
+    /// </summary>
+    private static ulong ReadMonitorHandle(Device device)
+    {
+        try
+        {
+            using Gst.GObject.Value value = device.GetProperty("monitor-handle");
+            return value.GetUInt64();
+        }
+        catch
+        {
+            return 0;
+        }
     }
 
     /// <summary>

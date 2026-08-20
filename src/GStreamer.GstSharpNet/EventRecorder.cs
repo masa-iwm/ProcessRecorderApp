@@ -1084,6 +1084,43 @@ public partial class EventRecorder : ObservableObject, IDisposable
 
         Close();
 
+        // **モニターのパス指定はここで 1 回だけ解く。**
+        // `monitor-device-path` は要素のプロパティではなくアプリの擬似プロパティで、
+        // 実行時のハンドル（`monitor-handle`）へ置き換えて消す必要がある
+        // ── 残したまま渡すと `no property` でパイプラインが組めない。
+        // 候補ループの中（InitializeWith）で解くと、同じ失敗が候補の数だけ繰り返される。
+        //
+        // **列挙は指定が在るときだけ走らせる。** InitializeCore はレコーダーごと・
+        // 復帰のたびに走るので、無条件に列挙するとテストソースのレコーダーまで
+        // デバイスプロバイダを 60 秒ごとに起こし続けることになる。
+        // **1 回だけ読む。** SrcPipeline は UI から書き換わりうるので、門と解決で
+        // 別の値を見ると「列挙しなかったのに解決だけ走る」形になりうる。
+        string? configuredSrcPipeline = SrcPipeline;
+        IReadOnlyList<MonitorInfo> monitors = MonitorSelection.RequiresMonitors(configuredSrcPipeline)
+            ? GstIntrospect.GetMonitors()
+            : Array.Empty<MonitorInfo>();
+        MonitorSelectionResult monitorSelection = MonitorSelection.Resolve(configuredSrcPipeline, monitors);
+        if (!monitorSelection.Succeeded)
+        {
+            Close();
+            // **番号へ縮退させない。** 指定されたモニターが今つながっていないのだから、
+            // 番号で代用すると黙って別の画面を録り始める ── 直そうとしている取り違えを
+            // 自分で作ることになる。失敗させれば復帰の連鎖（TryScheduleDeviceRebuild は
+            // 要素名で種別を引く）が拾い、モニターが戻れば作り直される。
+            string unresolved = $"the monitor could not be resolved: {monitorSelection.Failure}";
+            // 初期化の失敗も LastError に残す（候補が 0 件のときと同じ理由 ── 呼び出し側は
+            // activity.log へ書くだけなので、ここで入れないと画面にも status にも出ない）。
+            LastError = unresolved;
+            throw new InvalidOperationException(unresolved);
+        }
+        _resolvedSrcPipeline = monitorSelection.Pipeline;
+
+        // 効かせられなかった指定は黙って捨てない（常時録画の上書きと同じ流儀）。
+        // 縮退したことは画面からは分からないので、記録と状態の両方へ出す。
+        string? monitorWarning = monitorSelection.Warning;
+        if (monitorWarning is not null)
+            Components.ActivityLog.Warn("recorder.warning", $"recorder='{Name}' {monitorWarning}");
+
         var candidates = BuildEncoderCandidates();
         if (candidates.Count == 0)
         {
@@ -1130,6 +1167,11 @@ public partial class EventRecorder : ObservableObject, IDisposable
                 // （StartCore が録画開始時に消すのと同じ規約。消さないと、パイプラインを
                 //  直して復帰させても status が終了コード 15 を返し続ける）。
                 LastError = null;
+
+                // ただしモニター指定の縮退は「今の状態」そのものなので残す
+                // （バスの Warning と同じ "[warning] " 接頭辞の規約）。
+                if (monitorWarning is not null)
+                    LastError = $"[warning] {monitorWarning}";
 
                 if (continuousFailure is not null)
                 {
@@ -1206,6 +1248,10 @@ public partial class EventRecorder : ObservableObject, IDisposable
     {
         try
         {
+            // **ここから先は解決済みの文字列しか見ない。** 生の SrcPipeline には
+            // 擬似プロパティ monitor-device-path が残っているので、渡すと組めない。
+            string? srcPipeline = _resolvedSrcPipeline;
+
             H264EncoderDef? continuousEncoder = withContinuous ? ResolveContinuousEncoder() : null;
             string continuousBranch = "";
             string? droppedOverride = null;
@@ -1215,18 +1261,18 @@ public partial class EventRecorder : ObservableObject, IDisposable
                 var plan = ContinuousBranch.Plan(
                     Type, continuousEncoder.LaunchString, continuousEncoder.NeedsSystemMemory,
                     ContinuousFramerate, ContinuousResolution,
-                    ContinuousBranch.SourceSizeIsPinned(SrcPipeline),
-                    ContinuousBranch.SourceFramerateIsPinned(SrcPipeline));
+                    ContinuousBranch.SourceSizeIsPinned(srcPipeline),
+                    ContinuousBranch.SourceFramerateIsPinned(srcPipeline));
                 continuousBranch = plan.Branch;
                 droppedOverride = plan.DroppedOverride;
                 // 枝の中で拡縮するなら、tee の手前も同じ大きさで固定しないと
                 // 手前の変換が枝の要求を吸収して本線まで縮む。
                 if (plan.AppliesResolution)
-                    pinnedResolution = ContinuousBranch.SourceSize(SrcPipeline);
+                    pinnedResolution = ContinuousBranch.SourceSize(srcPipeline);
             }
 
             string SinkPipelineStr =
-                BuildSinkPipeline(Type, SrcPipeline, encoder.LaunchString, encoder.NeedsSystemMemory,
+                BuildSinkPipeline(Type, srcPipeline, encoder.LaunchString, encoder.NeedsSystemMemory,
                     continuousBranch, pinnedResolution);
 
             // 失敗したときに「何を組もうとしたのか」を残す。リンク失敗のメッセージは
@@ -1338,7 +1384,9 @@ public partial class EventRecorder : ObservableObject, IDisposable
             });
 
             ActualType = Type;
-            ActualSrcPipeline = SrcPipeline;
+            // **解決後の文字列を出す。** ここは「実際に使った値」を意味する読み取り専用の窓で、
+            // カメラ設定の解決（CameraSourcePipeline）もこれを優先して読む。
+            ActualSrcPipeline = srcPipeline;
             // 「実際に動いたエンコーダー」を読み取り専用プロパティへ出す。
             // 自動選択・フォールバックが起きた場合、UI 改修なしでその結果が見える。
             ActualEncodingProperties = encoder.LaunchString;
@@ -1420,6 +1468,18 @@ public partial class EventRecorder : ObservableObject, IDisposable
     /// caps の書き方の誤り（<c>framerate=5</c> と <c>5/1</c> の違い等）を追えない。
     /// </summary>
     private string? _lastAttemptedSinkPipeline;
+
+    /// <summary>
+    /// <see cref="SrcPipeline"/> から擬似プロパティ <c>monitor-device-path</c> を解いた文字列
+    /// （<see cref="MonitorSelection"/>）。<b>実際に <c>gst_parse_launch</c> へ渡すのはこちら</b>。
+    ///
+    /// <para>
+    /// 解決は <see cref="InitializeCore"/> の<b>エンコーダー候補ループより前で 1 回だけ</b>行い、
+    /// <see cref="InitializeWith"/> は常にこの値を見る ── 候補ごとに解き直すと、
+    /// 同じ失敗が候補の数だけ繰り返され、モニターの列挙も候補の数だけ走る。
+    /// </para>
+    /// </summary>
+    private string? _resolvedSrcPipeline;
 
     /// <summary>
     /// <c>.dot</c> の保存先（<c>AppSettings.GstDebugDumpDotDir</c> の static ミラー）。

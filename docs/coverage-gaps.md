@@ -21,6 +21,31 @@
 device-name / 解像度 / フレームレートの選択肢が実際に出ることを目で確かめる**こと。
 `debug.log` の `video devices: count=` が件数を出すので、空なら 0 と分かる。
 
+### `monitor-device-path` が実際にハンドルへ解決されて録れること
+
+`MonitorSelection.Resolve` の規則そのものは L1（`MonitorSelectionTests`）が 5 通り全部を
+縛っており、「一致しない → 初期化が失敗し理由にパスが出る」は L2
+（`ErrorReportingTests`）が見る。**守られていないのは成功の脚**である:
+
+- パスは機械ごとに違うので、**設定に書ける固定値が無い**（`monitor-index` と違い、
+  E2E から「必ず在る値」を与えられない）。したがって「一致 → `monitor-handle=…` を
+  渡して実際に PLAYING まで行く」経路は、どの層でも 1 度も走らない。
+- `GstIntrospect.GetMonitors` が読む GObject プロパティ **`monitor-handle` が
+  デバイス側に在ること**も、実物のプロバイダを起こさないと確かめられない。
+  読めなければ静かに 0 になり、規則 5（`monitor-index` へ縮退＋警告）へ倒れる
+  ── つまり**退行しても「動くが指定が効かない」形で静かに壊れる**。
+- 上の L2 は列挙が空の機械では**前提が無いので飛ばす**（`monitor.devices` の `count=`
+  で判定）。緑だから踏んだとは限らない ── 実行結果の skip 件数を見ること。
+
+ここを触ったら、**モニターが 2 台以上ある機械で**次を目で確かめること:
+
+1. パイプライン編集ダイアログの `monitor-device-path` に、モニターの数だけ選択肢が出る
+   （`activity.log` の `monitor.devices count=` が件数と `withPath=` を出す）
+2. 1 台目以外のパスを選んで OK すると、**そのモニター**が録れる（`monitor-index` を
+   書かなくても録れる）
+3. 前の番号のモニターを抜いて再起動しても、録れる画面が入れ替わらない
+4. 指定したモニターを抜くと `recorder.init fail` にそのパスが出て、挿し直すと復帰する
+
 ### カメラ設定（`CameraControls`）の COM 経路
 
 `IAMVideoProcAmp` / `IAMCameraControl` を叩く経路は**開発機では 1 行も走らない**（カメラが無い）。

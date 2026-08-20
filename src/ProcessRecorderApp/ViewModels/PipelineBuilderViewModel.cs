@@ -94,18 +94,43 @@ public sealed partial class PipelineBuilderViewModel : ObservableObject
     private IReadOnlyList<VideoDeviceInfo> VideoDevices => _videoDevices ??= GstIntrospect.GetVideoSourceDevices();
 
     /// <summary>
-    /// 接続されているモニターの物理ピクセルでの大きさ（<c>EnumDisplayDevices</c> の並び）。
-    /// 1 度だけ問い合わせて使い回す。
+    /// 接続されているモニター（<c>monitor-index</c> と同じ並び）。1 度だけ問い合わせて使い回す。
+    /// <b>大きさもパスもここから射影する</b> ── 列挙を 2 回走らせると、その間に構成が
+    /// 変わったときに解像度の行とパスの行が別のモニターを指しうる。
     /// </summary>
-    private IReadOnlyList<string> MonitorResolutions => _monitorResolutions ??= GstIntrospect.GetMonitorResolutions();
+    private IReadOnlyList<MonitorInfo> Monitors => _monitors ??= GstIntrospect.GetMonitors();
+    private IReadOnlyList<MonitorInfo>? _monitors;
+
+    /// <summary>接続されているモニターの物理ピクセルでの大きさ（読めなかったモニターは空文字で席が残る）。</summary>
+    private IReadOnlyList<string> MonitorResolutions =>
+        _monitorResolutions ??= Monitors.Select(m => m.Resolution).ToArray();
     private IReadOnlyList<string>? _monitorResolutions;
 
     /// <summary>
-    /// いま選ばれている <c>monitor-index</c>（読めなければ -1）。
+    /// いま選ばれているモニターの位置（読めなければ -1）。
     /// 解像度の選択肢をそのモニターに合わせるために見る。
+    ///
+    /// <para>
+    /// <b><c>monitor-device-path</c> が有効ならそちらを優先する</b> ── 実行時も
+    /// <see cref="MonitorSelection"/> がパスを優先して <c>monitor-index</c> を取り除くので、
+    /// ここで番号を見ると<b>解像度だけ別のモニターの値で固定される</b>
+    /// （caps がネゴシエートできず、エンコーダーの失敗として現れて真因が見えない）。
+    /// 一致するモニターが無いパスなら -1 ── 別のモニターの大きさを並べるより出さない方がよい。
+    /// </para>
     /// </summary>
     private int SelectedMonitorIndex()
     {
+        var pathRow = PropertyRows.FirstOrDefault(r => r.Name == "monitor-device-path");
+        if (pathRow is { Enabled: true } && !string.IsNullOrEmpty(pathRow.Value))
+        {
+            foreach (var monitor in Monitors)
+            {
+                if (string.Equals(monitor.Path, pathRow.Value, StringComparison.Ordinal))
+                    return monitor.Index;
+            }
+            return -1;
+        }
+
         var row = PropertyRows.FirstOrDefault(r => r.Name == "monitor-index");
         return row is not null
             && int.TryParse(row.Value, System.Globalization.NumberStyles.None,
@@ -315,13 +340,22 @@ public sealed partial class PipelineBuilderViewModel : ObservableObject
                 });
             }
 
-            // **monitor-index を変えたら解像度の行を作り直す。**
+            // **モニターの選択を変えたら解像度の行を作り直す。**
             // GetDynamicChoices は行を組み立てるときに 1 度しか走らないので、
             // ここで結び直さないと最初のモニターの値のまま固まる。
+            // **monitor-device-path も同じ結び方をすること** ── 実行時はパスが番号より
+            // 優先されるので、番号だけに結んでおくと「パスで別のモニターを選んだのに
+            // 解像度は番号のモニターのまま」になり、caps がネゴシエートできない。
             var indexRow = PropertyRows.FirstOrDefault(r => r.Name == "monitor-index");
+            var pathRow = PropertyRows.FirstOrDefault(r => r.Name == "monitor-device-path");
             var resolutionRow = CapsRows.FirstOrDefault(r => r.Name == "resolution");
-            if (indexRow is not null && resolutionRow is not null)
-                indexRow.Changed += () => SyncResolutionToMonitor(resolutionRow);
+            if (resolutionRow is not null)
+            {
+                if (indexRow is not null)
+                    indexRow.Changed += () => SyncResolutionToMonitor(resolutionRow);
+                if (pathRow is not null)
+                    pathRow.Changed += () => SyncResolutionToMonitor(resolutionRow);
+            }
         }
         finally
         {
@@ -413,6 +447,12 @@ public sealed partial class PipelineBuilderViewModel : ObservableObject
                         ? [all[index]]
                         : null;
                 }
+                case "monitor-device-path":
+                    // 読めなければ選択肢を出さず自由入力へ倒す（カメラの device-path と同じ）。
+                    // **位置との対応は無い** ── NonEmpty が読めなかった席（空文字）を落とすので、
+                    // 上から n 番目が monitor-index=n とは限らない。選択の同一性は
+                    // MonitorSelection がパスの値そのもので照合するので、それで十分である。
+                    return NonEmpty(Monitors.Select(m => m.Path));
                 case "mf-device-index":
                     return VideoDevices.Count > 0
                         ? Enumerable.Range(0, VideoDevices.Count).Select(i => i.ToString()).ToArray()

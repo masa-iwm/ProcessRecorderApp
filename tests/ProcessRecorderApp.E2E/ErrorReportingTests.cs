@@ -196,4 +196,71 @@ public sealed class ErrorReportingTests(PublishedApp app, ITestOutputHelper outp
         var stopped = ActivityLogFile.Events(log, "recording.stop");
         Assert.Contains(stopped, l => l.Contains("result=ok", StringComparison.Ordinal));
     }
+
+    /// <summary>
+    /// <b>つながっていないモニターをパスで指定したら、黙って別の画面を録らずに初期化が失敗すること。</b>
+    ///
+    /// <para>
+    /// <c>monitor-device-path</c> はアプリの擬似プロパティで、パイプラインを組む直前に
+    /// <c>monitor-handle</c> へ解決される。一致するモニターが無いときに <c>monitor-index</c> へ
+    /// 縮退させると、<b>直そうとしている取り違えを自分で作る</b> ── だから失敗させる。
+    /// 失敗の理由には<b>指定されたパスそのもの</b>が入る（入っていないと、利用者は
+    /// どのモニターを探して見つからなかったのかを知りようがない）。
+    /// </para>
+    /// <para>
+    /// <b>前提はモニターが 1 台でも列挙できること。</b> 列挙が空の機械では規則が変わり
+    /// （縮退＋警告）、この失敗は起こらない ── 二股の表明にすると「ずっと縮退側だけを
+    /// 見て緑」になりうるので、前提が無い環境では<b>飛ばす</b>。判定材料は
+    /// <c>monitor.devices</c> の <c>count=</c>（0 台でも 1 行出る）。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void AMonitorDevicePathThatIsNotConnected_FailsInitializationAndNamesThePath()
+    {
+        // 実在しえない形（ZZZTEST）にしてある。書式は本物と同じにして、
+        // 「読めなかった」ではなく「一致しなかった」を踏ませる。
+        const string bogusPath = @"\\?\DISPLAY#ZZZTEST#5&0&UID0#{e6f07b5f-ee97-4a90-b076-33f57bf4eaa7}";
+
+        var settings = new SettingsFile();
+        var recorder = settings.AddRecorder("R1");
+
+        // パイプライン文字列の中では '\' がエスケープされる（ダイアログの Assemble と同じ形）。
+        recorder.SrcPipeline =
+            $"d3d12screencapturesrc monitor-index=0 monitor-device-path=\"{bogusPath.Replace(@"\", @"\\")}\""
+            + " ! video/x-raw(memory:D3D12Memory), framerate=15/1";
+
+        using var instance = AppInstance.Create(app, settings);
+
+        // **準備完了（ping）はレコーダーの初期化を待たない** ── 待つのは
+        // WaitForControllerAsync を通る録画コマンドだけで、ping はそのまま 0 を返す。
+        // ここで待たずに読むと、まだ 1 行も出ていない activity.log を見て
+        // 下の SkipWhen が成立し、**モニターが在る機械でも恒久的に静かに飛ぶ**。
+        instance.WaitForActivityLogEvent("monitor.devices", TimeSpan.FromSeconds(30));
+
+        var log = instance.ReadActivityLog();
+        output.WriteLine(string.Join(Environment.NewLine, log));
+
+        var devices = ActivityLogFile.Events(log, "monitor.devices");
+        Assert.SkipWhen(devices.Count == 0,
+            "monitor.devices が出ていない（モニターの列挙まで到達していない）");
+        Assert.SkipWhen(
+            devices.All(l => ActivityLogFile.DetailOf(l).StartsWith("count=0 ", StringComparison.Ordinal)),
+            "この機械では画面キャプチャのモニターが 1 台も列挙されないため、"
+            + "「列挙できたのに一致しない」を踏めない");
+
+        // 列挙の行と初期化失敗の行は別々に書かれるので、ここでも待ち直す
+        // （前提が成立している以上、出ないことは無い）。
+        instance.WaitForActivityLogEvent("recorder.init fail", TimeSpan.FromSeconds(30));
+        log = instance.ReadActivityLog();
+        output.WriteLine(string.Join(Environment.NewLine, log));
+
+        var failures = ActivityLogFile.Events(log, "recorder.init fail");
+        Assert.NotEmpty(failures);
+
+        // **理由がアプリのものであること。** gst_parse_launch の `no property` で落ちていたら、
+        // 擬似プロパティを消し忘れているということになる。
+        Assert.Contains(failures, l => l.Contains("is not connected", StringComparison.Ordinal));
+        Assert.Contains(failures, l => l.Contains(bogusPath, StringComparison.Ordinal));
+        Assert.DoesNotContain(failures, l => l.Contains("no property", StringComparison.Ordinal));
+    }
 }

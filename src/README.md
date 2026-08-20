@@ -480,6 +480,54 @@ I フレームゲートが次の I まで捨てる ── そのぶんの映像�
 `ProcessRecorderApp/Views/PipelineBuilderDialog.xaml` 経由。ソースの候補・プロパティ定義は
 `GStreamer.GstSharpNet/SrcPipelineBuilder.cs`、カメラ/モニタの実機列挙は `GstIntrospect.cs`）。
 
+### モニタの指定（`monitor-device-path`）
+
+画面キャプチャ要素（`d3d12screencapturesrc` / `d3d11screencapturesrc`）が持つ選択手段は
+`monitor-index` と `monitor-handle` の 2 つだけで、**パスを受け取るプロパティは無い**。
+`monitor-index` は位置依存で、前のモニタを抜くと番号が詰まって別の画面を録り始める。
+`monitor-handle` は実行時の `HMONITOR` なので設定に保存できない。一方でデバイスプロバイダは
+各モニタに `device.path`（`\\?\DISPLAY#...` の形）を付けており、これは物理モニタ＋端子ごとに
+安定している（上流自身が再 probe 後の同一性判定に使っている）。
+
+したがって**パスで保存し、パイプラインを組む時点でハンドルへ解決する**のが唯一の道になる。
+`monitor-device-path` は `SrcPipelineBuilder` のカタログにだけ在る**アプリの擬似プロパティ**で、
+実要素には存在しない ── 残したまま `gst_parse_launch` へ渡すと `no property` で落ちる
+（カメラの `device-path` と発想は同じだが、あちらは実要素のプロパティである点が違う）。
+
+解決は `MonitorSelection.Resolve`（純粋関数。規則は L1 の `MonitorSelectionTests` が全数を縛る）で、
+`EventRecorder.InitializeCore` の**エンコーダー候補ループより前で 1 回だけ**行う ──
+候補ループの中で解くと、同じ失敗が候補の数だけ繰り返される。モニタの列挙
+（`GstIntrospect.GetMonitors`）は**パス指定が在るときにしか走らせない**
+（`MonitorSelection.RequiresMonitors`）── `InitializeCore` はレコーダーごと・復帰のたびに
+走るので、無条件に列挙するとテストソースのレコーダーまでデバイスプロバイダを起こし続ける。
+
+| 状況 | 結果 |
+|---|---|
+| 指定が無い | 文字列を 1 文字も変えない |
+| 一致するモニタが在り、ハンドルも読めた | `monitor-device-path=…` を `monitor-handle=…` へ置き換え、`monitor-index` を取り除く（パス指定が番号より優先） |
+| モニタは列挙できたのに一致しない | **初期化を失敗させる**（`LastError` と `recorder.init fail` に指定されたパスが入る） |
+| モニタが 1 台も列挙できない | パスだけ取り除いて `monitor-index` を残し、**警告**（`recorder.warning` と `LastError` の `[warning]` 接頭辞） |
+| 一致したがハンドルを読めない | 同上（縮退＋警告） |
+
+> **一致しないときに番号へ縮退させてはいけない。** 指定されたモニタが今つながっていない
+> のだから、番号で代用すると**黙って別の画面を録り始める** ── 直そうとしている取り違えを
+> 自分で作ることになる。失敗させれば復帰の連鎖（`TryScheduleDeviceRebuild` は要素名で種別を
+> 引く）が拾い、モニタが戻れば作り直される。
+> **逆に、列挙が空のときは失敗させてはいけない** ── 利用者の GStreamer に d3d12 が
+> 無いだけの機械で、番号なら録れるのに 1 フレームも録れなくなる。縮退したことは画面からは
+> 分からないので、そのときは黙らせずに警告として残す。
+
+> **書き換えるのは対象のトークンだけ。** `Parse` → `Assemble` の往復では実現できない ──
+> あちらはカタログに載っている caps とプロパティしか書き戻さず、ソースより後ろの中間要素
+> （`! identity ! videoconvert` 等）を丸ごと落とす。そのため `MonitorSelection` は
+> `SplitOutsideQuotes` でソース要素のセグメントだけを取り出し、解析と同じ `KeyValueRegex` で
+> 対象のトークンを置き換え、残りは原文のまま返す。
+
+解決後の文字列は `ActualSrcPipeline`（「実際に使った値」）に出る。編集ダイアログの選択肢は
+`GstIntrospect.GetMonitors()` の `Path` で、**解像度欄と同じ列挙の射影**である ──
+列挙を 2 回走らせると、その間に構成が変わったときに解像度の行とパスの行が別のモニタを
+指しうる。列挙の結果そのものは `monitor.devices`（`count=` / `withPath=`）に出る。
+
 ### カメラ設定（`mfvideosrc` のフォーカス・明るさ等）
 
 レコーダー設定 `CameraControls`（例 `brightness=128;focus=30;focus-auto=false`）で、
@@ -1889,6 +1937,7 @@ GPU テクスチャになるため**アクセシブルテキストが 1 つも�
 | `settings.seed` | INFO | `AppSettings.ReportSeedUsed` | 保存先に settings.json が無く、**実行ファイルの隣の settings.json を既定設定（種）として読んだ**。無記録だと「設定した覚えのない初期値で始まった」ことを追えない |
 | `camera.open` | INFO | `CameraControlWorker.OpenAsync` | カメラ設定を開いたときの解決結果（`resolution=` / `device=` / `opened=` / `controls=`）。**開くたびに必ず 1 行出る** ── `camera.devices` は `device-path` が既に書かれていれば走らないので、そちらだけでは通常の構成で何も分からない。「カメラ設定が効かない」ときに最初に見る行 |
 | `camera.devices` | INFO | `GstIntrospect.GetVideoSourceDevices` | カメラのデバイス列挙の結果（`count=` と、`device-path` を読めた数 `withPath=`）。**`DebugLogEx` では見えない**（`gst_debug_log` 経由なので `GST_DEBUG` 未設定では 1 行も出ない）ため activity.log へ出す ── カメラが 1 台も見えないのか、見えているがパスが読めないのかを切り分ける唯一の手掛かり |
+| `monitor.devices` | INFO | `GstIntrospect.GetMonitors` | モニターの列挙の結果（`count=` と、`device.path` を読めた数 `withPath=`）。**0 台でも 1 行出す** ── `monitor-device-path` を解決できなかったとき、列挙そのものが空だったのか一致しなかっただけなのかは、この行でしか区別できない |
 | `camera.control` | INFO / WARN / ERROR | `EventRecorder.ApplyCameraControls` | カメラ設定（`CameraControls`）を当てた／当てられなかった（`device-path` が無い・デバイスを開けない・ドライバが弾いた）。**録画は止めない**ので、ここが唯一の観測点になる |
 | `settings.save` | ERROR | `AppSettings.ReportSaveFailure` | settings.json を書けなかった（ディスク満杯・一時ロック・権限）。書けなかった変更は次の保存契機で改めて書かれる |
 | `cli` | INFO | `ActivationCommands.Parse` | コマンドラインと終了コード。**例外で抜けた場合も必ず出る**（そのときの終了コードは 99） |

@@ -154,6 +154,16 @@ public static partial class SrcPipelineBuilder
             [
                 new SrcPropertyDef("monitor-index", SrcPropertyKind.Int, "0",
                     description: Localization.GetString("Resources/Src_MonitorIndex_Desc"), dynamicKey: "monitor-index"),
+                // **これは実要素のプロパティではない。** 画面キャプチャ要素が持つ選択手段は
+                // `monitor-index`（位置依存）と `monitor-handle`（保存できない実行時ハンドル）の
+                // 2 つだけで、パスを受け取るプロパティは存在しない。
+                // `monitor-device-path` は<b>アプリの擬似プロパティ</b>で、パイプラインを組む直前に
+                // `MonitorSelection.Resolve` が `monitor-handle` へ解決して消す
+                // ── 残したまま `gst_parse_launch` へ渡すと `no property` で落ちる。
+                // **D3D11 版にも同じ形で載せてある**（片方だけだと CarryOver が切り替えで値を落とす）。
+                new SrcPropertyDef("monitor-device-path", SrcPropertyKind.String, null,
+                    description: Localization.GetString("Resources/Src_MonitorDevicePath_Desc"),
+                    dynamicKey: "monitor-device-path"),
                 new SrcPropertyDef("show-cursor", SrcPropertyKind.Bool, "false",
                     description: Localization.GetString("Resources/Src_ShowCursor_Desc")),
                 // **在るビルドと無いビルドがある。** Windows Graphics Capture を組み込んだ
@@ -205,6 +215,11 @@ public static partial class SrcPipelineBuilder
             [
                 new SrcPropertyDef("monitor-index", SrcPropertyKind.Int, "0",
                     description: Localization.GetString("Resources/Src_MonitorIndex_Desc"), dynamicKey: "monitor-index"),
+                // D3D12 版と同じ擬似プロパティ（実要素のプロパティではない ── アプリが
+                // `monitor-handle` へ解決して消す。理由は D3D12 版のカタログのコメント）。
+                new SrcPropertyDef("monitor-device-path", SrcPropertyKind.String, null,
+                    description: Localization.GetString("Resources/Src_MonitorDevicePath_Desc"),
+                    dynamicKey: "monitor-device-path"),
                 new SrcPropertyDef("show-cursor", SrcPropertyKind.Bool, "false",
                     description: Localization.GetString("Resources/Src_ShowCursor_Desc")),
                 // D3D12 版と同じ条件付きプロパティ（同じ綴り・同じ既定値。実測）。
@@ -370,12 +385,15 @@ public static partial class SrcPipelineBuilder
     // 引用値の中は \" / \\ のエスケープを1単位として読む（Assemble の QuoteIfNeeded が
     // 生成する形。エスケープを知らない "[^"]*" だと、値に '"' を含むラウンドトリップが
     // 引用の途中で切れる）
+    // **assembly 内へ公開してある。** MonitorSelection が同じ規則で
+    // 「ソース要素セグメントの key=value」を切り出す ── 引用とエスケープの読み方が
+    // 2 か所に書かれると、片方だけを直した時点で解析と書き換えが食い違う。
     [GeneratedRegex("""(?<key>[\w.-]+)\s*=\s*(?<value>"(?:\\.|[^"\\])*"|[^\s,]+)""")]
-    private static partial Regex KeyValueRegex();
+    internal static partial Regex KeyValueRegex();
 
     // 先頭が "video/x-raw" のようなメディアタイプで始まるか(caps セグメントの判定)
     [GeneratedRegex(@"^[a-zA-Z][\w-]*/[\w+-]")]
-    private static partial Regex MediaTypeRegex();
+    internal static partial Regex MediaTypeRegex();
 
     /// <summary>
     /// SrcPipeline 文字列を解析し、ソース要素・プロパティ・caps・中間要素に分解する。
@@ -531,8 +549,14 @@ public static partial class SrcPipelineBuilder
     /// '!' で要素/caps のセグメントに分割する。二重引用符の中の '!' は区切りにせず、
     /// 引用内の <c>\"</c> / <c>\\</c> エスケープは1単位として読み飛ばす
     /// （<see cref="QuoteIfNeeded"/> が生成する形と対）。
+    ///
+    /// <para>
+    /// <b>区切り文字以外は 1 文字も落とさない</b>ので、<c>string.Join("!", …)</c> で
+    /// 元の文字列がそのまま戻る ── <see cref="MonitorSelection"/> は
+    /// この性質を使って「ソース要素セグメントだけを書き換え、残りは原文のまま」を実現している。
+    /// </para>
     /// </summary>
-    private static List<string> SplitOutsideQuotes(string pipeline)
+    internal static List<string> SplitOutsideQuotes(string pipeline)
     {
         var segments = new List<string>();
         var current = new StringBuilder();

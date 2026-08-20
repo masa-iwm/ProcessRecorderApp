@@ -83,6 +83,8 @@ public static class ActivityLogFile
         "camera.control",
         // カメラのデバイス列挙の結果（件数と device-path が読めた数）。
         "camera.devices",
+        // モニターの列挙の結果（件数と device.path が読めた数）。0 台でも 1 行出る。
+        "monitor.devices",
         // カメラ設定を開いたときの解決結果（開くたびに 1 行）。
         "camera.open",
         // プレビューパイプラインの実行時障害（録画は止めない。1パイプラインにつき1行）。

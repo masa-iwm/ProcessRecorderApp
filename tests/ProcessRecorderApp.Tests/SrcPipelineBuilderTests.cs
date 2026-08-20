@@ -77,6 +77,56 @@ public class SrcPipelineBuilderTests
     }
 
     /// <summary>
+    /// <b><c>monitor-device-path</c> は画面キャプチャ 2 種にだけ載っていること。</b>
+    ///
+    /// <para>
+    /// <b>これは実要素のプロパティではない。</b> 要素が持つ選択手段は位置依存の
+    /// <c>monitor-index</c> と保存できない実行時ハンドル <c>monitor-handle</c> だけで、
+    /// パスを受け取るプロパティは無い。アプリの擬似プロパティとして持ち、
+    /// <see cref="MonitorSelection.Resolve"/> がパイプラインを組む直前に
+    /// ハンドルへ解決して消す。
+    /// </para>
+    /// <para>
+    /// <b>カタログに載せないと編集で消える。</b> <see cref="SrcPipelineBuilder.Parse"/> は
+    /// 要素セグメント上の全 key=value を読むが、<see cref="SrcPipelineBuilder.CarryOver"/> と
+    /// ダイアログの行は<b>カタログ定義のプロパティしか通さない</b> ── 載せずにいると
+    /// パイプライン編集ダイアログを一度開いて OK した時点で黙って落ちる
+    /// （カメラの <c>device-path</c> で実際に踏んだのと同じ壊れ方）。
+    /// <b>2 種に同じ綴りで載っていること</b>も要る ── 片方だけだと D3D12 ⇔ D3D11 の
+    /// 切り替えで <see cref="SrcPipelineBuilder.CarryOver"/> が名前照合で落とす。
+    /// </para>
+    /// <para>
+    /// <b><see cref="SrcPropertyDef.ConditionallyAvailable"/> を立ててはいけない</b> ──
+    /// 立てると UI は実物の要素に訊きに行き、実在しないプロパティなので<b>行が一度も出ない</b>。
+    /// </para>
+    /// </summary>
+    [Theory]
+    [InlineData("d3d12screencapturesrc", true)]
+    [InlineData("d3d11screencapturesrc", true)]
+    [InlineData("mfvideosrc", false)]
+    [InlineData("d3d12testsrc", false)]
+    [InlineData("videotestsrc", false)]
+    public void MonitorDevicePath_IsDeclaredOnTheScreenCaptureSourcesOnly(string elementName, bool expected)
+    {
+        SrcElementDef source = Assert.IsType<SrcElementDef>(SrcPipelineBuilder.FindSource(elementName));
+        SrcPropertyDef? def = source.Properties.FirstOrDefault(p => p.Name == MonitorSelection.PathProperty);
+
+        if (!expected)
+        {
+            Assert.Null(def);
+            return;
+        }
+
+        Assert.NotNull(def);
+        Assert.Equal(SrcPropertyKind.String, def.Kind);
+        Assert.Equal(MonitorSelection.PathProperty, def.DynamicKey);
+        Assert.False(def.ConditionallyAvailable,
+            $"{elementName} の monitor-device-path に ConditionallyAvailable が立っている。"
+            + "実要素には存在しないプロパティなので、立てると行が一度も出せなくなる。");
+        Assert.False(string.IsNullOrWhiteSpace(def.Description));
+    }
+
+    /// <summary>
     /// D3D11 版の画面キャプチャは <c>memory:D3D11Memory</c> を名乗ること。
     ///
     /// <para>
