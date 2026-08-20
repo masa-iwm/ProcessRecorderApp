@@ -1,4 +1,4 @@
-using Xunit;
+﻿using Xunit;
 
 namespace ProcessRecorderApp.E2E;
 
@@ -19,12 +19,13 @@ public sealed class StatusCommandTests(PublishedApp app, ITestOutputHelper outpu
     private const int ExitRecorderUnhealthy = 15;
 
     /// <summary>
-    /// 1行の列数（名前 / 初期化済み / 録画中 / 直近のファイル / 常時録画 / 常時録画のファイル / 直近の障害）。
+    /// 1行の列数（名前 / 初期化済み / 録画中 / 復帰待ち / 直近のファイル / 常時録画 /
+    /// 常時録画のファイル / 直近の障害）。
     /// </summary>
-    private const int ColumnCount = 7;
+    private const int ColumnCount = 8;
 
     private sealed record StatusRow(
-        string Name, bool Initialized, bool Recording, string LastFilename,
+        string Name, bool Initialized, bool Recording, bool AwaitingResume, string LastFilename,
         string Continuous, string ContinuousFilename, string LastError);
 
     /// <summary>
@@ -48,10 +49,11 @@ public sealed class StatusCommandTests(PublishedApp app, ITestOutputHelper outpu
                 cells[0],
                 ParseBoolean(cells[1], line),
                 ParseBoolean(cells[2], line),
-                cells[3],
+                ParseBoolean(cells[3], line),
                 cells[4],
                 cells[5],
-                cells[6]));
+                cells[6],
+                cells[7]));
         }
         return rows;
     }
@@ -94,6 +96,9 @@ public sealed class StatusCommandTests(PublishedApp app, ITestOutputHelper outpu
         Assert.Equal(["R1", "R2"], before.Select(r => r.Name));
         Assert.All(before, r => Assert.True(r.Initialized, $"'{r.Name}' が初期化されていません: {r.LastError}"));
         Assert.All(before, r => Assert.False(r.Recording));
+        // 復帰待ちは自動復帰の途中だけ立つ。平常時に立っているなら、
+        // 列がモデルに繋がっていないか、前の録画の意図が降りていない。
+        Assert.All(before, r => Assert.False(r.AwaitingResume));
         Assert.All(before, r => Assert.Equal("", r.LastError));
         // まだ一度も録画していないので、直近のファイルは無い。
         Assert.All(before, r => Assert.Equal("", r.LastFilename));
@@ -133,6 +138,7 @@ public sealed class StatusCommandTests(PublishedApp app, ITestOutputHelper outpu
         var after = Parse(stopped);
         Assert.All(after, r => Assert.False(r.Recording, $"'{r.Name}' が停止後も録画中として報告されています"));
         Assert.All(after, r => Assert.True(r.Initialized));
+        Assert.All(after, r => Assert.False(r.AwaitingResume));
         // 停止しても「直近のファイル」は残る（次の録画開始まで消えない）。
         foreach (var row in after)
             Assert.Equal(startedFiles[row.Name], row.LastFilename);

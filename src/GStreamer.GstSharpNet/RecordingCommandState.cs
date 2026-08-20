@@ -53,13 +53,15 @@ public static class RecordingCommandState
         => resumePending || (isInitialized && isRecording);
 
     /// <summary>
-    /// 画面と外部から見て「録画セッション中」か。
+    /// 画面から見て「録画セッション中」か。
     ///
     /// <para>
     /// <b>復帰待ちも録画中として見せる。</b> 見せないと、トグルは切れた状態で表示され、
     /// <b>利用者には切る手段が無くなる</b>（切れているものは切れない）。
     /// 実体の <c>_IsRecording</c> は false のままで、こちらは表示と可否の判断にだけ使う
     /// ── コールバックが読むのはあくまで実体の方である。
+    /// <b>畳んでよいのは画面だけ。</b> <c>status</c> は「いまフレームが録れているか」を
+    /// 機械へ渡すので、実体と復帰待ちを別の列で出す。
     /// </para>
     /// </summary>
     public static bool ShowsAsRecording(bool isRecording, bool resumePending)

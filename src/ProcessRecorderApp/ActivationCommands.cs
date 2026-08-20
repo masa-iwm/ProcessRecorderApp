@@ -328,11 +328,24 @@ internal static class ActivationCommands
     ///
     /// <para>
     /// 標準出力は1行1レコーダーで、列は TAB 区切りの
-    /// <c>名前 / 初期化済み / 録画中 / 直近のファイル / 常時録画 / 常時録画のファイル / 直近の障害</c>。
+    /// <c>名前 / 初期化済み / 録画中 / 復帰待ち / 直近のファイル / 常時録画 / 常時録画のファイル /
+    /// 直近の障害</c>。
     /// <b>自由記述である「直近の障害」は必ず最後の列に置く。</b> 途中に置くと、
     /// 理由文に TAB が混ざったときに後続の列の意味がずれる。あわせて改行と TAB は空白へ潰し、
     /// <b>1レコーダー＝1行</b>を崩さない（<c>ActivityLog</c> と同じ規約）。
     /// 真偽値は <see cref="bool.ToString()"/>（<c>True</c>/<c>False</c>）で、カルチャに依存しない。
+    /// </para>
+    /// <para>
+    /// <b>「録画中」は <see cref="EventRecorder.IsRecording"/> をそのまま出す</b> ──
+    /// ビューモデル側の同名プロパティを使ってはいけない。あちらは<b>表示用</b>で、
+    /// 復帰待ちを録画中に畳んである（畳まないとトグルを切る手段が無くなるため）。
+    /// CLI で畳むと「いまフレームが録れているか」を機械から判定できなくなるので、
+    /// ここでは実体を出し、復帰待ちは<b>独立した列</b>にする。
+    /// </para>
+    /// <para>
+    /// <b>「復帰待ち」は自動復帰が終わったら録り直す予定があること。</b>
+    /// デバイスが抜けているあいだは <c>初期化済み=False</c> かつ
+    /// <c>録画中=False</c> かつ <c>復帰待ち=True</c> になる。
     /// </para>
     /// <para>
     /// <b>「直近の障害」は今も壊れているという意味ではない。</b>
@@ -353,7 +366,9 @@ internal static class ActivationCommands
             output.AppendLine(RecorderCliRules.FormatStatusLine(
                 recorder.Name,
                 recorder.IsInitialized,
-                recorder.IsRecording,
+                // **実体を読む。** recorder.IsRecording（VM）は復帰待ちを畳んだ表示用の値。
+                recorder.Model.IsRecording,
+                recorder.Model.IsAwaitingRecoveryResume,
                 recorder.LastFilename,
                 RecorderCliRules.ContinuousState(
                     recorder.ContinuousRecording, recorder.IsContinuousRecording, recorder.ContinuousLastError),

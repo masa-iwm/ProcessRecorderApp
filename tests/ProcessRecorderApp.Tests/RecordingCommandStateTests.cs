@@ -73,8 +73,9 @@ public class RecordingCommandStateTests
     }
 
     /// <summary>
-    /// 復帰待ちは<b>画面と外部からは録画中に見える</b>こと。見えないとトグルは
+    /// 復帰待ちは<b>画面からは録画中に見える</b>こと。見えないとトグルは
     /// 切れた状態で表示され、切る手段が無くなる（切れているものは切れない）。
+    /// 機械可読な <c>status</c> は畳まず、実体と復帰待ちを別の列で出す。
     /// </summary>
     [Fact]
     public void AwaitingTheResume_ShowsAsRecording()

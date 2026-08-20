@@ -1325,7 +1325,7 @@ CommandOutcome { ShowWindow, ToastTitle, ToastMessage, ConsoleOutput, ConsoleErr
 | `activate` | ○ | ウィンドウを表示するだけ |
 | `start-recording-all` / `stop-recording-all` | ✕ | 全レコーダーの録画開始／終了。stdout に `名前\tファイル名` の一覧（**どちらも出すのは今回開始／停止した分だけ**。対象外のレコーダーの `LastFilename` は前回の録画を指すため。開始／停止できなかったレコーダーは名前つきで標準エラーへ出る） |
 | `start-recording <target>` / `stop-recording <target>` | ✕ | 個別レコーダーの録画開始／終了。`target` は数値ならインデックス(0始)、それ以外は名前 |
-| `status` | ✕ | レコーダーごとの状態を1行ずつ出力。不健全なものがあれば終了コード `15`（後述） |
+| `status` | ✕ | レコーダーごとの状態を1行ずつ出力（8 列。自由記述の障害は必ず最後）。不健全なものがあれば終了コード `15`（後述）。**`録画中` は `EventRecorder.IsRecording` の実体を出す** ── VM の同名プロパティは復帰待ちを畳んだ表示用の値なので使わない。復帰待ちは独立した列にする（畳むと「いまフレームが録れているか」を機械から判定できない） |
 | `--set Key=Value`（`Recursive`、繰返可） | — | `EventRecorder.TemplateVariables` へ設定（他コマンドと併用可）。**セッション限り** |
 | `--get [Key...]`（`Recursive`） | — | テンプレート変数を取得（`Parse()` 内でコマンド本体実行後に処理） |
 | `--persist Key`（`Recursive`、繰返可） | — | その変数を settings.json に残す（`--set` の直後・コマンド本体より前に処理）。未定義キーは終了コード `11` |
@@ -1368,12 +1368,12 @@ CommandOutcome { ShowWindow, ToastTitle, ToastMessage, ConsoleOutput, ConsoleErr
 
 #### `status` の出力
 
-標準出力は**1行1レコーダー**で、TAB 区切りの7列:
+標準出力は**1行1レコーダー**で、TAB 区切りの8列:
 
 ```
-名前	初期化済み	録画中	直近のファイル	常時録画	常時録画のファイル	直近の障害
-R1	True	False	C:\rec\R1_120050511.mp4	on	C:\rec\R1_c00003.mp4	
-R2	False	False		off		ERROR: pipeline doesn't want to play.
+名前	初期化済み	録画中	復帰待ち	直近のファイル	常時録画	常時録画のファイル	直近の障害
+R1	True	False	False	C:\rec\R1_120050511.mp4	on	C:\rec\R1_c00003.mp4	
+R2	False	False	False		off		ERROR: pipeline doesn't want to play.
 ```
 
 - 真偽値は `bool.ToString()`（`True`/`False`）で、**カルチャに依存しない**。

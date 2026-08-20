@@ -244,7 +244,7 @@ public sealed class ContinuousRecordingTests(PublishedApp app, ITestOutputHelper
         Assert.Equal(0, status.ExitCode);
         string[] cells = status.StdOut.TrimEnd().Split(TabChar);
         Assert.Equal("True", cells[1]);          // 初期化済み
-        Assert.Equal("error", cells[4]);         // 常時録画の列
+        Assert.Equal("error", cells[5]);         // 常時録画の列（6 列目）
 
         // そして実際に録れる
         Assert.Equal(0, instance.Run("start-recording", "R1").ExitCode);

@@ -55,31 +55,54 @@ public class RecorderCliRulesTests
         => Assert.Equal("R1\tC:\\rec\\a.mp4", RecorderCliRules.FormatRecorderLine("R1", "C:\\rec\\a.mp4"));
 
     [Fact]
-    public void FormatStatusLine_HasSevenTabSeparatedColumns_WithTheFreeTextLast()
+    public void FormatStatusLine_HasEightTabSeparatedColumns_WithTheFreeTextLast()
     {
         string line = RecorderCliRules.FormatStatusLine(
-            "R1", true, false, "C:\\rec\\a.mp4",
+            "R1", true, false, false, "C:\\rec\\a.mp4",
             RecorderCliRules.ContinuousOn, "C:\\rec\\a_c00001.mp4", "boom");
 
         Assert.Equal(
-            new[] { "R1", "True", "False", "C:\\rec\\a.mp4", "on", "C:\\rec\\a_c00001.mp4", "boom" },
+            new[] { "R1", "True", "False", "False", "C:\\rec\\a.mp4", "on", "C:\\rec\\a_c00001.mp4", "boom" },
             line.Split('\t'));
     }
 
     /// <summary>
+    /// <b>「録画中」と「復帰待ち」は別の列であること。</b>
+    ///
+    /// <para>
+    /// デバイスが抜けているあいだは「録画中=False・復帰待ち=True」になる ──
+    /// この 2 つを 1 列に畳むと、機械からは「いまフレームが録れているか」と
+    /// 「復帰したら録り直すか」を区別できなくなる。畳んだ値を持っているのは
+    /// ビューモデル側（トグルを切れる状態に保つため）で、CLI はそちらを読まない。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void FormatStatusLine_KeepsRecordingAndTheResumeApart()
+    {
+        string[] cells = RecorderCliRules.FormatStatusLine(
+            "R1", isInitialized: false, isRecording: false, isAwaitingRecoveryResume: true,
+            "C:\\rec\\a.mp4", RecorderCliRules.ContinuousOff, null, "boom").Split('\t');
+
+        Assert.Equal("False", cells[2]);   // 録画中
+        Assert.Equal("True", cells[3]);    // 復帰待ち
+    }
+
+    /// <summary>
     /// 自由記述の「直近の障害」に TAB・改行が混ざっても、1 レコーダー＝1 行・
-    /// 7 列を崩さない（<c>ActivityLog</c> と同じ規約）。
+    /// 8 列を崩さない（<c>ActivityLog</c> と同じ規約）。
     /// </summary>
     [Fact]
     public void FormatStatusLine_FlattensTabsAndNewlinesInTheError()
     {
         string line = RecorderCliRules.FormatStatusLine(
-            "R1", false, false, null, RecorderCliRules.ContinuousOff, null,
+            "R1", false, false, false, null, RecorderCliRules.ContinuousOff, null,
             "ERROR: line1\r\nline2\tcolumn");
 
-        Assert.Equal(7, line.Split('\t').Length);
+        Assert.Equal(8, line.Split('\t').Length);
         Assert.DoesNotContain('\n', line);
-        Assert.Equal("ERROR: line1 line2 column", line.Split('\t')[6]);
+        // **末尾から取る。** 契約は「自由記述は最後の列」なので、
+        // 列が増えても壊れない書き方にしておく。
+        Assert.Equal("ERROR: line1 line2 column", line.Split('\t')[^1]);
     }
 
     /// <summary>

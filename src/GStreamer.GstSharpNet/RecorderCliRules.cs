@@ -49,8 +49,9 @@ public static class RecorderCliRules
         => $"{name}\t{lastFilename}";
 
     /// <summary>
-    /// <c>status</c> の標準出力 1 行（TAB 区切りの 7 列:
-    /// <c>名前 / 初期化済み / 録画中 / 直近のファイル / 常時録画 / 常時録画のファイル / 直近の障害</c>）。
+    /// <c>status</c> の標準出力 1 行（TAB 区切りの 8 列:
+    /// <c>名前 / 初期化済み / 録画中 / 復帰待ち / 直近のファイル / 常時録画 /
+    /// 常時録画のファイル / 直近の障害</c>）。
     ///
     /// <para>
     /// <b>自由記述である「直近の障害」は必ず最後の列。</b> 途中に置くと、理由文に TAB が
@@ -60,12 +61,14 @@ public static class RecorderCliRules
     /// </para>
     /// </summary>
     public static string FormatStatusLine(
-        string name, bool isInitialized, bool isRecording, string? lastFilename,
+        string name, bool isInitialized, bool isRecording, bool isAwaitingRecoveryResume,
+        string? lastFilename,
         string continuousState, string? continuousFilename, string? lastError)
         => string.Join('\t',
             name,
             isInitialized.ToString(),
             isRecording.ToString(),
+            isAwaitingRecoveryResume.ToString(),
             lastFilename ?? string.Empty,
             continuousState,
             continuousFilename ?? string.Empty,

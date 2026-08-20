@@ -282,7 +282,7 @@
     <value>指定したレコーダーで録画を停止します。</value>
   </data>
   <data name="Cli_StatusDesc" xml:space="preserve">
-    <value>レコーダーごとの状態（名前・初期化済み・録画中・直近のファイル・常時録画・常時録画のファイル・直近の障害）を出力します。</value>
+    <value>レコーダーごとの状態（名前・初期化済み・録画中・復帰待ち・直近のファイル・常時録画・常時録画のファイル・直近の障害）を出力します。</value>
   </data>
   <data name="Cli_RecorderError" xml:space="preserve">
     <value>レコーダー '{0}' は正常ではありません: {1}</value>

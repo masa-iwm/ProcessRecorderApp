@@ -282,7 +282,7 @@
     <value>Stop recording on the specified recorder.</value>
   </data>
   <data name="Cli_StatusDesc" xml:space="preserve">
-    <value>Report the state of every recorder (name, initialized, recording, last file, continuous state, continuous file, last failure).</value>
+    <value>Report the state of every recorder (name, initialized, recording, awaiting resume, last file, continuous state, continuous file, last failure).</value>
   </data>
   <data name="Cli_RecorderError" xml:space="preserve">
     <value>Recorder '{0}' is not healthy: {1}</value>
