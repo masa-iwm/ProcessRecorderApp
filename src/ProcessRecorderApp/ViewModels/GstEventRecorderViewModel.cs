@@ -90,7 +90,14 @@ namespace ProcessRecorderApp.ViewModels
                 case nameof(Model.BufferDuration): if (BufferDuration != Model.BufferDuration) BufferDuration = Model.BufferDuration; break;
                 case nameof(Model.FilenameTemplate): if (FilenameTemplate != Model.FilenameTemplate) FilenameTemplate = Model.FilenameTemplate; break;
                 case nameof(Model.LastFilename): if (LastFilename != Model.LastFilename) LastFilename = Model.LastFilename; break;
-                case nameof(Model.IsRecording): if (IsRecording != Model.IsRecording) IsRecording = Model.IsRecording; break;
+                case nameof(Model.IsRecording): if (IsRecording != ModelShowsAsRecording) IsRecording = ModelShowsAsRecording; break;
+                // 復帰待ちは表示上の「録画中」も動かす（トグルを切れる状態に保つため）。
+                case nameof(Model.IsAwaitingRecoveryResume):
+                    if (IsAwaitingRecoveryResume != Model.IsAwaitingRecoveryResume)
+                        IsAwaitingRecoveryResume = Model.IsAwaitingRecoveryResume;
+                    if (IsRecording != ModelShowsAsRecording)
+                        IsRecording = ModelShowsAsRecording;
+                    break;
                 case nameof(Model.IsStopping): if (IsStopping != Model.IsStopping) IsStopping = Model.IsStopping; break;
                 case nameof(Model.IsInitialized): if (IsInitialized != Model.IsInitialized) IsInitialized = Model.IsInitialized; break;
                 case nameof(Model.Type): if (Type != Model.Type) Type = Model.Type; break;
@@ -188,6 +195,14 @@ namespace ProcessRecorderApp.ViewModels
         [ObservableProperty]
         public partial string? LastFilename { get; private set; }
 
+        /// <summary>
+        /// <b>モデルから見た「録画セッション中か」。</b> 復帰待ちも録画中として扱う
+        /// ── そうしないとトグルが切れた状態で表示され、<b>利用者に切る手段が無くなる</b>。
+        /// 規則そのものは L1 が守れるところ（<see cref="RecordingCommandState"/>）に置く。
+        /// </summary>
+        private bool ModelShowsAsRecording
+            => RecordingCommandState.ShowsAsRecording(Model.IsRecording, Model.IsAwaitingRecoveryResume);
+
         [Description("PropDesc_Rec_IsRecording")]
         [ObservableProperty]
         [NotifyPropertyChangedFor(nameof(CanStartRecording))]
@@ -197,7 +212,7 @@ namespace ProcessRecorderApp.ViewModels
         public partial bool IsRecording { get; set; }
         partial void OnIsRecordingChanged(bool value)
         {
-            if (Model.IsRecording == value)
+            if (ModelShowsAsRecording == value)
                 return;
 
             // PropertyGrid の直接編集はコマンドの CanExecute を通らないので、ここでも同じ
@@ -207,7 +222,7 @@ namespace ProcessRecorderApp.ViewModels
             // 排出中は WaitForPendingStop が UI スレッドを最大 StopFinalizeTimeoutMs 塞ぐ。
             if (value ? !CanStartRecording : !CanStopRecording)
             {
-                IsRecording = Model.IsRecording;   // 差し戻し（画面の値とモデルは常に一致させる）
+                IsRecording = ModelShowsAsRecording;   // 差し戻し（画面の値とモデルは常に一致させる）
                 return;
             }
 
@@ -222,7 +237,7 @@ namespace ProcessRecorderApp.ViewModels
             {
                 // 失敗の記録と LastError は EventRecorder 側が済ませている。
                 // ここでは表示をモデルへ差し戻すだけでよい。
-                IsRecording = Model.IsRecording;
+                IsRecording = ModelShowsAsRecording;
             }
         }
 
@@ -236,6 +251,24 @@ namespace ProcessRecorderApp.ViewModels
         [NotifyPropertyChangedFor(nameof(CanStartRecording))]
         [NotifyCanExecuteChangedFor(nameof(StartRecordingCommand))]
         public partial bool IsStopping { get; private set; }
+
+        /// <summary>
+        /// 自動復帰の作り直しで畳んだ録画を、復帰したら録り直す予定があるか
+        /// （<see cref="EventRecorder.IsAwaitingRecoveryResume"/> のミラー）。
+        ///
+        /// <para>
+        /// <b>停止を届かせるために要る。</b> 作り直しのあいだは
+        /// <c>IsRecording</c> も <c>IsInitialized</c> も false なので、これを見ないと
+        /// <see cref="CanStopRecording"/> が false になり、利用者の停止も
+        /// UiaTrigger の停止条件も<b>どこにも届かないまま</b>録画が再開する。
+        /// </para>
+        /// </summary>
+        [ReadOnly(true)]
+        [Browsable(false)]
+        [ObservableProperty]
+        [NotifyPropertyChangedFor(nameof(CanStopRecording))]
+        [NotifyCanExecuteChangedFor(nameof(StopRecordingCommand))]
+        public partial bool IsAwaitingRecoveryResume { get; private set; }
 
         [ReadOnly(true)]
         [Description("PropDesc_Rec_IsInitialized")]
@@ -458,7 +491,8 @@ namespace ProcessRecorderApp.ViewModels
 
         [Browsable(false)]
         public bool CanStopRecording
-            => RecordingCommandState.CanStop(Model.IsInitialized, Model.IsRecording);
+            => RecordingCommandState.CanStop(
+                Model.IsInitialized, Model.IsRecording, Model.IsAwaitingRecoveryResume);
 
         [property: Description("PropDesc_Rec_Initialize")]
         [RelayCommand]

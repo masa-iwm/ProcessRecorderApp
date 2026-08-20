@@ -21,14 +21,14 @@ public class RecordingCommandStateTests
     public void Idle_CanStartButCannotStop()
     {
         Assert.True(RecordingCommandState.CanStart(isInitialized: true, isRecording: false, isStopping: false));
-        Assert.False(RecordingCommandState.CanStop(isInitialized: true, isRecording: false));
+        Assert.False(RecordingCommandState.CanStop(isInitialized: true, isRecording: false, resumePending: false));
     }
 
     [Fact]
     public void Recording_CanStopButCannotStart()
     {
         Assert.False(RecordingCommandState.CanStart(isInitialized: true, isRecording: true, isStopping: false));
-        Assert.True(RecordingCommandState.CanStop(isInitialized: true, isRecording: true));
+        Assert.True(RecordingCommandState.CanStop(isInitialized: true, isRecording: true, resumePending: false));
     }
 
     /// <summary>
@@ -41,7 +41,7 @@ public class RecordingCommandStateTests
     {
         Assert.False(RecordingCommandState.CanStart(isInitialized: true, isRecording: false, isStopping: true),
             "排出中に開始を通すと Start が排出の完了を待ち、UI スレッドが最大 StopFinalizeTimeoutMs 固まる");
-        Assert.False(RecordingCommandState.CanStop(isInitialized: true, isRecording: false),
+        Assert.False(RecordingCommandState.CanStop(isInitialized: true, isRecording: false, resumePending: false),
             "二重停止は弾かれること");
     }
 
@@ -55,12 +55,51 @@ public class RecordingCommandStateTests
         Assert.False(RecordingCommandState.CanStart(isInitialized: true, isRecording: true, isStopping: true));
     }
 
+    // ---- 自動復帰による録り直し待ち ----
+
+    /// <summary>
+    /// <b>このスイートで 2 番目に重要な窓。</b> 作り直しのあいだは
+    /// <c>IsRecording</c> も <c>IsInitialized</c> も false になる。ここで停止を
+    /// 受け付けられないと、利用者が止めても UiaTrigger の停止条件が立っても
+    /// <b>どこにも届かないまま、復帰した瞬間に録画が再開する</b>。
+    /// </summary>
+    [Fact]
+    public void WhileAwaitingTheResume_CanStopEvenThoughNothingIsRecording()
+    {
+        Assert.True(RecordingCommandState.CanStop(isInitialized: false, isRecording: false, resumePending: true),
+            "デバイスが抜けているあいだ（未初期化）の停止が届くこと");
+        Assert.True(RecordingCommandState.CanStop(isInitialized: true, isRecording: false, resumePending: true),
+            "作り直しに成功して録り直す直前でも、停止が届くこと");
+    }
+
+    /// <summary>
+    /// 復帰待ちは<b>画面と外部からは録画中に見える</b>こと。見えないとトグルは
+    /// 切れた状態で表示され、切る手段が無くなる（切れているものは切れない）。
+    /// </summary>
+    [Fact]
+    public void AwaitingTheResume_ShowsAsRecording()
+    {
+        Assert.True(RecordingCommandState.ShowsAsRecording(isRecording: false, resumePending: true));
+        Assert.True(RecordingCommandState.ShowsAsRecording(isRecording: true, resumePending: false));
+        Assert.True(RecordingCommandState.ShowsAsRecording(isRecording: true, resumePending: true));
+        Assert.False(RecordingCommandState.ShowsAsRecording(isRecording: false, resumePending: false));
+    }
+
+    /// <summary>
+    /// 復帰待ちは開始の可否を変えない ── 二重開始は
+    /// <c>StartCore</c> 側（意図を消してから開始する）で防いでおり、
+    /// ここで塞ぐと「作り直し直後に利用者が開始する」正当な操作まで弾く。
+    /// </summary>
+    [Fact]
+    public void AwaitingTheResume_DoesNotBlockAManualStart()
+        => Assert.True(RecordingCommandState.CanStart(isInitialized: true, isRecording: false, isStopping: false));
+
     [Fact]
     public void Uninitialized_CanDoNothing()
     {
         // 初期化に失敗したレコーダー（エンコーダーが1つも見つからない等）。
         Assert.False(RecordingCommandState.CanStart(isInitialized: false, isRecording: false, isStopping: false));
-        Assert.False(RecordingCommandState.CanStop(isInitialized: false, isRecording: true));
+        Assert.False(RecordingCommandState.CanStop(isInitialized: false, isRecording: true, resumePending: false));
         Assert.False(RecordingCommandState.CanStart(isInitialized: false, isRecording: false, isStopping: true));
     }
 }

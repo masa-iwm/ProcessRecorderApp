@@ -276,10 +276,22 @@ UIA からは分からない。自動で守られているのは**幾何の規�
 **だからタイマーの梯子は外せない。** 到着は「間に合えば早める」ものであって、
 復帰の唯一の駆動源ではない。60 秒の待ち（`rebuildOnly`）では通知が十分に間に合う。
 
-**復帰しても録画は再開しない。** 録画中にソースが死ぬと、エスカレーションの `Initialize()` が
-`Close()` を通るためその場で確定する（実測: `recording.stop … result=ok samplesPushed=211` ──
-**ファイルは壊れていない**）。作り直しの後、レコーダーは待機状態で戻る。
-**これはこの機能より前からの挙動で、今回変えていない。**
+**録画の録り直しは、この実機確認より後に足した面である。** 上の回では
+「復帰したのに録画だけ戻らない」ことを実測している（`recording.stop … result=ok
+samplesPushed=211` ── ファイルは壊れていない）。その後、作り直しで畳んだ録画を
+録り直すようにしたが、**その挙動は実機では確認していない**
+── 自動で押さえているのは L2（`ErrorReportingTests.AfterRecovery_TheRecordingIsResumed`。
+`recording.start` が 2 本出ること）と、L1 のソース静的検査（`RecoveryResumeTests`）である。
+
+**抜けているあいだの停止が届くことも実機では未確認。** 作り直しのあいだは
+`IsRecording` も `IsInitialized` も false なので、`RecordingCommandState.CanStop` が
+`resumePending` を見なければ停止はどこにも届かない ── 利用者の停止も、
+**UiaTrigger の停止条件**も同じである。規則は L1 が縛り、順序（`StopAsync` の早期 return
+より前で取り消すこと）もソース静的検査で固定しているが、**窓が数秒しかないので
+E2E からは踏めない**。カメラのある機械で次に触るときは、
+抜いてから `round=1 scheduled in 60000ms` を確認し、その最中に停止してから挿し直して、
+`not resuming the recording after the rebuild (stop requested)` が出て
+録画が再開しないことを見ること。
 
 **利用者が別途入れた GStreamer に d3d12 プラグインが無い構成**も自動では踏めない
 （開発機も CI もフル構成）。そのときは `device.watch … monitor=no` を出して

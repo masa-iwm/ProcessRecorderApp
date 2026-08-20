@@ -293,6 +293,26 @@ public partial class EventRecorder : ObservableObject, IDisposable
     public partial bool IsInitialized { get; private set; }
 
     /// <summary>
+    /// 自動復帰の作り直しで畳んだ録画を、復帰したら録り直す予定があるか（実体）。
+    /// <see cref="IsAwaitingRecoveryResume"/> は UI 通知用のミラー。
+    ///
+    /// <para>
+    /// <b>volatile は必須</b> ── 立てるのは復帰の連鎖（プールスレッド）、
+    /// 降ろすのは <see cref="Stop"/>（UI/CLI スレッド）で、ロックを介さない。
+    /// </para>
+    /// <para>
+    /// <b>作り直しを跨いで生き残る。</b> デバイスが 2 分抜けていれば
+    /// <c>rebuildOnly</c> の連鎖が何周も回るので、周回ごとに立て直すのではなく
+    /// レコーダーが持つ。消えるのは「止められたとき」「録り直したとき」
+    /// 「破棄されたとき」の 3 つだけである。
+    /// </para>
+    /// </summary>
+    volatile bool _resumeAfterRecovery;
+
+    [ObservableProperty]
+    public partial bool IsAwaitingRecoveryResume { get; private set; }
+
+    /// <summary>
     /// 直近に検出した障害（バスの Error / Warning、停止のタイムアウト等）。正常時は <see langword="null"/>。
     ///
     /// <para>
@@ -2602,6 +2622,24 @@ public partial class EventRecorder : ObservableObject, IDisposable
                 }
                 _restartAttempt = 0;
 
+                // **作り直しの前に「録り直す」意図を控える。** この後の Initialize() は
+                // 先頭の Close() で進行中の録画を確定させる（ファイルは壊れない）ので、
+                // ここで控えておかないと**復帰しても録画だけが戻らない**
+                // ── 常時録画は InitializeWith の末尾で作り直されるのに、
+                // イベント録画だけ再開しない、という非対称がこれで消える。
+                // **_stateLock の下で見る** ── ちょうど同時に止められた場合に、
+                // 降ろされた直後の意図を立て直してしまわないため。
+                lock (_stateLock)
+                {
+                    if (_IsRecording && !_resumeAfterRecovery)
+                    {
+                        _resumeAfterRecovery = true;
+                        IsAwaitingRecoveryResume = true;
+                        Components.ActivityLog.Info("recorder.restart",
+                            $"recorder='{Name}' the recording will be resumed once the pipeline is rebuilt");
+                    }
+                }
+
                 // 再生成へ進む前に、連鎖の所有権を自分で畳む。Initialize() は Close() 経由で
                 // CancelPendingRestart を呼び、その時点の _restartTask は「実行中の自分自身」
                 // ── 畳まずに進むと pending?.Wait(2000) が自タスクの完了を待つ形になり、
@@ -2626,6 +2664,7 @@ public partial class EventRecorder : ObservableObject, IDisposable
                     string flushedTag = 0 < flushed ? $" repeated={flushed}" : "";
                     Components.ActivityLog.Info("recorder.restart",
                         $"recorder='{Name}' rebuild result=ok{wake}{flushedTag}");
+                    ResumeRecordingIfPending();
                 }
                 catch (Exception ex)
                 {
@@ -2660,6 +2699,68 @@ public partial class EventRecorder : ObservableObject, IDisposable
             }
             cts.Dispose();
         }
+    }
+
+    /// <summary>
+    /// 作り直しで畳んだ録画を録り直す。予定が無ければ何もしない。
+    ///
+    /// <para>
+    /// <b>意図は先に降ろしてから開始する。</b> 開始が失敗したときに立てたままにすると、
+    /// 次の作り直しのたびに永久に録り直しを試みることになる。
+    /// </para>
+    /// <para>
+    /// <c>recording.start</c> は <see cref="StartCore"/> が出すので、ここでは
+    /// 「なぜ始まったか」を 1 行だけ残す ── その 2 行が並ぶことが、利用者が始めた録画と
+    /// 復帰で戻った録画を後から見分ける唯一の手がかりになる。
+    /// </para>
+    /// <para>
+    /// <b>意図の検査から <see cref="Start"/> までを <c>_stateLock</c> の下で行う。</b>
+    /// 分けると「作り直しのあいだの停止」が落ちる ── 停止側は
+    /// <see cref="Initialize"/> が握っているロックの解放待ちで数秒止まっているので、
+    /// ロック外で意図を読んだこちらが先に進み、後から入った <see cref="StopAsync"/> は
+    /// <see cref="CancelRecoveryResume"/> が空振りしたうえ <c>_IsRecording</c> も false で
+    /// <b>1 行も実行せずに返る</b>。その直後にこちらが開始するので、
+    /// <b>利用者が止めた録画が戻ってくる</b>。
+    /// </para>
+    /// </summary>
+    private void ResumeRecordingIfPending()
+    {
+        lock (_stateLock)
+        {
+            if (!_resumeAfterRecovery)
+                return;
+
+            _resumeAfterRecovery = false;
+            IsAwaitingRecoveryResume = false;
+
+            Components.ActivityLog.Info("recorder.restart",
+                $"recorder='{Name}' resuming the recording that the rebuild finalized");
+            try
+            {
+                Start();
+            }
+            catch (Exception ex)
+            {
+                // 失敗の記録と LastError は StartCore が済ませている。連鎖は殺さない。
+                Log(DebugLevel.Error, $"resuming the recording failed\n{ex}");
+            }
+        }
+    }
+
+    /// <summary>
+    /// 復帰後に録り直す予定を取り消す。<b>録画中でなくても効くこと</b>が要点で、
+    /// 作り直しのあいだ（<c>_IsRecording</c> も <c>IsInitialized</c> も false）に
+    /// 届いた停止を、ここで受け止める。
+    /// </summary>
+    private void CancelRecoveryResume(string reason)
+    {
+        if (!_resumeAfterRecovery)
+            return;
+
+        _resumeAfterRecovery = false;
+        IsAwaitingRecoveryResume = false;
+        Components.ActivityLog.Info("recorder.restart",
+            $"recorder='{Name}' not resuming the recording after the rebuild ({reason})");
     }
 
     /// <summary>
@@ -2873,6 +2974,10 @@ public partial class EventRecorder : ObservableObject, IDisposable
         if (_IsRecording)
             throw new InvalidOperationException("Already started");
 
+        // 録画が始まる＝復帰後に録り直す意図は満たされた。
+        _resumeAfterRecovery = false;
+        IsAwaitingRecoveryResume = false;
+
         // 新しい録画では前回の障害表示を消す（「今の状態」を表すプロパティなので）
         LastError = null;
         _srcThrottles.Error.Flush();
@@ -3008,6 +3113,12 @@ public partial class EventRecorder : ObservableObject, IDisposable
     {
         lock (_stateLock)
         {
+            // **早期 return より前に降ろす。** 作り直しのあいだは _IsRecording が false
+            // なので、ここを下に置くと「抜けているあいだの停止」がどこにも届かず、
+            // 復帰した瞬間に録画が勝手に再開する ── 利用者が止めた場合も、
+            // UiaTrigger の停止条件が立った場合も同じである。
+            CancelRecoveryResume("stop requested");
+
             if (!_IsRecording)
                 return System.Threading.Tasks.Task.CompletedTask;
 
@@ -3308,6 +3419,13 @@ public partial class EventRecorder : ObservableObject, IDisposable
 
     protected virtual void Dispose(bool disposing)
     {
+        // 破棄されるレコーダーを復帰の連鎖が録り直さないように、意図を先に降ろす。
+        // **ミラーも一緒に降ろす** ── 残すと、まだ購読している VM が
+        // 「録画中」を出したまま（ShowsAsRecording）になり、停止を押しても
+        // CancelRecoveryResume が空振りするので二度と降りない。
+        _resumeAfterRecovery = false;
+        IsAwaitingRecoveryResume = false;
+
         if (!_disposedValue)
         {
             // フラグは Close() より**前**に立てる。後に立てると、Close() の完了から

@@ -1868,7 +1868,7 @@ GPU テクスチャになるため**アクセシブルテキストが 1 つも�
 | `recorder.error` | ERROR | `EventRecorder.HandleBusMessage` | **両方のバス**の `Error`（バス名・要素名・メッセージ・debug 情報） |
 | `recorder.warning` | WARN | 同上 | 両方のバスの `Warning`。連続する同一内容は畳んで `repeated=N` を添える |
 | `recorder.eos` | INFO | 同上 | sink 側バスの `Eos` |
-| `recorder.restart` | INFO / WARN | 同上／`RestartSinkSrc` | 自動復帰の予約と、その結果（`ok` / `failed`）。監視できる映像源なら `watch=camera｜monitor` が付き、デバイスの到着で待ちを打ち切った回は `wake=device-arrival` が付く。**作り直しだけを試す連鎖は `attempt=` ではなく `round=`**（1 周ごとに新しい連鎖になるので `attempt` は常に 1 になる）で、待ちの案内は 1 周目と約 1 時間ごとにしか出さない（1 分に 1 行では `activity.log` を数日で使い切る） |
+| `recorder.restart` | INFO / WARN | 同上／`RestartSinkSrc` | 自動復帰の予約と、その結果（`ok` / `failed`）。監視できる映像源なら `watch=camera｜monitor` が付き、デバイスの到着で待ちを打ち切った回は `wake=device-arrival` が付く。**作り直しだけを試す連鎖は `attempt=` ではなく `round=`**（1 周ごとに新しい連鎖になるので `attempt` は常に 1 になる）で、待ちの案内は 1 周目と約 1 時間ごとにしか出さない（1 分に 1 行では `activity.log` を数日で使い切る）。録画を畳んで録り直すときは `will be resumed once the pipeline is rebuilt` / `resuming the recording that the rebuild finalized` / `not resuming the recording after the rebuild (…)` の 3 種が出る ── 直後の `recording.start` が利用者の操作か復帰かは、この行があるかどうかで見分ける |
 | `device.watch` | INFO / WARN | `DeviceArrivalWatcher` | デバイス到着の監視を張った／止めた（`kind=` と `provider=`）。WARN は**監視できない**構成（プロバイダが無い・`CanMonitor()` が false・起動に失敗）で、タイマーだけの復帰へ縮退したことを意味する |
 | `device.arrive` | INFO | 同上 | デバイスプロバイダが到着（`device-added` / `device-changed`）を報告した。連続する同一内容は畳んで `repeated=N` を添える |
 | `recorder.continuous-init ok` / `recorder.continuous-init fail` | INFO / WARN | `EventRecorder.StartContinuous` ／ `InitializeCore` ／ `InitializeWith` | 常時録画の枝を組めた（エンコーダー・fps・解像度・分割間隔）／組めなかったので**枝だけ落とした**（イベント録画は無事＝隔離契約）。**上書きだけを捨てた場合も同じ名前で出す**（読めないフレームレート・上流が固定されていないのに指定された解像度）── どちらも「設定が黙って効いていない」という同じ事故だからである |
@@ -2079,6 +2079,23 @@ EOS を送ったあと `TaskCompletionSource` を**待つだけ**で、自分で
   限らない ── デバイスインターフェイスの到着通知はドライバが使える状態になる前に飛びうるし、
   ディスプレイの再構成は `WM_DISPLAYCHANGE` の時点ではまだ途中でありうる。
   置く時間は**元の待ちを超えない**（超えると「早期復帰」が待ち切るより遅くなる）。
+- **作り直しで畳んだ録画は録り直す。** `Initialize()` は先頭の `Close()` で進行中の録画を
+  確定させる（ファイルは壊れない）ので、控えておかないと**復帰しても録画だけが戻らない**
+  ── 常時録画は `InitializeWith` の末尾で作り直されるのに、イベント録画だけ再開しない、
+  という非対称になる。意図は `_resumeAfterRecovery` としてレコーダーが持ち、
+  **作り直しの何周を跨いでも生き残る**（デバイスが 2 分抜けていれば連鎖は何周も回る）。
+  消えるのは「止められたとき」「録り直したとき」「破棄されたとき」の 3 つだけ。
+  録り直しは**新しいファイル**になる（事前バッファは空なので先頭の巻き戻しは無い）。
+- **抜けているあいだの停止を届かせること。** 作り直しのあいだは `IsRecording` も
+  `IsInitialized` も false になるので、`RecordingCommandState.CanStop` が
+  `resumePending` を見ていないと、**利用者が止めても UiaTrigger の停止条件が立っても
+  どこにも届かず、復帰した瞬間に録画が再開する**。`StopAsync` は
+  `!_IsRecording` の早期 return より**前**で取り消すこと（順序は L1 が縛る）。
+  録り直し側も**意図の検査から `Start()` までを `_stateLock` の下で切れ目なく**行う ──
+  分けると、`Initialize()` の握るロックを待って止まっている停止を追い越して開始でき、
+  **利用者が止めた録画が戻ってくる**。
+  画面では復帰待ちも録画中として見せる（`ShowsAsRecording`）── 見せないとトグルが
+  切れた状態で表示され、切る手段が無くなる。
 - **`Initialize()` が失敗しても連鎖を絶やさない。** 失敗した時点では
   パイプラインもバスも無い＝**二度とエラーが飛ばない**ので、そこで諦めると
   デバイスを挿し直しても永久に復帰しない。`Initialize()` の `catch` が

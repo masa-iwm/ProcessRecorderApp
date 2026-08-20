@@ -140,4 +140,60 @@ public sealed class ErrorReportingTests(PublishedApp app, ITestOutputHelper outp
         Assert.True(errors.Count <= 10,
             $"recorder.error が畳まれていません（{errors.Count} 件）");
     }
+
+    /// <summary>
+    /// <b>録画中にソースが死んで復帰したら、録画も戻ること。</b>
+    ///
+    /// <para>
+    /// 作り直し（<c>Initialize()</c>）は先頭の <c>Close()</c> で進行中の録画を確定させる
+    /// ── ファイルは壊れないが、そこで録画は終わる。**常時録画は作り直されるのに
+    /// イベント録画だけ再開しない**という非対称が長らくあり、実機のカメラ抜き差しで
+    /// 「復帰したのに録れていない」として実際に踏んだ。
+    /// </para>
+    /// <para>
+    /// 見るのは <c>recording.start</c> が <b>2 本</b>出ること ── 利用者が始めた 1 本目と、
+    /// 復帰が戻した 2 本目である。1 本目のファイルが確定していること
+    /// （<c>recording.stop … result=ok</c>）も併せて見る。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void AfterRecovery_TheRecordingIsResumed()
+    {
+        var settings = new SettingsFile();
+        var recorder = settings.AddRecorder("R1");
+
+        // 15fps で約 2 秒後に本物の Error。EOS も伴うので作り直しへ進む。
+        recorder.SrcPipeline =
+            "videotestsrc is-live=true do-timestamp=true ! identity error-after=30 ! videoconvert ! " +
+            "video/x-raw,format=I420,width=320,height=240,framerate=15/1";
+
+        using var instance = AppInstance.Create(app, settings);
+
+        var start = instance.Run("start-recording-all");
+        output.WriteLine(start.ToString());
+        Assert.Equal(0, start.ExitCode);
+
+        // 障害（約 2 秒）→ 最初の待ち 5 秒 → 作り直し → 録り直し、までを観測する。
+        Thread.Sleep(TimeSpan.FromSeconds(14));
+
+        var log = instance.ReadActivityLog();
+        output.WriteLine(string.Join(Environment.NewLine, log));
+
+        var restarts = ActivityLogFile.Events(log, "recorder.restart");
+        Assert.Contains(restarts, l => l.Contains("will be resumed once the pipeline is rebuilt", StringComparison.Ordinal));
+        // **末尾まで書くこと。** "resuming the recording" だけだと、取り消しの行
+        // "not resuming the recording after the rebuild (...)" にも一致してしまい、
+        // 「録り直さなかった」でこの表明が緑になる。
+        Assert.Contains(restarts,
+            l => l.Contains("resuming the recording that the rebuild finalized", StringComparison.Ordinal));
+
+        var started = ActivityLogFile.Events(log, "recording.start");
+        Assert.True(2 <= started.Count,
+            $"復帰後に録画が戻っていません（recording.start が {started.Count} 件）:" + Environment.NewLine +
+            string.Join(Environment.NewLine, started));
+
+        // 畳まれた 1 本目は壊れていないこと。
+        var stopped = ActivityLogFile.Events(log, "recording.stop");
+        Assert.Contains(stopped, l => l.Contains("result=ok", StringComparison.Ordinal));
+    }
 }

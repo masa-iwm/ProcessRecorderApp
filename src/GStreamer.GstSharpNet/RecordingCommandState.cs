@@ -42,6 +42,26 @@ public static class RecordingCommandState
     /// ここに窓が開いて二重停止が通る。
     /// </para>
     /// </summary>
-    public static bool CanStop(bool isInitialized, bool isRecording)
-        => isInitialized && isRecording;
+    /// <param name="resumePending">
+    /// 自動復帰が終わったら録り直す予定があるか（<c>EventRecorder.IsAwaitingRecoveryResume</c>）。
+    /// <b>これを見ないと、抜けているあいだの停止がどこにも届かない。</b>
+    /// 作り直しのあいだ <c>isRecording</c> も <c>isInitialized</c> も false になるので、
+    /// その窓で利用者が止めても、UiaTrigger の停止条件が立っても、
+    /// <b>復帰した瞬間に録画が勝手に再開する</b>。
+    /// </param>
+    public static bool CanStop(bool isInitialized, bool isRecording, bool resumePending)
+        => resumePending || (isInitialized && isRecording);
+
+    /// <summary>
+    /// 画面と外部から見て「録画セッション中」か。
+    ///
+    /// <para>
+    /// <b>復帰待ちも録画中として見せる。</b> 見せないと、トグルは切れた状態で表示され、
+    /// <b>利用者には切る手段が無くなる</b>（切れているものは切れない）。
+    /// 実体の <c>_IsRecording</c> は false のままで、こちらは表示と可否の判断にだけ使う
+    /// ── コールバックが読むのはあくまで実体の方である。
+    /// </para>
+    /// </summary>
+    public static bool ShowsAsRecording(bool isRecording, bool resumePending)
+        => isRecording || resumePending;
 }
