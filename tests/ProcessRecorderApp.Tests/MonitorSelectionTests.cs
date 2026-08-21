@@ -271,7 +271,7 @@ public class MonitorSelectionTests
         Assert.NotNull(result.Failure);
     }
 
-    // ---- 規則 4: 列挙が空 → 番号へ縮退＋警告 ----
+    // ---- 規則 4: 列挙が空 → 番号が書かれていれば縮退＋警告、無ければ失敗 ----
 
     [Fact]
     public void WithoutAnyEnumeratedMonitor_ThePathIsDroppedAndTheIndexKept()
@@ -291,18 +291,100 @@ public class MonitorSelectionTests
         Assert.Contains(DevicePath, result.Warning, StringComparison.Ordinal);
     }
 
-    /// <summary>番号が書かれていない縮退では、パスだけが消えて余分な空白も残らないこと。</summary>
+    /// <summary>
+    /// 縮退では、パスのトークンだけが消えて余分な空白も残らないこと
+    /// （区切りの <c>'!'</c> の前が二重の空白にならない）。
+    /// </summary>
     [Fact]
     public void TheDegradedStringDoesNotKeepAStraySeparator()
     {
-        string pipeline = $"d3d12screencapturesrc monitor-device-path={QuotedDevicePath} ! video/x-raw(memory:D3D12Memory)";
+        string pipeline =
+            $"d3d12screencapturesrc monitor-index=0 monitor-device-path={QuotedDevicePath} ! video/x-raw(memory:D3D12Memory)";
 
         var result = MonitorSelection.Resolve(pipeline, None);
 
-        Assert.Equal("d3d12screencapturesrc ! video/x-raw(memory:D3D12Memory)", result.Pipeline);
+        Assert.Equal("d3d12screencapturesrc monitor-index=0 ! video/x-raw(memory:D3D12Memory)", result.Pipeline);
     }
 
-    // ---- 規則 5: 一致したがハンドルが読めない → 4 と同じ縮退＋警告 ----
+    /// <summary>
+    /// <b>戻せる先が無いなら縮退しない。</b> <c>monitor-index</c> が書かれていない指定で
+    /// パスだけ取り除くと、選択プロパティが 1 つも無い文字列
+    /// （<c>d3d12screencapturesrc capture-api=wgc ! …</c>）になり、要素は
+    /// <b>既定のモニター（index 0）を黙って撮る</b> ── パス指定が防ごうとしている事故そのもの。
+    /// 失敗させれば初期化が失敗し、デバイス到着の監視が拾い直して復帰する。
+    /// </summary>
+    [Fact]
+    public void WithoutAnyEnumeratedMonitorAndWithoutAnIndex_ItFailsInsteadOfDegrading()
+    {
+        string pipeline =
+            $"d3d12screencapturesrc capture-api=wgc monitor-device-path={QuotedDevicePath}"
+            + " ! video/x-raw(memory:D3D12Memory), framerate=30/1";
+
+        var result = MonitorSelection.Resolve(pipeline, None);
+
+        Assert.False(result.Succeeded);
+        Assert.Null(result.Warning);
+        Assert.NotNull(result.Failure);
+        Assert.Contains(DevicePath, result.Failure, StringComparison.Ordinal);
+        // 番号を書けば縮退できることが読み取れること（番号で構わない利用者の唯一の前進）。
+        Assert.Contains("monitor-index", result.Failure, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// <b>失敗のときはパイプライン文字列を書き換えて返さない。</b> 呼び出し側は投げるので
+    /// 使われないが、中途半端な（＝既定のモニターを撮る）文字列を作らないこと自体を縛る。
+    /// </summary>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void AFailureNeverProducesARewrittenPipeline(bool emptyEnumeration)
+    {
+        string pipeline = $"d3d12screencapturesrc monitor-device-path={QuotedDevicePath}";
+
+        var result = MonitorSelection.Resolve(
+            pipeline, emptyEnumeration ? None : (MonitorInfo[])[Monitor(0, DevicePath, handle: 0)]);
+
+        Assert.False(result.Succeeded);
+        Assert.Null(result.Pipeline);
+    }
+
+    /// <summary>
+    /// <b>規則 4/5 の失敗は規則 3 の失敗と区別できること。</b> 原因が違う
+    /// （3 はモニターが繋がっていない、4 は列挙できない、5 はハンドルが読めない）ので、
+    /// 同じ文言だと利用者が「挿し直す」という無効な対処へ誘導される。
+    /// </summary>
+    [Fact]
+    public void TheThreeFailureReasons_AreDistinguishable()
+    {
+        string pipeline = $"d3d12screencapturesrc monitor-device-path={QuotedDevicePath}";
+
+        string notConnected = MonitorSelection.Resolve(
+            pipeline,
+            (MonitorInfo[])[Monitor(0, @"\\?\DISPLAY#OTHER#4&1&UID256#{e6f07b5f-ee97-4a90-b076-33f57bf4eaa7}")])
+            .Failure!;
+        string notEnumerated = MonitorSelection.Resolve(pipeline, None).Failure!;
+        string noHandle = MonitorSelection.Resolve(
+            pipeline, (MonitorInfo[])[Monitor(0, DevicePath, handle: 0)]).Failure!;
+
+        Assert.NotNull(notConnected);
+        Assert.NotNull(notEnumerated);
+        Assert.NotNull(noHandle);
+        Assert.NotEqual(notConnected, notEnumerated);
+        Assert.NotEqual(notConnected, noHandle);
+        Assert.NotEqual(notEnumerated, noHandle);
+
+        // 規則 3 の「繋がっていない」は 4/5 では言わない ── 挿し直しは対処にならない。
+        Assert.Contains("is not connected", notConnected, StringComparison.Ordinal);
+        Assert.DoesNotContain("is not connected", notEnumerated, StringComparison.Ordinal);
+        Assert.DoesNotContain("is not connected", noHandle, StringComparison.Ordinal);
+
+        // 逆に 4/5 だけが「戻せる先が無い」ことを言う。
+        Assert.DoesNotContain("fall back", notConnected, StringComparison.Ordinal);
+        Assert.Contains("fall back", notEnumerated, StringComparison.Ordinal);
+        Assert.Contains("fall back", noHandle, StringComparison.Ordinal);
+    }
+
+    // ---- 規則 5: 一致したがハンドルが読めない → 4 と同じ扱い（番号の有無で分岐） ----
 
     [Fact]
     public void AMatchWithoutAReadableHandle_DegradesToTheIndexWithAWarning()
@@ -319,6 +401,27 @@ public class MonitorSelectionTests
             result.Pipeline);
         Assert.NotNull(result.Warning);
         Assert.Contains(DevicePath, result.Warning, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// 規則 5 でも<b>戻せる先が無ければ縮退しない</b>（規則 4 と同じ判断）。
+    /// パスが読めてハンドルだけ読めない構成で番号へ倒すと、番号が書かれていない以上
+    /// 既定のモニターを撮ることになる。
+    /// </summary>
+    [Fact]
+    public void AMatchWithoutAReadableHandleAndWithoutAnIndex_ItFailsInsteadOfDegrading()
+    {
+        string pipeline =
+            $"d3d12screencapturesrc capture-api=wgc monitor-device-path={QuotedDevicePath}"
+            + " ! video/x-raw(memory:D3D12Memory), framerate=30/1";
+
+        var result = MonitorSelection.Resolve(pipeline, (MonitorInfo[])[Monitor(0, DevicePath, handle: 0)]);
+
+        Assert.False(result.Succeeded);
+        Assert.Null(result.Warning);
+        Assert.NotNull(result.Failure);
+        Assert.Contains(DevicePath, result.Failure, StringComparison.Ordinal);
+        Assert.Contains("monitor-index", result.Failure, StringComparison.Ordinal);
     }
 
     /// <summary>

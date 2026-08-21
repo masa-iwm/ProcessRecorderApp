@@ -93,11 +93,22 @@ public static class MonitorSelection
     /// <item>モニターは列挙できたのに一致しない → <b>失敗</b>。そのモニターは今つながっていない
     /// ので、番号へ縮退すると<b>黙って別の画面を録り始める</b> ── 直そうとしている取り違えを
     /// 自分で作ることになる。失敗させれば復帰の連鎖が拾い、モニターが戻れば復帰する。</item>
-    /// <item>列挙が空（利用者の GStreamer に d3d12 が無い等） → パスだけ取り除いて
-    /// <c>monitor-index</c> を残し、<b>警告</b>を返す。ここで失敗させると
-    /// 「番号なら録れる機械で 1 フレームも録れない」になる。</item>
-    /// <item>一致したがハンドルが 0（パスは読めたがハンドルが読めないビルド） → 4 と同じ縮退＋警告。</item>
+    /// <item>列挙が空（利用者の GStreamer に d3d12 が無い等） → <b><c>monitor-index</c> が
+    /// 書かれていれば</b>パスだけ取り除いて番号を残し、<b>警告</b>を返す。ここで失敗させると
+    /// 「番号なら録れる機械で 1 フレームも録れない」になる。<b>書かれていなければ失敗</b>
+    /// ── 戻せる先が無いのにパスを消すと、選択プロパティが 1 つも無い文字列になり
+    /// <b>既定のモニター（index 0）を黙って撮る</b>。それは <c>monitor-device-path</c> が
+    /// 防ごうとしている事故そのものである。</item>
+    /// <item>一致したがハンドルが 0（パスは読めたがハンドルが読めないビルド） → 4 と同じ扱い
+    /// （<c>monitor-index</c> の有無で縮退／失敗が決まる）。</item>
     /// </list>
+    ///
+    /// <para>
+    /// <b>失敗の理由は 3 つとも別の文言にしてある。</b> 原因が違う（3 は繋がっていない、
+    /// 4 は列挙できない、5 はハンドルが読めない）ので、同じ文言だと利用者が違う対処へ
+    /// 誘導される。4/5 の失敗には<b>「<c>monitor-index</c> を書けば縮退できる」</b>ことも書く
+    /// ── 番号で構わない利用者にとっては、それが唯一の前進である。
+    /// </para>
     ///
     /// <para>
     /// <b>それ以外は 1 文字も変えない。</b> <see cref="SrcPipelineBuilder.Parse"/> →
@@ -124,9 +135,25 @@ public static class MonitorSelection
             return new MonitorSelectionResult { Pipeline = srcPipeline };
         }
 
+        // **縮退できるのは戻せる先が在るときだけ。** `monitor-index` が書かれていなければ、
+        // パスを取り除いた文字列には選択プロパティが 1 つも残らず、要素は既定のモニター
+        // （index 0）を黙って撮る ── パス指定が防ごうとしている事故そのものである。
+        // 判定は `Parse` の結果で行う（＝パスを読んだのと同じ規則・同じソース要素セグメント）。
+        bool hasIndex = parsed.Properties.ContainsKey(IndexProperty);
+
         // 規則 4
         if (monitors is null || monitors.Count == 0)
         {
+            if (!hasIndex)
+            {
+                return new MonitorSelectionResult
+                {
+                    Failure = $"no screen-capture monitor could be enumerated, so {PathProperty}='{path}' "
+                        + $"could not be resolved, and no {IndexProperty} is written to fall back on "
+                        + $"(add {IndexProperty} if selecting the monitor by position is acceptable)",
+                };
+            }
+
             return new MonitorSelectionResult
             {
                 Pipeline = Rewrite(srcPipeline!, handle: null, removeIndex: false),
@@ -162,6 +189,16 @@ public static class MonitorSelection
         // 規則 5
         if (match.Handle == 0)
         {
+            if (!hasIndex)
+            {
+                return new MonitorSelectionResult
+                {
+                    Failure = $"the monitor with {PathProperty}='{path}' was found but its {HandleProperty} "
+                        + $"could not be read, and no {IndexProperty} is written to fall back on "
+                        + $"(add {IndexProperty} if selecting the monitor by position is acceptable)",
+                };
+            }
+
             return new MonitorSelectionResult
             {
                 Pipeline = Rewrite(srcPipeline!, handle: null, removeIndex: false),

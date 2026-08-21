@@ -282,7 +282,8 @@ public static partial class GstIntrospect
     /// <see cref="Gst.GObject.Object.GetProperty"/> が返す <see cref="Gst.GObject.Value"/> は
     /// 呼び出し側の所有物なので破棄する。プロパティを持たないビルドでは
     /// <see cref="ArgumentException"/> になるが、そこは静かに 0 へ倒す
-    /// ── 呼び出し側（<see cref="MonitorSelection"/>）が縮退の道を持っている。
+    /// ── 0 をどう扱うかは呼び出し側（<see cref="MonitorSelection"/> の規則 5）が決める
+    /// （<c>monitor-index</c> が書かれていれば縮退＋警告、無ければ失敗）。
     /// </para>
     /// </summary>
     private static ulong ReadMonitorHandle(Device device)
