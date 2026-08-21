@@ -115,6 +115,15 @@ public sealed class StopOutcomeTests(PublishedApp app, ITestOutputHelper output)
         // 集計行の result も ok のままにしない。
         string summary = Assert.Single(ActivityLogFile.Events(log, "recording.stop"));
         Assert.Contains("result=empty", summary);
+
+        // **EOS が自動復帰を予約していないこと。** sink バスの EOS は復帰を予約する
+        // ── 画面キャプチャの WGC 経路は切断で Error を出さず EOS だけを出すので、
+        // そうしないと復帰が丸ごと効かない。ただし予約は**戻ってくるデバイスに限る**
+        // （`DeviceKindRules.Classify` が `DeviceKind.None` 以外のとき）。
+        // ここのソースは有限のテストパターン（`num-buffers`）なので、その門が効いていれば
+        // 1 件も出ない。**門が外れるとここが赤くなる** ── 5 秒後の作り直しで
+        // ソースが蘇り、「供給が止まっている」というこのテストの前提そのものが壊れる。
+        Assert.Empty(ActivityLogFile.Events(log, "recorder.restart"));
     }
 
     /// <summary>

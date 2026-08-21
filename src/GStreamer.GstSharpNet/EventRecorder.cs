@@ -1281,6 +1281,14 @@ public partial class EventRecorder : ObservableObject, IDisposable
             const string SrcPipelineStr =
                 "appsrc format=time name=src ! h264parse ! mp4mux faststart=true name=mux ! filesink name=file";
 
+            // 新しいパイプラインなので EOS の記憶も畳む（次の障害は要素単位から試せる）。
+            // **組み立てより前に畳む。** バスの購読（と溜まっていた分の汲み切り）より後ろに
+            // 置くと、新しいパイプラインが即座に出した EOS の印をここで消してしまい、
+            // その EOS が予約した連鎖は要素単位の再開から始まる ── 戻っていないのに
+            // result=ok と報告される形になる。古い購読は InitializeCore の Close() で
+            // 外れているので、ここで畳んでも前のパイプラインの EOS を拾うことはない。
+            _sinkSawEos = false;
+
             // ParseLaunch は失敗を Gst.GLib.GException で投げる。候補ごとの失敗は
             // InitializeCore の catch が次の候補へ送るので、ここでは握らない。
             _sinkPipeline = (Pipeline)Global.ParseLaunch(SinkPipelineStr);
@@ -1406,9 +1414,6 @@ public partial class EventRecorder : ObservableObject, IDisposable
                         $"recorder='{Name}' {droppedOverride}");
                 }
             }
-
-            // 新しいパイプラインなので EOS の記憶も畳む（次の障害は要素単位から試せる）。
-            _sinkSawEos = false;
 
             IsInitialized = true;
 
@@ -2395,8 +2400,23 @@ public partial class EventRecorder : ObservableObject, IDisposable
 
                 // sink 側の EOS は「このパイプラインはもう戻せない」という印
                 // （<see cref="_sinkSawEos"/>）。次の復帰は要素単位を飛ばして作り直す。
+                // **印を立てるのが先** ── 下で張る連鎖が mustRebuild の判断に読む。
                 _sinkSawEos = true;
                 Components.ActivityLog.Info("recorder.eos", $"recorder='{Name}' bus={busName} element='{elementName}'");
+
+                // **EOS だけで終わるソースがある。** 画面キャプチャの WGC 経路
+                // （capture-api=wgc）はディスプレイを切断しても Error を出さず、
+                // sink バスへ EOS を流して黙る ── 印を立てるだけで誰も読まないまま終わるので、
+                // ここで予約しなければ復帰の仕組みが丸ごと効かない（デバイス到着の監視も張られない）。
+                //
+                // **種別で絞る。** カメラ・画面キャプチャの EOS は切断以外にありえないので
+                // 作り直すのが正しいが、有限のテストパターン（videotestsrc num-buffers=N）や
+                // ファイルの EOS は**正常終了**であり、作り直すと同じ有限ストリームを
+                // 無限に回し続けることになる。E2E の StopOutcomeTests は num-buffers で
+                // 意図的に EOS を起こしているので、絞らないと 5 秒後の作り直しでソースが蘇り、
+                // 「供給が止まっている」というあのテストの前提そのものが壊れる。
+                if (DeviceKindRules.Classify(ActualSrcPipeline ?? SrcPipeline) != DeviceKind.None)
+                    ScheduleRestart(elementName);
                 break;
         }
     }

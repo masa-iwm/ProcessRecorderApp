@@ -322,6 +322,39 @@ E2E からは踏めない**。カメラのある機械で次に触るときは�
 （開発機も CI もフル構成）。そのときは `device.watch … monitor=no` を出して
 タイマーだけの復帰へ縮退するが、**その分岐を実際に流すテストは無い**。
 
+### WGC（`capture-api=wgc`）での切断 → 復帰
+
+画面キャプチャの WGC 経路は、**ディスプレイを切断してもエラーを出さない** ──
+`recorder.error` は 1 行も出ず、sink バスへ `Eos` を流して黙る。だから復帰の引き金は
+`recorder.eos` の側の予約だけであり、そこが外れると**この経路でだけ復帰が丸ごと効かなくなる**
+（DXGI は `Internal data stream error` を出すので Error 分岐が拾い、症状が出ない）。
+
+**自動では一度も踏めない。** 実機・実ディスプレイの抜き差しが要り、開発機は WARP ＋ RDP で、
+CI にも物理ディスプレイが無い。さらに `capture-api` は WGC 対応のビルドにしか登録されない
+（同梱の MSVC 版には在り、MinGW 版には無い）ので、**確認は MSVC 同梱版でしか行えない**。
+
+自動で押さえているのは 2 面だけである:
+
+- L1 のソース静的検査（`SinkEosRecoveryTests`）── EOS 分岐が `ScheduleRestart` を呼ぶこと、
+  `_sinkSawEos` の印がその前に立つこと、種別（`DeviceKindRules.Classify`）で絞っていること。
+- L2 の負の確認（`StopOutcomeTests`）── 有限のソース（`num-buffers`）の EOS の後に
+  `recorder.restart` が 1 件も出ないこと。**種別の門が外れるとここが赤くなる**。
+
+**手動確認の手順**（MSVC 同梱版・モニター 2 台以上、抜いてよい側を対象にする）:
+
+1. パイプライン編集画面で画面キャプチャを選び、`capture-api` を `wgc` にして OK。
+   `recorder.init ok` を確認する。
+2. 対象モニターのケーブルを抜く。
+3. `activity.log` に `recorder.eos` が出て、**その直後に `recorder.restart …
+   attempt=1 scheduled in 5000ms watch=monitor` が続く**こと。ここで
+   `device.watch kind=monitor provider='d3d12screencapturedeviceprovider' monitor=yes`
+   が出ることも見る ── **`recorder.eos` の 1 行で止まっていたら退行**である。
+4. 挿し直して `recorder.restart … rebuild result=ok` に至り、プレビューが戻ること。
+   EOS を受けた連鎖は要素単位の再開を飛ばすので、出るのは `rebuild result=` の側になる。
+   到着が間に合った回は `wake=device-arrival` が付く（付かなければタイマーで復帰した回）。
+5. 録画中に抜いた場合は、`will be resumed once the pipeline is rebuilt` →
+   `resuming the recording that the rebuild finalized` が出て録画が戻ること。
+
 ### 自動復帰のあとのプレビューの滑らかさ
 
 **カメラを抜き差しして自動復帰したあと、プレビューがカタつくことがある**（実機で 1 度観測）。

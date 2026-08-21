@@ -1915,7 +1915,7 @@ GPU テクスチャになるため**アクセシブルテキストが 1 つも�
 | `recording.aborted` | ERROR | `EventRecorder.HandleBusMessage` | 録画中に src 側バスがエラーを報告したため録画を中止した |
 | `recorder.error` | ERROR | `EventRecorder.HandleBusMessage` | **両方のバス**の `Error`（バス名・要素名・メッセージ・debug 情報） |
 | `recorder.warning` | WARN | 同上 | 両方のバスの `Warning`。連続する同一内容は畳んで `repeated=N` を添える |
-| `recorder.eos` | INFO | 同上 | sink 側バスの `Eos` |
+| `recorder.eos` | INFO | 同上 | sink 側バスの `Eos`。**これも自動復帰の引き金**（種別の付く映像源のときだけ予約する。「自動復帰」の節）── WGC の画面キャプチャは切断してもエラーを出さず、この行だけを出す |
 | `recorder.restart` | INFO / WARN | 同上／`RestartSinkSrc` | 自動復帰の予約と、その結果（`ok` / `failed`）。監視できる映像源なら `watch=camera｜monitor` が付き、デバイスの到着で待ちを打ち切った回は `wake=device-arrival` が付く。**作り直しだけを試す連鎖は `attempt=` ではなく `round=`**（1 周ごとに新しい連鎖になるので `attempt` は常に 1 になる）で、待ちの案内は 1 周目と約 1 時間ごとにしか出さない（1 分に 1 行では `activity.log` を数日で使い切る）。録画を畳んで録り直すときは `will be resumed once the pipeline is rebuilt` / `resuming the recording that the rebuild finalized` / `not resuming the recording after the rebuild (…)` の 3 種が出る ── 直後の `recording.start` が利用者の操作か復帰かは、この行があるかどうかで見分ける |
 | `device.watch` | INFO / WARN | `DeviceArrivalWatcher` | デバイス到着の監視を張った／止めた（`kind=` と `provider=`）。WARN は**監視できない**構成（プロバイダが無い・`CanMonitor()` が false・起動に失敗）で、タイマーだけの復帰へ縮退したことを意味する |
 | `device.arrive` | INFO | 同上 | デバイスプロバイダが到着（`device-added` / `device-changed`）を報告した。連続する同一内容は畳んで `repeated=N` を添える |
@@ -2102,6 +2102,23 @@ EOS を送ったあと `TaskCompletionSource` を**待つだけ**で、自分で
 - 障害要素が**ソース以外でも必ず予約する**。ソースに限定すると、エンコーダーが壊れた
   場合に何も起きず毎フレームのエラーを出し続ける。
   要素単位で戻せない障害は、エスカレーションでパイプラインごと作り直すのが唯一の手段。
+- **sink バスの `Eos` でも予約する。** 復帰の引き金は Error だけではない ──
+  **切断してもエラーを出さず、EOS だけを出して黙るソースがある**。実例は画面キャプチャの
+  WGC 経路（`capture-api=wgc`）で、ディスプレイを切断しても `recorder.error` は 1 行も出ず
+  `recorder.eos` だけが出る（DXGI は `Internal data stream error` を出すので Error 分岐が拾う）。
+  EOS で予約しないと `_sinkSawEos` の印が立つだけで誰も読まないまま終わり、
+  連鎖が張られない＝**デバイス到着の監視も張られない**ので、復帰の仕組みが丸ごと効かない。
+  印は予約より**先**に立てる（連鎖が `mustRebuild` の判断に読む）。
+  **印を畳むのはパイプラインを組む前**（`InitializeWith` の先頭）── バスの購読より後ろで
+  畳むと、作り直した直後に出た EOS の印を消してしまい、その EOS が予約した連鎖が
+  要素単位の再開から始まって**戻っていないのに `result=ok`** と報告される。
+  **ただし EOS の予約は種別の付く映像源に限る**（`DeviceKindRules.Classify`）── カメラ・
+  画面キャプチャの EOS は切断以外にありえないが、有限のテストパターン
+  （`videotestsrc num-buffers=N`）やファイルの EOS は**正常終了**であり、
+  作り直すと同じ有限ストリームを永久に回し続けることになる。
+  **Error 分岐は絞らない** ── あちらは何かが壊れた印なので、ソースの種類によらず復帰を試す。
+  Error と EOS が同じミリ秒で届く構成（DXGI）では、後から来た方が
+  `ScheduleRestart` の「already scheduled」で拒否されるので二重にはならない。
 - **デバイスの到着で待ちを打ち切る。** 監視は復帰待ちのあいだだけ
   （`DeviceArrivalWatcher.Acquire` の参照カウント）で、**プロバイダを永続的に started に
   してはいけない** ── `gst_device_provider_get_devices` は started の間だけキャッシュを返し、
