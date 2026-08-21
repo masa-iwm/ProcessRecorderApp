@@ -47,10 +47,44 @@ CI は2つのワークフローに分かれる。`build.yml` は push のたび�
 
 ## リリースの流し方（v* タグ）
 
-1. **先に Release の箱を作る**: `gh release create <tag> --target <フル SHA> --prerelease`。`--target` に短縮 SHA を渡すと `HTTP 422 Release.target_commitish is invalid` になる ── フル SHA を使うこと。この手順が要るのは、ワークフロー最後の `gh release upload <tag>` が**既存の Release を要求する**ためで、タグ push だけでは Release はできない。
-2. タグが push されると `release.yml` が走る（`gh release create` のような API 経由のタグ作成でも `push` イベントは飛ぶ）。タグはどのブランチのコミットに打ってもよい。
-3. `workflow_dispatch` でも流せるが、Release への添付ステップは `refs/tags/v*` のときだけ実行される。dispatch 実行では zip はワークフローのアーティファクト（`packages`）としてだけ取れる。
-4. ランナーの自己申告（ステップの success）だけで済ませず、`gh release download` で出来上がった zip を落として中身を数え直すこと ── **3 本とも**上がっているか、runtimes の件数がその形態の台帳（`COMPONENTS.tsv` / `COMPONENTS-msvc.tsv`）と一致するか、ライセンス文がリポジトリと SHA256 一致で入っているか、openh264 を含むファイルが 0 件か。
+**ドラフトで作り、中身を確かめてから公開する。** 公開してしまうと取り消す手段は削除しかなく、
+それは公開済みの参照（Release とタグ）を巻き戻すことになる。ドラフトのうちは
+捨てても外から見えた痕跡が残らない。
+
+1. **先にドラフトの箱を作る**:
+   `gh release create <tag> --target <フル SHA> --draft --prerelease --title "…" --notes-file <path>`
+   - `--target` に短縮 SHA を渡すと `HTTP 422 Release.target_commitish is invalid` になる ──
+     **フル SHA を使うこと**。
+   - この手順が要るのは、ワークフロー最後の `gh release upload <tag>` が
+     **既存の Release を要求する**ためである。
+   - **`--draft` ではタグが作られない。** 作られるのは `untagged-…` の URL を持つ箱だけで、
+     したがって**この時点では `release.yml` は走らない**。次の手順でタグを push して初めて
+     両者が結び付き、ワークフローが動く。
+   - 0.x のあいだは `--prerelease` も付ける（v0.1.0 以降そう扱っている）。
+2. **タグを push する**: `git tag <tag> <フル SHA>` してから `git push origin <tag>`
+   （`&&` で繋がない ── Windows PowerShell 5.1 では構文エラーになる）。これで `release.yml` が走り、出来上がった zip が 1. のドラフトへ添付される
+   （`--clobber` なので流し直しても上書きされる）。タグはどのブランチのコミットに打ってもよい。
+3. `workflow_dispatch` でも流せるが、Release への添付ステップは `refs/tags/v*` のときだけ
+   実行される。dispatch 実行では zip はワークフローのアーティファクト（`packages`）としてだけ取れる。
+4. **ランナーの自己申告（ステップの success）だけで済ませず**、`gh release download` で
+   出来上がった zip を落として中身を数え直すこと ── **3 本とも**上がっているか、
+   runtimes の件数がその形態の台帳（`COMPONENTS.tsv` / `COMPONENTS-msvc.tsv`）と一致するか、
+   ライセンス文がリポジトリと SHA256 一致で入っているか、openh264 を含むファイルが 0 件か、
+   同梱される exe の版がそのコミットを指しているか。**ここまでドラフトのままなので、
+   食い違いが見つかったら公開せずに捨てられる。**
+5. 確かめ終えてから公開する: `gh release edit <tag> --draft=false`
+
+**切り直し（まだ公開していない場合）**は、ドラフトとタグを消してから 1. からやり直す:
+
+```
+gh release delete <tag> --yes
+git push origin :refs/tags/<tag>
+git tag -d <tag>
+```
+
+**公開してしまった後の切り直しは別物である。** 同じ手順で消せはするが、
+消えるのは公開済みの Release とタグであって、取得した人の手元は戻らない。
+版を上げて出し直す方が筋がよい ── 同じ版で中身が変わることになるためである。
 
 ## 運用上の注意
 

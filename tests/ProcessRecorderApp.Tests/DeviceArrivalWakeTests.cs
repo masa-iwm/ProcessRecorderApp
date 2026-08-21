@@ -166,6 +166,29 @@ public class DeviceArrivalWakeTests
             + "戻すのは**試行の前**であること ── この回の失敗の後に"
             + "次の周回が 5 秒で来るようにするため。");
 
+        // **作り直しだけの連鎖に絞らないこと。** エスカレーションの作り直しも到着で
+        // 早められるので、そこで空振りしたときこそ次を早く来させたい ── RDP の
+        // セッション復帰は「仮想ディスプレイが先に現れ、実モニタは後から戻る」二段構えで、
+        // 一段目の到着で起きた作り直しは必ず失敗する。絞ると次の機会まで丸 1 分空く。
+        // **否定形だけでは守れない。** `if (rebuildOnly && early)` と書き直されると
+        // 素通りするので、肯定形で「early だけを見ていること」を縛る ──
+        // `early` の直後に `)` が要るので、どんな並びの絞り込みも弾ける。
+        Assert.True(
+            SourceMethodBody.ContainsCode(body, "if (early)"),
+            "梯子を戻す条件が early 単独でなくなっている。"
+            + Environment.NewLine
+            + "エスカレーションの作り直しが到着で空振りしたときに梯子が始まらず、"
+            + Environment.NewLine
+            + "RDP 復帰のような二段構えの復帰で丸 1 分待つことになる。");
+
+        Assert.False(
+            SourceMethodBody.ContainsCode(body, "if (early && rebuildOnly)"),
+            "梯子を戻す条件が rebuildOnly の連鎖に絞られている。"
+            + Environment.NewLine
+            + "エスカレーションの作り直しが到着で空振りしたときに梯子が始まらず、"
+            + Environment.NewLine
+            + "RDP 復帰のような二段構えの復帰で丸 1 分待つことになる。");
+
         int reset = SourceMethodBody.IndexOfCode(body, "_rebuildFailuresSinceArrival = 0");
         int rebuild = SourceMethodBody.IndexOfCode(body, "Initialize();");
         Assert.True(reset < rebuild,

@@ -2679,7 +2679,13 @@ public partial class EventRecorder : ObservableObject, IDisposable
                 // 「居ないデバイスを叩き続けない」ためのものなので、到着した時点でその
                 // 理由は消えている。試行の**前**に戻すこと ── この回が失敗したときに
                 // 次の周回が梯子の 1 段目（5s）から始まるようにするため。
-                if (early && rebuildOnly)
+                //
+                // **rebuildOnly の連鎖に限らない。** エスカレーションの作り直しも
+                // 到着で早められるので、そこで空振りしたときこそ次を早く来させたい
+                // ── RDP のセッション復帰は「仮想ディスプレイが先に現れ、実モニタは
+                // 後から戻る」二段構えで、一段目の到着で起きた作り直しは必ず失敗する。
+                // 絞ると、そこから次の機会まで丸 1 分空く。
+                if (early)
                     _rebuildFailuresSinceArrival = 0;
 
                 if (early && !RestartPolicy.MayWakeEarly(++earlyWakes))
@@ -2721,6 +2727,11 @@ public partial class EventRecorder : ObservableObject, IDisposable
                 if (!mustRebuild && RestartSinkSrc())
                 {
                     _restartAttempt = 0;
+                    // 戻せたのだから、到着に追いつくための梯子はもう要らない
+                    // （作り直しが成功したときと同じ）。戻さないと、この回の早期起床で
+                    // 置いた 0 が残り続け、ずっと後の・到着と無関係な作り直しの連鎖が
+                    // 60 秒ではなく短い梯子で回る。
+                    _rebuildFailuresSinceArrival = -1;
                     Components.ActivityLog.Info("recorder.restart",
                         $"recorder='{Name}' element='{elementName}' attempt={attempt} result=ok{wake}{suppressed}");
                     return;
