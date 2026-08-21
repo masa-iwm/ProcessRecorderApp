@@ -70,12 +70,65 @@ public class RestartPolicyTests
 
     /// <summary>
     /// <see cref="RestartPolicy.MaxDelayMs"/> は<b>バックオフ表の頭打ちと同じ値</b>であること。
-    /// パイプラインを組めていない連鎖（<c>rebuildOnly</c>）はこちらを間隔に使うので、
-    /// 表だけを伸ばすと 2 つの間隔が黙って食い違う。
+    /// パイプラインを組めていない連鎖（<c>rebuildOnly</c>）は、到着があるまでこちらを
+    /// 間隔に使い、到着の後は同じ表の梯子へ移る ── 表だけを伸ばすと、
+    /// 梯子の最後の段と到着前の間隔が黙って食い違う。
     /// </summary>
     [Fact]
     public void MaxDelay_MatchesTheCapOfTheBackoffTable()
         => Assert.Equal(RestartPolicy.MaxDelayMs, RestartPolicy.DelayForAttempt(int.MaxValue));
+
+    // ---- 作り直しだけの連鎖の間隔 ----
+
+    /// <summary>
+    /// <b>到着がまだ無いあいだは頭打ちのまま。</b> 何も変わっていない機械を短い間隔で
+    /// 叩いても得るものが無い（作り直しの連鎖は要素単位の再開を試さない）。
+    /// </summary>
+    [Theory]
+    [InlineData(-1)]
+    [InlineData(0)]
+    public void TheRebuildInterval_StaysCappedUntilSomethingArrives(int failuresSinceArrival)
+        => Assert.Equal(RestartPolicy.MaxDelayMs, RestartPolicy.RebuildDelayMs(failuresSinceArrival));
+
+    /// <summary>
+    /// <b>到着の後に失敗したら、短い梯子をやり直す。</b>
+    ///
+    /// <para>
+    /// バックオフは「居ないデバイスを叩き続けない」ためにあるので、到着した時点で
+    /// その理由は消えている。ここが頭打ちのままだと、到着で起きた試行が失敗した瞬間に
+    /// 次の機会が丸 60 秒先になる ── RDP のセッション復帰のように<b>到着の直後は
+    /// まだ撮れない</b>場合に、復帰がまるまる 1 分遅れる。
+    /// </para>
+    /// </summary>
+    [Theory]
+    [InlineData(1, 5_000)]
+    [InlineData(2, 10_000)]
+    [InlineData(3, 30_000)]
+    [InlineData(4, 60_000)]
+    public void TheRebuildInterval_RestartsTheLadderAfterAnArrival(int failuresSinceArrival, int expected)
+        => Assert.Equal(expected, RestartPolicy.RebuildDelayMs(failuresSinceArrival));
+
+    /// <summary>
+    /// 梯子は頭打ちで止まる ── 追いかけ続けても間隔が伸び続けないこと。
+    /// </summary>
+    [Theory]
+    [InlineData(5)]
+    [InlineData(100)]
+    [InlineData(int.MaxValue)]
+    public void TheRebuildInterval_NeverGrowsPastTheCap(int failuresSinceArrival)
+        => Assert.Equal(RestartPolicy.MaxDelayMs, RestartPolicy.RebuildDelayMs(failuresSinceArrival));
+
+    /// <summary>
+    /// <b>到着の直後は、到着前より必ず短いか同じ。</b> 到着が間隔を伸ばす側に回ったら
+    /// 仕切り直しの意味が消える。
+    /// </summary>
+    [Fact]
+    public void TheRebuildInterval_IsNeverSlowedDownByAnArrival()
+    {
+        for (int i = 1; i < 20; i++)
+            Assert.True(RestartPolicy.RebuildDelayMs(i) <= RestartPolicy.RebuildDelayMs(-1),
+                $"到着後 {i} 回目の間隔が、到着がまだ無いときより長い");
+    }
 
     /// <summary>
     /// 落ち着き待ちは 0 であってはならない ── <b>列挙に出た＝開けるとは限らない</b>ので、

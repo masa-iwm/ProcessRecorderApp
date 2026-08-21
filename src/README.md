@@ -1916,7 +1916,7 @@ GPU テクスチャになるため**アクセシブルテキストが 1 つも�
 | `recorder.error` | ERROR | `EventRecorder.HandleBusMessage` | **両方のバス**の `Error`（バス名・要素名・メッセージ・debug 情報） |
 | `recorder.warning` | WARN | 同上 | 両方のバスの `Warning`。連続する同一内容は畳んで `repeated=N` を添える |
 | `recorder.eos` | INFO | 同上 | sink 側バスの `Eos`。**これも自動復帰の引き金**（種別の付く映像源のときだけ予約する。「自動復帰」の節）── WGC の画面キャプチャは切断してもエラーを出さず、この行だけを出す |
-| `recorder.restart` | INFO / WARN | 同上／`RestartSinkSrc` | 自動復帰の予約と、その結果（`ok` / `failed`）。監視できる映像源なら `watch=camera｜monitor` が付き、デバイスの到着で待ちを打ち切った回は `wake=device-arrival` が付く。**作り直しだけを試す連鎖は `attempt=` ではなく `round=`**（1 周ごとに新しい連鎖になるので `attempt` は常に 1 になる）で、待ちの案内は 1 周目と約 1 時間ごとにしか出さない（1 分に 1 行では `activity.log` を数日で使い切る）。録画を畳んで録り直すときは `will be resumed once the pipeline is rebuilt` / `resuming the recording that the rebuild finalized` / `not resuming the recording after the rebuild (…)` の 3 種が出る ── 直後の `recording.start` が利用者の操作か復帰かは、この行があるかどうかで見分ける |
+| `recorder.restart` | INFO / WARN | 同上／`RestartSinkSrc` | 自動復帰の予約と、その結果（`ok` / `failed`）。監視できる映像源なら `watch=camera｜monitor` が付き、デバイスの到着で待ちを打ち切った回は `wake=device-arrival` が付く。**作り直しだけを試す連鎖は `attempt=` ではなく `round=`**（1 周ごとに新しい連鎖になるので `attempt` は常に 1 になる）で、待ちの案内は 1 周目と約 1 時間ごとにしか出さない（1 分に 1 行では `activity.log` を数日で使い切る）── ただし**間隔が前の周回から変わった回は必ず出す**（到着で仕切り直した後の短い梯子が、作り直しの成否の行は畳まれるので唯一の証拠になる。「頭打ちでない回」を条件にすると、到着のたびに梯子が 1 段目へ戻るぶん上限が無くなる）。録画を畳んで録り直すときは `will be resumed once the pipeline is rebuilt` / `resuming the recording that the rebuild finalized` / `not resuming the recording after the rebuild (…)` の 3 種が出る ── 直後の `recording.start` が利用者の操作か復帰かは、この行があるかどうかで見分ける |
 | `device.watch` | INFO / WARN | `DeviceArrivalWatcher` | デバイス到着の監視を張った／止めた（`kind=` と `provider=`）。WARN は**監視できない**構成（プロバイダが無い・`CanMonitor()` が false・起動に失敗）で、タイマーだけの復帰へ縮退したことを意味する |
 | `device.arrive` | INFO | 同上 | デバイスプロバイダが到着（`device-added` / `device-changed`）を報告した。連続する同一内容は畳んで `repeated=N` を添える |
 | `recorder.continuous-init ok` / `recorder.continuous-init fail` | INFO / WARN | `EventRecorder.StartContinuous` ／ `InitializeCore` ／ `InitializeWith` | 常時録画の枝を組めた（エンコーダー・fps・解像度・分割間隔）／組めなかったので**枝だけ落とした**（イベント録画は無事＝隔離契約）。**上書きだけを捨てた場合も同じ名前で出す**（読めないフレームレート・上流が固定されていないのに指定された解像度）── どちらも「設定が黙って効いていない」という同じ事故だからである |
@@ -2145,6 +2145,18 @@ EOS を送ったあと `TaskCompletionSource` を**待つだけ**で、自分で
   限らない ── デバイスインターフェイスの到着通知はドライバが使える状態になる前に飛びうるし、
   ディスプレイの再構成は `WM_DISPLAYCHANGE` の時点ではまだ途中でありうる。
   置く時間は**元の待ちを超えない**（超えると「早期復帰」が待ち切るより遅くなる）。
+- **作り直しの間隔は到着で仕切り直す**（`RestartPolicy.RebuildDelayMs`）。作り直しだけの
+  連鎖（`rebuildOnly`）は、到着があるまでは 60 秒で頭打ちのまま ── そちらは要素単位の
+  再開を試さないので、何も変わっていない機械を短い間隔で叩いても得るものが無い。
+  **到着の後は 5s → 10s → 30s → 60s の梯子をやり直す**。バックオフは「居ないデバイスを
+  叩き続けない」ためにあるので、到着した時点でその理由は消えている。
+  **到着の直後はまだ撮れないことがある**のがこれが要る理由で、RDP のセッション復帰では
+  画面構成が落ち着くまでに数秒かかり、到着 +1.5 秒の試行は全エンコーダーが失敗する
+  （ケーブルの抜き差しなら同じ +1.5 秒で成功するので、落ち着き待ちを一律に延ばすのは誤り）。
+  頭打ち固定だと、その 1 回の失敗で**復帰が丸 1 分遅れる**。数えるのはレコーダー側
+  （連鎖は 1 周ごとに終わるため）で、**ログの `round=` とは別物** ── あちらは
+  「何周目か」を読ませる単調増加のカウンタで、こちらは間隔を決めるためのものである。
+  到着が繰り返されればそのたびに梯子の 1 段目へ戻る。
 - **作り直しで畳んだ録画は録り直す。** `Initialize()` は先頭の `Close()` で進行中の録画を
   確定させる（ファイルは壊れない）ので、控えておかないと**復帰しても録画だけが戻らない**
   ── 常時録画は `InitializeWith` の末尾で作り直されるのに、イベント録画だけ再開しない、

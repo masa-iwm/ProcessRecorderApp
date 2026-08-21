@@ -2505,6 +2505,26 @@ public partial class EventRecorder : ObservableObject, IDisposable
     private int _rebuildRounds;
 
     /// <summary>
+    /// 直近のデバイス到着より後に、作り直しへ失敗した回数。<c>-1</c> は「到着がまだ無い」。
+    ///
+    /// <para>
+    /// <b><see cref="_rebuildRounds"/> と混ぜない。</b> あちらは「何周目か」を読ませるための
+    /// 単調増加のカウンタで、こちらは<b>間隔を決める</b>ためのものである。到着のたびに 0 へ戻る
+    /// ── 世界が変わったのだから、様子を見る理由が消えて短い梯子で追いかけ直す
+    /// （<see cref="RestartPolicy.RebuildDelayMs"/>）。
+    /// </para>
+    /// <para>
+    /// <b>連鎖ではなくレコーダーが持つ。</b> 作り直しの連鎖は 1 周ごとに終わって次の連鎖へ
+    /// 渡されるので（<see cref="_rebuildRounds"/> と同じ理由）、ループのローカルでは数えられない。
+    /// </para>
+    /// <para>
+    /// 素の <c>int</c> でよい ── 書くのは復帰の連鎖だけで、次の連鎖は <c>Task.Run</c> で
+    /// 起こされるため、書き込みは新しい連鎖の読み出しに対して happens-before になる。
+    /// </para>
+    /// </summary>
+    private int _rebuildFailuresSinceArrival = -1;
+
+    /// <summary>
     /// 作り直し待ちの案内（<c>scheduled in ...</c>）を、何周に 1 回だけ出すか。
     ///
     /// <para>
@@ -2514,8 +2534,28 @@ public partial class EventRecorder : ObservableObject, IDisposable
     /// <b>これだけで数日ぶんの履歴が押し出される</b>。1 周目は必ず出し、
     /// 以後は約 1 時間に 1 行だけ「まだ待っている」を残す。
     /// </para>
+    /// <para>
+    /// <b>間隔が前の周回から変わった回は、この間引きから外す。</b> 到着で仕切り直した
+    /// 短い梯子は<b>間引くと丸ごと見えなくなる</b> ── 作り直しの成否の行は畳まれる
+    /// （<see cref="_rebuildThrottle"/>）ので、この案内が唯一の証拠である。
+    /// <b>「頭打ちでない回は必ず出す」では上限が無い</b> ── 到着のたびに梯子は
+    /// 1 段目へ戻るので、到着を繰り返すデバイスでは 5 秒ごとに 1 行という、
+    /// この定数が防いでいるはずの洪水がそのまま戻ってくる。
+    /// 変化した回だけなら、梯子 1 本につき数行で収まる。
+    /// </para>
     /// </summary>
     private const int RebuildWaitAnnounceEveryRounds = 60;
+
+    /// <summary>
+    /// 直近に案内した作り直し待ちの間隔(ms)。<c>0</c> は「まだ案内していない」。
+    ///
+    /// <para>
+    /// <b>連鎖ではなくレコーダーが持つ</b>（<see cref="_rebuildRounds"/> と同じ理由）。
+    /// 前の周回と同じ間隔なら書くことが無いので、その回は
+    /// <see cref="RebuildWaitAnnounceEveryRounds"/> の間引きに戻す。
+    /// </para>
+    /// </summary>
+    private int _lastAnnouncedRebuildDelayMs;
 
     /// <summary>
     /// ソース障害からの自動復帰を予約する。
@@ -2582,7 +2622,8 @@ public partial class EventRecorder : ObservableObject, IDisposable
     /// <para>
     /// <paramref name="rebuildOnly"/> は<b>パイプラインがそもそも組めていない</b>連鎖。
     /// 要素単位の再開は対象が無いので飛ばし、<see cref="Initialize"/> だけを
-    /// <see cref="RestartPolicy.MaxDelayMs"/> 間隔（＋到着で早期）で試す。
+    /// <see cref="RestartPolicy.RebuildDelayMs"/> の間隔（＋到着で早期）で試す
+    /// ── 到着があるまでは 60 秒、到着の後は短い梯子をやり直す。
     /// この連鎖が無いと、初期化に失敗した時点でエラーの出所ごと消えて
     /// <b>デバイスを挿し直しても永久に復帰しない</b>。
     /// </para>
@@ -2612,9 +2653,17 @@ public partial class EventRecorder : ObservableObject, IDisposable
             while (!cts.IsCancellationRequested)
             {
                 attempt++;
-                int delayMs = rebuildOnly ? RestartPolicy.MaxDelayMs : RestartPolicy.DelayForAttempt(attempt);
-                if (!rebuildOnly || round == 1 || round % RebuildWaitAnnounceEveryRounds == 0)
+                // **作り直しの間隔は到着で仕切り直す。** 頭打ちのままだと、到着で起きた回が
+                // 失敗した時点で次の機会が丸 60 秒先になる ── RDP のセッション復帰のように
+                // 到着の直後はまだ撮れない場合に、復帰がまるまる 1 分遅れる。
+                int delayMs = rebuildOnly
+                    ? RestartPolicy.RebuildDelayMs(_rebuildFailuresSinceArrival)
+                    : RestartPolicy.DelayForAttempt(attempt);
+                if (!rebuildOnly || round == 1 || round % RebuildWaitAnnounceEveryRounds == 0
+                    || delayMs != _lastAnnouncedRebuildDelayMs)
                 {
+                    if (rebuildOnly)
+                        _lastAnnouncedRebuildDelayMs = delayMs;
                     string counter = rebuildOnly ? $"round={round}" : $"attempt={attempt}";
                     Components.ActivityLog.Info("recorder.restart",
                         $"recorder='{Name}' element='{elementName}' {counter} scheduled in {delayMs}ms{watchTag}");
@@ -2625,6 +2674,14 @@ public partial class EventRecorder : ObservableObject, IDisposable
                 // まだ落ち着いていない機械へパイプライン全再生成を掛けることになる。
                 bool mayWakeEarly = watched && RestartPolicy.MayWakeEarly(earlyWakes);
                 bool early = await WaitForRetrySlotAsync(kind, mayWakeEarly, seenArrival, delayMs, cts.Token);
+
+                // **到着で起きたら、作り直しの間隔を最初からやり直す。** バックオフは
+                // 「居ないデバイスを叩き続けない」ためのものなので、到着した時点でその
+                // 理由は消えている。試行の**前**に戻すこと ── この回が失敗したときに
+                // 次の周回が梯子の 1 段目（5s）から始まるようにするため。
+                if (early && rebuildOnly)
+                    _rebuildFailuresSinceArrival = 0;
+
                 if (early && !RestartPolicy.MayWakeEarly(++earlyWakes))
                 {
                     // 1 連鎖につき 1 行だけ。以後はバックオフを待ち切る。
@@ -2733,6 +2790,14 @@ public partial class EventRecorder : ObservableObject, IDisposable
                     _restartTask = null;
                 }
 
+                // **失敗の計上は Initialize() より前に行う。** 失敗した Initialize() は
+                // 自分の中で次の連鎖を張る（TryScheduleDeviceRebuild）ので、例外がここまで
+                // 返ってきてから数えたのでは**次の連鎖が古い値を読みうる**
+                // ── 到着で 0 に戻した直後なら、その連鎖はまた 60 秒待つことになる。
+                // 成功した場合は下で -1 へ戻すので、先に数えても見える値は変わらない。
+                if (0 <= _rebuildFailuresSinceArrival)
+                    _rebuildFailuresSinceArrival++;
+
                 try
                 {
                     Initialize();
@@ -2740,6 +2805,8 @@ public partial class EventRecorder : ObservableObject, IDisposable
                     // **畳んだ件数は捨てない** ── 捨てると「静かだった」と
                     // 「何百回も失敗を畳んでいた」が同じ 1 行に見える。
                     _rebuildRounds = 0;
+                    // 作り直せたのだから、到着に追いつくための梯子はもう要らない。
+                    _rebuildFailuresSinceArrival = -1;
                     int flushed = _rebuildThrottle.Flush() + _rebuildFailThrottle.Flush();
                     string flushedTag = 0 < flushed ? $" repeated={flushed}" : "";
                     Components.ActivityLog.Info("recorder.restart",

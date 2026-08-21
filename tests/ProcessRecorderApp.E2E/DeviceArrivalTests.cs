@@ -92,6 +92,10 @@ public sealed class DeviceArrivalTests(PublishedApp app, ITestOutputHelper outpu
     /// 見るのは「再試行が実際に走ったこと」までである ── カメラは戻ってこないので
     /// 2 度目も失敗する。<b>失敗の 2 周目こそが、詰みが解けている証拠</b>になる。
     /// </para>
+    /// <para>
+    /// <b>その失敗の後の待ちが 60 秒に戻らないこと</b>も併せて見る ── 到着で起こした試行が
+    /// 失敗したときに頭打ちへ戻ると、復帰の機会が丸 1 分先になる。
+    /// </para>
     /// </summary>
     [Fact]
     public void ARecorderThatNeverInitialized_IsRebuiltOnArrival()
@@ -116,6 +120,12 @@ public sealed class DeviceArrivalTests(PublishedApp app, ITestOutputHelper outpu
         string retry = WaitForLine(instance, "recorder.restart", "retrying the pipeline rebuild");
         string rebuilt = WaitForLine(instance, "recorder.restart", "rebuild result=");
 
+        // **到着で起きた作り直しが失敗したら、次の待ちは 60 秒ではない。**
+        // 到着はバックオフの理由（居ないデバイスを叩き続けない）を消すので、
+        // そこからは短い梯子でやり直す ── RDP のセッション復帰のように到着の直後は
+        // まだ撮れない場合に、ここが 60 秒のままだと復帰がまるまる 1 分遅れる。
+        string next = WaitForLine(instance, "recorder.restart", " scheduled in 5000ms");
+
         output.WriteLine(string.Join(Environment.NewLine, instance.ReadActivityLog()));
 
         Assert.Contains("wake=device-arrival", retry, StringComparison.Ordinal);
@@ -123,6 +133,10 @@ public sealed class DeviceArrivalTests(PublishedApp app, ITestOutputHelper outpu
         // カメラは戻ってこないので、2 周目も失敗するのが正しい。
         // 見ているのは「作り直しが実際に走った」ことである。
         Assert.Contains("rebuild result=failed", rebuilt, StringComparison.Ordinal);
+
+        // 梯子は最初の 1 周だけでなく、周回として続いていること
+        // （round=1 は到着より前の待ちなので、短い間隔は 2 周目以降に出る）。
+        Assert.DoesNotContain("round=1 ", next, StringComparison.Ordinal);
 
         // 監視が縮退していたら（プロバイダが無い・通知を出せない）、
         // 上の前倒しはタイマーの偶然ではなく注入によるものだと言えなくなる。

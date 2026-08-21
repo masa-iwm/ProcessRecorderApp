@@ -120,6 +120,72 @@ public class DeviceArrivalWakeTests
     }
 
     /// <summary>
+    /// <b>作り直しだけの連鎖の間隔が、到着で仕切り直されること。</b>
+    ///
+    /// <para>
+    /// <b>実行では守れない。</b> 頭打ち固定へ戻しても復帰は動くし、E2E も
+    /// 「いつかは作り直す」ことしか見ないので、遅いだけで正しく見える。
+    /// 壊れ方は<b>復帰が丸 1 分遅れる</b>ことだけである。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void TheRebuildInterval_IsRestartedByAnArrival()
+    {
+        string body = SourceMethodBody.Extract(EventRecorderSource, RestartLoopSignature);
+
+        Assert.True(
+            SourceMethodBody.ContainsCode(body, "RestartPolicy.RebuildDelayMs("),
+            "作り直しの連鎖の間隔が RebuildDelayMs を通らなくなっている。"
+            + Environment.NewLine
+            + "頭打ち（60 秒）固定へ戻すと、到着で起こした試行が失敗した時点で"
+            + Environment.NewLine
+            + "**次の機会が丸 60 秒先**になる ── RDP のセッション復帰のように"
+            + Environment.NewLine
+            + "到着の直後はまだ撮れない場合に、復帰が 1 分遅れる"
+            + "（ケーブルの抜き差しなら同じ 1.5 秒後の試行で成功するので、"
+            + "落ち着き待ちを一律に延ばすのは誤り）。");
+    }
+
+    /// <summary>
+    /// <b>到着で起きた回が、梯子を 1 段目へ戻すこと。</b> 戻さないと
+    /// <c>RebuildDelayMs</c> を通していても値は頭打ちのままで、検査だけが緑になる。
+    /// </summary>
+    [Fact]
+    public void AnEarlyWake_ResetsTheRebuildLadder()
+    {
+        string body = SourceMethodBody.Extract(EventRecorderSource, RestartLoopSignature);
+
+        Assert.True(
+            SourceMethodBody.ContainsCode(body, "_rebuildFailuresSinceArrival = 0"),
+            "到着で起きたときに作り直しの梯子を戻さなくなっている。"
+            + Environment.NewLine
+            + "これが無いと間隔は 60 秒のままなので、RDP 復帰のように"
+            + Environment.NewLine
+            + "到着の直後はまだ撮れない場合に、復帰が 1 分遅れる。"
+            + Environment.NewLine
+            + "戻すのは**試行の前**であること ── この回の失敗の後に"
+            + "次の周回が 5 秒で来るようにするため。");
+
+        int reset = SourceMethodBody.IndexOfCode(body, "_rebuildFailuresSinceArrival = 0");
+        int rebuild = SourceMethodBody.IndexOfCode(body, "Initialize();");
+        Assert.True(reset < rebuild,
+            "梯子を戻すのが作り直しより後になっている。"
+            + "試行の前に戻さないと、その回の失敗が梯子の 1 段目を食い潰す。");
+
+        // **失敗の計上も作り直しより前であること。** 失敗した Initialize() は自分の中で
+        // 次の連鎖を張る（TryScheduleDeviceRebuild）ので、catch へ動かすと
+        // その連鎖が到着で 0 に戻した値を読む ── RebuildDelayMs(0) は頭打ち（60 秒）なので、
+        // 梯子が丸ごと消えるのに上の検査は緑のままになる。
+        int count = SourceMethodBody.IndexOfCode(body, "_rebuildFailuresSinceArrival++");
+        Assert.True(0 <= count && count < rebuild,
+            "失敗の計上が作り直しより後になっている。"
+            + Environment.NewLine
+            + "失敗した Initialize() は自分の中で次の連鎖を張るので、"
+            + "後から数えたのでは**次の連鎖が古い値（0）を読み**、"
+            + "そこから 60 秒待つ ── 到着後の梯子が丸ごと効かなくなる。");
+    }
+
+    /// <summary>
     /// <b>初期化の失敗が復帰の芽を残すこと。</b> これが消えると、パイプラインもバスも無い
     /// 状態＝<b>二度とエラーが飛ばない状態</b>で連鎖が終わり、デバイスを挿し直しても
     /// 永久に復帰しなくなる（この機能の前は実際にそうなっていた）。

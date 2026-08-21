@@ -287,6 +287,7 @@ UIA からは分からない。自動で守られているのは**幾何の規�
 | 初期化に失敗しても連鎖が残る（詰みの解消） | **確認** ── `rebuild result=failed` の直後に `round=1 scheduled in 60000ms` が出て、次の周回で `rebuild result=ok repeated=1` に至った |
 | **モニターの到着で早期に起きる** | **確認** ── 到着 2 件（`EV2360` / `LG Ultra HD`）が 1ms 差で届き、**1.503 秒後**に `retrying the pipeline rebuild round=1 wake=device-arrival` → `rebuild result=ok wake=device-arrival`。束ね 500ms ＋ 落ち着き待ち 1000ms の設計値と一致し、60 秒の待ちを **約 52 秒短縮**した |
 | **カメラの到着で早期に起きる** | **確認** ── `device.arrive kind=camera` の **1.503 秒後**に `retrying the pipeline rebuild round=1 wake=device-arrival` → `rebuild result=ok wake=device-arrival`。モニターのときと**ミリ秒まで同じ遅れ**で、60 秒の待ちを **46.3 秒**短縮した |
+| **RDP のセッション復帰で早期に起きる** | **確認（ただし試行は失敗する）** ── 到着の **1.5 秒後**に起きるところまでは抜き差しと同じだが、その試行は**全エンコーダーが `pipeline doesn't want to play`** になり、次の試行で成功した。画面構成が落ち着くまでに数秒かかるためで、**到着の直後は撮れるとは限らない**（この失敗の後の間隔を仕切り直すのが `RestartPolicy.RebuildDelayMs`） |
 | 抜き差し後のデバイスの並び | **確認** ── 復帰後にパイプライン編集画面で見て、`monitor-index` と解像度、カメラの `device-index` / `device-name` / `device-path` の対応がいずれも実体と一致していた（監視は復帰待ちのあいだだけなので、見た時点ではプロバイダは既に停止している） |
 
 **`mfdeviceprovider` の到着通知は、物理的な抜き差しから数秒遅れる。** 別の回で
@@ -300,6 +301,17 @@ UIA からは分からない。自動で守られているのは**幾何の規�
 
 **だからタイマーの梯子は外せない。** 到着は「間に合えば早める」ものであって、
 復帰の唯一の駆動源ではない。60 秒の待ち（`rebuildOnly`）では通知が十分に間に合う。
+
+**RDP のセッション復帰では、到着の直後はまだキャプチャできないことがある。**
+実測では、ケーブルの抜き差しは到着 +1.5 秒の試行で成功するのに対し、RDP の復帰は
+**同じ +1.5 秒で全エンコーダーが `pipeline doesn't want to play` になり、次の試行で成功**する
+── 画面構成が落ち着くまでに数秒かかるためで、到着通知そのものは正しく届いている。
+落ち着き待ち（`EarlyWakeSettleMs`）を一律に延ばすのは誤り（抜き差しの側が遅くなる）なので、
+**作り直しの間隔を到着で仕切り直す**（`RestartPolicy.RebuildDelayMs`。到着の後は
+5s → 10s → 30s → 60s の梯子をやり直す）ことで追いかける。頭打ち固定だと、
+この 1 回の失敗で**復帰が丸 1 分遅れる**。梯子そのものは L1、到着後に間隔が短くなることは
+L2（`DeviceArrivalTests`）が押さえているが、**「到着の直後は撮れない」という現象自体は
+自動では踏めない** ── 開発機でも CI でも RDP のセッションを張り直せない。
 
 **録画の録り直しは、この実機確認より後に足した面である。** 上の回では
 「復帰したのに録画だけ戻らない」ことを実測している（`recording.stop … result=ok
@@ -317,6 +329,13 @@ E2E からは踏めない**。カメラのある機械で次に触るときは�
 抜いてから `round=1 scheduled in 60000ms` を確認し、その最中に停止してから挿し直して、
 `not resuming the recording after the rebuild (stop requested)` が出て
 録画が再開しないことを見ること。
+
+**手動確認には RDP のセッション復帰も含めること。** 画面キャプチャのレコーダーを動かした
+まま RDP のセッションを切り、しばらく置いてから接続し直して、`device.arrive kind=monitor` の
+後のログを読む ── 到着 +1.5 秒の試行が失敗した場合に、次の案内が
+`scheduled in 60000ms` ではなく `scheduled in 5000ms`（以降 10s / 30s）になり、
+梯子のどこかで `rebuild result=ok` に至ること。抜き差しとは**落ち着くまでの時間が違う**ので、
+ケーブルでの確認は代わりにならない。
 
 **利用者が別途入れた GStreamer に d3d12 プラグインが無い構成**も自動では踏めない
 （開発機も CI もフル構成）。そのときは `device.watch … monitor=no` を出して
