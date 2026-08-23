@@ -1,7 +1,13 @@
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Linq;
+using System.Reflection;
+using System.Text.Json;
+using System.Text.Json.Nodes;
+using System.Text.Json.Serialization.Metadata;
 using System.Threading.Tasks;
+using ProcessRecorderApp.Components;
 using ProcessRecorderApp.GStreamer;
 using ProcessRecorderApp.ViewModels;
 
@@ -52,7 +58,7 @@ internal sealed record StartResult(int ExitCode, string? RecorderName, string? L
 /// <see cref="ExitCode"/> は 12 / 13 / 14（停止できない状態）/ 0。
 /// <b><see cref="Outcome"/> が <see cref="RecordingStopOutcome.Empty"/> /
 /// <see cref="RecordingStopOutcome.NotFinalized"/> でも <see cref="ExitCode"/> は 0</b>
-/// ── 16 / 17 への写像は呼び出し側（<c>ActivationCommands.ExitCodeFor</c>）が行う。
+/// ── 16 / 17 への写像は <see cref="RecorderControlService.ExitCodeFor"/> が行う。
 /// </summary>
 internal sealed record StopResult(
     int ExitCode, string? RecorderName, string? LastFilename, RecordingStopOutcome Outcome);
@@ -80,6 +86,53 @@ internal sealed record StartAllResult(
 internal sealed record StopAllResult(
     int ExitCode,
     IReadOnlyList<(string Name, string? LastFilename, RecordingStopOutcome Outcome)> Stopped);
+
+/// <summary>
+/// 部分更新（PATCH）を受け付けられなかった理由。<b>文言は持たない</b>
+/// ── 呼び出し面ごとの言い回しは呼び出し側が決める。
+/// </summary>
+internal enum SettingsPatchRejection
+{
+    /// <summary>断っていない（成功、または対象そのものが見つからない等の別の失敗）。</summary>
+    None,
+
+    /// <summary>そのキーの設定項目が無い。</summary>
+    UnknownKey,
+
+    /// <summary>実在するが、リモートからの編集を許していないキー。</summary>
+    NotEditable,
+
+    /// <summary>キーは正しいが、値がその型として読めない。</summary>
+    InvalidValue,
+}
+
+/// <summary>
+/// <see cref="RecorderControlService.PatchRecorderSettingsAsync"/> /
+/// <see cref="RecorderControlService.PatchAppSettings"/> の結果。
+/// <see cref="ExitCode"/> は 4（要求が不正）/ 12 / 13 / 0。
+/// </summary>
+/// <param name="Clamped">
+/// 要求した値と、書き込んだ後の現在値が違うキー。<b>成功のまま値が変わっている</b>ことを
+/// 呼び出し側へ伝えるためにある。
+/// </param>
+internal sealed record SettingsPatchOutcome(
+    int ExitCode,
+    SettingsPatchRejection Rejection,
+    string? RejectedKey,
+    IReadOnlyList<string> Applied,
+    IReadOnlyList<string> Clamped,
+    IReadOnlyList<string> RequiresReinitialize)
+{
+    /// <summary>失敗（何も書いていない）。</summary>
+    internal static SettingsPatchOutcome Rejected(int exitCode, SettingsPatchRejection rejection, string? key)
+        => new(exitCode, rejection, key, [], [], []);
+}
+
+/// <summary>
+/// <see cref="RecorderControlService.GetRecorderSettingsAsync"/> の結果。
+/// <see cref="ExitCode"/> は 12 / 13 / 0。
+/// </summary>
+internal sealed record RecorderSettingsResult(int ExitCode, RemoteControl.RecorderSettingsDto? Settings);
 
 /// <summary>
 /// CLI の録画コマンドの<b>実処理</b>（コントローラの待ち受け・対象の解決・開始／停止・
@@ -324,5 +377,323 @@ internal static class RecorderControlService
         int index = RecorderCliRules.ResolveTargetIndex(
             controller.Recorders.Select(r => r.Name).ToArray(), target);
         return 0 <= index ? controller.Recorders[index] : null;
+    }
+
+    // ---- 停止の結果 → 終了コード ----
+
+    /// <summary>
+    /// 停止の結果 → 終了コード。<b>規則（どれが失敗か・どちらが強いか）は
+    /// <see cref="RecordingStopRules"/> にあり、L1 が守っている</b>
+    /// ── ここは番号の割り当てだけを持つ。
+    ///
+    /// <para>
+    /// <b>CLI と HTTP で共有する。</b> 片方だけ直すと、同じ壊れ方が呼び出し面ごとに
+    /// 違う番号で出る（終了経路は 2 つあり、片方だけ塞いでも防げない）。
+    /// </para>
+    /// </summary>
+    internal static int ExitCodeFor(RecordingStopOutcome outcome) => outcome switch
+    {
+        RecordingStopOutcome.NotFinalized => ActivationCommands.ExitCode_RecordingNotFinalized,
+        RecordingStopOutcome.Empty => ActivationCommands.ExitCode_RecordingProducedNothing,
+        _ => 0,
+    };
+
+    /// <summary>停止の結果 → 文言のリソースキー（<see cref="ExitCodeFor"/> と同じく共有）。</summary>
+    internal static string StopFailureMessageKey(RecordingStopOutcome outcome) => outcome switch
+    {
+        RecordingStopOutcome.NotFinalized => "Resources/Cli_RecordingNotFinalized",
+        _ => "Resources/Cli_RecordingProducedNothing",
+    };
+
+    /// <summary>
+    /// 複数レコーダーの停止結果を 1 つの終了コードへ畳む。
+    /// <b>返すのは「強い方」</b>（規則は <see cref="RecordingStopRules.Stronger"/>）──
+    /// 混在した場合に弱い方を返すと、救済できたはずのデータを捨てさせる。
+    /// </summary>
+    internal static int FoldStopExitCode(IEnumerable<RecordingStopOutcome> outcomes)
+        => ExitCodeFor(outcomes.Aggregate(RecordingStopOutcome.Ok, RecordingStopRules.Stronger));
+
+    // ---- テンプレート変数（リモート操作用の写し） ----
+
+    /// <summary>
+    /// テンプレート変数を全件、キーの序数順で <see cref="RemoteControl.VariableDto"/> にする。
+    /// 「保存するか」は変数そのものではなく設定側が持っている。
+    /// </summary>
+    internal static IReadOnlyList<RemoteControl.VariableDto> GetVariableDtos()
+        => GetVariables().Select(pair => new RemoteControl.VariableDto(
+            pair.Key, pair.Value, Settings.AppSettings.Default.IsTemplateVariablePersistent(pair.Key))).ToArray();
+
+    /// <summary>テンプレート変数を 1 件。未定義なら <see langword="null"/>。</summary>
+    internal static RemoteControl.VariableDto? GetVariableDto(string key)
+        => TryGetVariable(key, out string? value)
+            ? new RemoteControl.VariableDto(
+                key, value ?? string.Empty, Settings.AppSettings.Default.IsTemplateVariablePersistent(key))
+            : null;
+
+    // ---- レコーダー設定の読み書き ----
+
+    /// <summary>
+    /// <paramref name="target"/> の設定オブジェクト（<b>ビューモデルではなく設定側</b>）を得る。
+    ///
+    /// <para>
+    /// <b>対象の解決は <see cref="Resolve"/> と同じ規則で、同じ並びに対して行う。</b>
+    /// レコーダーのビューモデルは設定のコレクションと同じ順序で作られ、増減も追随するので、
+    /// 名前の一覧で引いたインデックスは設定側でもそのまま使える。
+    /// </para>
+    /// </summary>
+    private static async Task<(int ExitCode, EventRecorderSettings? Live)> ResolveSettingsAsync(string target)
+    {
+        var controller = await WaitForControllerAsync();
+        if (controller is null)
+            return (ActivationCommands.ExitCode_RecorderNotAvailable, null);
+
+        int index = RecorderCliRules.ResolveTargetIndex(
+            controller.Recorders.Select(r => r.Name).ToArray(), target);
+
+        var recorders = Settings.AppSettings.Default.Recorders;
+        if (index < 0 || recorders.Count <= index)
+            return (ActivationCommands.ExitCode_RecorderNotFound, null);
+
+        return (0, recorders[index]);
+    }
+
+    /// <summary>1 レコーダーの現在値と項目の説明。</summary>
+    internal static async Task<RecorderSettingsResult> GetRecorderSettingsAsync(string target)
+    {
+        var (exitCode, live) = await ResolveSettingsAsync(target);
+        if (live is null)
+            return new RecorderSettingsResult(exitCode, null);
+
+        var values = JsonSerializer.SerializeToNode(live, Settings.AppSettings.RecorderTypeInfo) as JsonObject ?? [];
+
+        var properties = live.GetProperties()
+            .Where(p => p.CanRead && p.CanWrite)
+            .Select(DescribeRecorderProperty)
+            .ToArray();
+
+        return new RecorderSettingsResult(0, new RemoteControl.RecorderSettingsDto(values, properties));
+    }
+
+    /// <summary>
+    /// 設定項目 1 つの説明。<b>カテゴリと説明はここで訳す</b> ──
+    /// 属性が持っているのはリソースキーで、訳を引けるのはアプリ側だけである
+    /// （<c>PropertyGridView.BuildItems</c> と同じ解決）。
+    /// </summary>
+    private static RemoteControl.SettingPropertyDto DescribeRecorderProperty(PropertyInfo prop)
+    {
+        Type type = Nullable.GetUnderlyingType(prop.PropertyType) ?? prop.PropertyType;
+
+        string kind =
+            type == typeof(bool) ? "bool"
+            : type.IsEnum ? "enum"
+            : type == typeof(int) ? "int"
+            : "string";
+
+        // カテゴリ未指定の既定は PropertyGridItem.DefaultCategoryKey と同じ値。
+        // あちらは internal なので参照できず、ここに書き写している。
+        string categoryKey = prop.GetCustomAttribute<CategoryAttribute>()?.Category ?? "PropCat_General";
+        string? descriptionKey = prop.GetCustomAttribute<DescriptionAttribute>()?.Description;
+
+        (long? min, long? max) = prop.Name switch
+        {
+            nameof(EventRecorderSettings.BufferDuration) =>
+                (EventRecorderSettings.MinBufferDuration, EventRecorderSettings.MaxBufferDuration),
+            nameof(EventRecorderSettings.ContinuousSegmentSeconds) =>
+                (EventRecorderSettings.MinContinuousSegmentSeconds, EventRecorderSettings.MaxContinuousSegmentSeconds),
+            // 丸めの無い項目に範囲を出さない ── 出すと「その範囲なら通る」という嘘になる。
+            _ => ((long?)null, (long?)null),
+        };
+
+        return new RemoteControl.SettingPropertyDto(
+            prop.Name,
+            kind,
+            Localization.GetStringOrFallback($"Resources/{categoryKey}", categoryKey),
+            descriptionKey is null
+                ? null
+                : Localization.GetStringOrFallback($"Resources/{descriptionKey}", descriptionKey),
+            type.IsEnum ? Enum.GetNames(type) : null,
+            min,
+            max,
+            EventRecorderSettings.PropertiesRequiringReinitialize.Contains(prop.Name, StringComparer.Ordinal));
+    }
+
+    /// <summary>
+    /// 1 レコーダーの設定を部分更新する。
+    ///
+    /// <para>
+    /// <b><c>Recorders[i]</c> を差し替えない。</b> 設定オブジェクトそのものを新しい実体に
+    /// すると、コレクションの変更通知が録画エンジンの作り直しを起こす
+    /// ── 録画中の PATCH がパイプラインを落とすことになる。書くのは<b>プロパティだけ</b>で、
+    /// これは画面の PropertyGrid が行っているのと同じ経路である。
+    /// </para>
+    /// </summary>
+    internal static async Task<SettingsPatchOutcome> PatchRecorderSettingsAsync(string target, JsonObject patch)
+    {
+        var (exitCode, live) = await ResolveSettingsAsync(target);
+        if (live is null)
+            return SettingsPatchOutcome.Rejected(exitCode, SettingsPatchRejection.None, null);
+
+        return ApplyPatch(
+            live, patch, Settings.AppSettings.RecorderTypeInfo,
+            live.GetProperties().ToArray(),
+            EventRecorderSettings.PropertiesRequiringReinitialize);
+    }
+
+    /// <summary>
+    /// アプリ設定を部分更新する。<b>許可リストに載っていないキーは断る</b>
+    /// （<see cref="RemoteApiRules.IsRemoteEditable"/>）。
+    /// 値の反映は <c>AppSettings.Default</c> のプロパティへの代入で、
+    /// 画面からの編集と同じ経路（＝既存のデバウンス保存が settings.json へ落とす）。
+    /// </summary>
+    internal static SettingsPatchOutcome PatchAppSettings(JsonObject patch)
+    {
+        foreach (var pair in patch)
+        {
+            if (!RemoteApiRules.IsRemoteEditable(pair.Key))
+            {
+                return SettingsPatchOutcome.Rejected(
+                    ActivationCommands.ExitCode_InvalidArguments, SettingsPatchRejection.NotEditable, pair.Key);
+            }
+        }
+
+        return ApplyPatch(
+            Settings.AppSettings.Default, patch, Settings.AppSettings.SettingsTypeInfo,
+            typeof(Settings.AppSettings).GetProperties(BindingFlags.Instance | BindingFlags.Public),
+            // アプリ設定に「初期化をやり直すまで効かない」項目は無い
+            // （そういうものは拒否リスト側にある）。
+            []);
+    }
+
+    /// <summary>
+    /// 部分更新の本体。<b>検証はキー 1 つずつ、その項目の型情報で行う</b>
+    /// ── 要求を丸ごと設定オブジェクトへ戻して検証する（一時インスタンスを作る）道は取れない。
+    /// 設定のプロパティは変更通知の受け口を持ち、そこから
+    /// <b>プロセス全体の状態</b>（GStreamer のログ水準・ログの保持行数・停止の待ち時間）が
+    /// 書き換わる。検証のためだけに作った一時インスタンスでも同じ副作用が起き、
+    /// <b>断った要求の副作用だけが残る</b>ことになる（1 キーずつ試す拒否の経路ほど濃く踏む）。
+    ///
+    /// <para>
+    /// 値が妥当かどうかは<b>デシリアライズに答えさせる</b>（型ごとの判定をここに書くと、
+    /// settings.json が受け付ける値と PATCH が通す値が二重定義になって食い違う）。
+    /// </para>
+    /// <para>
+    /// <b>全キーの検証を先に済ませてから書く。</b> 1 つでも通らなければ 1 つも書かない
+    /// ── 半分だけ適用された設定を残さない。
+    /// </para>
+    /// <para>
+    /// 丸めの検出は<b>書いた後の現在値</b>と要求を比べて行う。
+    /// 変換の結果と比べても意味が無い ── setter が丸めるので、
+    /// そちらも同じように丸まっていて常に一致する。
+    /// </para>
+    /// </summary>
+    private static SettingsPatchOutcome ApplyPatch<T>(
+        T live,
+        JsonObject patch,
+        JsonTypeInfo<T> typeInfo,
+        IReadOnlyList<PropertyInfo> properties,
+        IReadOnlyList<string> requiresReinitialize) where T : class
+    {
+        // 1. キーの検査。値の複製は検証用の JsonObject へ取る（現在値の JSON には重ねない
+        //    ── 重ねた木を型へ戻すのが一時インスタンスを作る道そのものである）。
+        var staged = new JsonObject();
+        if (!RemoteApiRules.TryMergeIntoNode(staged, patch, IsPatchableProperty, out string? unknown))
+        {
+            return SettingsPatchOutcome.Rejected(
+                ActivationCommands.ExitCode_InvalidArguments, SettingsPatchRejection.UnknownKey, unknown);
+        }
+
+        // 2. 変換と検証（まだ書かない）。
+        var pending = new List<(PropertyInfo Property, object? Value)>(staged.Count);
+        foreach (var pair in staged)
+        {
+            if (!TryConvert(FindJsonProperty(pair.Key)!, pair.Value, out object? value))
+            {
+                return SettingsPatchOutcome.Rejected(
+                    ActivationCommands.ExitCode_InvalidArguments,
+                    SettingsPatchRejection.InvalidValue,
+                    pair.Key);
+            }
+
+            pending.Add((FindProperty(pair.Key)!, value));
+        }
+
+        // 3. 書き込み（PropertyGrid の編集と同じ、プロパティへの代入）。
+        foreach (var (property, value) in pending)
+            property.SetValue(live, value);
+
+        var after = JsonSerializer.SerializeToNode(live, typeInfo) as JsonObject ?? [];
+
+        return new SettingsPatchOutcome(
+            0,
+            SettingsPatchRejection.None,
+            null,
+            patch.Select(pair => pair.Key).ToArray(),
+            patch.Where(pair => !JsonNode.DeepEquals(after[pair.Key], pair.Value))
+                .Select(pair => pair.Key).ToArray(),
+            patch.Select(pair => pair.Key)
+                .Where(key => requiresReinitialize.Contains(key, StringComparer.Ordinal)).ToArray());
+
+        PropertyInfo? FindProperty(string name)
+            => properties.FirstOrDefault(p => string.Equals(p.Name, name, StringComparison.Ordinal) && p.CanWrite);
+
+        JsonPropertyInfo? FindJsonProperty(string name)
+            => typeInfo.Properties.FirstOrDefault(p => string.Equals(p.Name, name, StringComparison.Ordinal));
+
+        // 書き込めるプロパティであることと、settings.json に現れるキーであることの両方を要求する
+        // ── 保存されない項目を PATCH できても、次の起動で消える値を書くだけである。
+        bool IsPatchableProperty(string name) => FindProperty(name) is not null && FindJsonProperty(name) is not null;
+    }
+
+    /// <summary>
+    /// 要求の値 1 つを、その設定項目の型へ変換する。
+    ///
+    /// <para>
+    /// <b><see langword="null"/> はデシリアライザへ通さない。</b> あちらは C# の null 許容注釈を
+    /// 見ないので、非 null のプロパティにも null を書けてしまう
+    /// （settings.json へ落ちた null は、以後の読み込みと録画の開始を壊す）。
+    /// 可否は<b>型情報が持つ注釈</b>（<see cref="JsonPropertyInfo.IsSetNullable"/>）で決める
+    /// ── ソース生成がコンパイル時に埋めるので Native AOT でも読める
+    /// （<c>NullabilityInfoContext</c> はトリム時の既定で無効になる）。
+    /// </para>
+    /// </summary>
+    private static bool TryConvert(JsonPropertyInfo jsonProperty, JsonNode? value, out object? converted)
+    {
+        converted = null;
+
+        if (value is null)
+            return jsonProperty.IsSetNullable;
+
+        try
+        {
+            converted = JsonSerializer.Deserialize(value, ValueTypeInfo(jsonProperty));
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// 設定項目 1 つぶんの値の型情報。
+    ///
+    /// <para>
+    /// <b>その項目に付いた変換器を必ず通す。</b> 型に付いた変換器
+    /// （<c>EventRecordingType</c> の <c>JsonStringEnumConverter</c>）は型情報を引けば効くが、
+    /// <b>プロパティに付いたもの</b>（<c>AppSettings.FramingGrid</c>）は効かない
+    /// ── そのままだと settings.json が書く文字列を PATCH だけが読めず、
+    /// 代わりに数値を受けてしまう。
+    /// </para>
+    /// </summary>
+    private static JsonTypeInfo ValueTypeInfo(JsonPropertyInfo jsonProperty)
+    {
+        if (jsonProperty.CustomConverter is null)
+            return jsonProperty.Options.GetTypeInfo(jsonProperty.PropertyType);
+
+        var options = new JsonSerializerOptions(jsonProperty.Options);
+        options.Converters.Add(jsonProperty.CustomConverter);
+        options.MakeReadOnly();
+        return options.GetTypeInfo(jsonProperty.PropertyType);
     }
 }

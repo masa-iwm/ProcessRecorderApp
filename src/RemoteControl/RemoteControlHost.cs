@@ -93,7 +93,20 @@ public sealed class RemoteControlHost : IAsyncDisposable
             {
                 if (ctx.Response.HasStarted)
                     return;
-                await ApiResponse.WriteExitCodeErrorAsync(ctx, ex.ExitCode, ex.Message);
+                await ApiResponse.WriteExitCodeErrorAsync(ctx, ex.ExitCode, ex.Message, ex.Filename);
+            }
+            catch (BadHttpRequestException)
+            {
+                // **要求そのものが不正**（本文が上限を超えた等）。Kestrel が 413 / 400 を書く
+                // ので、こちらは何もしない ── ここで捕まえると、送りつけるだけで
+                // remote.error を無制限に積める記録になる。
+                throw;
+            }
+            catch (OperationCanceledException) when (ctx.RequestAborted.IsCancellationRequested)
+            {
+                // **呼び出し側が切った。** 書く相手がもう居ないので何もしない
+                // ── これを下の受け口へ落とすと、接続を切るだけで remote.error を積める
+                // （長い読み取り・イベント配信では普通に起きる）。
             }
             catch (Exception ex)
             {
@@ -109,7 +122,9 @@ public sealed class RemoteControlHost : IAsyncDisposable
         RootEndpoint.Map(app, auth);
         PingEndpoint.Map(app, auth);
         RecorderEndpoints.Map(app, backend);
-        SettingsEndpoints.Map(app, backend);
+        ControlEndpoints.Map(app, backend, auth);
+        VariableEndpoints.Map(app, backend, auth);
+        SettingsEndpoints.Map(app, backend, auth);
         EventsEndpoint.Map(app, backend);
 
         app.MapFallback(async (HttpContext ctx) =>

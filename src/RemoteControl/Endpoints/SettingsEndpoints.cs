@@ -14,7 +14,7 @@ internal static class SettingsEndpoints
     /// </summary>
     public const string AccessTokenKey = "RemoteControlAccessToken";
 
-    public static void Map(WebApplication app, IRemoteControlBackend backend)
+    public static void Map(WebApplication app, IRemoteControlBackend backend, RemoteAuth auth)
     {
         app.MapGet("/api/settings", async (HttpContext ctx) =>
         {
@@ -22,6 +22,42 @@ internal static class SettingsEndpoints
             settings.Remove(AccessTokenKey);
             await ApiResponse.WriteJsonAsync(
                 ctx, 200, settings, RemoteApiJsonContext.Default.JsonObject);
+        });
+
+        app.MapPatch("/api/settings", async (HttpContext ctx) =>
+        {
+            if (!await AuthGate.AllowAsync(ctx, auth))
+                return;
+
+            if (await ApiResponse.ReadJsonObjectAsync(ctx) is not { } patch)
+                return;
+
+            var result = await backend.PatchAppSettingsAsync(patch);
+            await ApiResponse.WriteJsonAsync(
+                ctx, 200, result, RemoteApiJsonContext.Default.PatchResultDto);
+        });
+
+        // **レコーダー設定の読み取りは認証不要**（GET は全部そうである）。
+        // ここに秘密は無い ── アクセストークンはアプリ設定側にあり、そちらは
+        // 許可リストにも載っていない。
+        app.MapGet("/api/recorders/{id}/settings", async (HttpContext ctx) =>
+        {
+            var settings = await backend.GetRecorderSettingsAsync(ControlEndpoints.RouteId(ctx));
+            await ApiResponse.WriteJsonAsync(
+                ctx, 200, settings, RemoteApiJsonContext.Default.RecorderSettingsDto);
+        });
+
+        app.MapPatch("/api/recorders/{id}/settings", async (HttpContext ctx) =>
+        {
+            if (!await AuthGate.AllowAsync(ctx, auth))
+                return;
+
+            if (await ApiResponse.ReadJsonObjectAsync(ctx) is not { } patch)
+                return;
+
+            var result = await backend.PatchRecorderSettingsAsync(ControlEndpoints.RouteId(ctx), patch);
+            await ApiResponse.WriteJsonAsync(
+                ctx, 200, result, RemoteApiJsonContext.Default.PatchResultDto);
         });
     }
 }

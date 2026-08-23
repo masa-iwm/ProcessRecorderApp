@@ -396,27 +396,14 @@ internal static class ActivationCommands
         if (RecordingStopRules.IsUsableArtifact(outcome))
             return null;
 
-        return CommandOutcome.Failure(exitCode: ExitCodeFor(outcome)) with
+        // 番号と文言のキーは HTTP 側と共有する（RecorderControlService）── 呼び出し面ごとに
+        // 別の番号・別の文言が出ると、同じ壊れ方が違うものに見える。
+        return CommandOutcome.Failure(exitCode: RecorderControlService.ExitCodeFor(outcome)) with
         {
-            ConsoleError = Localization.GetString(MessageKeyFor(outcome), recorderName) + Environment.NewLine,
+            ConsoleError = Localization.GetString(
+                RecorderControlService.StopFailureMessageKey(outcome), recorderName) + Environment.NewLine,
         };
     }
-
-    /// <summary>結果 → 終了コード。<b>規則（どれが失敗か・どちらが強いか）は
-    /// <see cref="RecordingStopRules"/> にあり、L1 が守っている</b>
-    /// ── ここは番号の割り当てだけを持つ。</summary>
-    private static int ExitCodeFor(RecordingStopOutcome outcome) => outcome switch
-    {
-        RecordingStopOutcome.NotFinalized => ExitCode_RecordingNotFinalized,
-        RecordingStopOutcome.Empty => ExitCode_RecordingProducedNothing,
-        _ => 0,
-    };
-
-    private static string MessageKeyFor(RecordingStopOutcome outcome) => outcome switch
-    {
-        RecordingStopOutcome.NotFinalized => "Resources/Cli_RecordingNotFinalized",
-        _ => "Resources/Cli_RecordingProducedNothing",
-    };
 
     private static CommandOutcome RecorderNotAvailableFailure() =>
         CommandOutcome.Failure(exitCode: ExitCode_RecorderNotAvailable) with
@@ -721,11 +708,10 @@ internal static class ActivationCommands
             {
                 // **終了コードは「強い方」を返す**（規則は RecordingStopRules。L1 が守っている）。
                 // 混在した場合に弱い方を返すと、救済できたはずのデータを捨てさせる。
-                var worst = failed
-                    .Select(x => x.Recorder.Outcome)
-                    .Aggregate(RecordingStopOutcome.Ok, RecordingStopRules.Stronger);
-
-                setOutcome(CommandOutcome.Failure(exitCode: ExitCodeFor(worst)) with
+                // 畳み込みも HTTP 側と共有する（RecorderControlService.FoldStopExitCode）。
+                setOutcome(CommandOutcome.Failure(
+                        exitCode: RecorderControlService.FoldStopExitCode(
+                            failed.Select(x => x.Recorder.Outcome))) with
                 {
                     ConsoleOutput = files,
                     ConsoleError = string.Concat(failed.Select(x => x.Failure!.Value.ConsoleError)),

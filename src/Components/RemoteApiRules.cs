@@ -5,6 +5,7 @@ using System.IO;
 using System.Security;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json.Nodes;
 
 namespace ProcessRecorderApp.Components;
 
@@ -244,5 +245,52 @@ public static class RemoteApiRules
                 return true;
         }
         return false;
+    }
+
+    /// <summary>
+    /// 部分更新（PATCH）の本文を、現在値の JSON へ重ねる。
+    ///
+    /// <para>
+    /// <b>キーの検査と上書きだけを行う純関数である。</b> 値が型として妥当かどうかは見ない
+    /// ── そこは設定オブジェクトへ戻すデシリアライズが答える唯一の正解であり、
+    /// ここで先回りして判定すると<b>同じ規則が 2 か所に書かれる</b>。
+    /// </para>
+    /// <para>
+    /// <b>写すのは <see cref="JsonNode.DeepClone"/> した複製。</b> 要求の本文のノードを
+    /// そのまま差すと、同じノードが 2 つの親を持って
+    /// <see cref="InvalidOperationException"/> になる。
+    /// </para>
+    /// <para>
+    /// <b><see langword="null"/> の値も写す。</b> 「キーを指定しない」と
+    /// 「null を指定する」は別の意味で、後者は null 許容のプロパティを空へ戻す唯一の手段である。
+    /// </para>
+    /// </summary>
+    /// <param name="target">現在値の JSON（この場で書き換わる）。</param>
+    /// <param name="patch">要求の本文。</param>
+    /// <param name="isKnownKey">そのキーを受け付けてよいか。</param>
+    /// <param name="rejectedKey">受け付けられなかった最初のキー（成功なら <see langword="null"/>）。</param>
+    /// <returns>全キーを写せたら <see langword="true"/>。false のとき
+    /// <paramref name="target"/> は<b>部分的に書き換わっていることがある</b>
+    /// （呼び出し側は失敗した <paramref name="target"/> を使わない）。</returns>
+    public static bool TryMergeIntoNode(
+        JsonObject target, JsonObject patch, Func<string, bool> isKnownKey, out string? rejectedKey)
+    {
+        ArgumentNullException.ThrowIfNull(target);
+        ArgumentNullException.ThrowIfNull(patch);
+        ArgumentNullException.ThrowIfNull(isKnownKey);
+
+        foreach (var pair in patch)
+        {
+            if (!isKnownKey(pair.Key))
+            {
+                rejectedKey = pair.Key;
+                return false;
+            }
+
+            target[pair.Key] = pair.Value?.DeepClone();
+        }
+
+        rejectedKey = null;
+        return true;
     }
 }

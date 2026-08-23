@@ -76,7 +76,20 @@ public partial class AppSettings : JsonSettingsBase<AppSettings>
         });
 
     /// <inheritdoc cref="SettingsContext"/>
-    private static readonly JsonTypeInfo<AppSettings> SettingsTypeInfo = SettingsContext.AppSettings;
+    ///
+    /// <para>
+    /// <b>internal なのは、部分更新（リモート操作の PATCH）が保存と同じ型情報を通すため。</b>
+    /// あちらは「現在値を JSON にする → 要求のキーだけ差し替える → 型へ戻す」で値を検証するので、
+    /// 別の <c>JsonSerializerOptions</c> を使うと settings.json に書ける値と
+    /// PATCH で通る値が食い違う。
+    /// </para>
+    internal static readonly JsonTypeInfo<AppSettings> SettingsTypeInfo = SettingsContext.AppSettings;
+
+    /// <summary>
+    /// レコーダー設定 1 件ぶんの型情報。用途と理由は <see cref="SettingsTypeInfo"/> と同じ。
+    /// </summary>
+    internal static readonly JsonTypeInfo<GStreamer.EventRecorderSettings> RecorderTypeInfo =
+        SettingsContext.EventRecorderSettings;
 
     private static readonly Lazy<AppSettings> _default = new(
         () => LoadOrCreate(FilePath, SettingsTypeInfo, () => new(), ReportLoadFailure,
@@ -1018,8 +1031,7 @@ public partial class AppSettings : JsonSettingsBase<AppSettings>
     /// 現在の設定を JSON のノードにする（settings.json と同じ表現＝PascalCase）。
     ///
     /// <para>
-    /// <b><see cref="SettingsTypeInfo"/> を外へ出さないためのメソッド。</b> 保存と同じ
-    /// ソース生成の型情報を通すので、リモートが読む形と保存される形が食い違わない。
+    /// 保存と同じソース生成の型情報を通すので、リモートが読む形と保存される形が食い違わない。
     /// </para>
     /// </summary>
     internal static System.Text.Json.Nodes.JsonNode? ToJsonNode()

@@ -20,6 +20,16 @@ namespace ProcessRecorderApp.RemoteControl;
 [JsonSerializable(typeof(ErrorDto))]
 [JsonSerializable(typeof(OkDto))]
 [JsonSerializable(typeof(JsonObject))]
+[JsonSerializable(typeof(RecorderActionResult))]
+[JsonSerializable(typeof(StartAllResult))]
+[JsonSerializable(typeof(StopAllResult))]
+[JsonSerializable(typeof(StopItemResult))]
+[JsonSerializable(typeof(VariableDto))]
+[JsonSerializable(typeof(VariablesDto))]
+[JsonSerializable(typeof(VariablePutRequest))]
+[JsonSerializable(typeof(RecorderSettingsDto))]
+[JsonSerializable(typeof(SettingPropertyDto))]
+[JsonSerializable(typeof(PatchResultDto))]
 internal partial class RemoteApiJsonContext : JsonSerializerContext
 {
 }

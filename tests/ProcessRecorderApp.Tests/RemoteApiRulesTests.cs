@@ -1,6 +1,7 @@
 using ProcessRecorderApp.Components;
 using System;
 using System.IO;
+using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using Xunit;
 
@@ -168,5 +169,76 @@ public sealed class RemoteApiRulesTests
         Assert.False(RemoteApiRules.IsRemoteEditable("gstdebug"));
         Assert.False(RemoteApiRules.IsRemoteEditable("OutputDirectory"));
         Assert.False(RemoteApiRules.IsRemoteEditable(""));
+    }
+
+    // ---- PATCH の重ね合わせ ----
+
+    private static JsonObject Known() => new() { ["A"] = 1, ["B"] = "x" };
+
+    private static bool IsAOrB(string key) => key is "A" or "B";
+
+    [Fact]
+    public void AKnownKeyOverwritesTheCurrentValue()
+    {
+        var target = Known();
+
+        Assert.True(RemoteApiRules.TryMergeIntoNode(
+            target, new JsonObject { ["A"] = 2 }, IsAOrB, out string? rejected));
+
+        Assert.Null(rejected);
+        Assert.Equal(2, (int)target["A"]!);
+        // 触れていないキーは残る（PATCH であって PUT ではない）。
+        Assert.Equal("x", (string)target["B"]!);
+    }
+
+    [Fact]
+    public void AnUnknownKeyIsRejectedAndNamed()
+    {
+        Assert.False(RemoteApiRules.TryMergeIntoNode(
+            Known(), new JsonObject { ["Nope"] = 1 }, IsAOrB, out string? rejected));
+
+        // **どのキーが悪かったかを返すこと。** 「駄目だった」だけでは、
+        // 呼び出し側は要求の何を直せばよいか分からない。
+        Assert.Equal("Nope", rejected);
+    }
+
+    [Fact]
+    public void AnEmptyPatchChangesNothing()
+    {
+        var target = Known();
+
+        Assert.True(RemoteApiRules.TryMergeIntoNode(target, [], IsAOrB, out string? rejected));
+
+        Assert.Null(rejected);
+        Assert.Equal(1, (int)target["A"]!);
+        Assert.Equal("x", (string)target["B"]!);
+    }
+
+    [Fact]
+    public void ANullValueIsCopiedInsteadOfBeingSkipped()
+    {
+        var target = Known();
+
+        // 「キーを書かない」と「null を書く」は別の意味 ── null 許容の設定を
+        // 空へ戻す手段はこれしか無い。
+        Assert.True(RemoteApiRules.TryMergeIntoNode(
+            target, new JsonObject { ["B"] = null }, IsAOrB, out _));
+
+        Assert.True(target.ContainsKey("B"));
+        Assert.Null(target["B"]);
+    }
+
+    [Fact]
+    public void TheCopiedValueIsDetachedFromTheRequestBody()
+    {
+        var target = Known();
+        var patch = new JsonObject { ["A"] = 7 };
+
+        // 複製せずに差すと、同じノードが 2 つの親を持って InvalidOperationException になる。
+        Assert.True(RemoteApiRules.TryMergeIntoNode(target, patch, IsAOrB, out _));
+
+        Assert.Equal(7, (int)target["A"]!);
+        Assert.Equal(7, (int)patch["A"]!);
+        Assert.NotSame(patch["A"], target["A"]);
     }
 }

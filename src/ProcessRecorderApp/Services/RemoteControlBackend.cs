@@ -1,5 +1,6 @@
 using Microsoft.UI.Dispatching;
 using ProcessRecorderApp.Components;
+using ProcessRecorderApp.GStreamer;
 using ProcessRecorderApp.RemoteControl;
 using ProcessRecorderApp.ViewModels;
 using System;
@@ -117,6 +118,189 @@ internal sealed partial class RemoteControlBackend(DispatcherQueue dispatcherQue
 
             return Task.FromResult(settings);
         });
+
+    // ---- 書き込み ----
+    //
+    // **CancellationToken を受け取らない**（インターフェイスの doc 参照）。要求元が切っても
+    // 開始・停止・設定変更は完遂させる ── ここで畳むと「録画は始まったが誰も知らない」
+    // 状態が残る。捨てられるのは応答だけである。
+    //
+    // **文言は CLI と同じリソースを引く。** 番号（終了コード）だけを揃えて文言を別に書くと、
+    // 同じ失敗が呼び出し面ごとに違う説明で出る。
+
+    /// <inheritdoc/>
+    public Task<RecorderActionResult> StartAsync(string id)
+        => RunOnUiAsync(async () =>
+        {
+            var result = await RecorderControlService.StartAsync(id);
+            if (result.ExitCode != 0)
+                throw CommandFailure(result.ExitCode, id, result.RecorderName, start: true);
+
+            return new RecorderActionResult(result.RecorderName ?? id, result.LastFilename);
+        });
+
+    /// <inheritdoc/>
+    public Task<RecorderActionResult> StopAsync(string id)
+        => RunOnUiAsync(async () =>
+        {
+            var result = await RecorderControlService.StopAsync(id);
+            if (result.ExitCode != 0)
+                throw CommandFailure(result.ExitCode, id, result.RecorderName, start: false);
+
+            // **使えない成果物を成功として返さない。** 停止処理そのものは成功しているので、
+            // 分かるのは「何が残ったか」だけ ── ファイルのパスは載せる（救済できる）。
+            int outcomeCode = RecorderControlService.ExitCodeFor(result.Outcome);
+            if (outcomeCode != 0)
+                throw StopOutcomeFailure(result.Outcome, result.RecorderName, result.LastFilename);
+
+            return new RecorderActionResult(result.RecorderName ?? id, result.LastFilename);
+        });
+
+    /// <inheritdoc/>
+    public Task<RemoteControl.StartAllResult> StartAllAsync()
+        => RunOnUiAsync(async () =>
+        {
+            var result = await RecorderControlService.StartAllAsync();
+            if (result.ExitCode != 0)
+            {
+                throw new RemoteApiException(result.ExitCode, Localization.GetString(
+                    result.ExitCode == ActivationCommands.ExitCode_RecorderNotAvailable
+                        ? "Resources/Cli_RecorderNotAvailable"
+                        : "Resources/Cli_NoRecorderCanStart"));
+            }
+
+            return new RemoteControl.StartAllResult(
+                result.Started.Select(r => new RecorderActionResult(r.Name, r.LastFilename)).ToArray(),
+                result.FailedRecorders.ToArray());
+        });
+
+    /// <inheritdoc/>
+    public Task<RemoteControl.StopAllResult> StopAllAsync()
+        => RunOnUiAsync(async () =>
+        {
+            var result = await RecorderControlService.StopAllAsync();
+            if (result.ExitCode != 0)
+            {
+                throw new RemoteApiException(result.ExitCode, Localization.GetString(
+                    result.ExitCode == ActivationCommands.ExitCode_RecorderNotAvailable
+                        ? "Resources/Cli_RecorderNotAvailable"
+                        : "Resources/Cli_NoRecorderCanStop"));
+            }
+
+            // **1 本でも使えなければ全体を失敗にする**（CLI の stop-recording-all と同じ）。
+            // 200 で返すと、呼び出し側は行ごとの終了コードを見ない限り壊れに気付けない。
+            int folded = RecorderControlService.FoldStopExitCode(result.Stopped.Select(r => r.Outcome));
+            if (folded != 0)
+            {
+                var worst = result.Stopped
+                    .First(r => RecorderControlService.ExitCodeFor(r.Outcome) == folded);
+                throw StopOutcomeFailure(worst.Outcome, worst.Name, worst.LastFilename);
+            }
+
+            return new RemoteControl.StopAllResult(
+                result.Stopped
+                    .Select(r => new StopItemResult(
+                        r.Name, r.LastFilename, RecorderControlService.ExitCodeFor(r.Outcome)))
+                    .ToArray());
+        });
+
+    /// <inheritdoc/>
+    public Task<VariablesDto> GetVariablesAsync()
+        => RunOnUiAsync(() => Task.FromResult(
+            new VariablesDto(RecorderControlService.GetVariableDtos())));
+
+    /// <inheritdoc/>
+    public Task<VariableDto> PutVariableAsync(string key, string? value, bool? persist)
+        => RunOnUiAsync(() =>
+        {
+            // **順序は値 → 保存**（CLI の --set → --persist と同じ）。逆にすると、
+            // 「新しい変数を作って保存する」1 回の要求が「未定義」で落ちる。
+            if (value is not null)
+                RecorderControlService.SetVariable(key, value);
+
+            if (persist is bool wanted && !RecorderControlService.TrySetVariablePersistent(key, wanted))
+                throw VariableNotDefined(key);
+
+            return Task.FromResult(RecorderControlService.GetVariableDto(key) ?? throw VariableNotDefined(key));
+        });
+
+    /// <inheritdoc/>
+    public Task<RecorderSettingsDto> GetRecorderSettingsAsync(string id)
+        => RunOnUiAsync(async () =>
+        {
+            var result = await RecorderControlService.GetRecorderSettingsAsync(id);
+            return result.Settings ?? throw CommandFailure(result.ExitCode, id, null, start: false);
+        });
+
+    /// <inheritdoc/>
+    public Task<PatchResultDto> PatchRecorderSettingsAsync(string id, JsonObject patch)
+        => RunOnUiAsync(async () =>
+        {
+            var outcome = await RecorderControlService.PatchRecorderSettingsAsync(id, patch);
+            return ToPatchResult(outcome, id);
+        });
+
+    /// <inheritdoc/>
+    public Task<PatchResultDto> PatchAppSettingsAsync(JsonObject patch)
+        => RunOnUiAsync(() => Task.FromResult(
+            ToPatchResult(RecorderControlService.PatchAppSettings(patch), string.Empty)));
+
+    private static PatchResultDto ToPatchResult(SettingsPatchOutcome outcome, string target)
+    {
+        if (outcome.ExitCode == 0)
+            return new PatchResultDto(outcome.Applied, outcome.Clamped, outcome.RequiresReinitialize);
+
+        // **どのキーが駄目だったのかを必ず載せる。** 「要求が不正」だけでは、
+        // 呼び出し側は何を直せばよいか分からない（キーの綴りか、値の型か）。
+        throw outcome.Rejection switch
+        {
+            SettingsPatchRejection.UnknownKey =>
+                new RemoteApiException(outcome.ExitCode, $"unknown key: {outcome.RejectedKey}"),
+            SettingsPatchRejection.NotEditable =>
+                new RemoteApiException(outcome.ExitCode, $"key not editable: {outcome.RejectedKey}"),
+            // キーが分からないまま「invalid value for 」と尻切れの文を返さない。
+            SettingsPatchRejection.InvalidValue => new RemoteApiException(
+                outcome.ExitCode,
+                outcome.RejectedKey is null ? "invalid value" : $"invalid value for {outcome.RejectedKey}"),
+            _ => CommandFailure(outcome.ExitCode, target, null, start: false),
+        };
+    }
+
+    /// <summary>
+    /// 実行される前に断られた開始／停止（12 / 13 / 14）を例外へ写す。
+    /// 文言は CLI の <c>RecorderCommandFailure</c> と同じリソース
+    /// （末尾の改行だけ付けない ── あれは CLI の出力の組み立てであって文言ではない）。
+    /// </summary>
+    private static RemoteApiException CommandFailure(
+        int exitCode, string target, string? recorderName, bool start) => exitCode switch
+        {
+            ActivationCommands.ExitCode_RecorderNotAvailable =>
+                new RemoteApiException(exitCode, Localization.GetString("Resources/Cli_RecorderNotAvailable")),
+            ActivationCommands.ExitCode_RecorderNotFound =>
+                new RemoteApiException(exitCode, Localization.GetString("Resources/Cli_RecorderNotFound", target)),
+            ActivationCommands.ExitCode_RecordingNotExecutable =>
+                new RemoteApiException(exitCode, Localization.GetString(
+                    start ? "Resources/Cli_CannotStartInState" : "Resources/Cli_CannotStopInState", recorderName)),
+            // 未知の非 0 を成功に化かさない。
+            _ => new RemoteApiException(exitCode, "the command failed"),
+        };
+
+    /// <summary>
+    /// 停止は済んだが成果物が使えない（16 / 17）。<b>ファイルのパスを載せる</b> ──
+    /// 呼び出し側はそれで後始末や救済ができる（CLI が標準出力へパスを出すのと同じ）。
+    /// </summary>
+    private static RemoteApiException StopOutcomeFailure(
+        RecordingStopOutcome outcome, string? recorderName, string? filename)
+        => new(RecorderControlService.ExitCodeFor(outcome),
+               Localization.GetString(
+                   RecorderControlService.StopFailureMessageKey(outcome), recorderName ?? string.Empty))
+        {
+            Filename = filename,
+        };
+
+    private static RemoteApiException VariableNotDefined(string key)
+        => new(ActivationCommands.ExitCode_VariableNotDefined,
+               Localization.GetString("Resources/Cli_VariableNotFound", key));
 
     /// <inheritdoc/>
     public IDisposable SubscribeState(Action<RecordersSnapshot> onChange)

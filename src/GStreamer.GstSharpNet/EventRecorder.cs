@@ -54,6 +54,44 @@ public partial class EventRecorderSettings : ObservableObject, Components.IPrope
     public IEnumerable<PropertyInfo> GetProperties()
         => typeof(EventRecorderSettings).GetProperties(BindingFlags.Instance | BindingFlags.Public);
 
+    /// <summary>
+    /// 変更しても<b><see cref="EventRecorder.Initialize"/> をやり直すまで効かない</b>プロパティ。
+    ///
+    /// <para>
+    /// <b>これらはパイプラインの組み立ての入力である。</b> sink / src のパイプラインは
+    /// <c>parse_launch</c> へ渡す<b>文字列</b>として一度きり組み立てられ、
+    /// 常時録画の枝（<see cref="ContinuousRecording"/> 一式）も同じ文字列の一部なので、
+    /// 動いているパイプラインへ後から効かせる道が無い。
+    /// <see cref="ContinuousFilenameTemplate"/> と <see cref="ContinuousSegmentSeconds"/> は
+    /// 文字列ではないが、常時録画エンジンの構築時に<b>値として写し取られる</b>
+    /// （<c>ContinuousRecorder</c> の ctor）ので同じ扱いになる。
+    /// <see cref="CameraControls"/> は初期化の成功後に 1 回だけ適用される。
+    /// </para>
+    /// <para>
+    /// <b>ここに<u>無い</u>のは <see cref="Name"/> / <see cref="BufferDuration"/> /
+    /// <see cref="FilenameTemplate"/> の 3 つだけ</b>で、いずれも動作中に読み直される
+    /// （バッファ長はサンプルごと、ファイル名は録画開始ごと）。
+    /// </para>
+    /// <para>
+    /// 用途は<b>助言</b>である ── 変更そのものは常に受け付ける。
+    /// リモート操作の PATCH がこの一覧との交わりを応答へ載せ、
+    /// 「今の録画には効かない」ことを呼び出し側へ伝える。
+    /// </para>
+    /// </summary>
+    public static readonly string[] PropertiesRequiringReinitialize =
+    [
+        nameof(Type),
+        nameof(SrcPipeline),
+        nameof(EncodingProperties),
+        nameof(CameraControls),
+        nameof(ContinuousRecording),
+        nameof(ContinuousFramerate),
+        nameof(ContinuousResolution),
+        nameof(ContinuousEncodingProperties),
+        nameof(ContinuousFilenameTemplate),
+        nameof(ContinuousSegmentSeconds),
+    ];
+
     [Description("PropDesc_Rec_Name")]
     [ObservableProperty]
     public partial string Name { get; set; } = "Recorder";
