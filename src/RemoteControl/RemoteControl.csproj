@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>ProcessRecorderApp.RemoteControl</RootNamespace>
+    <AssemblyName>RemoteControl</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- ASP.NET Core は共有フレームワークとして参照する。PackageReference ではないので
+         Directory.Packages.props（中央パッケージ管理）は不変のままでよい。
+         参照をこのプロジェクトに閉じ込めることで、L1 テストホストへ ASP.NET Core が
+         降りてこない（テストプロジェクトはこの csproj を参照しない）。 -->
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- **Components だけを参照する。** GStreamer.GstSharpNet と ProcessRecorderApp を
+         参照しないので、GstControllerViewModel / RecorderControlService を書けば
+         コンパイルが止まる。
+         ただし Components が Microsoft.WindowsAppSDK を推移的に持ち込むため、
+         DispatcherQueue など Microsoft.UI の型は**書けてしまう** ── UI スレッド越境の
+         規律（越境は呼び出し側の責務）を守っているのは L1 の
+         RemoteControlIsolationTests によるソーステキストの検査である。 -->
+    <ProjectReference Include="..\Components\Components.csproj" />
+  </ItemGroup>
+
+</Project>

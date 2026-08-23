@@ -1946,6 +1946,10 @@ GPU テクスチャになるため**アクセシブルテキストが 1 つも�
 | `gst.debug` | INFO | `DebugLogEx.TrySetThreshold` | `GstDebug` の変更を実行中に適用した（`threshold='...'`）。適用先は GStreamer の内部状態だけで画面にもファイルにも痕跡が残らないので、ここが唯一の観測点になる |
 | `gst.dot` | INFO / ERROR | `MainPageViewModel.SaveDebugGraphs` ／ `Controller.WriteDebugGraphs` | Log 画面の「グラフを保存」の結果（`dir='...' files=N`）／個々のパイプラインの書き出し失敗 |
 | `preview.error` | ERROR | `Previewer` のバスのハンドラ（`SubscribeBus`）／`NativeSwapChainPanel.SetPanelSwapChain` | プレビューパイプラインの実行時障害（D3D デバイスロスト等。1 パイプラインにつき 1 行）と、スワップチェーンのパネルへのバインド失敗。録画は止めない方針のため復帰は試みない ── ここが「プレビューだけ黙って固まった／黒いまま」の唯一の観測点になる |
+| `remote.start` | INFO | `RemoteControlService.ReloadAsync` | リモート操作の HTTP サーバーを起動した（`bind=<ip>:<実ポート>`）。**ポートは実際に割り当てられた値**で、設定が `0`（空きポートを OS に選ばせる）のときはここが唯一の観測点になる |
+| `remote.stop` | INFO | 同上 ／ `RemoteControlService.Dispose` | サーバーを止めた（設定変更による作り直しの前と、アプリの終了時）。**作り直しは必ず `remote.stop` → `remote.start` の順に出る** |
+| `remote.error` | ERROR / WARN | 同上／`RemoteControlHost`（未処理例外の受け口） | 起動できなかった（アドレスが不正・ポートが使用中・トークンが空 `detail=access token is empty`）／要求の処理で予期しない例外が出た。**サーバーが立たなくても録画は止めない**ので、ここが唯一の観測点になる。トークンは書かない |
+| `remote.auth fail` | WARN | `RemoteAuth.ReportFailure` | 書き込み要求の認証に失敗した（`remote=<ip>`）。**1 分に 1 行へ間引く** ── 失敗のたびに書くと総当たりが activity.log を数分で使い切り、他の記録を押し流せてしまう。**トークンは書かない**（activity.log は利用者が貼り付けて共有する種類のファイル） |
 | `variables.duplicate-key` | WARN | `TemplateVariableViewModel.OnKeyChanged` | Variables 画面で既存の行と重複するキーを入力したため、元のキーへ差し戻した（重複を許すと既存の値を空文字で潰し、片方の削除で実体まで消える） |
 | `settings.load` | ERROR | `AppSettings.ReportLoadFailure` | settings.json を読めず既定値へ倒れた（読めなかったファイルは `.bad` へ退避） |
 | `settings.seed` | INFO | `AppSettings.ReportSeedUsed` | 保存先に settings.json が無く、**実行ファイルの隣の settings.json を既定設定（種）として読んだ**。無記録だと「設定した覚えのない初期値で始まった」ことを追えない |

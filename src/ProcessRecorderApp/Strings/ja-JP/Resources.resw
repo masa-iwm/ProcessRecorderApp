@@ -344,6 +344,21 @@
   <data name="PropDesc_RecordingCleanupIntervalHours" xml:space="preserve">
     <value>自動削除を実行する間隔（時間）。起動直後にも1回実行するため、間隔を長くしても起動のたびに掃除されます。1 未満の値は 1、1000 を超える値は 1000 として扱います。</value>
   </data>
+  <data name="PropCat_RemoteControl" xml:space="preserve">
+    <value>リモート操作</value>
+  </data>
+  <data name="PropDesc_RemoteControlEnabled" xml:space="preserve">
+    <value>同じ LAN の別 PC のブラウザから操作するための HTTP サーバーを動かします。既定は無効。読み取り（レコーダーの一覧・状態・設定の閲覧）はトークン不要で応答するため、ポートに到達できる相手には全て見えます ── 信頼できるネットワーク以外では有効にしないでください。書き込みにはアクセストークンが要ります。Windows Firewall は自動では開けないので、手動で許可してください。</value>
+  </data>
+  <data name="PropDesc_RemoteControlBindAddress" xml:space="preserve">
+    <value>待ち受ける IP アドレス。既定の 0.0.0.0 は全てのネットワークインターフェイスで、「別 PC から操作する」にはこれが要ります。127.0.0.1 にするとこの PC からのみになります。変更するとサーバーを再起動します。</value>
+  </data>
+  <data name="PropDesc_RemoteControlPort" xml:space="preserve">
+    <value>待ち受ける TCP ポート。0 を指定すると空いているポートを OS が選びます ── 実際に使われたポートは activity.log の remote.start に記録されます。どのポートになっても Windows Firewall の許可は手動で行う必要があります。</value>
+  </data>
+  <data name="PropDesc_RemoteControlAccessToken" xml:space="preserve">
+    <value>書き込み操作（録画の開始・停止、設定の変更）に要る秘密の文字列。リモート操作を初めて有効にしたときに生成されます。「…」ボタンで作り直すと、古いトークンとそれで開いたブラウザのセッションは無効になります。読み取りはこのトークンでは保護されません。</value>
+  </data>
   <data name="PropDesc_PreferredEncoder" xml:space="preserve">
     <value>優先する H.264 エンコーダーの要素ファクトリ名（例: x264enc、qsvh264enc）。空欄の場合は、この実機で利用できるエンコーダーから自動選択します。指定した要素が利用できない場合は自動選択の優先順位にフォールバックします。実際に採用されたエンコーダーは各レコーダーの「実際のエンコード設定」に表示されます。</value>
   </data>

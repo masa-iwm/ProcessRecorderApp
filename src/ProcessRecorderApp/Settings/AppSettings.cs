@@ -404,6 +404,62 @@ public partial class AppSettings : JsonSettingsBase<AppSettings>
     public partial int RecordingCleanupIntervalHours { get; set; } = 6;
 
     /// <summary>
+    /// LAN の別 PC のブラウザから操作するための HTTP サーバーを動かすか。
+    ///
+    /// <para>
+    /// <b>既定は無効。</b> 有効にすると <see cref="RemoteControlBindAddress"/> の
+    /// アドレスで待ち受け、<b>読み取り（一覧・状態・設定の閲覧）は認証なしで応答する</b>
+    /// ── 守っているのは「オフ既定」「アクセストークン」「Windows Firewall」の 3 つだけである。
+    /// </para>
+    /// </summary>
+    [System.ComponentModel.Category("PropCat_RemoteControl")]
+    [System.ComponentModel.Description("PropDesc_RemoteControlEnabled")]
+    [ObservableProperty]
+    public partial bool RemoteControlEnabled { get; set; }
+
+    /// <summary>
+    /// 有効化したときにトークンが空なら、その場で生成する。
+    /// <b>空のまま起動させない</b> ── トークン無しで待ち受けている状態を作らないため。
+    /// </summary>
+    partial void OnRemoteControlEnabledChanged(bool value)
+    {
+        if (value && string.IsNullOrEmpty(RemoteControlAccessToken))
+            RemoteControlAccessToken = RemoteApiRules.GenerateAccessToken();
+    }
+
+    /// <summary>
+    /// 待ち受ける IP アドレス。既定の <c>0.0.0.0</c> は全インターフェイス
+    /// （「別 PC から操作する」が目的そのものなので、<c>127.0.0.1</c> では成立しない）。
+    /// </summary>
+    [System.ComponentModel.Category("PropCat_RemoteControl")]
+    [System.ComponentModel.Description("PropDesc_RemoteControlBindAddress")]
+    [ObservableProperty]
+    public partial string RemoteControlBindAddress { get; set; } = "0.0.0.0";
+
+    /// <summary>待ち受けるポート。<b>0 は「空いているものを OS に選ばせる」</b>。</summary>
+    [System.ComponentModel.Category("PropCat_RemoteControl")]
+    [System.ComponentModel.Description("PropDesc_RemoteControlPort")]
+    [ObservableProperty]
+    public partial int RemoteControlPort { get; set; } = 8752;
+
+    /// <summary>
+    /// 書き込み操作に要るアクセストークン。<b>「…」ボタンで作り直せる</b>
+    /// （読み取り専用にはしない ── 手元の控えを貼り付け直せる方が運用しやすい）。
+    /// <see cref="RemoteControlEnabled"/> を有効にした時点で空なら自動生成される。
+    /// </summary>
+    [System.ComponentModel.Category("PropCat_RemoteControl")]
+    [System.ComponentModel.Description("PropDesc_RemoteControlAccessToken")]
+    [ValueBuilder(RemoteControlAccessTokenBuilderKey)]
+    [ObservableProperty]
+    public partial string RemoteControlAccessToken { get; set; } = "";
+
+    /// <summary>
+    /// <see cref="RemoteControlAccessToken"/> のビルダー識別キー。
+    /// <b><c>PropCat_</c> / <c>PropDesc_</c> で始めてはいけない</b>（<see cref="EncoderChoiceListKey"/> と同じ理由）。
+    /// </summary>
+    public const string RemoteControlAccessTokenBuilderKey = "RemoteControlAccessToken";
+
+    /// <summary>
     /// UIA トリガ監視全体の有効/無効。無効にすると監視スレッドごと止める
     /// （<c>UiaTriggerService</c> がこのプロパティの変更を購読している）。
     /// </summary>
@@ -798,6 +854,12 @@ public partial class AppSettings : JsonSettingsBase<AppSettings>
         OutputDirectory = loaded.OutputDirectory;
         RecordingRetentionDays = loaded.RecordingRetentionDays;
         RecordingCleanupIntervalHours = loaded.RecordingCleanupIntervalHours;
+        // **順序が効く。** RemoteControlEnabled を先に写すと OnRemoteControlEnabledChanged が
+        // トークンを生成し、その直後にファイル側の空文字が上書きして消す。
+        RemoteControlAccessToken = loaded.RemoteControlAccessToken;
+        RemoteControlBindAddress = loaded.RemoteControlBindAddress;
+        RemoteControlPort = loaded.RemoteControlPort;
+        RemoteControlEnabled = loaded.RemoteControlEnabled;
         UiaTriggersEnabled = loaded.UiaTriggersEnabled;
         // トリガ定義は差し替え運用（要素を in-place 変更しない）なので参照コピーでよい
         UiaTriggers = loaded.UiaTriggers;
@@ -951,6 +1013,17 @@ public partial class AppSettings : JsonSettingsBase<AppSettings>
         // 「新しい形のスキーマ」と「古い内容の本体」が並ぶ。
         SaveSchema(FilePath, SettingsTypeInfo, ReportSaveFailure);
     }
+
+    /// <summary>
+    /// 現在の設定を JSON のノードにする（settings.json と同じ表現＝PascalCase）。
+    ///
+    /// <para>
+    /// <b><see cref="SettingsTypeInfo"/> を外へ出さないためのメソッド。</b> 保存と同じ
+    /// ソース生成の型情報を通すので、リモートが読む形と保存される形が食い違わない。
+    /// </para>
+    /// </summary>
+    internal static System.Text.Json.Nodes.JsonNode? ToJsonNode()
+        => JsonSerializer.SerializeToNode(Default, SettingsTypeInfo);
 
     private System.Threading.Timer? _saveDebounce;
     private Microsoft.UI.Dispatching.DispatcherQueue? _saveDispatcherQueue;

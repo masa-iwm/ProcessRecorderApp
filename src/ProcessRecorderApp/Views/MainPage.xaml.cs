@@ -954,6 +954,11 @@ public sealed partial class MainPage : Page
         if (string.Equals(key, AppSettings.DebugLogFileBuilderKey, StringComparison.Ordinal))
             return await PickLogFileAsync(current);
 
+        // 「…」＝トークンの作り直し。**確認ダイアログは出さない** ── 押した瞬間に
+        // 新しい値が欄へ入るだけで、確定するのは通常の設定変更と同じ経路だからである。
+        if (string.Equals(key, AppSettings.RemoteControlAccessTokenBuilderKey, StringComparison.Ordinal))
+            return Components.RemoteApiRules.GenerateAccessToken();
+
         if (!string.Equals(key, AppSettings.UiaTriggerBuilderKey, StringComparison.Ordinal))
             return null;
         if (_uiaTriggerEditorOpen)

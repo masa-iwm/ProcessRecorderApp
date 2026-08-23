@@ -121,6 +121,9 @@
   <ItemGroup>
     <ProjectReference Include="..\Controls\Controls.csproj" />
     <ProjectReference Include="..\GStreamer.GstSharpNet\GStreamer.GstSharpNet.csproj" />
+    <!-- リモート操作の HTTP サーバー。ASP.NET Core の FrameworkReference は
+         あちらに閉じてあり、ここへは推移で入る（Directory.Packages.props は不変）。 -->
+    <ProjectReference Include="..\RemoteControl\RemoteControl.csproj" />
     <ProjectReference Include="..\SingleInstance\SingleInstance.csproj" />
   </ItemGroup>
 
@@ -174,6 +177,21 @@
       <MicrosoftWindowsAppSDKFilesExcluded
           Remove="@(MicrosoftWindowsAppSDKFilesExcluded)"
           Condition="'%(RecursiveDir)' == 'en-us\' Or '%(RecursiveDir)' == 'ja-jp\'" />
+    </ItemGroup>
+  </Target>
+
+  <!--
+    IIS のインプロセスハンドラ（aspnetcorev2_inprocess.dll）を発行から除く。
+
+    ASP.NET Core の共有フレームワークを参照すると必ず付いてくるが、これは
+    **IIS の中で動くとき専用**のネイティブハンドラで、Kestrel を自前で立てる
+    このアプリでは 1 バイトも実行されない。配布物に置いておくと
+    「このアプリは IIS 上でも動く」という読み違いを誘う。
+  -->
+  <Target Name="ExcludeIisInProcessHandler" AfterTargets="ComputeResolvedFilesToPublishList">
+    <ItemGroup>
+      <ResolvedFileToPublish Remove="@(ResolvedFileToPublish)"
+                             Condition="'%(Filename)%(Extension)' == 'aspnetcorev2_inprocess.dll'" />
     </ItemGroup>
   </Target>
 </Project>

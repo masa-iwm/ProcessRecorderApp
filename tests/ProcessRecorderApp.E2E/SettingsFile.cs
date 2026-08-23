@@ -221,6 +221,26 @@ public sealed class SettingsFile
     /// <summary>自動削除の間隔（時間）。null なら書かない。</summary>
     public int? RecordingCleanupIntervalHours { get; set; }
 
+    /// <summary>
+    /// リモート操作（HTTP サーバー）の 4 設定。null なら書かない（＝製品の既定＝無効）。
+    ///
+    /// <para>
+    /// <b>これは <c>AppSettings</c> の 5 箇所目の手書きミラーで、テストは縛っていない。</b>
+    /// 製品側にプロパティを増やしたらここへも手で足すこと ── 忘れると E2E が
+    /// 古い形の settings.json を書き、その設定が「効いていない」ように見える。
+    /// </para>
+    /// </summary>
+    public bool? RemoteControlEnabled { get; set; }
+
+    /// <inheritdoc cref="RemoteControlEnabled"/>
+    public string? RemoteControlBindAddress { get; set; }
+
+    /// <inheritdoc cref="RemoteControlEnabled"/>
+    public int? RemoteControlPort { get; set; }
+
+    /// <inheritdoc cref="RemoteControlEnabled"/>
+    public string? RemoteControlAccessToken { get; set; }
+
     public Dictionary<string, string> TemplateVariables { get; } = [];
     public List<RecorderSpec> Recorders { get; } = [];
 
@@ -270,6 +290,17 @@ public sealed class SettingsFile
             root["RecordingRetentionDays"] = retentionDays;
         if (RecordingCleanupIntervalHours is { } intervalHours)
             root["RecordingCleanupIntervalHours"] = intervalHours;
+
+        // リモート操作。**指定されたキーだけを書く** ── 既定で 4 キーを書くと、
+        // この機能に無関係なテストの settings.json まで形が変わる。
+        if (RemoteControlEnabled is { } remoteEnabled)
+            root["RemoteControlEnabled"] = remoteEnabled;
+        if (RemoteControlBindAddress is { } remoteBind)
+            root["RemoteControlBindAddress"] = remoteBind;
+        if (RemoteControlPort is { } remotePort)
+            root["RemoteControlPort"] = remotePort;
+        if (RemoteControlAccessToken is { } remoteToken)
+            root["RemoteControlAccessToken"] = remoteToken;
 
         if (TemplateVariables.Count > 0)
         {

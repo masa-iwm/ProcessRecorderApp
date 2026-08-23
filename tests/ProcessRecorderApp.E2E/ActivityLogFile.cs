@@ -102,6 +102,13 @@ public static class ActivityLogFile
         // GST_DEBUG のしきい値を実行中に適用した。適用は GStreamer の内部状態を変えるだけで
         // 画面にもファイルにも痕跡が残らないので、ここが唯一の観測点になる。
         "gst.debug",
+        // リモート操作（LAN の別 PC のブラウザから）。サーバーの起動・停止・失敗と、
+        // 書き込み要求の認証失敗。**"remote.auth fail" は空白を含む**ので、
+        // 表に載せないと EventNameOf が最初のトークン "remote.auth" までしか切り出せない。
+        "remote.start",
+        "remote.stop",
+        "remote.error",
+        "remote.auth fail",
         // パイプラインのグラフ(.dot)を保存した。
         "gst.dot",
     ];

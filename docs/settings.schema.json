@@ -69,6 +69,18 @@
     "RecordingCleanupIntervalHours": {
       "type": "integer"
     },
+    "RemoteControlEnabled": {
+      "type": "boolean"
+    },
+    "RemoteControlBindAddress": {
+      "type": "string"
+    },
+    "RemoteControlPort": {
+      "type": "integer"
+    },
+    "RemoteControlAccessToken": {
+      "type": "string"
+    },
     "UiaTriggersEnabled": {
       "type": "boolean"
     },

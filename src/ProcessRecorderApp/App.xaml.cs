@@ -106,6 +106,11 @@ public partial class App : Application
         var triggers = Services.UiaTriggerService.Start(
             Microsoft.UI.Dispatching.DispatcherQueue.GetForCurrentThread());
 
+        // リモート操作（LAN の別 PC のブラウザから）。既定は無効なので、
+        // 設定が有効でなければサーバーは立たない（背景で設定を読んで判断する）。
+        var remote = Services.RemoteControlService.Start(
+            Microsoft.UI.Dispatching.DispatcherQueue.GetForCurrentThread());
+
         _mainWindow = new MainWindow();
         // MainWindow の ctor が Window.Title を設定済み（詳細はそちらのコメント）。
         // ここで AppWindow へも入れるのは、WinUIEx がトレイアイコンのツールチップに
@@ -120,6 +125,10 @@ public partial class App : Application
         {
             try { Settings.AppSettings.Default.Save(); }
             catch (Exception ex) { LogException("AppWindow.Destroying(Save)", ex); }
+            // リモート操作をエンジンより先に止める ── 以後 HTTP から新しい操作を積ませない。
+            // 保存の後なのは、停止そのものが設定を変えないため（順序の理由は Save 側と同じ）。
+            try { remote.Dispose(); }
+            catch (Exception ex) { LogException("AppWindow.Destroying(Remote)", ex); }
             // トリガ監視をエンジンより先に止める ── 以後レコーダーへ新しい開始/停止を積ませない。
             try { triggers.Dispose(); }
             catch (Exception ex) { LogException("AppWindow.Destroying(Triggers)", ex); }

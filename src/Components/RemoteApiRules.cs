@@ -204,10 +204,19 @@ public static class RemoteApiRules
     /// ホストの画面状態、コレクション（要素の差し替えは録画中のパイプラインを落とす）、
     /// 永続化の内部状態。
     /// </para>
+    /// <para>
+    /// <b>リモート操作の設定そのもの（<c>RemoteControl*</c>）も拒否側に置く。</b>
+    /// リモートから自分の待ち受けとトークンを書き換えられると、
+    /// アクセスを与えた相手がそのまま鍵を掛け替えられる。
+    /// </para>
     /// </summary>
     public static readonly string[] RemoteDeniedAppSettings =
     [
         "OutputDirectory",
+        "RemoteControlEnabled",
+        "RemoteControlBindAddress",
+        "RemoteControlPort",
+        "RemoteControlAccessToken",
         "GstDebugDumpDotDir",
         "DebugLogFile",
         "WindowWidth",

@@ -344,6 +344,21 @@
   <data name="PropDesc_RecordingCleanupIntervalHours" xml:space="preserve">
     <value>How often the deletion runs, in hours. It also runs once right after startup, so a long interval still gets a sweep every time the app starts. Values below 1 are treated as 1, and values above 1000 as 1000.</value>
   </data>
+  <data name="PropCat_RemoteControl" xml:space="preserve">
+    <value>Remote control</value>
+  </data>
+  <data name="PropDesc_RemoteControlEnabled" xml:space="preserve">
+    <value>Run a small HTTP server so the app can be operated from a browser on another PC on the same LAN. Off by default. Reading (the recorder list, their state and the settings) needs no token at all, so anything that can reach the port can see it - keep it off unless the network is one you trust. Writing needs the access token. Windows Firewall is not opened for you: allow the port by hand.</value>
+  </data>
+  <data name="PropDesc_RemoteControlBindAddress" xml:space="preserve">
+    <value>IP address to listen on. 0.0.0.0 (the default) means every network interface, which is what "from another PC" needs; 127.0.0.1 restricts it to this machine. Changing this restarts the server.</value>
+  </data>
+  <data name="PropDesc_RemoteControlPort" xml:space="preserve">
+    <value>TCP port to listen on. 0 lets the operating system pick a free port - the port actually taken is written to activity.log as remote.start. Windows Firewall still has to be opened by hand for the port you end up on.</value>
+  </data>
+  <data name="PropDesc_RemoteControlAccessToken" xml:space="preserve">
+    <value>Secret required for every write (starting and stopping recordings, changing settings). It is generated when remote control is first turned on; the "..." button makes a new one, which invalidates the old one and any browser session opened with it. Reading is not covered by this token.</value>
+  </data>
   <data name="PropDesc_PreferredEncoder" xml:space="preserve">
     <value>Element factory name of the preferred H.264 encoder (for example x264enc or qsvh264enc). Leave empty to pick automatically from the encoders available on this machine. If the specified element is not available, the automatic order is used instead. The encoder actually used is shown in each recorder's Actual Encoding Properties.</value>
   </data>
