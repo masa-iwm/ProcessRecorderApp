@@ -521,10 +521,12 @@ public sealed class PreviewStreamTests(PublishedApp app, ITestOutputHelper outpu
 
             Assert.True(during.IsValid, "配信中の録画が有効な MP4 になっていない: " + during);
             Assert.True(during.DurationSeconds >= 2, "配信中の録画が 2 秒未満: " + during);
-            Assert.InRange(
-                during.SampleCount,
-                (uint)(baseline.SampleCount * 0.75),
-                (uint)(baseline.SampleCount * 1.25));
+            // **サンプル数の生比較はしない** ── stop-recording の CLI 往復が負荷で伸びると
+            // 録画の尺そのものが揺れる（CI 実測: 基準 3.9 秒 / 配信中 5.3 秒）。「配信が録画を
+            // 邪魔していない」の観測点は尺ではなくレート（サンプル数 ÷ 尺）である。
+            var baselineFps = Assert.NotNull(baseline.EffectiveFramerate);
+            var duringFps = Assert.NotNull(during.EffectiveFramerate);
+            Assert.InRange(duringFps, baselineFps * 0.75, baselineFps * 1.25);
 
             // 購読が切れたら mux も落ちる（落とすのは録画側の次のサンプル）。
             Assert.True(instance.WaitForActivityLogEvent("preview.unsubscribe", EventBudget),
