@@ -1,3 +1,16 @@
+---
+paths:
+  - "README*.md"
+  - "src/README.md"
+  - "docs/**"
+  - "tests/**"
+  - "tools/**"
+  - "licenses/**"
+  - "THIRD-PARTY-NOTICES.md"
+  - "**/*.resw"
+  - "src/ProcessRecorderApp/Assets/Terminal/**"
+---
+
 # 文書とコードの同期テスト一覧
 
 文書だけ・コードだけを直すと L1/L4 が赤になる組み合わせ。**必ず対で変更する**こと。
