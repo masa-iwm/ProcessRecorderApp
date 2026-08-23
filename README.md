@@ -26,6 +26,10 @@ goes away.
   interval. The pre-buffer does not apply to it.
 - **Video sources** — screen capture, webcams (through Media Foundation), and test patterns.
 - **Live preview** — watch the selected recorder's video in the app window in real time.
+- **Remote control from a browser** — optionally runs a small HTTP server so that a
+  browser on another PC on the same LAN can watch the recorders, start and stop them, change
+  settings, browse past recordings and see a live preview. Off by default, and **reading is
+  deliberately unauthenticated** — see the section below before turning it on.
 - **Burnt-in timestamp** — the date and time are rendered into the recorded video.
 - **Filename templates** — the output name is given as a template such as
   `{Now:yyyyMMdd_HHmmss}_{Name}.mp4`, and can embed the date and time, the recorder name,
@@ -188,6 +192,68 @@ ProcessRecorderApp.exe start-recording "Recorder #1"
 if errorlevel 1 echo Failed to start recording
 ```
 
+## Remote control from a browser
+
+The app can run a small HTTP server of its own so that a browser on **another PC on the same
+LAN** can watch what it is doing and drive it. It is **off by default**.
+
+**Turning it on.** Switch on `RemoteControlEnabled` on the Settings screen. An access token is
+generated the first time you do (32 random bytes, Base64Url — 43 characters) and is shown in the
+`RemoteControlAccessToken` row; the "…" button next to it mints a new one, which invalidates the
+old token together with every browser session opened with it. The server listens on
+`RemoteControlBindAddress` (`0.0.0.0` by default, meaning every network interface) and
+`RemoteControlPort` (`8752` by default; `0` lets the operating system pick a free port, and the
+port actually taken is recorded in `activity.log` as `remote.start`). From the other PC, open
+
+```
+http://<the IP address of the PC running the app>:8752/?token=<the access token>
+```
+
+once. The server answers with a session cookie (`HttpOnly`, `SameSite=Strict`, gone when the
+browser closes) and redirects to `/`, so the token never has to appear in the address bar again.
+Scripts can send `Authorization: Bearer <the access token>` instead of holding a cookie.
+
+**What you get.** The page lists every recorder with the same state the `status` command reports
+and lets you start and stop them one at a time or all at once; edit each recorder's settings and
+the application settings; read and write filename-template variables; browse the recordings under
+the output folder and play or download them; and watch a **live preview** of a recorder. The page
+is pushed the new state whenever it changes, so it follows what you do in the GUI as well. The
+preview reuses the H.264 stream that is already being encoded for recording, so it costs no extra
+encoding — the price is latency: **roughly 2 to 3 seconds** (one GOP, 2 seconds by default, plus
+what the transport adds).
+
+**Security — read this before turning it on.**
+
+- **Every `GET` is unauthenticated.** The recorder list and state, the application settings, the
+  recorder settings (including `SrcPipeline`, the raw GStreamer pipeline, and `FilenameTemplate`,
+  which may be an absolute path), the list of recordings, the recording files themselves and the
+  live preview are all readable by **anyone who can reach the port**, with no token at all.
+  Whatever is on the captured screen is on the LAN.
+- **Writing needs the token, and holding the token is as good as sitting at the machine.**
+  Starting and stopping recordings, changing settings and setting variables all require it.
+  Recorder settings are *not* filtered, so a holder of the token can write `SrcPipeline` and
+  `FilenameTemplate` — that is, run an arbitrary GStreamer pipeline and write files anywhere the
+  app can. Application settings *are* restricted to a fixed allow-list, so `OutputDirectory`,
+  the debug paths and the `RemoteControl*` settings themselves cannot be changed remotely.
+- **Plain HTTP, no TLS.** There is no mDNS either — you address the PC by its IP. Use this only
+  on a network you trust, and leave it off otherwise.
+- **Windows Firewall is not opened for you.** Add the rule yourself, for example:
+
+  ```powershell
+  New-NetFirewallRule -DisplayName "ProcessRecorderApp remote" -Direction Inbound -Protocol TCP -LocalPort 8752 -Program "<full path to the executable>" -Profile Private
+  ```
+
+**Limits.**
+
+- **Keep it to one tab.** HTTP/1.1 allows six connections per origin and the page holds two of
+  them open permanently — one for the state stream, one for the preview.
+- The preview allows **4 viewers per recorder and 8 in total**; past that the request is refused
+  with `503`.
+- A recording that is still being written can be **downloaded but not played** — an MP4 only
+  becomes playable once its index has been written at the end of the recording.
+- Deleting recordings, `HEAD` requests, HTTPS and mDNS are not supported. The browsers this is
+  built for are **Chrome and Edge on a PC**.
+
 ## Requirements
 
 - Windows 11 (x64)
@@ -218,6 +284,7 @@ carries three zip files; unpack one and run `ProcessRecorderApp.exe` — nothing
 - `src/GStreamer.GstSharpNet/` — the recording and preview engine
 - `src/SingleInstance/` — tray residency and single-instance control
 - `src/Components/` — shared components
+- `src/RemoteControl/` — the built-in HTTP server for remote control
 - `src/Controls/` — GUI parts
 - `docs/` — development notes (test harness, CI, GPU verification, runtime updates)
 

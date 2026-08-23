@@ -713,6 +713,10 @@ sink パイプラインのバスを購読しているハンドラ（`HandleBusMe
 | `OutputDirectory` | 空欄 | 録画の保存先。空欄なら実行ファイルのあるディレクトリ。相対パスもそこからの相対。Settings 画面では「…」でフォルダー選択ダイアログが開く（後述） |
 | `RecordingRetentionDays` | `0` | この日数を過ぎた mp4 を自動削除する。**0 なら削除しない** |
 | `RecordingCleanupIntervalHours` | `6` | 自動削除の間隔（時間）。1 未満は 1、**1000 を超える値は 1000** として扱う（`Task.Delay` の上限 ≒ 1,193 時間より手前で頭打ちにする。超えると周回が例外死して保持期限が無音で効かなくなる） |
+| `RemoteControlEnabled` | `false` | ブラウザからのリモート操作の HTTP サーバーを動かす。**読み取り（GET）はトークン不要**なので、ポートに到達できる相手には全て見える。詳細は「リモート操作（内蔵 HTTP サーバー）」の節 |
+| `RemoteControlBindAddress` | `0.0.0.0` | 待ち受ける IP アドレス。`0.0.0.0` は全てのネットワークインターフェイス、`127.0.0.1` はこの PC のみ。変更するとサーバーを再起動する |
+| `RemoteControlPort` | `8752` | 待ち受ける TCP ポート。`0` なら空いているポートを OS が選ぶ（実際に使われたポートは `remote.start` に出る） |
+| `RemoteControlAccessToken` | 空欄 | 書き込み（POST/PATCH/PUT）に要る秘密の文字列。有効化した時点で 32 バイト乱数の Base64Url（43 文字）が自動生成される。**読み取りはこれでは保護されない** |
 
 削除は `Components.RecordingCleanup.Sweep`（サブフォルダーも再帰的に探す。判定は更新時刻。
 **リパースポイント［ジャンクション・シンボリックリンク］には降りない** ── リンク先は
@@ -1662,6 +1666,300 @@ GUIサブシステム（`OutputType=WinExe`）だと、**対話コマンドプ�
 | `trigger.name warn` | テンプレートから参照できないキー |
 | `trigger.error` | 監視・発火処理の例外 |
 
+## リモート操作（内蔵 HTTP サーバー）
+
+同じ LAN の別 PC のブラウザから操作するための HTTP サーバーをアプリ内に持つ（`src/RemoteControl/`）。
+**既定は無効**で、`RemoteControlEnabled` が ON のときだけ立ち上がる。利用者向けの説明と
+セキュリティの前提はルートの [README.md](../README.md)。
+
+### 構成
+
+`RemoteControl` は ASP.NET Core（`WebApplication.CreateSlimBuilder` ＋ Kestrel、
+`FrameworkReference Microsoft.AspNetCore.App`）を使う唯一のプロジェクトで、**参照するのは
+`Components` だけ**。`GStreamer.GstSharpNet` も `ProcessRecorderApp` も参照せず、
+`PackageReference` も持たない ── **UI スレッドに触る手段そのものを持たせない**ための構造で、
+UI スレッド越境の規律がコンパイル時に強制される。L1 テストホスト（`ProcessRecorderApp.Tests`）も
+この csproj を参照しない（共有フレームワークをテストホストへ降ろさないため）。
+
+`RemoteControlIsolationTests`（L1）が縛るのは次の 3 つ:
+
+- `src/RemoteControl/` のソースに `DispatcherQueue` / `GstControllerViewModel` /
+  `RecorderControlService` / `Microsoft.UI` が **1 度も現れない**（コメントの中も含めて）。
+- `Map(Get|Post|Patch|Put|Delete|Fallback)(` の登録すべてが引数に `(HttpContext ` を含む
+  ── **ハンドラは `(HttpContext ctx)` 単一引数**に統一する規律。任意の `Delegate` を渡す形は
+  Request Delegate Generator が効かずリフレクションへ落ち、AOT で ILC 警告になる。
+- プロジェクト参照の形（テストホストは参照しない／アプリは参照する／`Components` だけを参照する）。
+
+JSON は DTO 専用の `RemoteApiJsonContext`（source-gen、封筒は camelCase）で読み書きする。
+UI スレッドとの境界は `Services/RemoteControlBackend`（`IRemoteControlBackend` の唯一の実装。
+WinUI アプリ側にある）の `RunOnUiAsync` で、`DispatcherQueue.TryEnqueue` ＋
+`TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously)`。
+**`RunContinuationsAsynchronously` は必須** ── 無いと HTTP 側の継続（直列化と送信）が
+UI スレッドで走る。`TryEnqueue` が false なら `RemoteApiException(12, "ui thread unavailable")`
+＝ 503。UI スレッドから返す値はすべて不変 DTO へ写してから境界を越える。
+
+サーバーの寿命は `Services/RemoteControlService`（アプリの起動時に `Start`、
+`AppWindow.Destroying` で `Dispose`）。設定 4 キーのいずれかが変わると 300ms 合流させたうえで
+**必ず停止 → 起動**をやり直す（`activity.log` には `remote.stop` → `remote.start` の順で出る）。
+停止は内側 3 秒・外側 8 秒で有界。**サーバーが立たなくても録画は止めない**ので、起動の失敗は
+`remote.error` にしか現れない。
+
+### 設定（`AppSettings` のフラット 4 キー）
+
+| 設定 | 型・既定 | 意味 |
+|---|---|---|
+| `RemoteControlEnabled` | `bool` / `false` | ブラウザから操作するための HTTP サーバーを動かす。読み取り（レコーダーの一覧・状態・設定の閲覧）はトークン不要で応答するため、**ポートに到達できる相手には全て見える** |
+| `RemoteControlBindAddress` | `string` / `"0.0.0.0"` | 待ち受ける IP アドレス。`0.0.0.0` は全てのネットワークインターフェイス（「別 PC から」にはこれが要る）、`127.0.0.1` はこの PC のみ。変更するとサーバーを再起動する |
+| `RemoteControlPort` | `int` / `8752` | 待ち受ける TCP ポート。`0` なら空いているポートを OS が選ぶ ── **実際に使われたポートは `remote.start` にしか出ない** |
+| `RemoteControlAccessToken` | `string` / `""` | 書き込み操作（録画の開始・停止、設定の変更）に要る秘密の文字列。**読み取りはこれでは保護されない** |
+
+ネストではなくフラットな 4 キーなのは、`AppSettings` がフラット構造で PropertyGrid が
+ネストを展開しないため。既定のバインドが `0.0.0.0` なのは「別 PC から操作する」が目的そのもので、
+守りは **オフ既定 ＋ トークン ＋ Firewall** の 3 つで行う（Firewall の規則はアプリが登録しない）。
+
+トークンは `RemoteControlEnabled` を true にした瞬間、空なら
+`RemoteApiRules.GenerateAccessToken()`（`RandomNumberGenerator.GetBytes(32)` を Base64Url ＝
+**43 文字・パディング無し**）で自動生成する（`OnRemoteControlEnabledChanged`）。Settings 画面の
+「…」ボタンは同じ生成器で作り直す（古いトークンと、それで開いたブラウザのセッションが失効する）。
+**`AppSettings.Reload()` が 4 キーを写す順序は「トークン → バインド → ポート → 有効」で固定**
+── 有効を先に写すと変更ハンドラがトークンを生成し、その直後にファイル側の空文字で潰される。
+
+### 認証（読み取りは無認証・書き込みはトークン必須）
+
+判定は `RemoteAuth.AuthorizeWrite`。**順序そのものが仕様**である:
+
+1. 資格情報が無い／合わない → **401**（`remote.auth fail` を記録）
+2. `X-PRApp-Client: 1`（`RemoteAuth.ClientHeaderName` / `ClientHeaderValue`、序数比較）が
+   付いていない → **403**（記録しない）
+
+資格情報を先に見るのは、ヘッダーを付け忘れただけの呼び出し元に「トークンは合っている」と
+分かる 403 を返すため。`X-PRApp-Client` は CSRF 対策で、**CORS を一切設定していない**ので
+他オリジンの `fetch` からはこのヘッダーを付けられない。
+
+- Cookie は `prapp_session`（`HttpOnly` ＋ `SameSite=Strict` ＋ `Path=/`。有効期限を付けないので
+  ブラウザを閉じると消える）。**`Secure` は付けていない** ── HTTP のみだから。
+  **HTTPS 化するときは `Secure` を必ず付けること**（`RootEndpoint` の `CookieOptions` 1 箇所）。
+- セッションを発行するのは `GET /?token=<トークン>` だけ。成功で `Set-Cookie` ＋ **302 → `/`**
+  （トークンがアドレスバーに残らない）、失敗は 401。セッション ID もトークンと同じ生成器で作り、
+  `SessionStore` がメモリ上に最大 64 本だけ持つ（古いものから追い出す。永続化しない）。
+- `Authorization: Bearer <トークン>` も受ける。**Bearer が違っても短絡せず** Cookie も見る
+  ── 手で足した古いヘッダーと、ブラウザが自動送信する Cookie は同居しうる。
+- 比較は `RemoteApiRules.TokenEquals` ＝ UTF-8 バイトに対する
+  `CryptographicOperations.FixedTimeEquals`（どちらかが空なら false）。
+- `GET /api/settings` の応答からは `RemoteControlAccessToken` を**二重に**落とす
+  ── `RemoteApiRules.RemoteDeniedAppSettings` に入れたうえで、`SettingsEndpoints` の応答側でも
+  `Remove` する。
+- `remote.auth fail` は **1 分に 1 行へ間引く**（`RemoteAuth.FailureLogInterval`、
+  `Environment.TickCount64` 基準）。状態はプロセス全体で 1 つ＝**IP ごとではない**。
+  **トークンは書かない**（activity.log は利用者が貼り付けて共有する種類のファイル）。
+- 要求本文は 64KB で頭打ち（`ApiResponse.MaxRequestBodyBytes`。超過は Kestrel の 413 で、
+  JSON 本文は付かない）。`Content-Type` は検査しない。
+
+### API
+
+すべて `/api/` 配下、封筒の JSON は camelCase、失敗は `{exitCode, error}`（`exitCode` は CLI と
+同じ番号）。`filename` は**終了コード 16 / 17 のときだけ**付く（`ErrorDto.Filename` は
+`WhenWritingNull` なので、他ではキーごと消える）。
+
+| メソッド | 経路 | 認証 | 内容 |
+|---|---|---|---|
+| GET | `/` | 不要 | `?token=` があればセッションを発行して 302、無ければ `index.html` |
+| GET | `/{name}` | 不要 | 埋め込みの Web 資産（1 セグメントのみ）。`no-cache` ＋ 強い ETag、`If-None-Match` で 304 |
+| GET | `/api/recorders` | 不要 | 全レコーダーの状態（`RecordersSnapshot` ＝ `status` の 8 列 ＋ `canStartAll` / `canStopAll` / `isIdleAll`） |
+| GET | `/api/recorders/{id}` | 不要 | 1 レコーダー。無ければ終了コード 13 → 404 |
+| POST | `/api/recorders/start-all` | **要** | 全台の録画を開始 |
+| POST | `/api/recorders/stop-all` | **要** | 全台の録画を終了（結果は `RecordingStopRules.Stronger` で畳む） |
+| POST | `/api/recorders/{id}/start` | **要** | 1 台の録画を開始 |
+| POST | `/api/recorders/{id}/stop` | **要** | 1 台の録画を終了（確定まで待つ） |
+| GET | `/api/recorders/{id}/settings` | 不要 | 現在値（**キーは settings.json と同じ PascalCase**）＋ 項目の説明（`type` / **解決済みの** `category`・`description` / `choices` / `min` / `max` / `requiresReinitialize`） |
+| PATCH | `/api/recorders/{id}/settings` | **要** | 変更したいキーだけ。応答は `applied` / `clamped` / `requiresReinitialize` |
+| GET | `/api/settings` | 不要 | アプリ設定（`RemoteControlAccessToken` を除く） |
+| PATCH | `/api/settings` | **要** | `RemoteApiRules.RemoteEditableAppSettings` の 9 キーだけ |
+| GET | `/api/variables` | 不要 | ファイル名テンプレートの変数の一覧 |
+| PUT | `/api/variables/{key}` | **要** | `{value, persist}`（`--set` / `--persist` / `--no-persist` と同義）。両方 null は 400 |
+| POST | `/api/ping` | **要** | 認証の疎通確認（`{"ok":true}`） |
+| GET | `/api/events` | 不要 | SSE。`state` と `ping` |
+| GET | `/api/recordings` | 不要 | 録画ファイルの一覧（`root` ＋ `files[]`） |
+| GET | `/api/recordings/{*path}` | 不要 | 1 ファイルの配信（Range 対応。`?download=1` で添付） |
+| GET | `/api/recorders/{id}/preview.mp4` | 不要 | ライブプレビュー（chunked fMP4） |
+
+**`HEAD` / `DELETE` / `OPTIONS` のハンドラは無い**（`MapGet` などしか呼んでいない）。CORS
+ミドルウェアも入れていない。未知の経路は `MapFallback` が 404 ＋ 終了コード 4 で返す。
+
+アプリ設定の PATCH は `RemoteApiRules` の**明示 2 配列**で決める ──
+`RemoteEditableAppSettings`（9 キー）と `RemoteDeniedAppSettings`（21 キー）。L1 が
+「`AppSettings` の全 public プロパティ ＝ 許可 ∪ 拒否、かつ過不足なし」を検査するので、
+プロパティを増やして書き忘れると赤くなる（「拒否リストに無いものは書ける」という既定にはしない）。
+`OutputDirectory` を拒否しているのは、**動かせると録画配信の root ごと動く**ため。
+レコーダー設定の PATCH は `SerializeToNode` → マージ → `Deserialize` → **パッチに現れた
+プロパティだけ live インスタンスへ書き戻す**（要素を差し替えると録画が落ちるため。
+`RecorderSettingsMirrorTests` の言う「手書きミラーの 5 つ目」を作らないためでもある）。
+**こちらは絞っていない** ── トークン所持者は `SrcPipeline` と `FilenameTemplate` も書ける。
+「トークン所持者はローカル操作者と同等」という前提で、ルート README に明記してある。
+
+#### 終了コード → HTTP の写像
+
+正本は `Components/RemoteApiRules.HttpStatusFor`。**数値リテラルで書いてある**
+── `ExitCode_*` 定数は WinUI アプリ側と `SingleInstance` にあり、このプロジェクトからは
+参照できないため。L1 `RemoteApiRulesDriftTests` が定数のソーステキストと写像の双方向一致を検査する。
+
+| 終了コード | HTTP | 備考 |
+|---|---|---|
+| `0` | 200 | 成功 |
+| `4` | 400 | 引数・本文が不正。HTTP 層だけで起きる失敗（401 / 403 / 未知の経路の 404 / パスの拒否）もこの番号を使う（`ApiResponse.HttpLayerExitCode`。`public const int` にすると `DocumentationDriftTests` が終了コード表への掲載を要求してしまうので `internal`） |
+| `10` | 500 | 既定の失敗 |
+| `12` | 503 | レコーダー／エンジンが未準備。**`Retry-After: 5` を付ける唯一の枝**（`RemoteApiRules.RetryAfterSecondsWhenNotReady`） |
+| `11` / `13` | 404 | 変数が未定義／レコーダーが見つからない |
+| `14` | 409 | いまは実行できない操作 |
+| `15` | 200 | 健全でないレコーダーがある ── **処理そのものは成功**なので本文で表現する |
+| `16` / `17` | 422 | 中身の無い MP4 ／ 確定できなかった MP4。どちらも `filename` を含める |
+| `99` | 500 | 予期しない例外 |
+
+例外ミドルウェアはルーティングより前に置く。`RemoteApiException` は上の写像で返し、
+`BadHttpRequestException` は**握らず**投げ直す（Kestrel が 413 / 400 を書き、`remote.error` を
+汚さない）。`RequestAborted` による `OperationCanceledException` は黙って捨てる。それ以外は
+`remote.error` に全文を残しつつ、応答の本文には**型名だけ**を出す（500 ／ 終了コード 99）。
+
+### 状態のプッシュ（SSE）
+
+`GET /api/events`。イベントは `state`（`RecordersSnapshot`）と `ping`（本文 `{}`、
+`EventsEndpoint.PingInterval` ＝ **15 秒**）の 2 つだけ。書式は `event:` 行 ＋ `data:` 行 ＋ 空行
+（改行は LF）で、1 イベントごとに flush する。応答ヘッダーは `text/event-stream; charset=utf-8` ＋
+`Cache-Control: no-store` ＋ `X-Accel-Buffering: no`。
+
+購読者ごとに `Channel`（容量 8・`DropOldest`・`SingleReader`・
+`AllowSynchronousContinuations = false`）を持つ。押し出しは UI スレッドで `PropertyChanged` を
+購読し、**200ms デバウンス**（`RemoteControlBackend.DebounceInterval`）してから不変 DTO にする。
+**ヘッダーを書く前に一度 `GetRecordersAsync` を呼ぶ** ── そうしないと、起動直後の失敗を
+500 / 503 の JSON で返せなくなる（ヘッダーを送った後では手遅れ）。
+
+### 録画ファイルの配信
+
+配信 root は要求ごとに UI スレッドで
+`AppDirectories.ResolveOrBase(AppSettings.Default.OutputDirectory)` を評価する（録画の書き込み側と
+同じ式。UI スレッドでは IO を行わず文字列だけ返す）。列挙は `Components/RecordingFiles.Enumerate`
+で、**規則は `RecordingCleanup` に合わせてある**:
+
+- `GetFiles()`（引数なし ＝ `"*"`）＋ **自前の拡張子比較**（`RecordingCleanup.Extension` ＝
+  `".mp4"`、`OrdinalIgnoreCase`）。`GetFiles("*.mp4")` にしないのは、Win32 の 8.3 名の意味論では
+  `.mp4v` まで拾いうるため。
+- サブフォルダーは手で再帰し、**リパースポイントのディレクトリには降りない**。root 自身の
+  リパースポイントは見ない（保存先をジャンクションに向ける使い方は正当）。
+- 配信側だけの追加規則: **ファイル自身がリパースポイントなら外す**（リンク先は root の外の実体で
+  ありうる）。列挙中の失敗は黙って握る（1 つの権限エラーで一覧全体を失わないため。
+  `RecordingCleanup` は逆に理由を `cleanup.error` へ残す）。
+- `inProgress` は `FileShare.Read` で開けるかどうかで判定する（`filesink` が握っていると
+  `IOException` ＝ 書き込み中）。並びは更新時刻の降順、同着は相対パスの序数昇順。
+
+1 ファイルの取得は `RecordingFiles.TryOpen` → `TypedResults.Stream(enableRangeProcessing: true)`。
+`FileShare.ReadWrite | Delete` で開くので**書き込み中のファイルも取れる**（ただし `moov` が
+未確定なので再生はできない）。ETag は `RemoteApiRules.RecordingETag` ＝
+`"<長さの16進>-<更新時刻 Ticks の16進>"`（引用符込みの**強い** ETag）。`?download=1`（**序数で
+`"1"` と一致するときだけ**。`download=true` は効かない）で `fileDownloadName` を渡し、
+`Content-Disposition: attachment` を付ける（`filename*=UTF-8''` 形式の符号化はフレームワーク側が
+行うので、日本語のファイル名も通る）。一覧は `Cache-Control: no-store`、ファイルは `no-cache`。
+
+**ETag の長さと本文の `Content-Length` は別々の `stream.Length` 読み取り**である。`faststart`
+構成（既定）では書き込み中のファイルは 0 バイトなので影響しないが、`faststart=false` の構成では
+伸びているファイルで食い違いうる。
+
+パスの検査は `RemoteApiRules.TryResolveUnderRoot`（**ファイルシステムに触らない文字列規則**）:
+空・`/` を `\` に直したあとの絶対パス／ドライブ相対／UNC・`Path.GetInvalidPathChars()`・
+セグメントが空 / `.` / `..` / 末尾がドットか空白 / `: * ? " < >` を含む・DOS 予約名
+（`CON` `PRN` `AUX` `NUL` `COM1`〜`9` `LPT1`〜`9`）・拡張子が `.mp4` でない、のいずれかで拒否し、
+最後に `root + '\'` で始まることを確かめる。理由 → HTTP は `"not found"` / `"unavailable"` が
+**404**、`"path rejected"` / `"reparse point"` が **400**。`unavailable` を 404 に寄せてあるのは、
+拒否の形の違いから root の外のファイルの有無を探れないようにするため、また同じ要求が
+ディスクの状態で 400 と 200 の間を行き来しないようにするためである。
+
+**`..` の拒否規則を実際に踏むのは `..%5C` のほう**（400 `path rejected`）。`%2e%2e%2f` は
+`Uri` が `%2e` だけ復号し、サーバー側の正規化でドットセグメントが畳まれるため、ハンドラーには
+`x.mp4` として届いて **404** になる。どちらも L2 で固定してある。
+
+### ライブプレビュー（fMP4 / MSE）
+
+`GET /api/recorders/{id}/preview.mp4` で、**録画と同じエンコード済み H.264**（`EventRecorder` の
+枝 2 の `appsink`）を fMP4 にして chunked で流す。再エンコードはしない。
+
+**レコーダーごとに 1 本**の小パイプライン（`LivePreviewStream.PreviewMuxPipeline`）:
+
+```
+appsrc name=src format=time block=false max-bytes=4194304 leaky-type=downstream ! h264parse ! mp4mux name=mux fragment-duration=1000 fragment-mode=dash-or-mss ! appsink name=sink sync=false async=false
+```
+
+`appsink` から出てくるバイト列を `Fmp4SegmentSplitter` が **ISO-BMFF の最上位ボックス境界**で
+切り分ける（バッファ境界と揃っている必要はない）。`moov` までを 1 つの **Init**、以後は `moof` ＋
+続く `mdat` を 1 つの **Media** として出す（`ftyp` / `free` は Init に抱え込み、`mfra` / `sidx` /
+`styp` / 2 つ目の `moov` は捨てる）。同期始まりかどうかは `trun.first_sample_flags` →
+`trun.sample_flags[0]` → `tfhd.default_sample_flags` → `trex.default_sample_flags` の順で決める。
+
+契約は `Components/PreviewStream.cs`:
+
+- `IPreviewStreamSource.TrySubscribe(target, out PreviewSubscription, out reason)`。
+  `PreviewSubscription.Segments` は `ChannelReader<PreviewSegment>`
+  （`Kind: Init|Media`・`Bytes`・`Sequence`・`StartsWithSync`）。
+- **最初は必ず Init。1 本の接続に 2 つ目の Init は来ない。** SPS/PPS の変化・PTS の巻き戻し・
+  レコーダーの閉止はすべて **channel の完了**として表し、クライアントは張り直す。`Teardown` の
+  理由は `"splitter fault"` / `"stream error"` / `"no subscribers"` / `"pts rewind"` /
+  `"caps changed"` / `"close"` の 6 つで、`preview.stream-stop` に出る。
+- 購読者ごとに bounded(8, `DropOldest`, `AllowSynchronousContinuations = false`)。
+  **落とした数が 16 を超えたら切る**（`PreviewStreamLimits.MaxDroppedSegments`）。遅い購読者が
+  mux を止めない／appsink のコールバック上で HTTP を書かないための形である。
+- 上限は**供給側だけ**が持つ（HTTP 層で二重に持たない）: `MaxSubscribersPerRecorder = 4`、
+  `MaxTotalSubscribers = 8`。断る理由は `"recorder not found"`（→ 終了コード 13 ＝ 404）と、
+  それ以外（`"recorder is not running"` / `"too many preview subscribers for this recorder"` /
+  `"too many preview subscribers"` → 終了コード 12 ＝ 503 ＋ `Retry-After: 5`）。
+
+ロックの規律（`LivePreviewStream`）は **`_muxLock` → `_subLock` の一方向だけ**。逆順は禁止で、
+**`SetState` を `_subLock` を保持したまま呼ばない** ── mux スレッドが配布のために `_subLock` を
+待っている最中に `SetState(Null)`（＝ mux スレッドの退去待ち）へ入ると、そこで詰む。唯一の例外は
+`StartMux` の `catch` の中の `SetState(Null)` で、そのパイプラインは PLAYING に到達していないので
+退去させるべきスレッドが居ない。mux スレッドは `SetState` を呼ばず、`_wantRestart` を立てて
+録画スレッドに任せる。
+
+**非配信時のコストは volatile の 1 回読み**である ── `OnEncodedSample` の先頭が
+`if (!_wantMux && Volatile.Read(ref _mux) is null) return;` で、購読者が 0 なら mux パイプラインも
+`Fmp4SegmentSplitter` も存在しない（この機能を足す前と同じコストで済む）。`Close` は
+`Monitor.TryEnter(_muxLock, 5000)` で有界化し、抜けられなければ `preview.leak` を残して
+**mux を意図的にリークする**（`recorder.leak` と同じ規律）。
+
+HTTP 側（`PreviewEndpoints`）は `video/mp4` ＋ `Cache-Control: no-store` ＋
+`X-Accel-Buffering: no`、`DisableBuffering()`、**最初のセグメントより前に `StartAsync`**
+（「つながったが待っている」と「つながっていない」を区別できるようにする）、セグメントごとに
+`WriteAsync` ＋ `FlushAsync`。`Content-Length` は付かない。切断（`RequestAborted`）で購読は
+`using` により Dispose され、そのときの例外は握る（切断のたびに `remote.error` が出ないように）。
+
+遅延は定常で **GOP（既定 2 秒）＋α ≒ 2〜3 秒**。下げる唯一のレバーは IDR 間隔で、それは録画
+そのものに効くので触らない。**途中参加は MSE の RAP 待ち任せ**（fragment は IDR に揃わない）で、
+購読者ごとに mux を建てることはしない。
+
+ブラウザ側は **MSE**（`fetch` → `ReadableStream` → `SourceBuffer` へ append）。
+`SourceBuffer.mode = 'sequence'` にして、途中参加でもタイムラインを 0 起点にする。
+**MIME は `video/mp4; codecs="avc1.4d401f"` の固定文字列**（`app.js` の `PREVIEW_MIME`）で、
+`avcC` から導いてはいない ── High profile の構成では `isTypeSupported` が false になりうる。
+バッファは 35 秒を超えたら末尾 30 秒へ詰める。3 秒以上遅れたら末尾へ寄せ、未読が 16MB を超えたら
+諦めて張り直す。再接続は**固定 1 秒**（指数バックオフも試行上限も無い）だが、**HTTP の応答が
+非 OK のときは張り直さない** ── 404 と 503 は「ゆらぎ」ではなく答えなので、繰り返しても同じ
+だからである。
+
+### Web UI
+
+`src/RemoteControl/wwwroot/` の **3 ファイルだけ**（`index.html` / `app.js` / `app.css`）を
+`EmbeddedResource`（`LogicalName="wwwroot/…"`）でアセンブリに埋める。**フレームワーク無しの
+プレーン JS で、第三者のスクリプトはゼロ** ── NOTICES の変更が要らず、4 プロファイル全部で
+同じに動き、パストラバーサルの余地が構造的に無い（`WebAssets.Manifest` に載っている名前しか
+読まない）。資産の欠落は**要求時ではなく静的初期化で**例外になる。ETag は SHA-256 の先頭
+16 バイトの小文字 16 進。
+
+`WebAssetManifestTests`（L1）が `WebAssets.Manifest` ⇔ ディスクの `wwwroot` を双方向で
+突き合わせ、`wwwroot` にサブディレクトリが無いこと・csproj の埋め込み指定・`app.js` が
+`<script src="http` と `import ` を持たないこと・`index.html` の参照先がすべてマニフェスト内の
+名前であることを縛る。
+
+開発中は環境変数 `PROCESSRECORDERAPP_WEBROOT` にディレクトリを指すと、**マニフェストに在る名前
+だけ**をそこから読む（要求ごとに評価し、読めなければ黙って埋め込みへ戻る）。配信する集合を
+広げることはできない。
+
 ## Log 画面のターミナル表示（xterm.js / WebView2）
 
 Log 画面は既定で **WebView2 の中の xterm.js** に描く。`ListView` は WebView2 が使えないときの
@@ -1794,7 +2092,9 @@ GPU テクスチャになるため**アクセシブルテキストが 1 つも�
   ペイン表示モード、レコーダー削除時の確認要否、レコーダー一覧（`EventRecorderSettings`）、
   保存先と自動削除（`OutputDirectory` / `RecordingRetentionDays` /
   `RecordingCleanupIntervalHours`）、テンプレート変数（`TemplateVariables`）、
-  UIA トリガ（`UiaTriggers` / `UiaTriggerAssignments` / `UiaTriggersEnabled`）等）。
+  UIA トリガ（`UiaTriggers` / `UiaTriggerAssignments` / `UiaTriggersEnabled`）、
+  リモート操作（`RemoteControlEnabled` / `RemoteControlBindAddress` / `RemoteControlPort` /
+  `RemoteControlAccessToken`。「リモート操作（内蔵 HTTP サーバー）」の節）等）。
 
   **この場所に `settings.json` が無いときだけ、実行ファイルの隣の `settings.json` を
   「種」として読む**（`AppSettings.SeedFilePath` → `JsonSettingsBase.LoadOrCreate` の
@@ -1950,6 +2250,12 @@ GPU テクスチャになるため**アクセシブルテキストが 1 つも�
 | `remote.stop` | INFO | 同上 ／ `RemoteControlService.Dispose` | サーバーを止めた（設定変更による作り直しの前と、アプリの終了時）。**作り直しは必ず `remote.stop` → `remote.start` の順に出る** |
 | `remote.error` | ERROR / WARN | 同上／`RemoteControlHost`（未処理例外の受け口） | 起動できなかった（アドレスが不正・ポートが使用中・トークンが空 `detail=access token is empty`）／要求の処理で予期しない例外が出た。**サーバーが立たなくても録画は止めない**ので、ここが唯一の観測点になる。トークンは書かない |
 | `remote.auth fail` | WARN | `RemoteAuth.ReportFailure` | 書き込み要求の認証に失敗した（`remote=<ip>`）。**1 分に 1 行へ間引く** ── 失敗のたびに書くと総当たりが activity.log を数分で使い切り、他の記録を押し流せてしまう。**トークンは書かない**（activity.log は利用者が貼り付けて共有する種類のファイル） |
+| `preview.stream-start` | INFO | `LivePreviewStream.StartMux` | ライブプレビューの fMP4 muxer が PLAYING に達した（`recorder='…' subscribers=N fragmentMs=1000`）。**録画そのものとは別のパイプライン**なので、プレビューが出ない原因が muxer なのか配信なのかはここで切り分ける |
+| `preview.stream-stop` | INFO | `LivePreviewStream.Teardown` | muxer を退役させ、購読者を全員 completed にした（`reason=` は `no subscribers｜caps changed｜pts rewind｜splitter fault｜stream error｜close` の 6 種）。**理由がそのままクライアントの再接続の原因**になる |
+| `preview.stream-error` | ERROR | `LivePreviewStream` の `OnEncodedSample` / `OnMuxSample` / `Retire` | 録画スレッドでの押し込みの失敗／`Fmp4SegmentSplitter` の破綻・appsink コールバックの例外（次の押し込みで作り直す）／退役したパイプラインを綺麗に落とせなかった。**録画は止めない**ので、ここが唯一の観測点になる |
+| `preview.subscribe` | INFO | `LivePreviewStream.TrySubscribe` | 購読の席を 1 つ渡した（`subscribers=N`）。上限（レコーダーごと 4・全体 8）に当たって断った場合は出ない ── そちらは HTTP の 503 で表す |
+| `preview.unsubscribe` | INFO | `LivePreviewStream.Unsubscribe` | `PreviewSubscription.Dispose`（＝ HTTP の切断）で席が戻った（`subscribers=` は残数）。**`preview.subscribe` と対で数える**と、席が漏れているかどうかが分かる |
+| `preview.leak` | WARN | `LivePreviewStream.Close` | `Monitor.TryEnter(_muxLock, 5000)` が抜けず、プレビューの muxer を止めずに手放した（`recorder.leak` と同じ規律 ── クラッシュ回避のための意図的なリーク） |
 | `variables.duplicate-key` | WARN | `TemplateVariableViewModel.OnKeyChanged` | Variables 画面で既存の行と重複するキーを入力したため、元のキーへ差し戻した（重複を許すと既存の値を空文字で潰し、片方の削除で実体まで消える） |
 | `settings.load` | ERROR | `AppSettings.ReportLoadFailure` | settings.json を読めず既定値へ倒れた（読めなかったファイルは `.bad` へ退避） |
 | `settings.seed` | INFO | `AppSettings.ReportSeedUsed` | 保存先に settings.json が無く、**実行ファイルの隣の settings.json を既定設定（種）として読んだ**。無記録だと「設定した覚えのない初期値で始まった」ことを追えない |
@@ -2268,6 +2574,7 @@ API は `StopAsync()`（完了を表す `Task` を返す）/ `Stop()`（fire-and
 | `PROCESSRECORDERAPP_LANG` | 表示言語を BCP-47 タグで強制する（**`Microsoft.Windows.Globalization`**`.ApplicationLanguages.PrimaryLanguageOverride`）。`Program.Main` の先頭、リソース解決より前に適用する。不正なタグは警告を出して無視する | OS の表示言語を切り替えないと ja-JP / en-US / フォールバック（例: de-DE）の各経路を検証できない。GitHub ランナーは en-US 固定なので ja-JP が永久に未検証になる |
 | `PROCESSRECORDERAPP_MIRROR_STDERR` | `1`/`true` で、捕捉した標準出力・標準エラーを差し替え前の標準エラーへも複写する（`StandardStreamRedirector`） | 標準ストリームを捕捉へ差し替えた後は、外からプロセスを起動した側が出力を1行も受け取れず、E2E ハーネスが診断を失う |
 | `PROCESSRECORDERAPP_TEST_DEVICE_ARRIVAL` | `1`/`true` で、名前付きイベント `{キー接頭辞}-DeviceArrival` のシグナルを**デバイスの到着として扱う**（`DeviceArrivalWatcher`）。実際のデバイスプロバイダには一切触れない | 開発機にも CI にも**カメラが無く、モニタの抜き差しもできない**ので、「到着で復帰の待ちを打ち切る」経路がどのテスト層でも1行も実行されない |
+| `PROCESSRECORDERAPP_WEBROOT` | リモート操作の Web UI（`index.html` / `app.js` / `app.css`）を、埋め込みリソースではなく指定したディレクトリから読む。**マニフェストに在る名前だけ**が対象で、配信する集合は広げられない。読めなければ黙って埋め込みへ戻る | 資産を1文字直すたびに再ビルドが要る。**この1つだけ性格が違う** ── 解決規則は `AppEnvironment` ではなく `RemoteControl/WebAssets.cs` にあり、**要求ごとに**評価される（プロセス起動時の1回ではない）。E2E の `RecordingDeliveryTests` が「持っているファイルだけを差し替える」ことを検査する |
 
 > **`Windows.Globalization` ではなく `Microsoft.Windows.Globalization` を使うこと。**
 > 前者（OS 側の WinRT API）は**パッケージ ID を要求する**ため、アンパッケージ配布の
@@ -2282,7 +2589,7 @@ API は `StopAsync()`（完了を表す `Task` を返す）/ `Stop()`（fire-and
 既に `en-US` を既定値として与えているため明示しても挙動は変わらないが、
 暗黙の既定に依存しないよう書いてある。
 
-いずれもプロセス起動時に1度だけ解決する（起動後に環境変数を変えても反映されない）。
+最後の 1 つを除き、プロセス起動時に1度だけ解決する（起動後に環境変数を変えても反映されない）。
 
 ## UI 自動化のための `AutomationId`
 

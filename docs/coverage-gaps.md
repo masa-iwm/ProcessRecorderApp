@@ -487,6 +487,119 @@ QuickEdit 選択中など、コンソール書き込みが無期限にブロッ�
 3. 取り消すと値が変わらない
 4. 選ぶと絶対パスが入り、直接入力の空欄・相対パスも従来どおり通る（`[ReadOnly]` にしていない）
 
+### リモート操作のブラウザ側（MSE の JavaScript）
+
+`src/RemoteControl/wwwroot/app.js` の**プレビュー再生そのものは、どの層も 1 行も実行しない**。
+L1 は `WebAssetManifestTests` が「資産の一覧が合っているか」を見るだけ、L2 は HTTP の応答
+（fMP4 のバイト列）までしか見ず、L3（UIA）はブラウザを起動しない。すなわち
+`MediaSource` / `SourceBuffer` の組み立て、`mode = 'sequence'`、**35 秒を超えたら末尾 30 秒へ
+詰めるトリム**、3 秒以上遅れたときの追従、未読 16MB での打ち切り、**固定 1 秒の自動再接続**と
+「非 OK 応答では張り直さない」判断は、すべて無検査である。JS の構文エラー 1 つで画面が
+真っ白になっても push は緑になる。
+
+ここを触ったら、発行物を起動して**実際に Chrome か Edge で開く**こと。DevTools の Console に
+例外が出ていないこと、映像が出ること、30 秒以上放置しても `video.buffered` が伸び続けないこと、
+アプリ側でレコーダーを停止 → 再開したときに自動で再接続することを目で確かめる。
+
+### プレビューの初画までの時間
+
+L2 の `PreviewStreamTests` が確かめているのは「**最初の 3 つの `moof` のどれかが同期始まり**」
+であって、初画までの時間ではない。これは緩和した条件である ── fragment は IDR に揃わないので
+「1 つ目が必ず同期」とは書けない。したがって、GOP が伸びる／`fragment-duration` を変える／
+途中参加の先渡しが壊れる、といった**「映るまでが遅くなる」退行は検出できない**（映りさえすれば
+緑になる）。実測したいときは、ブラウザで開いてから最初のフレームが出るまでを手で計ること。
+定常の遅延はおおむね 2〜3 秒である。
+
+### Teardown 後の自動再開と、再接続後の Init
+
+`Teardown` で muxer を畳んだあと、購読者が残っていれば次のサンプルで muxer が建て直される。
+この**「2 本目の muxer」と、再接続したクライアントが受け取る 2 つ目の Init** は、どの層でも
+検査していない（L2 は 1 本の接続を張って落とすところまでしか見ない）。
+
+なお `Teardown` の直後、完了済みの購読が `_subs` に残っているあいだは `_wantMux` が真のままで、
+`preview.stream-start` / `preview.stream-stop` の対が**1 組余分に出る**ことがある。これは
+既知で許容している挙動であり、ログを読むときの誤読の元になる。
+
+### プレビューの異常経路（`caps changed` / `pts rewind` / splitter fault / `preview.leak`）
+
+`preview.stream-stop` の 6 つの理由のうち、L2 が実際に踏むのは正常系の `no subscribers` と
+`close` だけである。**`caps changed`（SPS/PPS の変化）・`pts rewind`（PTS の巻き戻し）・
+`Fmp4SegmentSplitter` の破綻（`splitter fault` → `preview.stream-error`）・
+`preview.leak`（`Monitor.TryEnter(_muxLock, 5000)` の失敗）は、どれも 1 行も走らない** ──
+起こすには解像度が途中で変わる映像源や、mp4mux が壊れたバイト列を吐く状況が要る。
+`Fmp4SegmentSplitter` の破綻検出そのもの（`Fmp4SegmentSplitterTests`）は L1 が単体で縛っているが、
+**それが `preview.stream-error` と再作成へ繋がる配線**は無検査である。
+
+ここを触ったら、`identity error-after` などで人為的に障害を起こして
+`activity.log` に `preview.stream-error` が出ること、そのあとブラウザが自動で映像を取り戻すことを
+確かめる。
+
+### `MaxTotalSubscribers`（複数レコーダーに跨る全体上限）
+
+`PreviewStreamLimits.MaxSubscribersPerRecorder = 4` は L2 が踏む（1 レコーダーに 5 本目を
+張ると 503）。**`MaxTotalSubscribers = 8` のほうは踏んでいない** ── 複数のレコーダーへ
+合計 9 本を張る必要があり、E2E の既定構成にレコーダーが足りない。上限そのものを消しても、
+片方だけ消しても緑のままである。
+
+### E2E の `Mp4File` の同期判定は製品規則の写し
+
+`tests/ProcessRecorderApp.E2E/Mp4File.cs` の `StartsWithSync` は、製品側
+`Fmp4SegmentSplitter.StartsWithSync` の規則（`trun.first_sample_flags` →
+`trun.sample_flags[0]` → `tfhd.default_sample_flags` → `trex.default_sample_flags`）を**手で
+写したもの**である。したがって**両方が同じように間違っていれば緑になる**。独立した検査は
+qtdemux（GStreamer 側のパーサ）が読めることだけで、そちらはフラグの意味までは見ない。
+規則を直すときは、必ず両側を対で直したうえで、実際のブラウザで再生できることを確かめること。
+
+### `WebAssetManifestTests` が捕まえないもの
+
+`app.js` については `<script src="http` と `import ` の 2 つの文字列しか見ていない。
+したがって **動的 `import(...)` と CSS の `@import`** は素通りする ── どちらも
+「第三者のスクリプトはゼロ」「外部への参照はゼロ」という前提を壊すのに、
+`THIRD-PARTY-NOTICES.md` の更新を促す仕組みは何も動かない。`wwwroot` に何かを足すときは、
+外部を参照していないことを目で確かめること。
+
+### `RecordingCleanup` と `RecordingFiles` の列挙規則の一致
+
+自動削除（`RecordingCleanup`）と配信（`RecordingFiles`）は、**同じ規則で同じ集合を見ることを
+意図している**（`"*"` ＋ 自前の拡張子比較、リパースポイントのディレクトリへ降りない）。
+配信側だけがファイル自身のリパースポイントを追加で外す ── これは意図的な差である。
+**この「意図した一致」を縛るテストは無い。** 片方の規則だけを変えると、
+「一覧には出るが自動削除されない」「削除されるのに一覧に出ない」という食い違いが静かに生まれる。
+`RecordingCleanup.Extension` を共有しているのは一致の一部でしかない。どちらかを触るときは、
+もう一方も読むこと。
+
+### 別 PC・Windows Firewall 越しの到達
+
+L2 は同じマシンのループバックでサーバーを叩く。**別 PC のブラウザから実際に届くこと**
+（`0.0.0.0` バインドが効いていること、Windows Firewall の受信規則を入れれば通ること、
+`?token=` → Cookie → 302 の一巡がブラウザで成立すること、一覧 → 再生 → シーク →
+ダウンロードが通ること）は、どの層も確かめていない ── CI にも開発機にも 2 台目が無い。
+
+ここを触ったら、実際に別 PC のブラウザで一巡すること。Firewall の規則はアプリが登録しないので、
+`New-NetFirewallRule` で自分で入れる（ルート [README.md](../README.md) に例がある）。
+
+### 終了コード 17 の HTTP 経路と `PUT /api/variables/{key}` の `%2F`
+
+**終了コード 17（確定できなかった MP4）の HTTP 経路は未検証**である ── CLI 側の
+`StopOutcomeTests` と同じ理由で、17 を確実に起こす手段が無い。写像（17 → 422 ＋ `filename`）は
+L1 が縛るが、`RemoteApiException` から `ErrorDto.Filename` へ実際に運ばれることは走っていない。
+
+`PUT /api/variables/{key}` に `/` を含むキー（`%2F`）を渡したときの復号挙動も未検証である。
+CLI 側は `/` 入りのキーを受けるので、ここだけ受け付けない／別のキーとして解釈される可能性がある。
+
+### レコーダー設定 PATCH の非対称（この項目は性格が違う）
+
+**これは退行の穴ではなく、v1 で意図してそうした設計判断**である。アプリ設定の PATCH は
+`RemoteEditableAppSettings` の 9 キーに絞ってあり `OutputDirectory` を拒否するのに対し、
+**レコーダー設定の PATCH は全プロパティが対象**で、トークン所持者は `SrcPipeline`
+（任意の GStreamer パイプライン）と `FilenameTemplate`（絶対パス可）を書ける。さらに
+`GET /api/recorders/{id}/settings` は**無認証で**その 2 つを返す。
+
+「トークン所持者はローカル操作者と同等」「読み取りは LAN に見える」という前提でこうしてあり、
+ルート [README.md](../README.md) の「Remote control from a browser」／
+「リモート操作（ブラウザから）」に明記してある。拒否リスト化は v1 の範囲外。
+**この非対称を「バグ」として片側だけ直すと、README の記述と食い違う** ── 直すなら文書も対で直すこと。
+
 ### Mp4Probe.StartsOnASyncSample
 
 `Mp4Probe.StartsOnASyncSample`（`stss` の先頭項目の検査）は**退行検出器ではなく不変条件の表明**である。これが緑であることを「この性質を壊す変更を検出できる」と読まないこと。
