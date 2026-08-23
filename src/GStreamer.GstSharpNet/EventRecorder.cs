@@ -264,6 +264,17 @@ public partial class EventRecorder : ObservableObject, IDisposable
     /// <summary>常時録画エンジン。常時録画が無効か、枝を組めなかった場合は null。</summary>
     private ContinuousRecorder? _continuous;
 
+    /// <summary>
+    /// ライブプレビューの配信エンジン。初期化に成功している間だけ非 null で、
+    /// <b>購読者が 0 人のうちは何も作らない</b>（mux は最初の購読で起きる）。
+    /// </summary>
+    private LivePreviewStream? _live;
+
+    /// <summary>
+    /// ライブプレビューの購読口。<b>読むのは配信側だけ</b>で、初期化前・破棄後は null。
+    /// </summary>
+    internal LivePreviewStream? LivePreview => Volatile.Read(ref _live);
+
     static int _instanceCount = 0;
     [ObservableProperty]
     public partial string Name { get; set; } = $"Recorder #{Interlocked.Increment(ref _instanceCount)}";
@@ -1437,6 +1448,12 @@ public partial class EventRecorder : ObservableObject, IDisposable
             // 自動選択・フォールバックが起きた場合、UI 改修なしでその結果が見える。
             ActualEncodingProperties = encoder.LaunchString;
 
+            // ライブプレビューの器を用意する。**mux は作らない** ── 購読が 1 人も
+            // 来なければ何も起きず、録画経路の費用も変わらない。ここに置くのは
+            // 常時録画と同じ理由で、sink パイプラインが PLAYING に達してからでないと
+            // 押し込む相手（枝2 の appsink）が動いていないためである。
+            Volatile.Write(ref _live, new LivePreviewStream(new LivePreviewHost(this)));
+
             // 常時録画は sink パイプラインが PLAYING になってから起こす。
             // ここで投げると呼び出し側（InitializeCore）が枝なしで組み直す。
             if (continuousEncoder is not null)
@@ -1640,6 +1657,15 @@ public partial class EventRecorder : ObservableObject, IDisposable
     }
 
     /// <summary>
+    /// ライブプレビューの配信エンジンから見た宿主。<b>名前しか渡さない</b> ──
+    /// 配信は観測値を一切書き換えない（録画の状態表示に影響しない）。
+    /// </summary>
+    private sealed class LivePreviewHost(EventRecorder owner) : ILivePreviewHost
+    {
+        public string Name => owner.Name;
+    }
+
+    /// <summary>
     /// 常時録画のセグメント 1 本ぶんのパスを決める。<c>{Segment}</c> は 5 桁 0 詰めの連番として
     /// テンプレート変数に重ねる（<c>FilenameTemplate.Format</c> の書式指定は
     /// <see cref="IFormattable"/> にしか効かないため、桁揃えは呼び出し側で済ませる）。
@@ -1795,6 +1821,14 @@ public partial class EventRecorder : ObservableObject, IDisposable
             bool quiesced = quiescing is null
                 || System.Threading.Tasks.Task.Run(() => quiescing.SetState(State.Null))
                     .Wait(SinkQuiesceTimeoutMs);
+
+            // **ライブプレビューは quiesce の直後・同期で畳む。** 触っていたのは
+            // 枝2 のコールバック（＝いま退去させた相手）なので、ここへ来た時点で
+            // 誰も mux を触っていない。畳むのに待つのは自前の mux パイプラインの
+            // ストリーミングスレッドだけで、sink 側の解放判断には効かない。
+            var live = _live;
+            Volatile.Write(ref _live, null);
+            live?.Close();
 
             // **常時録画の確定はイベント側の排出と並行に走らせる。**
             // 直列にすると停止の予算（MaxAdvisedStopFinalizeTimeoutMs + StopFinalizeSlackMs
@@ -2132,6 +2166,11 @@ public partial class EventRecorder : ObservableObject, IDisposable
         ulong bufferDurationNs = (ulong)Math.Max(0, BufferDuration) * 1_000_000UL;
         foreach (var evicted in _ringBuffer.Evict(pts, bufferDurationNs, MaxRingBufferBytes))
             evicted.Dispose();
+
+        // ライブプレビューへ回す。**リングの整理より後**に置くのは、mux の起動時に
+        // 流し込むリングの中身を「いま押し込む窓」と一致させるため。
+        // 購読者が 0 人ならこの呼び出しは volatile の 1 回読みで返る。
+        _live?.OnEncodedSample(sample, buffer, pts, _ringBuffer);
 
         if (_IsRecording)
         {

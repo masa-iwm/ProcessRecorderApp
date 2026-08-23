@@ -311,6 +311,29 @@ internal sealed partial class RemoteControlBackend(DispatcherQueue dispatcherQue
                Localization.GetString("Resources/Cli_VariableNotFound", key));
 
     /// <inheritdoc/>
+    public Task<PreviewSubscription> SubscribePreviewAsync(string id, CancellationToken ct)
+        => RunOnUiAsync(() =>
+        {
+            if (GstControllerViewModel.Current is not { } controller)
+                throw new RemoteApiException(NotAvailableExitCode, "the recording engine is not ready yet");
+
+            // **購読の生成だけを UI スレッドで行う。** 以後の読み出し（channel）は
+            // 呼び出し側のスレッドで、UI スレッドには一切戻らない。
+            if (!controller.PreviewStreams.TrySubscribe(id, out var subscription, out string? reason))
+            {
+                // 「対象が無い」だけが 13（404）で、残り（まだ動いていない・上限）は 12。
+                // 文字列の正本は Components.PreviewStreamReasons（供給側と共有）。
+                throw new RemoteApiException(
+                    reason == PreviewStreamReasons.RecorderNotFound
+                        ? ActivationCommands.ExitCode_RecorderNotFound
+                        : NotAvailableExitCode,
+                    reason);
+            }
+
+            return Task.FromResult(subscription);
+        });
+
+    /// <inheritdoc/>
     public IDisposable SubscribeState(Action<RecordersSnapshot> onChange)
     {
         var subscription = new StateSubscription(_dispatcherQueue, onChange);

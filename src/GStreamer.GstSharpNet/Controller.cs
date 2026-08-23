@@ -17,6 +17,47 @@ namespace ProcessRecorderApp.GStreamer
         public GstEventRecorderCollection Recorders { get; init; } = [];
 
         /// <summary>
+        /// ライブプレビューの供給元（リモート操作の <c>preview.mp4</c> が引く）。
+        /// <b>呼ぶのは UI スレッド</b> ── <see cref="Recorders"/> は UI スレッド所有である。
+        /// </summary>
+        public Components.IPreviewStreamSource PreviewStreams { get; }
+
+        /// <summary>
+        /// <see cref="Controller.PreviewStreams"/> の実体。<b>対象の解決規則は CLI と同じ</b>
+        /// （<see cref="RecorderCliRules.ResolveTargetIndex"/>: 数値はインデックス、
+        /// それ以外は名前の序数完全一致）── 規則を 2 か所に書かないため、
+        /// ここは同じ並びの一覧に対してその関数を呼ぶだけにしてある。
+        /// </summary>
+        private sealed class PreviewStreamSource(Controller owner) : Components.IPreviewStreamSource
+        {
+            public bool TrySubscribe(
+                string target,
+                [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out Components.PreviewSubscription? subscription,
+                [System.Diagnostics.CodeAnalysis.NotNullWhen(false)] out string? reason)
+            {
+                subscription = null;
+
+                string[] names = [.. owner.Recorders.Select(r => r.Name)];
+                int index = RecorderCliRules.ResolveTargetIndex(names, target);
+                if (index < 0)
+                {
+                    // 呼び出し側（HTTP）はこの文字列で 404 と 503 を分ける。
+                    reason = Components.PreviewStreamReasons.RecorderNotFound;
+                    return false;
+                }
+
+                // 初期化が済んでいなければ配信の器そのものが無い（＝「まだ動いていない」）。
+                if (owner.Recorders[index].LivePreview is not { } live)
+                {
+                    reason = "recorder is not running";
+                    return false;
+                }
+
+                return live.TrySubscribe(out subscription, out reason);
+            }
+        }
+
+        /// <summary>
         /// Preview イベントを購読済みのレコーダー。
         /// Reset の通知はコレクションが既に空になった後に来るため、
         /// コレクション自体を走査しても購読解除できない（＝購読が漏れる）。
@@ -48,6 +89,8 @@ namespace ProcessRecorderApp.GStreamer
 
         public Controller()
         {
+            PreviewStreams = new PreviewStreamSource(this);
+
             Recorders.CollectionChanged += (_, e) =>
             {
                 switch (e.Action)

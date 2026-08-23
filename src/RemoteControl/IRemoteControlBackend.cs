@@ -49,6 +49,22 @@ public interface IRemoteControlBackend
     /// </summary>
     IDisposable SubscribeState(Action<RecordersSnapshot> onChange);
 
+    /// <summary>
+    /// 1 レコーダーのライブプレビュー（fMP4）を購読する。
+    /// 使い終わったら必ず <see cref="IDisposable.Dispose"/> すること
+    /// ── 席を返さないと同時購読の上限が事実上無くなる。
+    ///
+    /// <para>
+    /// 失敗は <see cref="RemoteApiException"/>。理由が <c>"recorder not found"</c> なら 13、
+    /// それ以外（まだ動いていない・上限に達した）は 12 である。
+    /// </para>
+    /// <para>
+    /// <b>{id} は文字列のまま渡す。</b> 数値ならインデックス・それ以外は名前という規則は
+    /// CLI（<c>RecorderCliRules.ResolveTargetIndex</c>）が正本で、実装側がそれを呼ぶ。
+    /// </para>
+    /// </summary>
+    Task<Components.PreviewSubscription> SubscribePreviewAsync(string id, CancellationToken ct);
+
     // ---- 書き込み ----
     //
     // **CancellationToken を取らない。** 開始・停止・設定変更は、要求元が切っても

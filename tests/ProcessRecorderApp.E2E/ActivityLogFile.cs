@@ -88,7 +88,19 @@ public static class ActivityLogFile
         // カメラ設定を開いたときの解決結果（開くたびに 1 行）。
         "camera.open",
         // プレビューパイプラインの実行時障害（録画は止めない。1パイプラインにつき1行）。
+        // **これは画面の D3D プレビューのもの**で、下のライブ配信の 6 種とは別物。
+        // 名前を寄せないこと ── 最長一致の表で衝突すると、どちらの観測点も読めなくなる。
         "preview.error",
+        // リモート操作のライブプレビュー（fMP4 の配信）。購読の増減と、
+        // それに応じた mux の起き/落ち。**表に無くても EventNameOf は最初のトークンへ
+        // 倒すので名前自体は取れる**（空白を含まないため）が、載せないと
+        // 「未知のイベント」として扱われ、名前の取り違えが起きても誰も気付けない。
+        "preview.subscribe",
+        "preview.unsubscribe",
+        "preview.stream-start",
+        "preview.stream-stop",
+        "preview.stream-error",
+        "preview.leak",
         // デバイス到着の監視（復帰待ちのあいだだけプロバイダを started に保つ）と、
         // 観測した到着。到着で復帰の待ちを打ち切ったことは recorder.restart の
         // wake=device-arrival に出る。

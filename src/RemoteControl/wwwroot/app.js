@@ -110,6 +110,14 @@
       var actions = document.createElement('td');
       actions.appendChild(writeButton('Start', function () { control('/api/recorders/' + encodeURIComponent(recorder.name) + '/start'); }));
       actions.appendChild(writeButton('Stop', function () { control('/api/recorders/' + encodeURIComponent(recorder.name) + '/stop'); }));
+
+      // Watching is a read: it needs no session, so this is not a write button.
+      var preview = document.createElement('button');
+      preview.type = 'button';
+      preview.textContent = 'Preview';
+      preview.addEventListener('click', function () { startPreview(recorder.name); });
+      actions.appendChild(preview);
+
       row.appendChild(actions);
 
       body.appendChild(row);
@@ -453,6 +461,245 @@
     });
   }
 
+  // ---- live preview (fragmented MP4 over MSE) ----
+  //
+  // The response is an endless chunked body: one init segment (ftyp+moov) and then
+  // moof+mdat pairs. `<video src>` cannot be pointed at that, so the bytes are fed
+  // to a MediaSource by hand. `mode = 'sequence'` puts a late joiner's first
+  // fragment at zero, which is what makes joining mid-stream work at all.
+  //
+  // A second init segment never arrives on one connection (the server closes the
+  // response instead), so every restart builds a fresh MediaSource: appending a new
+  // init to the SourceBuffer that already has one is exactly what breaks playback.
+  //
+  // Every way this can go wrong ends in the same place: abort, say why, and rebuild
+  // from a fresh MediaSource a second later. A SourceBuffer that has rejected one
+  // append never takes the next one, so there is nothing to salvage in place.
+
+  var PREVIEW_MIME = 'video/mp4; codecs="avc1.4d401f"';
+
+  // How much of the past to keep in the SourceBuffer. Without this the buffer grows
+  // for as long as the page is open and the browser eventually refuses to append.
+  var PREVIEW_WINDOW_SECONDS = 30;
+
+  // Trimming starts only once the buffered span is this long, and then cuts back to
+  // PREVIEW_WINDOW_SECONDS. The hysteresis is not cosmetic: without it every
+  // `updateend` would call `remove()` again, `remove()` raises `updateend`, and the
+  // SourceBuffer would stay `updating` forever -- `appendBuffer` never gets a turn
+  // and the picture freezes with the network still running.
+  var PREVIEW_TRIM_TRIGGER_SECONDS = 35;
+
+  // Playing further behind the live edge than this means the tab was throttled;
+  // seeking forward is the only way back (the stream has no seekable timeline).
+  var PREVIEW_LAG_SECONDS = 3;
+
+  var PREVIEW_RECONNECT_MS = 1000;
+
+  // The most undelivered body we will hold. Reached only when appends cannot keep
+  // up with the network, which no amount of further buffering fixes.
+  var PREVIEW_MAX_QUEUE_BYTES = 16 * 1024 * 1024;
+
+  // Bumped by every stop and every start. Callbacks that belong to an older
+  // generation return without touching anything: an aborted fetch, a pending
+  // timer and an in-flight `updateend` can all outlive the stream they came from.
+  var previewGeneration = 0;
+  var previewAbort = null;
+  var previewTimer = null;
+  var previewUrl = null;
+
+  // The active pump's failure hook. The <video> element outlives every connection,
+  // so its `error` listener is attached once and routed through here.
+  var previewOnFailure = null;
+
+  function previewSupported() {
+    return typeof MediaSource !== 'undefined' && MediaSource.isTypeSupported(PREVIEW_MIME);
+  }
+
+  function releasePreviewUrl() {
+    if (previewUrl !== null) {
+      URL.revokeObjectURL(previewUrl);
+      previewUrl = null;
+    }
+  }
+
+  function stopPreview(message) {
+    previewGeneration++;
+    previewOnFailure = null;
+    if (previewTimer !== null) {
+      clearTimeout(previewTimer);
+      previewTimer = null;
+    }
+    if (previewAbort !== null) {
+      previewAbort.abort();
+      previewAbort = null;
+    }
+
+    var video = $('previewPlayer');
+    video.removeAttribute('src');
+    video.load();
+    releasePreviewUrl();
+
+    status($('previewStatus'), message === undefined ? '' : message, false);
+  }
+
+  function startPreview(id) {
+    stopPreview('');
+    if (!previewSupported()) {
+      status($('previewStatus'), 'this browser cannot play ' + PREVIEW_MIME, true);
+      return;
+    }
+    status($('previewStatus'), 'connecting to ' + id + '...', false);
+    connectPreview(id, previewGeneration);
+  }
+
+  function connectPreview(id, generation) {
+    var video = $('previewPlayer');
+    var source = new MediaSource();
+    var controller = new AbortController();
+    previewAbort = controller;
+
+    releasePreviewUrl();
+    previewUrl = URL.createObjectURL(source);
+    video.src = previewUrl;
+
+    source.addEventListener('sourceopen', function () {
+      if (generation !== previewGeneration) { return; }
+
+      var buffer;
+      try {
+        buffer = source.addSourceBuffer(PREVIEW_MIME);
+      } catch (error) {
+        status($('previewStatus'), error.message, true);
+        return;
+      }
+      buffer.mode = 'sequence';
+      pumpPreview(id, generation, controller, buffer);
+    });
+  }
+
+  function pumpPreview(id, generation, controller, buffer) {
+    var video = $('previewPlayer');
+    var queue = [];
+    var queued = 0;
+    var broken = false;
+
+    // One place decides that this connection is unusable, so no caller has to
+    // reason about whether a retry is still allowed.
+    function fail(reason) {
+      if (broken || generation !== previewGeneration) { return; }
+      broken = true;
+      previewOnFailure = null;
+      controller.abort();
+      reconnectPreview(id, generation, reason);
+    }
+
+    previewOnFailure = fail;
+
+    function flush() {
+      if (broken || generation !== previewGeneration || buffer.updating || queue.length === 0) { return; }
+
+      // Peek, append, then drop. Shifting first loses the chunk when appendBuffer
+      // throws, and a byte stream with a hole in it never recovers.
+      var chunk = queue[0];
+      try {
+        buffer.appendBuffer(chunk);
+      } catch (error) {
+        fail('append failed: ' + error.message);
+        return;
+      }
+      queue.shift();
+      queued -= chunk.byteLength;
+    }
+
+    buffer.addEventListener('error', function () { fail('the source buffer failed'); });
+
+    buffer.addEventListener('updateend', function () {
+      if (broken || generation !== previewGeneration) { return; }
+      trimPreview(video, buffer);
+      followPreview(video);
+      flush();
+    });
+
+    fetch('/api/recorders/' + encodeURIComponent(id) + '/preview.mp4', {
+      signal: controller.signal,
+      credentials: 'same-origin'
+    }).then(function (response) {
+      if (!response.ok) {
+        // 404 and 503 are answers, not hiccups: reconnecting would just repeat them.
+        return response.json().catch(function () { return {}; }).then(function (body) {
+          throw new Error(describe(body, response.status));
+        });
+      }
+
+      status($('previewStatus'), 'streaming ' + id, false);
+      var reader = response.body.getReader();
+
+      function read() {
+        return reader.read().then(function (chunk) {
+          if (broken || generation !== previewGeneration) { return undefined; }
+          if (chunk.done) {
+            reconnectPreview(id, generation, 'reconnecting to ' + id + '...');
+            return undefined;
+          }
+
+          queue.push(chunk.value);
+          queued += chunk.value.byteLength;
+          if (queued > PREVIEW_MAX_QUEUE_BYTES) {
+            fail('the player fell too far behind (' + formatSize(queued) + ' unread)');
+            return undefined;
+          }
+
+          flush();
+          return read();
+        });
+      }
+
+      return read();
+    }).catch(function (error) {
+      if (broken || generation !== previewGeneration || error.name === 'AbortError') { return; }
+      previewOnFailure = null;
+      status($('previewStatus'), error.message, true);
+    });
+  }
+
+  function trimPreview(video, buffer) {
+    if (buffer.updating) { return; }
+    var ranges = video.buffered;
+    if (ranges.length === 0) { return; }
+
+    var start = ranges.start(0);
+    var end = ranges.end(ranges.length - 1);
+
+    // Compare the span, not the end. `end` passes 30 once and stays past it, so a
+    // test against `end` alone would trim on every single updateend forever.
+    if (end - start <= PREVIEW_TRIM_TRIGGER_SECONDS) { return; }
+
+    try {
+      buffer.remove(start, end - PREVIEW_WINDOW_SECONDS);
+    } catch (error) {
+      /* the next updateend tries again */
+    }
+  }
+
+  function followPreview(video) {
+    var ranges = video.buffered;
+    if (ranges.length === 0) { return; }
+
+    var end = ranges.end(ranges.length - 1);
+    if (end - video.currentTime > PREVIEW_LAG_SECONDS) { video.currentTime = end - 0.5; }
+  }
+
+  function reconnectPreview(id, generation, message) {
+    if (generation !== previewGeneration || previewTimer !== null) { return; }
+    status($('previewStatus'), message, false);
+
+    previewTimer = setTimeout(function () {
+      previewTimer = null;
+      if (generation !== previewGeneration) { return; }
+      connectPreview(id, generation);
+    }, PREVIEW_RECONNECT_MS);
+  }
+
   // ---- live state ----
 
   // The server already debounces the state events (200ms), so the handler redraws
@@ -480,6 +727,19 @@
   markWrite($('variableKey'));
   markWrite($('variableValue'));
   $('loadRecordings').addEventListener('click', loadRecordings);
+
+  $('stopPreview').addEventListener('click', function () { stopPreview('stopped'); });
+  // The element outlives every connection, so this is attached once. A decode
+  // failure is otherwise silent: the picture stops and the network keeps running.
+  $('previewPlayer').addEventListener('error', function () {
+    var media = $('previewPlayer').error;
+    if (previewOnFailure !== null) {
+      previewOnFailure('playback error' + (media ? ' (code ' + media.code + ')' : ''));
+    }
+  });
+  // Leaving the page has to release the subscription: the seat is only returned
+  // when the response ends, and a background tab would hold it indefinitely.
+  window.addEventListener('pagehide', function () { stopPreview(); });
 
   subscribe();
   loadAppSettings();

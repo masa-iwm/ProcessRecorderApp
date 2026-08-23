@@ -307,3 +307,297 @@ public static class Mp4File
 
 /// <summary>ファイルを書き込み側がまだ掴んでいた（＝排出が完了していない）。</summary>
 public sealed class SharingViolation(string message, Exception inner) : Exception(message, inner);
+
+/// <summary>
+/// fragmented MP4（ライブプレビューの本文）の最小限の検証。
+///
+/// <para>
+/// <b>見るのはトップレベルの箱の並びだけ。</b> 答えたいのは「MSE へ渡せる形か」
+/// ── 先頭が <c>ftyp</c>＋<c>moov</c>（<c>mvex</c> と <c>avc1</c>/<c>avcC</c> 入り）で、
+/// 以後が <c>moof</c>＋<c>mdat</c> の対で続いているか ── だけである。
+/// </para>
+/// <para>
+/// <b>末尾は必ず切れている。</b> 打ち切って保存したファイルなので、最後の箱は
+/// 途中までしか無いことがある。長さが足りない箱に出会ったらそこで読み終える。
+/// </para>
+/// <para>
+/// <b>同期判定は製品側（<c>Fmp4SegmentSplitter.StartsWithSync</c>）の規則を
+/// 書き写したもので、独立検査ではない。</b> E2E は <c>GstSharpNet</c> を参照しない
+/// ので共有できず、規則が 2 か所にある ── <b>製品側の規則が間違っていれば
+/// こちらも同じように間違う</b>。中身が本当に読めるかを製品と無関係に確かめているのは
+/// <c>qtdemux</c> を通す <c>PreviewStreamTests</c> の方である。
+/// </para>
+/// </summary>
+public sealed record Fmp4Probe(
+    string Path,
+    long Length,
+    IReadOnlyList<string> Boxes,
+    bool HasMvex,
+    bool HasAvc1,
+    bool HasAvcC,
+    IReadOnlyList<bool> MoofStartsWithSync,
+    // ParsedLength: 完全な箱として読めた先頭からの長さ。打ち切って保存した本文の末尾は
+    // 必ず途中なので、そこまでを切り出したものが「箱の境界で閉じた」ファイルになる。
+    int ParsedLength)
+{
+    /// <summary><c>moof</c> の個数（＝取り出せた fragment の数）。</summary>
+    public int MoofCount => MoofStartsWithSync.Count;
+
+    /// <summary>先頭が <c>ftyp</c> → <c>moov</c> で始まるか（＝ init セグメントが先頭に在る）。</summary>
+    public bool StartsWithInitSegment
+        => 2 <= Boxes.Count && Boxes[0] == "ftyp" && Boxes[1] == "moov";
+
+    /// <summary><c>moov</c> の後ろが <c>moof</c>／<c>mdat</c> の交互になっているか。</summary>
+    public bool MediaSegmentsAlternate()
+    {
+        for (int i = 2; i + 1 < Boxes.Count; i += 2)
+        {
+            if (Boxes[i] != "moof" || Boxes[i + 1] != "mdat")
+                return false;
+        }
+        return true;
+    }
+
+    public override string ToString()
+        => $"{Path} ({Length:N0} bytes, {ParsedLength:N0} parsed) mvex={HasMvex} avc1={HasAvc1} avcC={HasAvcC} "
+         + $"moof={MoofCount} sync=[{string.Join(",", MoofStartsWithSync)}] "
+         + $"boxes=[{string.Join(",", Boxes)}]";
+}
+
+public static class Fmp4File
+{
+    /// <summary><c>sample_is_non_sync_sample</c>（ISO/IEC 14496-12, 8.8.3.1 の packed 32bit）。</summary>
+    private const uint NonSyncSampleFlag = 0x00010000;
+
+    private const int BoxHeaderSize = 8;
+    private const int LargeBoxHeaderSize = 16;
+
+    public static Fmp4Probe Probe(string path) => Probe(path, File.ReadAllBytes(path));
+
+    public static Fmp4Probe Probe(string path, byte[] data)
+    {
+        var boxes = new List<string>();
+        var sync = new List<bool>();
+        bool hasMvex = false, hasAvc1 = false, hasAvcC = false;
+        uint trexDefaultSampleFlags = 0;
+
+        int position = 0;
+        while (position + BoxHeaderSize <= data.Length)
+        {
+            long size = ReadU32(data, position);
+            int header = BoxHeaderSize;
+
+            if (size == 1)
+            {
+                if (position + LargeBoxHeaderSize > data.Length)
+                    break;
+                size = ReadU64(data, position + BoxHeaderSize);
+                header = LargeBoxHeaderSize;
+            }
+            else if (size == 0)
+            {
+                // 「以後ファイル末尾まで」。ライブの切り落としでは決着しない。
+                break;
+            }
+
+            // 切り落とした末尾（最後の箱が途中まで）はここで読み終える。
+            if (size < header || data.Length < position + size)
+                break;
+
+            string type = TypeName(data, position + 4);
+            boxes.Add(type);
+
+            int contentStart = position + header;
+            int contentEnd = (int)(position + size);
+
+            if (type == "moov")
+            {
+                hasMvex = TryFindChild(data, contentStart, contentEnd, "mvex", out int mvexStart, out int mvexEnd);
+                hasAvc1 = 0 <= IndexOfFourCc(data, contentStart, contentEnd, "avc1");
+                hasAvcC = 0 <= IndexOfFourCc(data, contentStart, contentEnd, "avcC");
+                if (hasMvex)
+                    trexDefaultSampleFlags = ReadTrexDefaultSampleFlags(data, mvexStart, mvexEnd);
+            }
+            else if (type == "moof")
+            {
+                sync.Add(StartsWithSync(data, contentStart, contentEnd, trexDefaultSampleFlags));
+            }
+
+            position += (int)size;
+        }
+
+        return new Fmp4Probe(path, data.Length, boxes, hasMvex, hasAvc1, hasAvcC, sync, position);
+    }
+
+    /// <summary>
+    /// この fragment の<b>先頭サンプル</b>が同期サンプルか。優先順は具体的なものから:
+    /// <c>trun.first_sample_flags</c> → <c>trun</c> の <c>sample_flags[0]</c> →
+    /// <c>tfhd.default_sample_flags</c> → <c>trex.default_sample_flags</c>。
+    /// <c>trun</c> が無い・<c>sample_count==0</c> なら false。
+    /// </summary>
+    private static bool StartsWithSync(byte[] data, int moofStart, int moofEnd, uint trexDefaultSampleFlags)
+    {
+        if (!TryFindChild(data, moofStart, moofEnd, "traf", out int trafStart, out int trafEnd))
+            return false;
+        if (!TryFindChild(data, trafStart, trafEnd, "trun", out int trunStart, out int trunEnd))
+            return false;
+        if (trunStart + 8 > trunEnd)
+            return false;
+
+        uint trunFlags = ReadU24(data, trunStart + 1);
+        if (ReadU32AsUInt(data, trunStart + 4) == 0)
+            return false;
+
+        uint? firstSampleFlags = null;
+        uint? sampleZeroFlags = null;
+
+        int offset = trunStart + 8;
+        if ((trunFlags & 0x000001) != 0)
+            offset += 4;                                        // data-offset-present
+        if ((trunFlags & 0x000004) != 0)
+        {
+            if (offset + 4 <= trunEnd)
+                firstSampleFlags = ReadU32AsUInt(data, offset);  // first-sample-flags-present
+            offset += 4;
+        }
+        if ((trunFlags & 0x000400) != 0)
+        {
+            int sampleOffset = offset;
+            if ((trunFlags & 0x000100) != 0)
+                sampleOffset += 4;                              // sample-duration-present
+            if ((trunFlags & 0x000200) != 0)
+                sampleOffset += 4;                              // sample-size-present
+            if (sampleOffset + 4 <= trunEnd)
+                sampleZeroFlags = ReadU32AsUInt(data, sampleOffset);
+        }
+
+        uint effective = firstSampleFlags
+            ?? sampleZeroFlags
+            ?? ReadTfhdDefaultSampleFlags(data, trafStart, trafEnd)
+            ?? trexDefaultSampleFlags;
+
+        return (effective & NonSyncSampleFlag) == 0;
+    }
+
+    private static uint? ReadTfhdDefaultSampleFlags(byte[] data, int trafStart, int trafEnd)
+    {
+        if (!TryFindChild(data, trafStart, trafEnd, "tfhd", out int start, out int end))
+            return null;
+        if (start + 8 > end)
+            return null;
+
+        uint flags = ReadU24(data, start + 1);
+
+        int offset = start + 8;                                  // version/flags(4) track_ID(4)
+        if ((flags & 0x000001) != 0)
+            offset += 8;                                         // base-data-offset-present
+        if ((flags & 0x000002) != 0)
+            offset += 4;                                         // sample-description-index-present
+        if ((flags & 0x000008) != 0)
+            offset += 4;                                         // default-sample-duration-present
+        if ((flags & 0x000010) != 0)
+            offset += 4;                                         // default-sample-size-present
+
+        if ((flags & 0x000020) == 0 || offset + 4 > end)
+            return null;                                         // default-sample-flags-present
+
+        return ReadU32AsUInt(data, offset);
+    }
+
+    private static uint ReadTrexDefaultSampleFlags(byte[] data, int mvexStart, int mvexEnd)
+    {
+        if (!TryFindChild(data, mvexStart, mvexEnd, "trex", out int trexStart, out int trexEnd))
+            return 0;
+
+        // version/flags(4) track_ID(4) default_sample_description_index(4)
+        // default_sample_duration(4) default_sample_size(4) default_sample_flags(4)
+        return trexStart + 24 > trexEnd ? 0 : ReadU32AsUInt(data, trexStart + 20);
+    }
+
+    /// <summary>指定した範囲の 1 段の箱から最初の 1 件を探す。</summary>
+    private static bool TryFindChild(byte[] data, int start, int end, string type, out int contentStart, out int contentEnd)
+    {
+        contentStart = 0;
+        contentEnd = 0;
+
+        int position = start;
+        while (position + BoxHeaderSize <= end)
+        {
+            long size = ReadU32(data, position);
+            int header = BoxHeaderSize;
+
+            if (size == 1)
+            {
+                if (position + LargeBoxHeaderSize > end)
+                    return false;
+                size = ReadU64(data, position + BoxHeaderSize);
+                header = LargeBoxHeaderSize;
+            }
+            else if (size == 0)
+            {
+                size = end - position;
+            }
+
+            if (size < header || end < position + size)
+                return false;
+
+            if (IsType(data, position + 4, type))
+            {
+                contentStart = position + header;
+                contentEnd = (int)(position + size);
+                return true;
+            }
+
+            position += (int)size;
+        }
+
+        return false;
+    }
+
+    /// <summary>範囲内の 4cc の位置（見つからなければ -1）。階層は辿らない。</summary>
+    private static int IndexOfFourCc(byte[] data, int start, int end, string fourCc)
+    {
+        for (int i = start; i + 4 <= end; i++)
+        {
+            if (IsType(data, i, fourCc))
+                return i;
+        }
+        return -1;
+    }
+
+    private static bool IsType(byte[] data, int offset, string type)
+        => data[offset] == type[0]
+        && data[offset + 1] == type[1]
+        && data[offset + 2] == type[2]
+        && data[offset + 3] == type[3];
+
+    private static string TypeName(byte[] data, int offset)
+    {
+        Span<char> characters = stackalloc char[4];
+        for (int i = 0; i < 4; i++)
+        {
+            byte value = data[offset + i];
+            characters[i] = value is >= 0x20 and < 0x7F ? (char)value : '?';
+        }
+        return new string(characters);
+    }
+
+    private static long ReadU32(byte[] data, int offset)
+        => ((long)data[offset] << 24) | ((long)data[offset + 1] << 16)
+         | ((long)data[offset + 2] << 8) | data[offset + 3];
+
+    private static uint ReadU32AsUInt(byte[] data, int offset)
+        => ((uint)data[offset] << 24) | ((uint)data[offset + 1] << 16)
+         | ((uint)data[offset + 2] << 8) | data[offset + 3];
+
+    private static uint ReadU24(byte[] data, int offset)
+        => ((uint)data[offset] << 16) | ((uint)data[offset + 1] << 8) | data[offset + 2];
+
+    private static long ReadU64(byte[] data, int offset)
+    {
+        long value = 0;
+        for (int i = 0; i < 8; i++)
+            value = (value << 8) | data[offset + i];
+        return value;
+    }
+}

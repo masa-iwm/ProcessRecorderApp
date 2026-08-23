@@ -56,6 +56,12 @@ namespace ProcessRecorderApp.ViewModels
         public IReadOnlyList<string> WriteDebugGraphs(string directory)
             => Model.WriteDebugGraphs(directory);
 
+        /// <summary>
+        /// ライブプレビューの供給元（<see cref="Model"/> が持つものをそのまま通す）。
+        /// <b>呼ぶのは UI スレッド</b> ── 対象の解決に UI スレッド所有のコレクションを読む。
+        /// </summary>
+        public Components.IPreviewStreamSource PreviewStreams => Model.PreviewStreams;
+
         /// <summary>Settings_Recorders_CollectionChanged の遅延実行用（Initialize を呼んだ UI スレッドのキュー）。</summary>
         private readonly DispatcherQueue _dispatcherQueue;
 
