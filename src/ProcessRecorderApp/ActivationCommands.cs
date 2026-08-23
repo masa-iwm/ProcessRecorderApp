@@ -7,7 +7,6 @@ using System.Threading.Tasks;
 using ProcessRecorderApp.Components;
 using ProcessRecorderApp.SingleInstance;
 using ProcessRecorderApp.GStreamer;
-using ProcessRecorderApp.ViewModels;
 
 namespace ProcessRecorderApp;
 
@@ -15,11 +14,16 @@ namespace ProcessRecorderApp;
 /// 起動引数（コマンドライン）を System.CommandLine で解析し、
 /// 対応する処理を実行して <see cref="CommandOutcome"/> を返す。
 ///
+/// 【実処理はここに書かない】
+/// レコーダーの操作・テンプレート変数の読み書きは <see cref="RecorderControlService"/> が持つ。
+/// ここに残すのは引数解析・文言（Localization）・<see cref="CommandOutcome"/> の整形だけで、
+/// 終了コードの番号（<c>ExitCode_*</c>）もここが正本。
+///
 /// 【新しいコマンドの追加方法】
 /// <see cref="BuildRootCommand"/> 内に、他のコマンドと同様に
 ///   1. Argument/Option を定義
 ///   2. new Command(...) でサブコマンドを作成し、Argument/Optionを紐付け
-///   3. SetAction 内で実処理を行い、setOutcome で結果を設定
+///   3. SetAction 内で RecorderControlService を呼び、結果を整形して setOutcome へ渡す
 ///   4. rootCommand.Subcommands.Add(...) で登録
 /// を追加するだけでよい。ハンドラーの中で setOutcome に
 /// <see cref="CommandOutcome.Activate"/> / <see cref="CommandOutcome.Silent"/> /
@@ -128,16 +132,6 @@ internal static class ActivationCommands
     public const int ExitCode_RecordingNotFinalized = 17;
 
     /// <summary>
-    /// 録画コマンド実行時、まだ録画エンジン（<see cref="GstControllerViewModel.Current"/>）が
-    /// 準備完了（<see cref="GstControllerViewModel.IsReady"/>）でない場合に待つ最大時間。
-    /// 常駐ワーカー未起動から起動された直後（コールドスタート）に、
-    /// アプリの初期化完了を待ってから録画を実行するために使用する。
-    /// ランチャー側の結果待ちタイムアウト（<b>60 秒</b>）より
-    /// 短い値とし、結果通知の猶予を残す。
-    /// </summary>
-    private static readonly TimeSpan ReadyWaitTimeout = TimeSpan.FromSeconds(8);
-
-    /// <summary>
     /// 起動引数（トークン配列）を解析し、実行結果を返す。
     /// サブコマンド未指定（＝素の起動）の場合はウィンドウを表示せず何もしない（Silent）。
     /// 不明なコマンド・パースエラーの場合は「不明な引数」として失敗（Failure）となる。
@@ -188,7 +182,7 @@ internal static class ActivationCommands
         foreach (var pair in parseResult.GetValue(setOption) ?? [])
         {
             int separatorIndex = pair.IndexOf('=');
-            EventRecorder.SetTemplateVariable(pair[..separatorIndex], pair[(separatorIndex + 1)..]);
+            RecorderControlService.SetVariable(pair[..separatorIndex], pair[(separatorIndex + 1)..]);
         }
 
         // --persist / --no-persist の適用（--set の直後・コマンド本体より前）。
@@ -201,13 +195,11 @@ internal static class ActivationCommands
         {
             foreach (var key in keys)
             {
-                if (!EventRecorder.TemplateVariables.ContainsKey(key))
+                if (!RecorderControlService.TrySetVariablePersistent(key, persistent))
                 {
                     hasUndefinedPersistKey = true;
                     persistError.AppendLine(Localization.GetString("Resources/Cli_VariableNotFound", key));
-                    continue;
                 }
-                Settings.AppSettings.Default.SetTemplateVariablePersistent(key, persistent);
             }
         }
 
@@ -279,8 +271,8 @@ internal static class ActivationCommands
 
         if (keys.Length == 0)
         {
-            // 全件取得
-            foreach (var pair in EventRecorder.TemplateVariables.OrderBy(p => p.Key, StringComparer.Ordinal))
+            // 全件取得（並びはキーの序数順。RecorderControlService.GetVariables が固定している）
+            foreach (var pair in RecorderControlService.GetVariables())
             {
                 output.AppendLine($"{pair.Key}={pair.Value}");
             }
@@ -293,7 +285,7 @@ internal static class ActivationCommands
             // 個別取得（値のみを出力する）
             foreach (var key in keys)
             {
-                if (EventRecorder.TemplateVariables.TryGetValue(key, out var value))
+                if (RecorderControlService.TryGetVariable(key, out var value))
                 {
                     output.AppendLine($"{value}");
                 }
@@ -336,14 +328,9 @@ internal static class ActivationCommands
     /// 真偽値は <see cref="bool.ToString()"/>（<c>True</c>/<c>False</c>）で、カルチャに依存しない。
     /// </para>
     /// <para>
-    /// <b>「録画中」は <see cref="EventRecorder.IsRecording"/> をそのまま出す</b> ──
-    /// ビューモデル側の同名プロパティを使ってはいけない。あちらは<b>表示用</b>で、
-    /// 復帰待ちを録画中に畳んである（畳まないとトグルを切る手段が無くなるため）。
-    /// CLI で畳むと「いまフレームが録れているか」を機械から判定できなくなるので、
-    /// ここでは実体を出し、復帰待ちは<b>独立した列</b>にする。
-    /// </para>
-    /// <para>
-    /// <b>「復帰待ち」は自動復帰が終わったら録り直す予定があること。</b>
+    /// <b>「録画中」は <see cref="EventRecorder.IsRecording"/> の実体</b>（読み分けは
+    /// <see cref="RecorderControlService.GetStatusAsync"/> が行う）。復帰待ちは<b>独立した列</b>で、
+    /// <b>自動復帰が終わったら録り直す予定があること</b>を表す。
     /// デバイスが抜けているあいだは <c>初期化済み=False</c> かつ
     /// <c>録画中=False</c> かつ <c>復帰待ち=True</c> になる。
     /// </para>
@@ -353,25 +340,23 @@ internal static class ActivationCommands
     /// ここに出るのは「最後に起きたことが障害だった」ことを表す。
     /// </para>
     /// </summary>
-    private static CommandOutcome BuildStatusOutcome(GstControllerViewModel controller)
+    private static CommandOutcome BuildStatusOutcome(StatusResult status)
     {
         var output = new StringBuilder();
         var error = new StringBuilder();
         bool hasUnhealthy = false;
 
-        foreach (var recorder in controller.Recorders)
+        foreach (var recorder in status.Statuses)
         {
             // 列の並びと TAB/改行の潰しは RecorderCliRules（L1 が守っている）
             string lastError = RecorderCliRules.FlattenToOneLine(recorder.LastError);
             output.AppendLine(RecorderCliRules.FormatStatusLine(
                 recorder.Name,
                 recorder.IsInitialized,
-                // **実体を読む。** recorder.IsRecording（VM）は復帰待ちを畳んだ表示用の値。
-                recorder.Model.IsRecording,
-                recorder.Model.IsAwaitingRecoveryResume,
+                recorder.IsRecording,
+                recorder.IsAwaitingRecoveryResume,
                 recorder.LastFilename,
-                RecorderCliRules.ContinuousState(
-                    recorder.ContinuousRecording, recorder.IsContinuousRecording, recorder.ContinuousLastError),
+                recorder.ContinuousState,
                 recorder.ContinuousLastFilename,
                 recorder.LastError));
 
@@ -396,39 +381,6 @@ internal static class ActivationCommands
         };
     }
 
-    /// <summary>
-    /// 録画エンジン（<see cref="GstControllerViewModel.Current"/>）がレコーダー一覧まで
-    /// 用意し終わるのを待って取得する。
-    ///
-    /// 常駐ワーカーが未起動から起動された直後（コールドスタート）は、リダイレクトされた録画コマンドが
-    /// <c>App.OnLaunched</c> のエンジン生成より先に走ることがある。加えて、生成直後は
-    /// <see cref="GstControllerViewModel.Current"/> が非 <see langword="null"/> でも
-    /// <see cref="GstControllerViewModel.Recorders"/> への挿入がディスパッチャキューに残っている
-    /// 可能性があるため、<see cref="GstControllerViewModel.IsReady"/> が立つまで待つ
-    /// （待たないと <c>start-recording-all</c> が「開始できるレコーダーが無い」と誤判定しうる）。
-    ///
-    /// 待ちは <see cref="ReadyWaitTimeout"/> の範囲で UI スレッドを解放しながら行い、
-    /// タイムアウトした場合は <see langword="null"/> を返す。
-    /// </summary>
-    // internal なのは UiaTriggerService が同じ「IsReady まで待つ」を再利用するため（同一アセンブリ）。
-    internal static async Task<GstControllerViewModel?> WaitForControllerAsync()
-    {
-        long deadline = Environment.TickCount64 + (long)ReadyWaitTimeout.TotalMilliseconds;
-        while (GstControllerViewModel.Current is not { IsReady: true })
-        {
-            if (Environment.TickCount64 >= deadline)
-                return null;
-            // await の間に message loop が回り、App.OnLaunched でエンジンが生成され、
-            // 続いて ctor 末尾の TryEnqueue で IsReady が立つ。
-            // 継続は UI スレッド（DispatcherQueueSynchronizationContext）へ戻る。
-            await Task.Delay(50);
-        }
-        return GstControllerViewModel.Current;
-    }
-
-    /// <summary>
-    /// ViewModel がまだ利用できない（<see cref="ReadyWaitTimeout"/> 待っても生成されなかった）場合の失敗結果。
-    /// </summary>
     /// <summary>
     /// 停止の結果を CLI の失敗（終了コード＋標準エラー）へ写す。使える成果物が残った場合は
     /// <see langword="null"/>。
@@ -473,74 +425,74 @@ internal static class ActivationCommands
         };
 
     /// <summary>
-    /// 個別レコーダの録画開始／終了を実行し、その結果を <see cref="CommandOutcome"/> として返す。
-    /// <paramref name="target"/> は数値ならインデックス（0始まり）、それ以外はレコーダ名として解決する。
-    /// ViewModel 未生成の場合は準備完了を待ってから処理し、待っても未生成なら
-    /// <see cref="ExitCode_RecorderNotAvailable"/>、対象が見つからない場合は <see cref="ExitCode_RecorderNotFound"/>、
-    /// 現在の状態で実行できない場合は <see cref="ExitCode_RecordingNotExecutable"/> を返す。
+    /// 個別レコーダの録画開始／終了の結果（<see cref="RecorderControlService"/>）を
+    /// <see cref="CommandOutcome"/> へ整形する。
+    /// <paramref name="target"/> は失敗の文言（見つからなかった指定そのもの）に使う。
     /// </summary>
     private static async Task<CommandOutcome> ExecuteRecorderCommandAsync(string target, bool start)
     {
-        // 常駐ワーカー起動直後は ViewModel 生成待ち。準備完了まで待ってから実行する
-        var controller = await WaitForControllerAsync();
-        if (controller is null)
-            return RecorderNotAvailableFailure();
-
-        // 数値ならインデックス、それ以外は名前で対象レコーダを解決する
-        // （規則は RecorderCliRules.ResolveTargetIndex。L1 が守っている）
-        int index = RecorderCliRules.ResolveTargetIndex(
-            controller.Recorders.Select(r => r.Name).ToArray(), target);
-        GstEventRecorderViewModel? recorder = 0 <= index ? controller.Recorders[index] : null;
-
-        if (recorder is null)
+        if (start)
         {
-            return CommandOutcome.Failure(exitCode: ExitCode_RecorderNotFound) with
+            var result = await RecorderControlService.StartAsync(target);
+            if (RecorderCommandFailure(result.ExitCode, target, result.RecorderName, start: true)
+                is CommandOutcome failure)
             {
-                ConsoleError = Localization.GetString("Resources/Cli_RecorderNotFound", target) + Environment.NewLine,
-            };
+                return failure;
+            }
+
+            return SucceededWithFile(result.LastFilename);
         }
 
-        // 実行前に実行可否を確認し、不可の場合は実行せず失敗として返す
-        bool canExecute = start ? recorder.CanStartRecording : recorder.CanStopRecording;
-        if (!canExecute)
+        var stop = await RecorderControlService.StopAsync(target);
+        if (RecorderCommandFailure(stop.ExitCode, target, stop.RecorderName, start: false)
+            is CommandOutcome stopRejected)
         {
-            return CommandOutcome.Failure(exitCode: ExitCode_RecordingNotExecutable) with
+            return stopRejected;
+        }
+
+        // **使えないファイルを成功として返さない。** ファイルのパスは出力したうえで、
+        // 終了コードで理由を伝える（バッチはパスを使って後始末や修復ができるが、
+        // 成果物として運んではいけない）。
+        if (StopFailure(stop.Outcome, stop.RecorderName ?? string.Empty) is CommandOutcome stopFailure)
+        {
+            return stopFailure with { ConsoleOutput = stop.LastFilename + Environment.NewLine };
+        }
+
+        return SucceededWithFile(stop.LastFilename);
+    }
+
+    /// <summary>
+    /// 個別レコーダの録画開始／終了が<b>実行される前に</b>失敗した場合の文言と終了コード。
+    /// 成功（0）なら <see langword="null"/>。
+    /// </summary>
+    private static CommandOutcome? RecorderCommandFailure(
+        int exitCode, string target, string? recorderName, bool start) => exitCode switch
+        {
+            ExitCode_RecorderNotAvailable => RecorderNotAvailableFailure(),
+            ExitCode_RecorderNotFound => CommandOutcome.Failure(exitCode: ExitCode_RecorderNotFound) with
+            {
+                ConsoleError = Localization.GetString("Resources/Cli_RecorderNotFound", target) + Environment.NewLine,
+            },
+            ExitCode_RecordingNotExecutable => CommandOutcome.Failure(exitCode: ExitCode_RecordingNotExecutable) with
             {
                 ConsoleError = Localization.GetString(
                     start ? "Resources/Cli_CannotStartInState" : "Resources/Cli_CannotStopInState",
-                    recorder.Name) + Environment.NewLine,
-            };
-        }
-
-        if (start)
-        {
-            recorder.StartRecording();
-        }
-        else
-        {
-            // 停止は完了まで待つ。`stop-recording X` の直後に `copy` するバッチが
-            // 想定用途であり、コマンド復帰時に moov が
-            // 確定している必要がある。HandleActivation は元々非同期なので
-            // UI スレッドは塞がらない。
-            await recorder.StopRecordingAsync();
-
-            // **使えないファイルを成功として返さない。** ファイルのパスは出力したうえで、
-            // 終了コードで理由を伝える（バッチはパスを使って後始末や修復ができるが、
-            // 成果物として運んではいけない）。
-            if (StopFailure(recorder.LastStopOutcome, recorder.Name) is CommandOutcome failure)
-            {
-                return failure with { ConsoleOutput = recorder.LastFilename + Environment.NewLine };
-            }
-        }
-
-        // 出力は「実際に使われたファイルのパス」。-all 版と揃えるため、
-        // 未展開の FilenameTemplate ではなく解決済みの LastFilename を返す。
-        // 末尾の改行はランチャー側が Console.Out.Write（WriteLine ではない）で出力するため、ここで付ける。
-        return CommandOutcome.Silent() with
-        {
-            ConsoleOutput = recorder.LastFilename + Environment.NewLine
+                    recorderName) + Environment.NewLine,
+            },
+            // 未知の非 0 は成功に化かさず、そのまま終了コードとして返す。
+            _ => exitCode == 0 ? null : CommandOutcome.Failure(exitCode: exitCode),
         };
-    }
+
+    /// <summary>
+    /// 出力は「実際に使われたファイルのパス」。-all 版と揃えるため、
+    /// 未展開の FilenameTemplate ではなく解決済みの LastFilename を返す。
+    /// 末尾の改行はランチャー側が Console.Out.Write（WriteLine ではない）で出力するため、ここで付ける。
+    /// </summary>
+    private static CommandOutcome SucceededWithFile(string? lastFilename) =>
+        CommandOutcome.Silent() with
+        {
+            ConsoleOutput = lastFilename + Environment.NewLine
+        };
 
     /// <summary>
     /// 引数をランチャー側でその場で処理すべきか判定し、処理した場合はその終了コードを返す。
@@ -675,15 +627,13 @@ internal static class ActivationCommands
         var statusCommand = new Command("status", Localization.GetString("Resources/Cli_StatusDesc"));
         statusCommand.SetAction(async (_, _) =>
         {
-            // 常駐ワーカー起動直後は ViewModel 生成待ち。準備完了まで待ってから読む
-            // ── 待たないと「レコーダーが1件も無い」という嘘の健全な結果を返しうる。
-            var controller = await WaitForControllerAsync();
-            if (controller is null)
+            var status = await RecorderControlService.GetStatusAsync();
+            if (status.ExitCode == ExitCode_RecorderNotAvailable)
             {
                 setOutcome(RecorderNotAvailableFailure());
                 return;
             }
-            setOutcome(BuildStatusOutcome(controller));
+            setOutcome(BuildStatusOutcome(status));
         });
         rootCommand.Subcommands.Add(statusCommand);
 
@@ -693,40 +643,25 @@ internal static class ActivationCommands
         var startRecordingAllCommand = new Command("start-recording-all", Localization.GetString("Resources/Cli_StartAllDesc"));
         startRecordingAllCommand.SetAction(async (_, _) =>
         {
-            // 常駐ワーカー起動直後は ViewModel 生成待ち。準備完了まで待ってから実行する
-            var controller = await WaitForControllerAsync();
-            if (controller is null)
+            var result = await RecorderControlService.StartAllAsync();
+            if (result.ExitCode == ExitCode_RecorderNotAvailable)
             {
                 setOutcome(RecorderNotAvailableFailure());
                 return;
             }
-            // 開始前に実行可否を確認し、開始可能なレコーダが1つも無ければ失敗として返す
-            if (!controller.CanStartRecordingAll)
-            {
-                setOutcome(CommandOutcome.Failure(exitCode: ExitCode_RecordingNotExecutable) with
-                {
-                    ConsoleError = Localization.GetString("Resources/Cli_NoRecorderCanStart") + Environment.NewLine,
-                });
-                return;
-            }
-            // **出すのは「今回開始した分」だけ**（stop-recording-all と同じ規則）。
-            // 全件を出すと、開始しなかったレコーダーの行が前回録画の LastFilename を
-            // 載せて出て、バッチがそれを今回の成果物として運んでしまう。
-            //
             // 標準エラーへ出すのは**開始できるはずだったのに落ちた分**だけ
             // （既に録画中のレコーダーはトリガ運用では日常で、失敗ではない）。
-            var startedRecorders = controller.StartRecordingAllAndReport(out var failedRecorders);
-            string? startErrors = failedRecorders.Count == 0
+            string? startErrors = result.FailedRecorders.Count == 0
                 ? null
-                : string.Concat(failedRecorders.Select(r =>
-                    Localization.GetString("Resources/Cli_CannotStartInState", r.Name) + Environment.NewLine));
+                : string.Concat(result.FailedRecorders.Select(name =>
+                    Localization.GetString("Resources/Cli_CannotStartInState", name) + Environment.NewLine));
 
-            if (startedRecorders.Count == 0)
+            if (result.ExitCode != 0)
             {
-                // 1 台も開始できなかった。**終了コード 0 で返さない** ── 単体の
-                // start-recording が同じ失敗で非 0 を返すのに -all だけ 0 を返すと、
-                // バッチは「全部落ちた」を成功として通す。
-                setOutcome(CommandOutcome.Failure(exitCode: ExitCode_RecordingNotExecutable) with
+                // 開始可能なレコーダが1つも無い／1 台も開始できなかった。
+                // **終了コード 0 で返さない** ── 単体の start-recording が同じ失敗で
+                // 非 0 を返すのに -all だけ 0 を返すと、バッチは「全部落ちた」を成功として通す。
+                setOutcome(CommandOutcome.Failure(exitCode: result.ExitCode) with
                 {
                     ConsoleError = (startErrors ?? "")
                         + Localization.GetString("Resources/Cli_NoRecorderCanStart") + Environment.NewLine,
@@ -734,11 +669,14 @@ internal static class ActivationCommands
                 return;
             }
 
+            // **出すのは「今回開始した分」だけ**（stop-recording-all と同じ規則）。
+            // 全件を出すと、開始しなかったレコーダーの行が前回録画の LastFilename を
+            // 載せて出て、バッチがそれを今回の成果物として運んでしまう。
             setOutcome(CommandOutcome.Silent() with
             {
                 // 末尾の改行は、ランチャー側が Console.Out.Write（WriteLine ではない）で出力するためここで付ける
                 ConsoleOutput = string.Join(Environment.NewLine,
-                    startedRecorders.Select(r => RecorderCliRules.FormatRecorderLine(r.Name, r.LastFilename)))
+                    result.Started.Select(r => RecorderCliRules.FormatRecorderLine(r.Name, r.LastFilename)))
                     + Environment.NewLine,
                 ConsoleError = startErrors,
             });
@@ -749,42 +687,33 @@ internal static class ActivationCommands
         var stopRecordingAllCommand = new Command("stop-recording-all", Localization.GetString("Resources/Cli_StopAllDesc"));
         stopRecordingAllCommand.SetAction(async (_, _) =>
         {
-            // 常駐ワーカー起動直後は ViewModel 生成待ち。準備完了まで待ってから実行する
-            var controller = await WaitForControllerAsync();
-            if (controller is null)
+            var result = await RecorderControlService.StopAllAsync();
+            if (result.ExitCode == ExitCode_RecorderNotAvailable)
             {
                 setOutcome(RecorderNotAvailableFailure());
                 return;
             }
-            // 終了前に実行可否を確認し、終了可能なレコーダが1つも無ければ失敗として返す
-            if (!controller.CanStopRecordingAll)
+            // 終了可能なレコーダが1つも無ければ失敗として返す
+            if (result.ExitCode != 0)
             {
-                setOutcome(CommandOutcome.Failure(exitCode: ExitCode_RecordingNotExecutable) with
+                setOutcome(CommandOutcome.Failure(exitCode: result.ExitCode) with
                 {
                     ConsoleError = Localization.GetString("Resources/Cli_NoRecorderCanStop") + Environment.NewLine,
                 });
                 return;
             }
-            // 停止は完了まで待つ（stop-recording と同じ理由）。排出は並行に走る。
-            //
-            // **見るのは「今回止めたレコーダー」だけ。** 全件を走査してはいけない ──
-            // 録画していなかったレコーダーの LastStopOutcome / LastFilename は
-            // **前回の録画のもの**で（リセットは次の録画開始のときだけ）、
-            // 前回失敗したレコーダーが1本あるだけで、今回正常に録れた分まで
-            // 失敗として返してしまう（詳細は StopRecordingAllAsync の注記）。
-            var stopped = await controller.StopRecordingAllAsync();
 
             // 末尾の改行は、ランチャー側が Console.Out.Write（WriteLine ではない）で出力するためここで付ける
             string files = string.Join(Environment.NewLine,
-                stopped.Select(r => RecorderCliRules.FormatRecorderLine(r.Name, r.LastFilename)))
+                result.Stopped.Select(r => RecorderCliRules.FormatRecorderLine(r.Name, r.LastFilename)))
                 + Environment.NewLine;
 
             // **1本でも使えなければ失敗として返す。** -all の成否は「全部ちゃんと録れたか」で、
             // 1本が壊れていても 0 を返すと、バッチはそれを検出する手段を持たない。
             // どのレコーダーがどう壊れたかは標準エラーへ名前つきで、**全件**出す
             // （最初の1件で止めると、残りが壊れているかどうか分からない）。
-            var failed = stopped
-                .Select(r => (Recorder: r, Failure: StopFailure(r.LastStopOutcome, r.Name)))
+            var failed = result.Stopped
+                .Select(r => (Recorder: r, Failure: StopFailure(r.Outcome, r.Name)))
                 .Where(x => x.Failure is not null)
                 .ToList();
 
@@ -793,7 +722,7 @@ internal static class ActivationCommands
                 // **終了コードは「強い方」を返す**（規則は RecordingStopRules。L1 が守っている）。
                 // 混在した場合に弱い方を返すと、救済できたはずのデータを捨てさせる。
                 var worst = failed
-                    .Select(x => x.Recorder.LastStopOutcome)
+                    .Select(x => x.Recorder.Outcome)
                     .Aggregate(RecordingStopOutcome.Ok, RecordingStopRules.Stronger);
 
                 setOutcome(CommandOutcome.Failure(exitCode: ExitCodeFor(worst)) with

@@ -329,7 +329,7 @@ public sealed partial class UiaTriggerService : IDisposable
             if (requests.Count == 0)
                 return;
 
-            var controller = await ActivationCommands.WaitForControllerAsync();
+            var controller = await RecorderControlService.WaitForControllerAsync();
             if (controller is null)
             {
                 ActivityLog.Warn("trigger.action fail", $"id='{triggerId}' engine not ready");
@@ -394,7 +394,7 @@ public sealed partial class UiaTriggerService : IDisposable
 
     private async Task ExecuteForSingleAsync(string triggerId, TriggerActionRequest request, GstControllerViewModel controller)
     {
-        // 名前解決は CLI と同じ「完全一致・先勝ち」（ActivationCommands.ExecuteRecorderCommandAsync）
+        // 名前解決は CLI と同じ「完全一致・先勝ち」（RecorderControlService.StartAsync / StopAsync）
         var recorder = controller.Recorders.FirstOrDefault(r => r.Name == request.TargetRecorder);
         if (recorder is null)
         {
@@ -498,7 +498,7 @@ public sealed partial class UiaTriggerService : IDisposable
             if (orphans.Count == 0)
                 return;
 
-            var controller = await ActivationCommands.WaitForControllerAsync();
+            var controller = await RecorderControlService.WaitForControllerAsync();
             if (_disposed || Volatile.Read(ref _monitorEpoch) != epoch)
                 return;
             if (controller is null)

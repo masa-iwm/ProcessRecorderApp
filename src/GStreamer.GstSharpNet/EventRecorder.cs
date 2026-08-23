@@ -1222,7 +1222,7 @@ public partial class EventRecorder : ObservableObject, IDisposable
     /// <para>
     /// <b>これは独立に決めてよい値ではない。</b> 起動時のレコーダー初期化は UI スレッドで走り、
     /// <c>GstControllerViewModel.IsReady</c> が立つ前に完了する必要がある
-    /// ── その間に届いた CLI コマンドは <c>ActivationCommands.ReadyWaitTimeout</c> しか待たない。
+    /// ── その間に届いた CLI コマンドは <c>RecorderControlService.ReadyWaitTimeout</c> しか待たない。
     /// 関係は <c>PlayingStateBudgetTests</c>（L1）が機械的に守っている。
     /// </para>
     /// <para>

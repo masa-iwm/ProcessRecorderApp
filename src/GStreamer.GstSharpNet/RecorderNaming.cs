@@ -7,7 +7,7 @@ namespace ProcessRecorderApp.GStreamer;
 ///
 /// <para>
 /// CLI のレコーダー指定は「数値ならインデックス、それ以外は名前で<b>完全一致・先勝ち</b>」
-/// （<c>ActivationCommands.ExecuteRecorderCommandAsync</c>）。同じ名前が2つあると
+/// （<c>RecorderCliRules.ResolveTargetIndex</c>）。同じ名前が2つあると
 /// <b>2つ目には CLI から永久に到達できない</b> ── しかも画面上は普通に2件並んで見えるので、
 /// 「コマンドが効かない」ではなく「毎回 1 つ目が動く」という気付きにくい形で現れる。
 /// </para>

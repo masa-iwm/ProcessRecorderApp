@@ -7,8 +7,8 @@ namespace ProcessRecorderApp.GStreamer;
 /// CLI の録画コマンドがレコーダー集合へ適用する<b>選択と整形の規則</b>（純粋関数）。
 ///
 /// <para>
-/// 規則の本体は <c>ActivationCommands</c>（WinUI アプリプロジェクト）から呼ばれるが、
-/// あちらは L1 テストプロジェクトから参照できない。終了コード契約の中核
+/// 規則の本体は WinUI アプリプロジェクト（<c>RecorderControlService</c> / <c>ActivationCommands</c>）
+/// から呼ばれるが、あちらは L1 テストプロジェクトから参照できない。終了コード契約の中核
 /// （どのレコーダーが対象になるか・出力の列の並び）が発行物 E2E でしか検証できない
 /// 死角になっていたので、<c>RecordingStopRules</c> / <c>RecordingCommandState</c> と
 /// 同じ形でここへ置き、L1 で固定する。

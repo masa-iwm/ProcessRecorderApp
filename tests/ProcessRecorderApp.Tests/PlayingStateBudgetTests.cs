@@ -12,7 +12,7 @@ namespace ProcessRecorderApp.Tests;
 /// 到達するのを待つ上限（<c>SetState</c> の <c>ASYNC</c> を成功扱いしないための検出器）。
 /// この待ちは<b>起動時のレコーダー初期化＝UI スレッド</b>で消費され、
 /// <c>GstControllerViewModel.IsReady</c> が立つ<b>前</b>に起きる。
-/// 一方その間に届いた CLI コマンドは <c>ActivationCommands.ReadyWaitTimeout</c> しか待たない
+/// 一方その間に届いた CLI コマンドは <c>RecorderControlService.ReadyWaitTimeout</c> しか待たない
 /// ── ここが逆転すると、<b>1本のレコーダーが引っ掛かっただけで、
 /// 起動直後のコマンドが「録画エンジンが利用できない」で失敗し始める。</b>
 /// </para>
@@ -31,7 +31,7 @@ namespace ProcessRecorderApp.Tests;
 public class PlayingStateBudgetTests
 {
     /// <summary>
-    /// <c>ActivationCommands.ReadyWaitTimeout</c> の秒数（ソースから読む）。
+    /// <c>RecorderControlService.ReadyWaitTimeout</c> の秒数（ソースから読む）。
     /// </summary>
     private static readonly Regex ReadyWaitRegex = new(
         @"ReadyWaitTimeout\s*=\s*TimeSpan\.FromSeconds\(\s*(\d+)\s*\)", RegexOptions.Compiled);
@@ -39,7 +39,7 @@ public class PlayingStateBudgetTests
     [Fact]
     public void ThePlayingStateWait_FitsInsideTheCommandReadyWait()
     {
-        string path = RepositoryFiles.At("src", "ProcessRecorderApp", "ActivationCommands.cs");
+        string path = RepositoryFiles.At("src", "ProcessRecorderApp", "RecorderControlService.cs");
         string text = File.ReadAllText(path);
 
         // コメント中の言及（doc コメントがこの名前を何度も出す）を実装と数えない。
@@ -49,7 +49,7 @@ public class PlayingStateBudgetTests
             .FirstOrDefault(m => !SourceReferences.IsCommentLine(text, m.Index));
 
         Assert.True(match is not null,
-            "ActivationCommands.cs に ReadyWaitTimeout = TimeSpan.FromSeconds(...) が見つからない。"
+            "RecorderControlService.cs に ReadyWaitTimeout = TimeSpan.FromSeconds(...) が見つからない。"
             + Environment.NewLine
             + "書き方を変えたなら、この正規表現も一緒に直すこと"
             + "（見つからないまま緑にすると、検査そのものが消える）。");
@@ -64,7 +64,7 @@ public class PlayingStateBudgetTests
             + Environment.NewLine
             + "起動直後の CLI コマンドが「録画エンジンが利用できない」で失敗し始める。"
             + Environment.NewLine
-            + "どちらかを動かすなら、もう一方（ActivationCommands.ReadyWaitTimeout /"
+            + "どちらかを動かすなら、もう一方（RecorderControlService.ReadyWaitTimeout /"
             + Environment.NewLine
             + "EventRecorder.PlayingStateTimeoutMs）も一緒に見直すこと。");
     }
