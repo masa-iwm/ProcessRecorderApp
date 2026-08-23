@@ -6,6 +6,13 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- Web UI の 3 ファイル。**LogicalName を明示して `/` 区切りで固定する** ──
+         既定の論理名は RootNamespace とディレクトリ名から作られるので、
+         名前空間を変えた日に WebAssets の探し方が黙って壊れる。 -->
+    <EmbeddedResource Include="wwwroot\**\*" LogicalName="wwwroot/%(RecursiveDir)%(Filename)%(Extension)" />
+  </ItemGroup>
+
+  <ItemGroup>
     <!-- ASP.NET Core は共有フレームワークとして参照する。PackageReference ではないので
          Directory.Packages.props（中央パッケージ管理）は不変のままでよい。
          参照をこのプロジェクトに閉じ込めることで、L1 テストホストへ ASP.NET Core が

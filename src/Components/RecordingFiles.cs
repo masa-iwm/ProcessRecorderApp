@@ -24,6 +24,11 @@ public sealed record RecordingFileInfo(string RelativePath, long Length, DateTim
 /// 「消えたのに一覧に残る」が起きる。
 /// </para>
 /// <para>
+/// <b>ファイル自身がリンクなら出さない</b>（配信は <see cref="RecordingCleanup"/> より狭い）。
+/// 掃除はリンクを消せば済むが、配信はリンク先の実体を読むことになり、
+/// それは root の外でありうる。
+/// </para>
+/// <para>
 /// <b>root 自身のリパースポイントは見ない。</b> 保存先はユーザーが指定するもので、
 /// ジャンクションであることに正当性がある。降りる先だけを見るのが
 /// <see cref="RecordingCleanup"/> と同じ範囲になる。
@@ -74,6 +79,11 @@ public static class RecordingFiles
         foreach (var file in files)
         {
             if (!string.Equals(file.Extension, RecordingCleanup.Extension, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            // ファイル自身のリンク。実体は root の外でありうるので、開かずに落とす
+            // （開いてしまえばリンク先を配ることになる）。
+            if ((file.Attributes & FileAttributes.ReparsePoint) != 0)
                 continue;
 
             if (!TryProbeInProgress(file.FullName, out bool inProgress))
@@ -138,7 +148,13 @@ public static class RecordingFiles
     /// （録画中は取得した時点の長さまでしか意味のある内容が無い）。
     /// </para>
     /// </summary>
-    /// <param name="reason">失敗理由（ログ用・英語）。</param>
+    /// <param name="reason">
+    /// 失敗理由（ログ用・英語）。<c>path rejected</c>（root の外・拡張子違い）／
+    /// <c>reparse point</c>（root と対象の間、または対象自身がリンク ── <see cref="Enumerate"/>
+    /// で見えないものは取得もできない）／<c>not found</c>（無い）／
+    /// <c>unavailable</c>（在るのに開けない ── 排他で握られている・権限が無い・
+    /// 同名のディレクトリ）のいずれか。
+    /// </param>
     public static bool TryOpen(
         string root, string relativePath,
         [NotNullWhen(true)] out FileStream? stream,
@@ -179,6 +195,30 @@ public static class RecordingFiles
             }
         }
 
+        // 対象自身のリンク。実体は root の外でありうるので、開かずに断る
+        // （Enumerate も同じ理由でリンクを一覧に出さない）。
+        FileAttributes target;
+        try
+        {
+            target = File.GetAttributes(fullPath);
+        }
+        catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
+        {
+            reason = "not found";
+            return false;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            reason = "unavailable";
+            return false;
+        }
+
+        if ((target & FileAttributes.ReparsePoint) != 0)
+        {
+            reason = "reparse point";
+            return false;
+        }
+
         try
         {
             stream = new FileStream(fullPath, FileMode.Open, FileAccess.Read,
@@ -186,7 +226,15 @@ public static class RecordingFiles
         }
         catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
         {
+            // IOException より先に受けること（どちらも IOException の派生）。
             reason = "not found";
+            return false;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // 在るのに開けない ── 排他で握られている・権限が無い・同名のディレクトリ。
+            // 「無い」と答えると、消えたのか読めないのかが呼び出し側で区別できない。
+            reason = "unavailable";
             return false;
         }
 

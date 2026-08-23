@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ProcessRecorderApp</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<p id="authNotice" class="notice hidden"></p>
+
+<h1>ProcessRecorderApp</h1>
+
+<section id="recordersSection">
+  <h2>Recorders</h2>
+  <p class="actions">
+    <button type="button" id="startAll">Start all</button>
+    <button type="button" id="stopAll">Stop all</button>
+    <span id="recordersStatus" class="status"></span>
+  </p>
+  <table id="recordersTable">
+    <thead>
+      <tr>
+        <th>name</th><th>state</th><th>isRecording</th><th>lastFilename</th><th>health</th><th></th>
+      </tr>
+    </thead>
+    <tbody id="recordersBody"></tbody>
+  </table>
+</section>
+
+<section id="recorderSettingsSection">
+  <h2>Recorder settings</h2>
+  <p class="actions">
+    <label for="recorderSelect">Recorder</label>
+    <select id="recorderSelect"></select>
+    <button type="button" id="loadRecorderSettings">Load</button>
+    <button type="button" id="applyRecorderSettings">Apply changes</button>
+    <span id="recorderSettingsStatus" class="status"></span>
+  </p>
+  <div id="recorderSettingsForm"></div>
+</section>
+
+<section id="appSettingsSection">
+  <h2>App settings</h2>
+  <p class="actions">
+    <button type="button" id="loadAppSettings">Reload</button>
+    <span id="appSettingsStatus" class="status"></span>
+  </p>
+  <div id="appSettingsForm"></div>
+</section>
+
+<section id="variablesSection">
+  <h2>Variables</h2>
+  <p class="actions">
+    <label for="variableKey">key</label>
+    <input type="text" id="variableKey">
+    <label for="variableValue">value</label>
+    <input type="text" id="variableValue">
+    <label for="variablePersist">persist</label>
+    <input type="checkbox" id="variablePersist">
+    <button type="button" id="putVariable">Put</button>
+    <button type="button" id="loadVariables">Reload</button>
+    <span id="variablesStatus" class="status"></span>
+  </p>
+  <table id="variablesTable">
+    <thead><tr><th>key</th><th>value</th><th>persistent</th></tr></thead>
+    <tbody id="variablesBody"></tbody>
+  </table>
+</section>
+
+<section id="recordingsSection">
+  <h2>Recordings</h2>
+  <p class="actions">
+    <button type="button" id="loadRecordings">Refresh</button>
+    <span id="recordingsRoot" class="status"></span>
+  </p>
+  <video id="player" controls preload="none"></video>
+  <table id="recordingsTable">
+    <thead><tr><th>path</th><th>size</th><th>lastWrite</th><th>inProgress</th><th></th></tr></thead>
+    <tbody id="recordingsBody"></tbody>
+  </table>
+</section>
+
+<script src="app.js"></script>
+</body>
+</html>

@@ -319,7 +319,8 @@ public sealed class RemoteControlTests(PublishedApp app, ITestOutputHelper outpu
             Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         }
 
-        // トークンの付かないルートは仮の本文（波 5 で Web UI に置き換わる）。
+        // トークンの付かないルートは Web UI（index.html）。
+        // 資産そのものの検証は RecordingDeliveryTests の担当。
         using (var root = await client.GetAsync("/", Ct))
         {
             Assert.Equal(HttpStatusCode.OK, root.StatusCode);

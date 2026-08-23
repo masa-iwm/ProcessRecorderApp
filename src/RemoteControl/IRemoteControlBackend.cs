@@ -32,6 +32,18 @@ public interface IRemoteControlBackend
     Task<JsonObject> GetAppSettingsAsync(CancellationToken ct);
 
     /// <summary>
+    /// 録画の配信 root（解決済みの絶対パス）。<b>アプリ全体で 1 つ</b>で、
+    /// 録画の書き込み先と同じ値である。
+    ///
+    /// <para>
+    /// <b>返すのは文字列だけで、列挙も開封もしない。</b> ディスクを読むのは呼び出し側
+    /// （<c>RecordingEndpoints</c>）の仕事である ── 実装は UI スレッドの上に居るので、
+    /// 件数に比例する同期 IO をここへ載せると画面が止まる。
+    /// </para>
+    /// </summary>
+    Task<string> GetRecordingsRootAsync(CancellationToken ct);
+
+    /// <summary>
     /// 状態変化の購読。<paramref name="onChange"/> は任意のスレッドで呼ばれる
     /// （200ms デバウンス済み）。戻り値の <see cref="IDisposable.Dispose"/> で解除する。
     /// </summary>

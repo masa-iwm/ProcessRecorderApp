@@ -207,6 +207,61 @@ public sealed class RecordingFilesTests : IDisposable
         Assert.Equal("not found", reason);
     }
 
+    [Fact]
+    public void AFileHeldExclusivelyIsUnavailable()
+    {
+        // 在るのに開けない ── 「無い」と区別できないと、呼び出し側は
+        // 消えたのか読めないのかを判断できない。
+        string path = CreateFile("locked.mp4");
+
+        using var exclusive = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.None);
+
+        Assert.False(RecordingFiles.TryOpen(_root, "locked.mp4", out var stream, out string? reason));
+        Assert.Null(stream);
+        Assert.Equal("unavailable", reason);
+    }
+
+    [Fact]
+    public void ADirectoryNamedLikeARecordingIsUnavailable()
+    {
+        // 拡張子だけでは中身の種類は決まらない。ディレクトリは開けないので
+        // 「無い」ではなく「開けない」と答える。
+        Directory.CreateDirectory(Path.Combine(_root, "x.mp4"));
+
+        Assert.False(RecordingFiles.TryOpen(_root, "x.mp4", out var stream, out string? reason));
+        Assert.Null(stream);
+        Assert.Equal("unavailable", reason);
+
+        // 一覧にも出ない（列挙が見るのはファイルだけ）。
+        Assert.Empty(RecordingFiles.Enumerate(_root));
+    }
+
+    [Fact]
+    public void AFileThatIsItselfALinkIsNotServed()
+    {
+        CreateFile("real.mp4", length: 5);
+
+        string link = Path.Combine(_root, "link.mp4");
+        try
+        {
+            // ファイルのシンボリックリンクは管理者か開発者モードが要る。
+            // ジャンクションはディレクトリ専用なので代わりにならない。
+            File.CreateSymbolicLink(link, Path.Combine(_root, "real.mp4"));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or PlatformNotSupportedException)
+        {
+            Assert.Skip("no file symbolic link could be created here (" + ex.GetType().Name + ")");
+            return;
+        }
+
+        // リンク先の実体は root の外でありうる。配るのは実体なので、リンクは出さない。
+        Assert.Equal(["real.mp4"], RecordingFiles.Enumerate(_root).Select(f => f.RelativePath).ToArray());
+
+        Assert.False(RecordingFiles.TryOpen(_root, "link.mp4", out var stream, out string? reason));
+        Assert.Null(stream);
+        Assert.Equal("reparse point", reason);
+    }
+
     /// <summary>
     /// リパースポイントを 1 つ作る。作れなければ false。
     ///

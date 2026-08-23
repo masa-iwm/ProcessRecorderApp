@@ -1,0 +1,460 @@
+using System.Diagnostics;
+using System.Net;
+using System.Net.Http;
+using System.Net.Http.Headers;
+using System.Text;
+using System.Text.Json;
+using System.Text.RegularExpressions;
+using Xunit;
+
+namespace ProcessRecorderApp.E2E;
+
+/// <summary>
+/// 録画ファイルの配信（<c>GET /api/recordings</c>・<c>GET /api/recordings/{*path}</c>）と、
+/// 埋め込みの Web UI。
+///
+/// <para>
+/// <b>ここは発行物でしか確かめられない。</b> Range・条件付き要求・
+/// <c>Content-Disposition</c> の符号化はどれも ASP.NET Core が書くもので、
+/// 単体テストからは 1 バイトも観測できない ── 埋め込み資産に至っては、
+/// 発行物へ入っているかどうかそのものが検証対象である。
+/// </para>
+/// </summary>
+[Collection(E2ECollection.Name)]
+public sealed class RecordingDeliveryTests(PublishedApp app, ITestOutputHelper output)
+{
+    /// <summary>製品が生成する形（Base64Url・43 文字）に合わせた固定トークン。</summary>
+    private const string Token = "E2E-recording-delivery-token-0123456789-abc";
+
+    private static readonly TimeSpan StartBudget = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(30);
+
+    /// <summary>録画を回す時間。<c>mp4mux</c> が意味のある長さを書くのに足りる最小限。</summary>
+    private static readonly TimeSpan RecordingWindow = TimeSpan.FromSeconds(2);
+
+    private static CancellationToken Ct => TestContext.Current.CancellationToken;
+
+    private static readonly Regex BindPattern = new(@"\bbind=([0-9.]+):(\d+)\b", RegexOptions.Compiled);
+
+    /// <summary>
+    /// リモート操作を有効にし、<b>配信 root を隔離ディレクトリへ向けた</b> settings.json。
+    /// <c>OutputDirectory</c> を書かないと相対の基準が発行ディレクトリになり、
+    /// 一覧が開発機の実ファイルを映す。
+    /// </summary>
+    private static SettingsFile RemoteSettings()
+    {
+        var settings = new SettingsFile
+        {
+            RemoteControlEnabled = true,
+            // 127.0.0.1 に固定する（0.0.0.0 だと開発機と CI の LAN から到達できる）。
+            RemoteControlBindAddress = "127.0.0.1",
+            RemoteControlPort = 0,
+            RemoteControlAccessToken = Token,
+        };
+        settings.AddRecorder("R1");
+        return settings;
+    }
+
+    private static void UseIsolatedRoot(AppInstance instance)
+        => instance.Settings.OutputDirectory = instance.RecordingsDir;
+
+    private int WaitForPort(AppInstance instance)
+    {
+        var deadline = Stopwatch.StartNew();
+        while (deadline.Elapsed < StartBudget)
+        {
+            foreach (string line in ActivityLogFile.Events(instance.ReadActivityLog(), "remote.start"))
+            {
+                var match = BindPattern.Match(ActivityLogFile.DetailOf(line));
+                if (match.Success)
+                {
+                    output.WriteLine(line);
+                    return int.Parse(match.Groups[2].Value);
+                }
+            }
+            Thread.Sleep(200);
+        }
+
+        Assert.Fail(
+            $"remote.start が {StartBudget.TotalSeconds:F0} 秒以内に現れませんでした。"
+            + Environment.NewLine
+            + string.Join(Environment.NewLine, ActivityLogFile.Events(instance.ReadActivityLog(), "remote.error"))
+            + Environment.NewLine + instance.DiagnosticDump());
+        return 0;
+    }
+
+    private static HttpClient CreateClient(int port) =>
+        new(new HttpClientHandler { UseCookies = false, AllowAutoRedirect = false })
+        {
+            BaseAddress = new Uri($"http://127.0.0.1:{port}/"),
+            Timeout = RequestTimeout,
+        };
+
+    private static async Task<JsonDocument> ReadJsonAsync(HttpResponseMessage response)
+        => JsonDocument.Parse(await response.Content.ReadAsStringAsync(Ct));
+
+    /// <summary>一覧を読み、<c>files</c> の要素を素の JSON のまま返す。</summary>
+    private static async Task<(string Root, JsonElement[] Files)> ListAsync(HttpClient client)
+    {
+        using var response = await client.GetAsync("api/recordings", Ct);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("no-store", response.Headers.CacheControl?.ToString());
+
+        using var body = await ReadJsonAsync(response);
+        return (body.RootElement.GetProperty("root").GetString()!,
+                [.. body.RootElement.GetProperty("files").EnumerateArray().Select(e => e.Clone())]);
+    }
+
+    /// <summary>録画を 1 本作って、その相対パスを返す。</summary>
+    private string RecordOnce(AppInstance instance)
+    {
+        Assert.Equal(0, instance.Run("start-recording-all").ExitCode);
+        Thread.Sleep(RecordingWindow);
+        Assert.Equal(0, instance.Run("stop-recording-all").ExitCode);
+
+        string file = Assert.Single(instance.ListRecordings());
+        output.WriteLine(file);
+        return Path.GetFileName(file);
+    }
+
+    // ---- 一覧 ----
+
+    /// <summary>
+    /// 録画中のファイルが <c>inProgress</c> で出て、停止後は確定した長さで出ること。
+    /// 併せて、<b>録画中でも取得できる</b>こと（<c>filesink</c> が握ったままでも読める）。
+    /// </summary>
+    [Fact]
+    public async Task TheListing_MarksTheFileInProgressAndServesItAnyway()
+    {
+        using var instance = AppInstance.Create(app, RemoteSettings(), configure: UseIsolatedRoot);
+        int port = WaitForPort(instance);
+        using var client = CreateClient(port);
+
+        var (root, empty) = await ListAsync(client);
+        Assert.Equal(instance.RecordingsDir, root, ignoreCase: true);
+        Assert.Empty(empty);
+
+        Assert.Equal(0, instance.Run("start-recording-all").ExitCode);
+        Thread.Sleep(RecordingWindow);
+
+        var (_, recording) = await ListAsync(client);
+        var live = Assert.Single(recording);
+        Assert.True(live.GetProperty("inProgress").GetBoolean(),
+            "録画中のファイルが inProgress で出ていない: " + live);
+
+        string relativePath = live.GetProperty("path").GetString()!;
+        Assert.DoesNotContain('\\', relativePath);
+
+        // 録画中でも本文が取れること。moov は未確定なので再生はできないが、
+        // 「握られているから読めない」であってはならない。
+        //
+        // **長さは 0 でありうる。** `mp4mux faststart=true` は EOS まで自前の一時ファイルへ
+        // 溜めるので、`filesink` の出力先は録画が終わるまで 0 バイトのままになる（実測）。
+        // ここで確かめられるのは「共有読み取りで開けて 200 が返る」ことだけである。
+        using (var live200 = await client.GetAsync("api/recordings/" + Uri.EscapeDataString(relativePath), Ct))
+        {
+            Assert.Equal(HttpStatusCode.OK, live200.StatusCode);
+            Assert.NotNull(live200.Content.Headers.ContentLength);
+            output.WriteLine($"in-progress Content-Length: {live200.Content.Headers.ContentLength}");
+        }
+
+        Assert.Equal(0, instance.Run("stop-recording-all").ExitCode);
+
+        var (_, finished) = await ListAsync(client);
+        var done = Assert.Single(finished);
+        Assert.False(done.GetProperty("inProgress").GetBoolean());
+        Assert.Equal(relativePath, done.GetProperty("path").GetString());
+
+        string full = Assert.Single(instance.ListRecordings());
+        Assert.Equal(new FileInfo(full).Length, done.GetProperty("length").GetInt64());
+
+        // 更新時刻は ISO-8601 で載る（文字列ではなく時刻として突き合わせる）。
+        Assert.Equal(
+            File.GetLastWriteTimeUtc(full),
+            done.GetProperty("lastWriteTimeUtc").GetDateTime(),
+            TimeSpan.FromSeconds(2));
+    }
+
+    // ---- Range と条件付き要求 ----
+
+    /// <summary>
+    /// 完結したファイルが、全体・末尾の部分・範囲外・再検証のそれぞれに正しく答えること。
+    /// <b>シークはこれが動いていないと成立しない</b>（ブラウザは末尾の <c>moov</c> を
+    /// 部分要求で読む）。
+    /// </summary>
+    [Fact]
+    public async Task AFinishedRecording_ServesRangesAndRevalidates()
+    {
+        using var instance = AppInstance.Create(app, RemoteSettings(), configure: UseIsolatedRoot);
+        int port = WaitForPort(instance);
+        using var client = CreateClient(port);
+
+        string name = RecordOnce(instance);
+        byte[] expected = File.ReadAllBytes(Path.Combine(instance.RecordingsDir, name));
+        string url = "api/recordings/" + Uri.EscapeDataString(name);
+
+        string etag;
+        using (var whole = await client.GetAsync(url, Ct))
+        {
+            Assert.Equal(HttpStatusCode.OK, whole.StatusCode);
+            Assert.Equal("video/mp4", whole.Content.Headers.ContentType?.MediaType);
+            Assert.Contains("bytes", whole.Headers.AcceptRanges);
+            Assert.Equal("no-cache", whole.Headers.CacheControl?.ToString());
+
+            Assert.NotNull(whole.Headers.ETag);
+            etag = whole.Headers.ETag.ToString();
+            output.WriteLine("ETag: " + etag);
+            Assert.Equal(expected, await whole.Content.ReadAsByteArrayAsync(Ct));
+        }
+
+        const int TailLength = 1024;
+        using (var request = new HttpRequestMessage(HttpMethod.Get, url))
+        {
+            request.Headers.Range = new RangeHeaderValue(null, TailLength);
+            using var tail = await client.SendAsync(request, Ct);
+
+            Assert.Equal(HttpStatusCode.PartialContent, tail.StatusCode);
+            Assert.Equal(
+                $"bytes {expected.Length - TailLength}-{expected.Length - 1}/{expected.Length}",
+                tail.Content.Headers.ContentRange?.ToString());
+            Assert.Equal(expected[^TailLength..], await tail.Content.ReadAsByteArrayAsync(Ct));
+        }
+
+        using (var request = new HttpRequestMessage(HttpMethod.Get, url))
+        {
+            request.Headers.Range = new RangeHeaderValue(expected.Length + 10, null);
+            using var beyond = await client.SendAsync(request, Ct);
+
+            Assert.Equal(HttpStatusCode.RequestedRangeNotSatisfiable, beyond.StatusCode);
+        }
+
+        using (var request = new HttpRequestMessage(HttpMethod.Get, url))
+        {
+            request.Headers.TryAddWithoutValidation("If-None-Match", etag);
+            using var revalidated = await client.SendAsync(request, Ct);
+
+            Assert.Equal(HttpStatusCode.NotModified, revalidated.StatusCode);
+        }
+    }
+
+    // ---- パス ----
+
+    /// <summary>
+    /// 配信 root の外・録画以外の拡張子・存在しないファイルの断り方。
+    ///
+    /// <para>
+    /// <b>「無い」だけが 404 で、規則で断ったものは 400。</b> 逆にすると、
+    /// 断り方の違いだけで root の外のファイルの存在を当てられる。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task PathsOutsideTheRootAreRejected()
+    {
+        using var instance = AppInstance.Create(app, RemoteSettings(), configure: UseIsolatedRoot);
+        int port = WaitForPort(instance);
+        using var client = CreateClient(port);
+
+        using (var missing = await client.GetAsync("api/recordings/nope.mp4", Ct))
+        {
+            Assert.Equal(HttpStatusCode.NotFound, missing.StatusCode);
+            using var body = await ReadJsonAsync(missing);
+            Assert.Equal(4, body.RootElement.GetProperty("exitCode").GetInt32());
+        }
+
+        using (var wrongExtension = await client.GetAsync("api/recordings/a.txt", Ct))
+        {
+            Assert.Equal(HttpStatusCode.BadRequest, wrongExtension.StatusCode);
+            using var body = await ReadJsonAsync(wrongExtension);
+            Assert.Equal(4, body.RootElement.GetProperty("exitCode").GetInt32());
+        }
+
+        using (var absolute = await client.GetAsync("api/recordings/C:%5Cx.mp4", Ct))
+        {
+            Assert.Equal(HttpStatusCode.BadRequest, absolute.StatusCode);
+            using var body = await ReadJsonAsync(absolute);
+            Assert.Equal(4, body.RootElement.GetProperty("exitCode").GetInt32());
+        }
+
+        // 親への遡り、その 1: 区切りも符号化したもの（%2e%2e%2f）は**ハンドラーに届く前に畳まれる**。
+        // `Uri` は %2e だけを '.' へ戻し %2f は符号化のまま残すので、線上は
+        // /api/recordings/..%2fx.mp4 の 1 セグメント。これを復号したサーバー側の
+        // 正規化がドットセグメントを取り除き、ハンドラーが受け取るのは x.mp4 になる
+        // ── だから 404 の理由は「規則で断った（path rejected）」ではなく
+        // 「無い（not found）」である（実測）。経路が MapFallback（`{*path:nonfile}`）へ
+        // 落ちているのではない ── 落ちていれば理由は unknown endpoint になる。
+        using (var request = new HttpRequestMessage(HttpMethod.Get, new Uri(client.BaseAddress!, "api/recordings/%2e%2e%2fx.mp4")))
+        using (var encoded = await client.SendAsync(request, Ct))
+        {
+            string body = await encoded.Content.ReadAsStringAsync(Ct);
+            output.WriteLine($"%2e%2e%2f sent as {request.RequestUri!.PathAndQuery} -> {(int)encoded.StatusCode} {body}");
+
+            Assert.Equal("/api/recordings/..%2fx.mp4", request.RequestUri.PathAndQuery);
+            Assert.Equal(HttpStatusCode.NotFound, encoded.StatusCode);
+            using var json = JsonDocument.Parse(body);
+            Assert.Equal(4, json.RootElement.GetProperty("exitCode").GetInt32());
+            Assert.Equal("not found", json.RootElement.GetProperty("error").GetString());
+        }
+
+        // 親への遡り、その 2: 区切りが '\'（%5C）なら 1 セグメントのまま**ハンドラーへ届く**
+        // ── ここで初めて ".." を断る規則（TryResolveUnderRoot）が働く。
+        // root の外に本物のファイルを置いてあるので、断りが破れれば中身が返ってしまう。
+        File.WriteAllBytes(Path.Combine(Path.GetDirectoryName(instance.RecordingsDir)!, "outside.mp4"), new byte[16]);
+
+        using (var request = new HttpRequestMessage(HttpMethod.Get, new Uri(client.BaseAddress!, "api/recordings/..%5Coutside.mp4")))
+        using (var traversal = await client.SendAsync(request, Ct))
+        {
+            string body = await traversal.Content.ReadAsStringAsync(Ct);
+            output.WriteLine($"..%5C -> {(int)traversal.StatusCode} {body}");
+
+            Assert.Equal(HttpStatusCode.BadRequest, traversal.StatusCode);
+            Assert.Equal("application/json", traversal.Content.Headers.ContentType?.MediaType);
+
+            using var json = JsonDocument.Parse(body);
+            Assert.Equal(4, json.RootElement.GetProperty("exitCode").GetInt32());
+            Assert.Equal("path rejected", json.RootElement.GetProperty("error").GetString());
+        }
+    }
+
+    // ---- ダウンロード ----
+
+    /// <summary>
+    /// <c>?download=1</c> が <c>Content-Disposition: attachment</c> を付け、
+    /// <b>非 ASCII のファイル名が <c>filename*=UTF-8''</c> で運ばれる</b>こと。
+    /// 自前で組み立てると必ず間違える部分なので、フレームワークに書かせている。
+    /// </summary>
+    [Fact]
+    public async Task TheDownloadQuery_AttachesTheEncodedFilename()
+    {
+        var settings = RemoteSettings();
+
+        using var instance = AppInstance.Create(app, settings, configure: i =>
+        {
+            UseIsolatedRoot(i);
+            // 日本語を含むファイル名。データディレクトリは ASCII のままにしてある。
+            i.Settings.Recorders[0].FilenameTemplate =
+                Path.Combine(i.RecordingsDir, "録画_{Name}_{Now:HHmmssfff}.mp4");
+        });
+
+        int port = WaitForPort(instance);
+        using var client = CreateClient(port);
+
+        string name = RecordOnce(instance);
+        Assert.StartsWith("録画_", name, StringComparison.Ordinal);
+
+        string url = "api/recordings/" + Uri.EscapeDataString(name);
+
+        using (var attachment = await client.GetAsync(url + "?download=1", Ct))
+        {
+            Assert.Equal(HttpStatusCode.OK, attachment.StatusCode);
+
+            string disposition = Assert.Single(attachment.Content.Headers.GetValues("Content-Disposition"));
+            output.WriteLine(disposition);
+
+            Assert.StartsWith("attachment", disposition, StringComparison.Ordinal);
+            Assert.Contains("filename*=UTF-8''", disposition, StringComparison.Ordinal);
+            // 「録」の UTF-8 パーセント符号化。ここが素通しだとヘッダーが壊れる。
+            Assert.Contains("%E9%8C%B2", disposition, StringComparison.OrdinalIgnoreCase);
+        }
+
+        using (var inline = await client.GetAsync(url, Ct))
+        {
+            Assert.Equal(HttpStatusCode.OK, inline.StatusCode);
+            Assert.False(
+                inline.Content.Headers.TryGetValues("Content-Disposition", out var values)
+                    && values.Any(v => v.StartsWith("attachment", StringComparison.OrdinalIgnoreCase)),
+                "download を付けていないのに attachment が返った。");
+        }
+    }
+
+    // ---- Web UI ----
+
+    /// <summary>
+    /// 埋め込みの Web UI が発行物から配られること。
+    /// <b>これは発行の検査でもある</b> ── 資産が入っていなければ、
+    /// サーバーは待ち受ける前に落ちる。
+    /// </summary>
+    [Fact]
+    public async Task TheEmbeddedWebUiIsServed()
+    {
+        using var instance = AppInstance.Create(app, RemoteSettings(), configure: UseIsolatedRoot);
+        int port = WaitForPort(instance);
+        using var client = CreateClient(port);
+
+        using (var index = await client.GetAsync("/", Ct))
+        {
+            Assert.Equal(HttpStatusCode.OK, index.StatusCode);
+            Assert.Equal("text/html", index.Content.Headers.ContentType?.MediaType);
+
+            string html = await index.Content.ReadAsStringAsync(Ct);
+            Assert.Contains("<title>ProcessRecorderApp</title>", html, StringComparison.Ordinal);
+            Assert.Contains("app.js", html, StringComparison.Ordinal);
+        }
+
+        string etag;
+        using (var script = await client.GetAsync("app.js", Ct))
+        {
+            Assert.Equal(HttpStatusCode.OK, script.StatusCode);
+            Assert.Equal("text/javascript", script.Content.Headers.ContentType?.MediaType);
+
+            Assert.NotNull(script.Headers.ETag);
+            etag = script.Headers.ETag.ToString();
+            Assert.Equal("no-cache", script.Headers.CacheControl?.ToString());
+        }
+
+        using (var request = new HttpRequestMessage(HttpMethod.Get, "app.js"))
+        {
+            request.Headers.TryAddWithoutValidation("If-None-Match", etag);
+            using var revalidated = await client.SendAsync(request, Ct);
+            Assert.Equal(HttpStatusCode.NotModified, revalidated.StatusCode);
+        }
+
+        using (var style = await client.GetAsync("app.css", Ct))
+        {
+            Assert.Equal(HttpStatusCode.OK, style.StatusCode);
+            Assert.Equal("text/css", style.Content.Headers.ContentType?.MediaType);
+        }
+
+        // 台帳に無い 1 セグメントは 404（本文は HTTP 層の失敗と同じ形）。
+        using (var unknown = await client.GetAsync("nope.js", Ct))
+        {
+            Assert.Equal(HttpStatusCode.NotFound, unknown.StatusCode);
+            using var body = await ReadJsonAsync(unknown);
+            Assert.Equal(4, body.RootElement.GetProperty("exitCode").GetInt32());
+        }
+    }
+
+    /// <summary>
+    /// <c>PROCESSRECORDERAPP_WEBROOT</c> がディスクの資産で上書きすること、
+    /// <b>置かれていない名前は埋め込みへ戻る</b>こと（上書きは一部だけでも成立する）。
+    /// </summary>
+    [Fact]
+    public async Task TheWebRootVariableOverridesOnlyTheFilesItHas()
+    {
+        const string Marker = "<!doctype html><title>overridden</title>";
+
+        using var instance = AppInstance.Create(app, RemoteSettings(), configure: i =>
+        {
+            UseIsolatedRoot(i);
+            string webRoot = Path.Combine(i.DataDir, "webroot");
+            Directory.CreateDirectory(webRoot);
+            File.WriteAllText(Path.Combine(webRoot, "index.html"), Marker, new UTF8Encoding(false));
+            i.ExtraEnvironment["PROCESSRECORDERAPP_WEBROOT"] = webRoot;
+        });
+
+        int port = WaitForPort(instance);
+        using var client = CreateClient(port);
+
+        using (var index = await client.GetAsync("/", Ct))
+        {
+            Assert.Equal(HttpStatusCode.OK, index.StatusCode);
+            Assert.Equal(Marker, await index.Content.ReadAsStringAsync(Ct));
+        }
+
+        using (var script = await client.GetAsync("app.js", Ct))
+        {
+            Assert.Equal(HttpStatusCode.OK, script.StatusCode);
+            // 上書きが無い名前は埋め込みのまま（SSE の購読はこのファイルにしかない）。
+            Assert.Contains("EventSource", await script.Content.ReadAsStringAsync(Ct), StringComparison.Ordinal);
+        }
+    }
+}

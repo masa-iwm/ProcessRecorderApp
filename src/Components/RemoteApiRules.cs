@@ -1,6 +1,7 @@
 using System;
 using System.Buffers.Text;
 using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
 using System.IO;
 using System.Security;
 using System.Security.Cryptography;
@@ -173,6 +174,41 @@ public static class RemoteApiRules
                 return true;
         }
         return false;
+    }
+
+    /// <summary>
+    /// 録画ファイルの <c>ETag</c>。長さと更新時刻（tick）を 16 進で連ねた
+    /// <c>"&lt;length&gt;-&lt;ticks&gt;"</c>（<b>引用符込みで返す</b> ── HTTP の entity-tag は
+    /// 引用符まで含めて 1 つの値であり、付ける側が 2 か所に分かれると片方が忘れる）。
+    ///
+    /// <para>
+    /// <b>弱い（<c>W/</c>）にはしない。</b> 長さか更新時刻のどちらかが動けば別の値になり、
+    /// 同じ値なら中身も同じ ── Range 要求の前提条件に使える強さがある。
+    /// 録画中のファイルは書かれるたびに両方が動くので、キャッシュは自然に無効になる。
+    /// </para>
+    /// </summary>
+    public static string RecordingETag(long length, DateTime lastWriteUtc)
+        => string.Create(CultureInfo.InvariantCulture, $"\"{length:x}-{lastWriteUtc.Ticks:x}\"");
+
+    /// <summary>
+    /// Windows の相対パス（区切りは <c>\</c>）を URL の経路（区切りは <c>/</c>）にする。
+    /// <b>エスケープはしない</b> ── 各セグメントの符号化は URL を組み立てる側の責務である。
+    /// </summary>
+    public static string ToUrlPath(string relativePath)
+    {
+        ArgumentNullException.ThrowIfNull(relativePath);
+        return relativePath.Replace('\\', '/');
+    }
+
+    /// <summary>
+    /// URL の経路（区切りは <c>/</c>）を Windows の相対パス（区切りは <c>\</c>）にする。
+    /// <see cref="ToUrlPath"/> の逆。<b>妥当性は見ない</b> ── 判定は
+    /// <see cref="TryResolveUnderRoot"/> 1 か所に置く。
+    /// </summary>
+    public static string FromUrlPath(string urlPath)
+    {
+        ArgumentNullException.ThrowIfNull(urlPath);
+        return urlPath.Replace('/', '\\');
     }
 
     /// <summary>

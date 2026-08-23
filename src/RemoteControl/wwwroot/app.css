@@ -1,0 +1,77 @@
+/* ProcessRecorderApp remote control UI.
+   Two colour schemes only (prefers-color-scheme); no framework, no third-party CSS. */
+
+:root {
+  color-scheme: light dark;
+  --bg: #fbfbfb;
+  --fg: #1a1a1a;
+  --line: #c8c8c8;
+  --accent: #f0f0f0;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1c1c1c;
+    --fg: #ededed;
+    --line: #444444;
+    --accent: #2a2a2a;
+  }
+}
+
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: "Segoe UI", system-ui, sans-serif;
+  font-size: 14px;
+  margin: 0 auto;
+  max-width: 1100px;
+  padding: 12px 16px 48px;
+}
+
+h1 { font-size: 20px; }
+h2 { font-size: 16px; margin-top: 28px; }
+
+section { border-top: 1px solid var(--line); }
+
+table { border-collapse: collapse; width: 100%; }
+th, td {
+  border-bottom: 1px solid var(--line);
+  padding: 4px 6px;
+  text-align: left;
+  vertical-align: top;
+  word-break: break-all;
+}
+th { background: var(--accent); font-weight: 600; }
+
+button, input, select {
+  background: var(--accent);
+  border: 1px solid var(--line);
+  color: var(--fg);
+  font: inherit;
+  padding: 2px 8px;
+}
+button:disabled, input:disabled, select:disabled { opacity: 0.5; }
+
+.actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.actions label { opacity: 0.8; }
+
+.status { opacity: 0.8; }
+.status.error { font-weight: 600; }
+
+.notice {
+  background: var(--accent);
+  border: 1px solid var(--line);
+  margin: 0 0 12px;
+  padding: 8px 12px;
+}
+
+.hidden { display: none; }
+
+.group { margin: 12px 0; }
+.group > h3 { font-size: 14px; margin: 6px 0; }
+.field { display: flex; gap: 8px; align-items: center; margin: 2px 0; }
+.field > label { flex: 0 0 260px; }
+.field > input[type="text"], .field > input[type="number"], .field > select { flex: 1 1 auto; }
+.field.changed > label { font-weight: 700; }
+
+#player { display: block; margin: 8px 0; max-height: 360px; width: 100%; background: #000000; }

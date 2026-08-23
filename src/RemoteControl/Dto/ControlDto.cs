@@ -9,7 +9,9 @@ namespace ProcessRecorderApp.RemoteControl;
 /// <param name="Filename">
 /// 実際に使われたファイルのパス。<b>未展開のテンプレートではない</b>
 /// ── CLI の <c>start-recording</c> / <c>stop-recording</c> が標準出力へ出すものと同じ値で、
-/// 呼び出し側はこれをそのまま配信要求（波 5）や後処理へ渡せる。
+/// 呼び出し側はこれをそのまま後処理へ渡せる。配信（<c>RecordingEndpoints</c> の
+/// <c>GET /api/recordings/{path}</c>）が要るのは配信 root からの相対パスなので、
+/// 渡すときは root ぶんを落とすこと。
 /// </param>
 public sealed record RecorderActionResult(string Name, string? Filename);
 

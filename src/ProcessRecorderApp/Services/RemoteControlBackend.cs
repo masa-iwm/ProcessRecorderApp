@@ -119,6 +119,14 @@ internal sealed partial class RemoteControlBackend(DispatcherQueue dispatcherQue
             return Task.FromResult(settings);
         });
 
+    /// <inheritdoc/>
+    public Task<string> GetRecordingsRootAsync(CancellationToken ct)
+        => RunOnUiAsync(() =>
+            // **録画の書き込み先と同じ式で解決する**（AppSettings が
+            // EventRecorder.OutputDirectory へ写すときと同じ）── 別々に書くと、
+            // 相対パスの基準がずれた日に「録画はできるのに一覧に出ない」になる。
+            Task.FromResult(Components.AppDirectories.ResolveOrBase(Settings.AppSettings.Default.OutputDirectory)));
+
     // ---- 書き込み ----
     //
     // **CancellationToken を受け取らない**（インターフェイスの doc 参照）。要求元が切っても

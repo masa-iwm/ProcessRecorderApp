@@ -119,6 +119,21 @@ public sealed class RemoteControlHost : IAsyncDisposable
             }
         });
 
+        // **待ち受けの前に Web UI の資産へ触れる。** 型初期化で埋め込みを全部読むので、
+        // 発行物へ入っていなければここで例外になり、起動が remote.error で落ちる
+        // ── 要求が来てから 404 になるのでは、原因が資産の欠落だと分からない。
+        try
+        {
+            _ = WebAssets.Manifest.Count;
+        }
+        catch (TypeInitializationException ex) when (ex.InnerException is not null)
+        {
+            // 型初期化の例外は「型 X の初期化子が例外を投げた」としか言わない。
+            // 記録に残るのは remote.error の 1 行（例外の Message だけ）なので、
+            // 欠けている資産の名前を持っている内側の理由をここで表へ出す。
+            throw new InvalidOperationException(ex.InnerException.Message, ex);
+        }
+
         RootEndpoint.Map(app, auth);
         PingEndpoint.Map(app, auth);
         RecorderEndpoints.Map(app, backend);
@@ -126,6 +141,7 @@ public sealed class RemoteControlHost : IAsyncDisposable
         VariableEndpoints.Map(app, backend, auth);
         SettingsEndpoints.Map(app, backend, auth);
         EventsEndpoint.Map(app, backend);
+        RecordingEndpoints.Map(app, backend);
 
         app.MapFallback(async (HttpContext ctx) =>
             await ApiResponse.WriteErrorAsync(

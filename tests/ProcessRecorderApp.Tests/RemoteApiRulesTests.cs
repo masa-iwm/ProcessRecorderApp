@@ -241,4 +241,55 @@ public sealed class RemoteApiRulesTests
         Assert.Equal(7, (int)patch["A"]!);
         Assert.NotSame(patch["A"], target["A"]);
     }
+
+    // ---- 録画配信の ETag と経路表記 ----
+
+    [Fact]
+    public void TheRecordingETagIsQuoted()
+    {
+        string etag = RemoteApiRules.RecordingETag(1234, new DateTime(2026, 1, 2, 3, 4, 5, DateTimeKind.Utc));
+
+        // 引用符を付けるのは値を作る側の責務 ── HTTP の entity-tag は
+        // 引用符まで含めて 1 つの値である。
+        Assert.StartsWith("\"", etag, StringComparison.Ordinal);
+        Assert.EndsWith("\"", etag, StringComparison.Ordinal);
+        Assert.DoesNotContain("W/", etag, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TheSameFileGivesTheSameRecordingETag()
+    {
+        var written = new DateTime(2026, 1, 2, 3, 4, 5, DateTimeKind.Utc);
+
+        Assert.Equal(RemoteApiRules.RecordingETag(1234, written), RemoteApiRules.RecordingETag(1234, written));
+    }
+
+    [Fact]
+    public void ADifferentLengthOrTimeGivesADifferentRecordingETag()
+    {
+        var written = new DateTime(2026, 1, 2, 3, 4, 5, DateTimeKind.Utc);
+        string baseline = RemoteApiRules.RecordingETag(1234, written);
+
+        // 録画中のファイルは書かれるたびに両方が動く ── どちらか片方でも
+        // 値が変わらないと、伸びたファイルが古い内容のまま配られる。
+        Assert.NotEqual(baseline, RemoteApiRules.RecordingETag(1235, written));
+        Assert.NotEqual(baseline, RemoteApiRules.RecordingETag(1234, written.AddTicks(1)));
+    }
+
+    [Theory]
+    [InlineData(@"a.mp4", "a.mp4")]
+    [InlineData(@"2026\06\a.mp4", "2026/06/a.mp4")]
+    [InlineData("", "")]
+    public void TheUrlPathUsesForwardSlashes(string relativePath, string urlPath)
+    {
+        Assert.Equal(urlPath, RemoteApiRules.ToUrlPath(relativePath));
+        Assert.Equal(relativePath, RemoteApiRules.FromUrlPath(urlPath));
+    }
+
+    [Theory]
+    [InlineData(@"2026\06\a.mp4")]
+    [InlineData(@"a b\c.mp4")]
+    [InlineData("a.mp4")]
+    public void TheUrlPathConversionRoundTrips(string relativePath)
+        => Assert.Equal(relativePath, RemoteApiRules.FromUrlPath(RemoteApiRules.ToUrlPath(relativePath)));
 }
