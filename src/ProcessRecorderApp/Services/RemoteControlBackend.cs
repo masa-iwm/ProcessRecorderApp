@@ -448,8 +448,31 @@ internal sealed partial class RemoteControlBackend(DispatcherQueue dispatcherQue
         private IReadOnlyList<MonitorInfo>? _monitors;
         private IReadOnlyList<VideoDeviceInfo>? _devices;
 
-        private IReadOnlyList<MonitorInfo> Monitors => _monitors ??= GstIntrospect.GetMonitors();
-        private IReadOnlyList<VideoDeviceInfo> Devices => _devices ??= GstIntrospect.GetVideoSourceDevices();
+        /// <summary>
+        /// <b>列挙は 1 回だけ試す。失敗も覚える。</b> 例外のときに <c>??=</c> のままだと
+        /// 次のキーでもう一度列挙され、同じ失敗が要素の数だけ <c>activity.log</c> へ出る
+        /// （組み立てた一覧そのものは <see cref="SourcesCacheLifetime"/> のキャッシュに乗るので、
+        /// 間隔をまたぐ再試行は妨げない）。
+        /// </summary>
+        private IReadOnlyList<MonitorInfo> Monitors => _monitors ??= Enumerate(GstIntrospect.GetMonitors, "monitors");
+
+        /// <inheritdoc cref="Monitors"/>
+        private IReadOnlyList<VideoDeviceInfo> Devices
+            => _devices ??= Enumerate(GstIntrospect.GetVideoSourceDevices, "video devices");
+
+        /// <summary>失敗を空の一覧として覚える（＝以後このインスタンスでは再試行しない）。</summary>
+        private static IReadOnlyList<T> Enumerate<T>(Func<IReadOnlyList<T>> enumerate, string what)
+        {
+            try
+            {
+                return enumerate();
+            }
+            catch (Exception ex)
+            {
+                ActivityLog.Warn("remote.error", $"source choices ({what}): {ex.Message}");
+                return [];
+            }
+        }
 
         public IReadOnlyList<string>? For(string? dynamicKey)
         {
@@ -462,6 +485,15 @@ internal sealed partial class RemoteControlBackend(DispatcherQueue dispatcherQue
                     "monitor-resolution" => NonEmpty(Monitors.Select(m => m.Resolution)),
                     "mf-device-index" => 0 < Devices.Count ? Indices(Devices.Count) : null,
                     "mf-device-name" => NonEmpty(Devices.Select(d => d.Name)),
+                    // **ここから 4 つはビルダーのダイアログと同じ規則**
+                    // （<c>PipelineBuilderViewModel.GetDynamicChoices</c>）。
+                    // 落とすと、カメラを選んだブラウザにだけ選択肢が出ない
+                    // ── しかも Enum のプロパティは候補が無いと<b>どの値も通らない</b>ので、
+                    // 「画面から選べないうえに手で書いても断られる」形になる。
+                    "mf-device-path" => NonEmpty(Devices.Select(d => d.Path)),
+                    "mf-format" => NonEmpty(Devices.SelectMany(d => d.Formats)),
+                    "mf-resolution" => NonEmpty(Devices.SelectMany(d => d.Resolutions)),
+                    "mf-framerate" => NonEmpty(Devices.SelectMany(d => d.Framerates)),
                     _ => null,
                 };
             }

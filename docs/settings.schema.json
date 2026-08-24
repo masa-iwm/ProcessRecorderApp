@@ -480,6 +480,9 @@
               "null"
             ]
           },
+          "FragmentedOutput": {
+            "type": "boolean"
+          },
           "CameraControls": {
             "type": [
               "string",

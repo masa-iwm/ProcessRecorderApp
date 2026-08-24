@@ -119,9 +119,13 @@
     <button type="button" id="loadRecordings">Refresh</button>
     <span id="recordingsRoot" class="status"></span>
   </p>
+  <p class="actions">
+    <button type="button" id="stopPlayer">Stop</button>
+    <span id="playerStatus" class="status"></span>
+  </p>
   <video id="player" controls preload="none"></video>
   <table id="recordingsTable">
-    <thead><tr><th>path</th><th>size</th><th>lastWrite</th><th>inProgress</th><th></th></tr></thead>
+    <thead><tr><th>path</th><th>size</th><th>lastWrite</th><th>state</th><th></th></tr></thead>
     <tbody id="recordingsBody"></tbody>
   </table>
 </section>

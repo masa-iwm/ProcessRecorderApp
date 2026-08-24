@@ -179,6 +179,184 @@ public sealed class RecordingDeliveryTests(PublishedApp app, ITestOutputHelper o
             TimeSpan.FromSeconds(2));
     }
 
+    // ---- fragmented 出力（録画中の追いかけ再生） ----
+
+    /// <summary>fragment が書かれるのを待つ上限。<c>fragment-duration</c> は 1 秒。</summary>
+    private static readonly TimeSpan FragmentBudget = TimeSpan.FromSeconds(20);
+
+    /// <summary><see cref="RemoteSettings"/> の R1 を fragmented 出力にしたもの。</summary>
+    private static SettingsFile FragmentedSettings()
+    {
+        var settings = RemoteSettings();
+        settings.Recorders[0].FragmentedOutput = true;
+        return settings;
+    }
+
+    /// <summary>本文の先頭の箱の名前（<c>size(4) + type(4)</c>）。</summary>
+    private static string FirstBoxOf(byte[] body)
+        => 8 <= body.Length ? Encoding.ASCII.GetString(body, 4, 4) : "(too short)";
+
+    /// <summary>
+    /// <b>fragmented なら録画中でも中身が読める。</b> 既定（<c>faststart=true</c>）では
+    /// 録画中のファイルは 0 バイトで、再生できる形が 1 バイトも無い
+    /// ── その違いがブラウザの追いかけ再生の土台である。
+    ///
+    /// <para>
+    /// 併せて、追いかけ再生が使うヘッダー（<c>X-In-Progress</c> / <c>X-Codecs</c>）と、
+    /// 伸びを追う仕掛け（末尾からの <c>Range</c> が 416、数秒後には total が伸びる）を固定する。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task AFragmentedRecording_IsReadableWhileItIsBeingWritten()
+    {
+        using var instance = AppInstance.Create(app, FragmentedSettings(), configure: UseIsolatedRoot);
+        int port = WaitForPort(instance);
+        using var client = CreateClient(port);
+
+        Assert.Equal(0, instance.Run("start-recording-all").ExitCode);
+
+        // fragment が 1 つ以上書かれるまで待つ（1 秒ごとに 1 つ出る）。
+        string relativePath = "";
+        byte[] body = [];
+        long snapshot = 0;
+        var deadline = Stopwatch.StartNew();
+        Fmp4Probe? probe = null;
+
+        while (deadline.Elapsed < FragmentBudget)
+        {
+            var (_, files) = await ListAsync(client);
+            if (files.Length == 1 && files[0].GetProperty("fragmented").GetBoolean())
+            {
+                Assert.True(files[0].GetProperty("inProgress").GetBoolean(),
+                    "録画中のファイルが inProgress で出ていない: " + files[0]);
+
+                relativePath = files[0].GetProperty("path").GetString()!;
+                using var live = await client.GetAsync("api/recordings/" + Uri.EscapeDataString(relativePath), Ct);
+                Assert.Equal(HttpStatusCode.OK, live.StatusCode);
+
+                Assert.Equal("true", Assert.Single(live.Headers.GetValues("X-In-Progress")));
+                string codecs = Assert.Single(live.Headers.GetValues("X-Codecs"));
+                Assert.StartsWith("avc1.", codecs, StringComparison.Ordinal);
+
+                snapshot = Assert.IsType<long>(live.Content.Headers.ContentLength);
+                body = await live.Content.ReadAsByteArrayAsync(Ct);
+                Assert.Equal(snapshot, body.Length);
+
+                probe = Fmp4File.Probe(relativePath, body);
+                if (0 < probe.MoofCount)
+                    break;
+            }
+
+            Thread.Sleep(500);
+        }
+
+        Assert.False(relativePath.Length == 0, "録画中のファイルが fragmented として一覧に出ませんでした。");
+        Assert.NotNull(probe);
+        output.WriteLine(probe.ToString());
+
+        // 先頭は ftyp、その次が mvex 入りの moov、以後は moof+mdat の対
+        // ── つまり「MSE へそのまま渡せる形」である。
+        Assert.Equal("ftyp", FirstBoxOf(body));
+        Assert.True(probe.StartsWithInitSegment, "先頭が ftyp+moov ではない: " + probe);
+        Assert.True(probe.HasMvex, "moov に mvex が無い（fragmented ではない）: " + probe);
+        Assert.True(probe.HasAvcC, "moov に avcC が無い: " + probe);
+        Assert.True(0 < probe.MoofCount, "moof が 1 つも無い: " + probe);
+
+        // 末尾からの Range は「まだ伸びていない」＝ 416。取得と要求の間に
+        // fragment が 1 つ増えることはあるので、その分だけ追いかけて確かめる。
+        HttpStatusCode beyond = HttpStatusCode.OK;
+        for (int attempt = 0; attempt < 5 && beyond != HttpStatusCode.RequestedRangeNotSatisfiable; attempt++)
+        {
+            using var request = new HttpRequestMessage(
+                HttpMethod.Get, "api/recordings/" + Uri.EscapeDataString(relativePath));
+            request.Headers.Range = new RangeHeaderValue(snapshot, null);
+            using var response = await client.SendAsync(request, Ct);
+
+            beyond = response.StatusCode;
+            if (beyond == HttpStatusCode.PartialContent)
+                snapshot = response.Content.Headers.ContentRange?.Length ?? snapshot;
+        }
+        Assert.Equal(HttpStatusCode.RequestedRangeNotSatisfiable, beyond);
+
+        // 数秒後には伸びている（＝続きが Range で取れる）。
+        Thread.Sleep(TimeSpan.FromSeconds(3));
+
+        long grown;
+        using (var request = new HttpRequestMessage(
+                   HttpMethod.Get, "api/recordings/" + Uri.EscapeDataString(relativePath)))
+        {
+            request.Headers.Range = new RangeHeaderValue(snapshot, null);
+            using var more = await client.SendAsync(request, Ct);
+
+            Assert.Equal(HttpStatusCode.PartialContent, more.StatusCode);
+            Assert.Equal("true", Assert.Single(more.Headers.GetValues("X-In-Progress")));
+
+            grown = Assert.IsType<long>(more.Content.Headers.ContentRange?.Length);
+            output.WriteLine($"total {snapshot} -> {grown}");
+            Assert.True(snapshot < grown, $"Content-Range の total が伸びていない（{snapshot} -> {grown}）。");
+
+            byte[] tail = await more.Content.ReadAsByteArrayAsync(Ct);
+            Assert.Equal(grown - snapshot, tail.Length);
+        }
+
+        Assert.Equal(0, instance.Run("stop-recording-all").ExitCode);
+
+        // 停止後は X-In-Progress が false（ブラウザはこれを見て endOfStream する）。
+        using (var finished = await client.GetAsync(
+                   "api/recordings/" + Uri.EscapeDataString(relativePath), Ct))
+        {
+            Assert.Equal(HttpStatusCode.OK, finished.StatusCode);
+            Assert.Equal("false", Assert.Single(finished.Headers.GetValues("X-In-Progress")));
+            Assert.True(grown <= finished.Content.Headers.ContentLength);
+        }
+
+        var (_, done) = await ListAsync(client);
+        Assert.False(Assert.Single(done).GetProperty("inProgress").GetBoolean());
+        Assert.True(done[0].GetProperty("fragmented").GetBoolean());
+
+        // 完成したファイルも fragmented のまま（EOS で足すのは末尾の mfra だけで、
+        // moov は書き直されない ＝ 尺は 0 のまま）。
+        string full = Assert.Single(instance.ListRecordings());
+        var complete = Fmp4File.Probe(full);
+        output.WriteLine(complete.ToString());
+        Assert.True(complete.StartsWithInitSegment, complete.ToString());
+        Assert.True(complete.HasMvex, complete.ToString());
+        Assert.True(0 < complete.MoofCount, complete.ToString());
+
+        var asPlainMp4 = Mp4File.Probe(full);
+        output.WriteLine(asPlainMp4.ToString());
+        Assert.True(asPlainMp4.HasFtyp && asPlainMp4.HasMoov && asPlainMp4.HasMdat && asPlainMp4.HasAvcC,
+            "完成したファイルが MP4 として最低限の箱を持っていない: " + asPlainMp4);
+        // **尺は 0 のまま**（moov を書き直さないので mvhd の duration が伸びない）。
+        // だから `<video src>` 直結では 1 秒に見え、ブラウザ側は完成後も MSE 経路で読む。
+        Assert.True(asPlainMp4.DurationSeconds is null or 0, "fragmented なのに mvhd の尺が入っている: " + asPlainMp4);
+    }
+
+    /// <summary>
+    /// <b>強制終了しても、そこまでの fragment が読める。</b> 既定の <c>faststart</c> では
+    /// kill されたファイルは 0 バイト（＝録画が丸ごと失われる）。
+    /// </summary>
+    [Fact]
+    public void AKilledFragmentedRecording_KeepsWhatItHadWritten()
+    {
+        using var instance = AppInstance.Create(app, FragmentedSettings(), configure: UseIsolatedRoot);
+        WaitForPort(instance);
+
+        Assert.Equal(0, instance.Run("start-recording-all").ExitCode);
+        Thread.Sleep(TimeSpan.FromSeconds(5));
+
+        instance.KillWorkers();
+
+        string full = Assert.Single(instance.ListRecordings());
+        var probe = Fmp4File.Probe(full);
+        output.WriteLine(probe.ToString());
+
+        Assert.True(probe.StartsWithInitSegment, "kill されたファイルの先頭が ftyp+moov ではない: " + probe);
+        Assert.True(probe.HasMvex, probe.ToString());
+        Assert.True(0 < probe.MoofCount, "kill されたファイルに moof が 1 つも無い: " + probe);
+        Assert.True(probe.MediaSegmentsAlternate(), "moof/mdat の対になっていない: " + probe);
+    }
+
     // ---- Range と条件付き要求 ----
 
     /// <summary>

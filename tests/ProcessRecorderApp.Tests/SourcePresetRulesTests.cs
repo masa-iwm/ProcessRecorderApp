@@ -56,6 +56,28 @@ public sealed class SourcePresetRulesTests
         }
     }
 
+    /// <summary>
+    /// <b>録画種別の綴りは <see cref="EventRecordingType"/> の列挙子名そのもの。</b>
+    /// <c>PUT /api/recorders/{id}/source</c> はこの文字列を <c>Type</c> の値として書き込み、
+    /// settings.json にも名前で入る ── 綴りがずれると「適用は 200 なのに種別だけ既定へ落ちる」
+    /// という形で黙って壊れる（<c>kind</c> の綴りと同じ流儀で、こちらも実際の名前と照合する）。
+    /// </summary>
+    [Fact]
+    public void RecordingTypeNames_MatchTheEnumMemberNames()
+    {
+        Assert.Equal(nameof(EventRecordingType.System), SourcePresetRules.RecordingTypeSystem);
+        Assert.Equal(nameof(EventRecordingType.D3d12), SourcePresetRules.RecordingTypeD3d12);
+
+        // 導出が答える値は、必ずそのどちらかである（列挙子が増えたら気付けるように件数も見る）。
+        string[] fromEnum = [.. Enum.GetNames<EventRecordingType>().Order(StringComparer.Ordinal)];
+        string[] fromRules =
+        [
+            .. new[] { SourcePresetRules.RecordingTypeSystem, SourcePresetRules.RecordingTypeD3d12 }
+                .Order(StringComparer.Ordinal)
+        ];
+        Assert.Equal(string.Join(", ", fromEnum), string.Join(", ", fromRules));
+    }
+
     // ---- 封筒に出る種別の綴り ----
 
     /// <summary>

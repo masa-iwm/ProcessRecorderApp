@@ -115,6 +115,16 @@ GStreamer が使われる」という取り違えもここから起きる（ど�
   （常時録画が有効なら 3 本目の枝 `appsink name=cont` が加わる。後述「常時録画」）
 - **srcパイプライン**（録画中のみ稼働）:
   `appsrc name=src ! h264parse ! mp4mux faststart=true name=mux ! filesink name=file`
+  （`FragmentedOutput` が ON なら `mp4mux fragment-duration=1000 fragment-mode=dash-or-mss`。
+  文字列は `EventRecorder.BuildSrcPipeline` が組み立てる）
+
+| 設定 | 既定 | 意味 |
+|---|---|---|
+| `FragmentedOutput` | `false` | 録画ファイルを fragmented MP4（`ftyp` `moov`(`mvex`) `moof` `mdat` …）で書く。**録画中・強制終了後でもファイルが読める**。EOS で足すのは末尾の `mfra` だけで **`moov` は書き直さない**ので、`mvhd` の尺は 0 のまま ── 他のプレイヤーでは録画中のファイルをシークできず、ブラウザからも MSE 経路（追いかけ再生）でしか正しい尺にならない。**反映は `Initialize` で効く**（src パイプラインの文字列そのもの） |
+
+`faststart=true`（既定）は EOS のあとにファイル全体を書き直して `moov` を先頭へ移すので、
+**書き込み中の `filesink` の出力先は 0 バイトのまま**である（強制終了すれば何も残らない）。
+`faststart` と `fragment-mode` は排他で、L1（`RecordingSrcPipelineTests`）が両方向で縛っている。
 
 sink パイプラインの `appsink` に取り付けた **`new-sample` コールバック**
 （`SetSimpleCallbacks(onNewSample:)`）がエンコード済み H.264 バッファを取り出し、
@@ -1841,8 +1851,8 @@ UI スレッドで走る。`TryEnqueue` が false なら `RemoteApiException(12,
 | PUT | `/api/variables/{key}` | `Operator`（**W**） | `{value, persist}`（`--set` / `--persist` / `--no-persist` と同義）。両方 null は 400 |
 | POST | `/api/ping` | `Viewer`（**W**） | 認証の疎通確認（`{"ok":true}`）。**書き込み扱い**なのでヘッダーの有無まで切り分けられる |
 | GET | `/api/events` | `Viewer` | SSE。`state` と `ping`。**Cookie だけで通る**（`EventSource` はヘッダーを付けられない） |
-| GET | `/api/recordings` | `Viewer` | 録画ファイルの一覧（`root` ＋ `files[]`） |
-| GET | `/api/recordings/{*path}` | `Viewer` | 1 ファイルの配信（Range 対応。`?download=1` で添付） |
+| GET | `/api/recordings` | `Viewer` | 録画ファイルの一覧（`root` ＋ `files[]`。1 件は `path` / `length` / `lastWriteTimeUtc` / `inProgress` / `fragmented`） |
+| GET | `/api/recordings/{*path}` | `Viewer` | 1 ファイルの配信（Range 対応。`?download=1` で添付。応答に `X-In-Progress` と `X-Codecs`） |
 | GET | `/api/recorders/{id}/preview.mp4` | `Viewer` | ライブプレビュー（chunked fMP4） |
 
 **`HEAD` / `DELETE` / `OPTIONS` のハンドラは無い**（`MapGet` などしか呼んでいない）。CORS
@@ -1959,18 +1969,31 @@ UI スレッドで走る。`TryEnqueue` が false なら `RemoteApiException(12,
   `RecordingCleanup` は逆に理由を `cleanup.error` へ残す）。
 - `inProgress` は `FileShare.Read` で開けるかどうかで判定する（`filesink` が握っていると
   `IOException` ＝ 書き込み中）。並びは更新時刻の降順、同着は相対パスの序数昇順。
+- `fragmented` は**先頭 64KB**（`RecordingFiles.HeaderProbeBytes`）を
+  `FileShare.ReadWrite | Delete` で読み、`moov` の子に `mvex` が在るかで判定する
+  （純関数 `Components/Fmp4Probe.IsFragmented`。読めない・短い・壊れていれば false）。
+  `inProgress` の判定用に開くのとは**別に開く** ── あちらの共有指定では書き込み中の
+  ファイルを読めない。
 
 1 ファイルの取得は `RecordingFiles.TryOpen` → `TypedResults.Stream(enableRangeProcessing: true)`。
-`FileShare.ReadWrite | Delete` で開くので**書き込み中のファイルも取れる**（ただし `moov` が
-未確定なので再生はできない）。ETag は `RemoteApiRules.RecordingETag` ＝
+`FileShare.ReadWrite | Delete` で開くので**書き込み中のファイルも取れる**（`fragmented` でなければ
+`moov` が未確定なので再生はできない）。ETag は `RemoteApiRules.RecordingETag` ＝
 `"<長さの16進>-<更新時刻 Ticks の16進>"`（引用符込みの**強い** ETag）。`?download=1`（**序数で
 `"1"` と一致するときだけ**。`download=true` は効かない）で `fileDownloadName` を渡し、
 `Content-Disposition: attachment` を付ける（`filename*=UTF-8''` 形式の符号化はフレームワーク側が
 行うので、日本語のファイル名も通る）。一覧は `Cache-Control: no-store`、ファイルは `no-cache`。
 
-**ETag の長さと本文の `Content-Length` は別々の `stream.Length` 読み取り**である。`faststart`
-構成（既定）では書き込み中のファイルは 0 バイトなので影響しないが、`faststart=false` の構成では
-伸びているファイルで食い違いうる。
+**長さを読むのは開いた直後の 1 回だけ**で、その値を `Components/LengthCappedStream` に渡して
+本文をそこで切る。ETag・`Content-Length`・`Content-Range` の total は**必ず同じ値**になる
+（録画中のファイルは要求の処理中も伸びるので、別々に読むと同じ応答の中で食い違う）。
+
+応答には追いかけ再生のためのヘッダーが 2 つ載る（**結果型を実行する前に置く**ので
+200 / 206 / 304 / 416 のどれでも付く）:
+
+- `X-In-Progress: true|false` ── 一覧の `inProgress` と**同じ関数**（`RecordingFiles.IsInProgress`）。
+  ブラウザはこれが `false` になった時点で残りを取り切って `endOfStream()` する。
+- `X-Codecs: avc1.PPCCLL` ── `avcC` の profile / compatibility / level から
+  `Fmp4Probe.CodecString` が導く。読めなければ**付けない**（ブラウザ側が `avc1.4d401f` へ倒す）。
 
 パスの検査は `RemoteApiRules.TryResolveUnderRoot`（**ファイルシステムに触らない文字列規則**）:
 空・`/` を `\` に直したあとの絶対パス／ドライブ相対／UNC・`Path.GetInvalidPathChars()`・
@@ -2064,6 +2087,17 @@ HTTP 側（`PreviewEndpoints`）は `video/mp4` ＋ `Cache-Control: no-store` �
 突き合わせ、`wwwroot` にサブディレクトリが無いこと・csproj の埋め込み指定・`app.js` が
 `<script src="http` と `import ` を持たないこと・`index.html` の参照先がすべてマニフェスト内の
 名前であることを縛る。
+
+録画一覧の「Play」は 2 経路ある。`fragmented` でない行は `<video src>` 直結で、
+**録画中は押せない**（`moov` が未確定）。`fragmented` の行は**録画中でも押せて、MSE 経路**で再生する
+── 完了済みの `fragmented` も同じ経路である（`moov` を書き直さないので `<video src>` では
+尺 1 秒に見える）。MSE 側は `SourceBuffer(mode='segments')`（ライブプレビューの `'sequence'` とは逆。
+ファイルは自前のタイムラインを持っており、シーク先がそのまま再生位置でなければならない）。
+codecs はサーバーの `X-Codecs`、無ければ `avc1.4d401f`。続きは `Range: bytes=<next>-` で取り、
+**416 は「まだ伸びていない」**として 1 秒待って引き直す。`X-In-Progress: false` を見て、
+本文が末尾まで届いた時点で `endOfStream()`。再生位置は既定でライブ端（`buffered.end` − 1 秒）へ
+寄せ、**利用者がシークしたら追従をやめる**。バッファは 70 秒を超えたら末尾 60 秒へ詰める
+（**再生位置より後ろは切らない**）。
 
 ログインフォームは `index.html` に**最初から入っていて隠してある**（資産は増やさない）。
 `app.js` は fetch の集約点（`getJson` / `send`）で `401` を受けた時点でフォームへ切り替え、

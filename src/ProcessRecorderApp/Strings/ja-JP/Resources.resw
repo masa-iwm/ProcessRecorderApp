@@ -539,6 +539,9 @@
   <data name="PropDesc_Rec_EncodingProperties" xml:space="preserve">
     <value>録画パイプラインに適用するエンコード設定。</value>
   </data>
+  <data name="PropDesc_Rec_FragmentedOutput" xml:space="preserve">
+    <value>録画ファイルを fragmented MP4 で書きます。ヘッダーを最初に書いたまま書き直さないので、録画中のファイルも、強制終了で残ったファイルも読めます。代わりに尺は 0 のままになり、他のプレイヤーでは録画中のファイルをシークできません（ブラウザからは追いかけ再生を使います）。次回の初期化から効きます。</value>
+  </data>
   <data name="PropDesc_Rec_ContinuousRecording" xml:space="preserve">
     <value>イベント録画とは別に、常に回して一定時間ごとにファイルを切り替える録画を行うかどうか。事前バッファは効きません。次にレコーダーを初期化したときから反映されます。</value>
   </data>

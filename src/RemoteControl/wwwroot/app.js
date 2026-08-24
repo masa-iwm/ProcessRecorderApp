@@ -14,7 +14,10 @@
   // 'Viewer' until /api/me answers. Starting permissive would flash controls that
   // the server is going to refuse.
   var role = 'Viewer';
-  var guest = true;
+  // Whether reading is allowed without signing in. Only `/api/me` knows, so it
+  // starts at false: with guest reading off that call answers 401, and starting at
+  // true would put a "Cancel" button on the sign-in form that leads nowhere.
+  var guest = false;
   var userName = '';
   var events = null;
 
@@ -584,17 +587,20 @@
         cell(row, file.path);
         cell(row, formatSize(file.length));
         cell(row, new Date(file.lastWriteTimeUtc).toLocaleString());
-        cell(row, file.inProgress ? 'recording' : '');
+        cell(row, (file.inProgress ? 'recording' : '') + (file.fragmented ? ' fragmented' : ''));
 
         var actions = document.createElement('td');
 
         var play = document.createElement('button');
         play.type = 'button';
         play.textContent = 'Play';
-        // A file that is still being written has no finished moov box, so it cannot
-        // be played; the bytes are downloadable all the same.
-        play.disabled = file.inProgress;
+        // A fragmented recording can be played while it is still being written:
+        // its header is complete from the first byte. Anything else has no finished
+        // moov box until the recording stops, so only the bytes are offered.
+        play.disabled = file.inProgress && !file.fragmented;
         play.addEventListener('click', function () {
+          if (file.fragmented) { startFollow(url, file.path); return; }
+          stopFollow('');
           var player = $('player');
           player.src = url;
           player.play().catch(function () { /* the browser decides; the controls remain */ });
@@ -613,6 +619,372 @@
     }).catch(function (error) {
       status($('recordingsRoot'), error.message, true);
     });
+  }
+
+  // ---- follow-along playback of a recording (fragmented MP4 over MSE) ----
+  //
+  // A fragmented recording writes `ftyp` + `moov` once and never rewrites them, so
+  // the file is readable from the first byte -- while it is being recorded and
+  // after a forced shutdown. The price is that the duration in `moov` stays 0:
+  // pointing `<video src>` at such a file shows a one-second clip whether or not
+  // the recording has finished. So the bytes are fed to a MediaSource by hand, and
+  // that is the only path used for `fragmented` rows.
+  //
+  // `mode = 'segments'` -- not the preview's 'sequence'. This is a file with a
+  // timeline of its own, and the position the user seeks to has to be the position
+  // that plays.
+  //
+  // Growth is followed with ordinary range requests (`Range: bytes=<next>-`), and
+  // `next` advances by the number of bytes that actually arrived. Appends may fall
+  // on any boundary. A 416 is not an error here: it means "no longer than last
+  // time". `X-In-Progress: false` together with a read that reached the end is what
+  // ends the stream.
+
+  // Used when the server does not report `X-Codecs` (an older file, or a header it
+  // could not read). The same constant the live preview uses.
+  var FOLLOW_CODECS_FALLBACK = 'avc1.4d401f';
+
+  // How much of the past to keep, and the span that triggers a trim. The gap
+  // between the two is load-bearing for the same reason as in the preview: without
+  // it every `updateend` would call `remove()`, whose own `updateend` would call it
+  // again, and `appendBuffer` would never get a turn.
+  var FOLLOW_WINDOW_SECONDS = 60;
+  var FOLLOW_TRIM_TRIGGER_SECONDS = 70;
+
+  // How long to wait after a 416 before asking again (the file has not grown yet).
+  var FOLLOW_POLL_MS = 1000;
+
+  // Playback follows this far behind the buffered end. Right at the end the
+  // decoder runs out on every fragment boundary.
+  var FOLLOW_LAG_SECONDS = 1;
+
+  // Bumped by every start and every stop: callbacks belonging to an older playback
+  // (an in-flight fetch, a pending timer, an `updateend`) return without touching
+  // anything.
+  var followGeneration = 0;
+  var followAbort = null;
+  var followTimer = null;
+  var followUrl = null;
+
+  // Following the live edge stops for good once the user seeks. `followSeeking`
+  // marks the corrections this file makes itself, which must not count as that.
+  var followLive = true;
+  var followSeeking = false;
+
+  function releaseFollowUrl() {
+    if (followUrl !== null) {
+      URL.revokeObjectURL(followUrl);
+      followUrl = null;
+    }
+  }
+
+  function stopFollow(message) {
+    followGeneration++;
+    if (followTimer !== null) {
+      clearTimeout(followTimer);
+      followTimer = null;
+    }
+    if (followAbort !== null) {
+      followAbort.abort();
+      followAbort = null;
+    }
+
+    var video = $('player');
+    video.pause();
+    video.removeAttribute('src');
+    video.load();
+    releaseFollowUrl();
+
+    status($('playerStatus'), message === undefined ? '' : message, false);
+  }
+
+  function startFollow(url, label) {
+    stopFollow('');
+    if (typeof MediaSource === 'undefined') {
+      status($('playerStatus'), 'this browser has no MediaSource', true);
+      return;
+    }
+    status($('playerStatus'), 'opening ' + label + '...', false);
+    openFollow(url, followGeneration);
+  }
+
+  // The first response does double duty: it carries the codecs string (needed
+  // before `addSourceBuffer`, and only the server can read it out of `avcC`) and
+  // the first bytes. So the request comes first and the MediaSource is built from
+  // its answer.
+  function openFollow(url, generation) {
+    var controller = new AbortController();
+    followAbort = controller;
+
+    fetch(url, { signal: controller.signal, credentials: 'same-origin', cache: 'no-store' })
+      .then(function (response) {
+        if (generation !== followGeneration) { return; }
+        if (response.status === 401) { showLogin('Sign in to continue.'); return; }
+        if (!response.ok) { throw new Error('HTTP ' + response.status); }
+
+        var codecs = response.headers.get('X-Codecs') || FOLLOW_CODECS_FALLBACK;
+        var video = $('player');
+        var source = new MediaSource();
+
+        releaseFollowUrl();
+        followUrl = URL.createObjectURL(source);
+        followLive = true;
+        followSeeking = false;
+        video.src = followUrl;
+
+        source.addEventListener('sourceopen', function () {
+          if (generation !== followGeneration) { return; }
+
+          var buffer;
+          try {
+            buffer = source.addSourceBuffer('video/mp4; codecs="' + codecs + '"');
+          } catch (error) {
+            status($('playerStatus'), error.message, true);
+            return;
+          }
+          buffer.mode = 'segments';
+          followFile(url, generation, source, buffer, response);
+        });
+      })
+      .catch(function (error) {
+        if (generation !== followGeneration || error.name === 'AbortError') { return; }
+        status($('playerStatus'), error.message, true);
+      });
+  }
+
+  // Owns everything that spans the requests: how far the file has been read, what
+  // the last response said about it, and the chunks waiting for the SourceBuffer.
+  function followFile(url, generation, source, buffer, first) {
+    var video = $('player');
+    var queue = [];
+    var next = 0;
+    var total = null;
+    var inProgress = true;
+    var reading = false;
+    var receivedBytes = false;
+    var started = false;
+    var trimmed = false;
+
+    function fail(reason) {
+      if (generation !== followGeneration) { return; }
+      // Bumping the generation is what stops the rest: a SourceBuffer that has
+      // rejected one append never takes the next one, so there is nothing to
+      // salvage in place.
+      followGeneration++;
+      if (followAbort !== null) { followAbort.abort(); followAbort = null; }
+      status($('playerStatus'), reason, true);
+    }
+
+    // One place decides what happens next, and it only runs when the SourceBuffer
+    // is idle, the queue is empty and the body has been read to its end.
+    function settle() {
+      if (!inProgress && (total === null || total <= next)) {
+        try {
+          if (source.readyState === 'open') { source.endOfStream(); }
+        } catch (error) {
+          /* the element already has everything; nothing is left to repair */
+        }
+        status($('playerStatus'), 'complete (' + formatSize(next) + ')', false);
+        return;
+      }
+
+      // Something arrived, so more may already be there; a 416 means it is not.
+      schedule(receivedBytes ? 0 : FOLLOW_POLL_MS);
+    }
+
+    function schedule(delay) {
+      if (followTimer !== null) { return; }
+      followTimer = setTimeout(function () {
+        followTimer = null;
+        if (generation !== followGeneration) { return; }
+        request();
+      }, delay);
+    }
+
+    // A retry of an append the SourceBuffer refused. It shares the one timer with
+    // `schedule`, which is safe because the two cannot both be wanted: a refused
+    // append means the queue is not empty, and a request is only ever scheduled
+    // from `settle`, which needs it empty.
+    function scheduleFlush() {
+      if (followTimer !== null) { return; }
+      followTimer = setTimeout(function () {
+        followTimer = null;
+        if (generation !== followGeneration) { return; }
+        flush();
+      }, FOLLOW_POLL_MS);
+    }
+
+    function flush() {
+      if (generation !== followGeneration || buffer.updating) { return; }
+
+      // The trim runs before the queue, and one remove() is allowed between two
+      // appends. A response that carries the whole file keeps `reading` true and
+      // the queue busy from its first chunk to its last, so a trim placed after
+      // them would never get a turn on that path; the flag is what keeps it from
+      // taking every turn instead (remove() is granular to random access points,
+      // so a cut can free nothing and ask to be repeated forever).
+      if (!trimmed) {
+        trimmed = true;
+        if (trimFollow(buffer, false)) { return; }  // its own updateend comes back here
+      }
+
+      if (0 < queue.length) {
+        // Peek, append, then drop: shifting first loses the chunk when
+        // appendBuffer throws, and a byte stream with a hole never recovers.
+        var chunk = queue[0];
+        try {
+          buffer.appendBuffer(chunk);
+        } catch (error) {
+          // A full SourceBuffer is not a failure: what is already in it still
+          // plays, and the media behind the playback position can be freed as the
+          // position advances. The chunk stays at the head of the queue. Any other
+          // error is fatal, as before.
+          if (error.name === 'QuotaExceededError') {
+            trimmed = false;
+            if (!trimFollow(buffer, true)) { scheduleFlush(); }
+            return;
+          }
+          fail('append failed: ' + error.message);
+          return;
+        }
+        queue.shift();
+        trimmed = false;
+        if (!started) {
+          started = true;
+          video.play().catch(function () { /* the browser decides; the controls remain */ });
+        }
+        return;
+      }
+
+      if (reading) { return; }
+      settle();
+    }
+
+    function read(response) {
+      reading = true;
+      receivedBytes = false;
+      var reader = response.body.getReader();
+
+      function step() {
+        return reader.read().then(function (chunk) {
+          if (generation !== followGeneration) { return undefined; }
+          if (chunk.done) {
+            reading = false;
+            flush();
+            return undefined;
+          }
+
+          next += chunk.value.byteLength;
+          receivedBytes = true;
+          queue.push(chunk.value);
+          flush();
+          return step();
+        });
+      }
+
+      return step();
+    }
+
+    function request() {
+      var controller = new AbortController();
+      followAbort = controller;
+
+      fetch(url, {
+        signal: controller.signal,
+        credentials: 'same-origin',
+        cache: 'no-store',
+        headers: { 'Range': 'bytes=' + next + '-' }
+      }).then(function (response) {
+        if (generation !== followGeneration) { return undefined; }
+        if (response.status === 401) { showLogin('Sign in to continue.'); return undefined; }
+
+        inProgress = response.headers.get('X-In-Progress') !== 'false';
+
+        // 416 = the file is no longer than what has already been read. The headers
+        // still say whether it is going to grow, so this is where a finished
+        // recording is recognised.
+        if (response.status === 416) {
+          receivedBytes = false;
+          settle();
+          return undefined;
+        }
+
+        if (!response.ok) { throw new Error('HTTP ' + response.status); }
+
+        total = totalOf(response, next);
+        return read(response);
+      }).catch(function (error) {
+        if (generation !== followGeneration || error.name === 'AbortError') { return; }
+        fail(error.message);
+      });
+    }
+
+    buffer.addEventListener('error', function () { fail('the source buffer failed'); });
+
+    buffer.addEventListener('updateend', function () {
+      if (generation !== followGeneration) { return; }
+      followEdge();
+      flush();
+    });
+
+    // Keep playback near the live edge until the user seeks: after that the
+    // position is theirs. A file that is no longer being written has no live edge
+    // to follow -- doing it there would put playback one second before the end of
+    // the recording and finish it at once.
+    function followEdge() {
+      if (!followLive || !inProgress) { return; }
+      var ranges = video.buffered;
+      if (ranges.length === 0) { return; }
+
+      var target = ranges.end(ranges.length - 1) - FOLLOW_LAG_SECONDS;
+      if (target <= video.currentTime) { return; }
+
+      followSeeking = true;
+      video.currentTime = target;
+    }
+
+    inProgress = first.headers.get('X-In-Progress') !== 'false';
+    total = totalOf(first, 0);
+    read(first);
+  }
+
+  // Never cut past where playback is: the user may have seeked back into the part
+  // that would otherwise be dropped. `force` frees everything behind the playback
+  // position no matter how short the buffered span is -- the caller has been told
+  // the SourceBuffer is full, so anything freed is better than nothing.
+  function trimFollow(buffer, force) {
+    var video = $('player');
+    var ranges = video.buffered;
+    if (ranges.length === 0) { return false; }
+
+    var start = ranges.start(0);
+    var end = ranges.end(ranges.length - 1);
+
+    // Compare the span, not the end: `end` passes 70 once and stays past it.
+    if (!force && end - start <= FOLLOW_TRIM_TRIGGER_SECONDS) { return false; }
+
+    var cut = force ? video.currentTime : Math.min(end - FOLLOW_WINDOW_SECONDS, video.currentTime);
+    if (cut <= start) { return false; }
+
+    try {
+      buffer.remove(start, cut);
+      return true;
+    } catch (error) {
+      return false;  // the next updateend tries again
+    }
+  }
+
+  // The length of the whole file as the server saw it when it opened the file:
+  // `Content-Range: bytes <from>-<to>/<total>`, or the plain length of a 200.
+  function totalOf(response, from) {
+    var range = response.headers.get('Content-Range');
+    if (range !== null) {
+      var slash = range.lastIndexOf('/');
+      var parsed = slash < 0 ? NaN : parseInt(range.substring(slash + 1), 10);
+      if (!isNaN(parsed)) { return parsed; }
+    }
+    var length = parseInt(response.headers.get('Content-Length'), 10);
+    return isNaN(length) ? null : from + length;
   }
 
   // ---- live preview (fragmented MP4 over MSE) ----
@@ -888,6 +1260,7 @@
 
   function showLogin(message) {
     stopPreview();
+    stopFollow();
     if (events !== null) { events.close(); events = null; }
     $('mainSections').classList.add('hidden');
     $('identity').classList.add('hidden');
@@ -942,7 +1315,21 @@
   // The whole page hangs off this one answer: who we are decides both what is
   // drawn and whether the reads are allowed to start at all.
   function start() {
-    getJson('/api/me').then(function (me) {
+    // Deliberately not routed through `getJson`: that would show the form before
+    // `guest` is known, and the form draws its "Cancel" button from it. A 401 here
+    // is the answer "reading needs a session", which is exactly `guest === false`.
+    fetch('/api/me', { credentials: 'same-origin' }).then(function (response) {
+      if (response.status === 401) {
+        guest = false;
+        showLogin('Sign in to continue.');
+        return null;
+      }
+      return response.json().then(function (body) {
+        if (!response.ok) { throw new Error(describe(body, response.status)); }
+        return body;
+      });
+    }).then(function (me) {
+      if (me === null) { return; }
       role = me.role;
       guest = me.guest;
       userName = me.name;
@@ -956,8 +1343,9 @@
       loadVariables();
       loadRecordings();
     }).catch(function () {
-      // A 401 has already switched the page to the form; anything else lands there
-      // too, because nothing on the main page can be trusted to have loaded.
+      // The 401 is handled above (it decides `guest`). Everything else lands here
+      // and goes to the form too, because nothing on the main page can be trusted
+      // to have loaded.
       showLogin('Sign in to continue.');
     });
   }
@@ -980,6 +1368,12 @@
   $('logoutButton').addEventListener('click', logout);
 
   $('loadRecorderSettings').addEventListener('click', loadRecorderSettings);
+  // The pipeline on screen belongs to the recorder that was loaded. Leaving it
+  // there after the selection changes offers another recorder's value for Apply.
+  $('recorderSelect').addEventListener('change', function () {
+    text($('sourceCurrent'), '');
+    status($('recorderSettingsStatus'), '', false);
+  });
   markWrite($('applyRecorderSettings'), 'admin').addEventListener('click', applyRecorderSettings);
   $('sourceSelect').addEventListener('change', buildSourceForm);
   markWrite($('applySource'), 'admin').addEventListener('click', applySource);
@@ -990,6 +1384,13 @@
   markWrite($('variableKey'));
   markWrite($('variableValue'));
   $('loadRecordings').addEventListener('click', loadRecordings);
+  $('stopPlayer').addEventListener('click', function () { stopFollow('stopped'); });
+  // A seek the user made ends the live-edge following. The corrections this file
+  // makes itself go through `followSeeking` and must not count.
+  $('player').addEventListener('seeking', function () {
+    if (followSeeking) { followSeeking = false; return; }
+    followLive = false;
+  });
 
   $('stopPreview').addEventListener('click', function () { stopPreview('stopped'); });
   // The element outlives every connection, so this is attached once. A decode
@@ -1002,7 +1403,7 @@
   });
   // Leaving the page has to release the subscription: the seat is only returned
   // when the response ends, and a background tab would hold it indefinitely.
-  window.addEventListener('pagehide', function () { stopPreview(); });
+  window.addEventListener('pagehide', function () { stopPreview(); stopFollow(); });
 
   start();
 })();

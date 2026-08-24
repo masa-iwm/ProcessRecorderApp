@@ -44,7 +44,8 @@ internal static class RecordingEndpoints
             var dto = new RecordingsDto(
                 root,
                 files.Select(f => new RecordingFileDto(
-                    RemoteApiRules.ToUrlPath(f.RelativePath), f.Length, f.LastWriteTimeUtc, f.InProgress)).ToArray());
+                    RemoteApiRules.ToUrlPath(f.RelativePath),
+                    f.Length, f.LastWriteTimeUtc, f.InProgress, f.Fragmented)).ToArray());
 
             // 一覧は毎回作り直す（録画中のファイルは長さが動き続ける）。
             ctx.Response.Headers.CacheControl = "no-store";
@@ -78,15 +79,31 @@ internal static class RecordingEndpoints
                 // 実際に返す本文と食い違う。更新時刻は開いてあるハンドルから取る
                 // ── パスから取り直すと、その間に差し替えられた別の実体を見うる。
                 //
-                // **既知の制約**: ETag の長さと本文の Content-Length は別々の
-                // `stream.Length` の読み取りであり、伸び続けるファイルでは両者が
-                // 食い違いうる（結果型が本文を書くときにもう一度読む）。
-                // 出力が `faststart` なら録画中の長さは 0 のままなので影響は無い。
+                // **そして長さを読むのはこの 1 回だけ。** 要求の処理中も伸びるので、
+                // ETag・`Content-Length`・`Content-Range` の total が別々の読み取りに
+                // なると同じ応答の中で食い違う。この値で `LengthCappedStream` が
+                // 本文を切るので、3 つとも必ず一致する。
                 long length = stream.Length;
                 DateTime lastWrite = File.GetLastWriteTimeUtc(stream.SafeFileHandle);
                 string etag = RemoteApiRules.RecordingETag(length, lastWrite);
 
                 bool download = string.Equals(ctx.Request.Query["download"], "1", StringComparison.Ordinal);
+
+                // **ヘッダーは結果型を実行する前に置く。** 200 でも 206 でも 304 でも
+                // 416 でも同じ値が載る ── 追いかけ再生の側は「まだ伸びるのか」を
+                // 416 の応答からも読む必要がある。
+                //
+                // `X-In-Progress` の判定は一覧の `inProgress` と同じ関数
+                // （共有読み取りで開けるか）で、ブラウザはこれが false になった時点で
+                // 残りを取り切って `endOfStream()` する。
+                ctx.Response.Headers["X-In-Progress"] =
+                    RecordingFiles.IsInProgress(stream.Name) ? "true" : "false";
+
+                // MSE の `codecs` パラメータ。読めなければヘッダーを付けない
+                // （ブラウザ側が既定値へ倒す）── 付ける値が違うと
+                // `isTypeSupported` が false になり、再生そのものが始まらない。
+                if (Fmp4Probe.CodecString(RecordingFiles.ReadHeader(stream)) is { } codecs)
+                    ctx.Response.Headers["X-Codecs"] = codecs;
 
                 // **no-store ではなく no-cache。** ETag を持たせてある以上、
                 // 再検証（If-None-Match → 304）を使わせた方が転送が減る。
@@ -96,7 +113,7 @@ internal static class RecordingEndpoints
                 // 含めてフレームワークが書く（日本語のファイル名がそのまま通る）。
                 // Range と If-None-Match の評価も同じ結果型が行う。
                 var result = TypedResults.Stream(
-                    stream,
+                    new LengthCappedStream(stream, length),
                     VideoContentType,
                     fileDownloadName: download ? Path.GetFileName(stream.Name) : null,
                     lastModified: lastWrite,

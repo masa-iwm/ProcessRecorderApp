@@ -539,6 +539,9 @@
   <data name="PropDesc_Rec_EncodingProperties" xml:space="preserve">
     <value>Encoding properties applied to the recording pipeline.</value>
   </data>
+  <data name="PropDesc_Rec_FragmentedOutput" xml:space="preserve">
+    <value>Write the recording as a fragmented MP4. The file stays readable while it is being recorded and after a forced shutdown, because the header is written first and never rewritten. In exchange the duration stays 0: other players cannot seek in a file that is still being recorded, and the browser needs the follow-along player. Takes effect the next time the recorder is initialized.</value>
+  </data>
   <data name="PropDesc_Rec_ContinuousRecording" xml:space="preserve">
     <value>Whether to keep a second recording running at all times, cut into files on a fixed interval. The pre-buffer does not apply to it. Takes effect the next time the recorder is initialized.</value>
   </data>

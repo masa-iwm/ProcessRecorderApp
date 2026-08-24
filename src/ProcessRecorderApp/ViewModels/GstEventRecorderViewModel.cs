@@ -36,6 +36,7 @@ namespace ProcessRecorderApp.ViewModels
             Type = model.Type;
             SrcPipeline = model.SrcPipeline;
             EncodingProperties = model.EncodingProperties;
+            FragmentedOutput = model.FragmentedOutput;
             CameraControls = model.CameraControls;
             CameraControlsLastError = model.CameraControlsLastError;
             ActualType = model.ActualType;
@@ -103,6 +104,7 @@ namespace ProcessRecorderApp.ViewModels
                 case nameof(Model.Type): if (Type != Model.Type) Type = Model.Type; break;
                 case nameof(Model.SrcPipeline): if (SrcPipeline != Model.SrcPipeline) SrcPipeline = Model.SrcPipeline; break;
                 case nameof(Model.EncodingProperties): if (EncodingProperties != Model.EncodingProperties) EncodingProperties = Model.EncodingProperties; break;
+                case nameof(Model.FragmentedOutput): if (FragmentedOutput != Model.FragmentedOutput) FragmentedOutput = Model.FragmentedOutput; break;
                 case nameof(Model.CameraControls): if (CameraControls != Model.CameraControls) CameraControls = Model.CameraControls; break;
                 case nameof(Model.CameraControlsLastError): if (CameraControlsLastError != Model.CameraControlsLastError) CameraControlsLastError = Model.CameraControlsLastError; break;
                 case nameof(Model.ActualType): if (ActualType != Model.ActualType) ActualType = Model.ActualType; break;
@@ -305,6 +307,20 @@ namespace ProcessRecorderApp.ViewModels
         {
             if (Model.EncodingProperties != value)
                 Model.EncodingProperties = value;
+        }
+
+        /// <summary>
+        /// 録画ファイルを fragmented MP4 で書くか
+        /// （<c>EventRecorderSettings.FragmentedOutput</c> のミラー）。
+        /// </summary>
+        [Category("PropCat_Output")]
+        [Description("PropDesc_Rec_FragmentedOutput")]
+        [ObservableProperty]
+        public partial bool FragmentedOutput { get; set; }
+        partial void OnFragmentedOutputChanged(bool value)
+        {
+            if (Model.FragmentedOutput != value)
+                Model.FragmentedOutput = value;
         }
 
         /// <summary>

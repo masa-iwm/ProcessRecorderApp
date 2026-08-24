@@ -565,7 +565,8 @@ internal static class RecorderControlService
     /// <para>
     /// <b>録画中は断る（14）。</b> どちらのキーも
     /// <see cref="EventRecorderSettings.PropertiesRequiringReinitialize"/> に載っており、
-    /// 書けばパイプラインが作り直される ── 走っている録画を黙って落とすことになる。
+    /// <b>書いた瞬間には何も起きず、次の初期化から効く</b> ── 走っている録画は
+    /// 設定と食い違ったまま続き、利用者から見れば「変えたのに変わっていない」録画物が残る。
     /// 判定は <c>Model.IsRecording</c>（実体）で行う ── ビューモデルの同名プロパティは
     /// 復帰待ちを畳んだ表示用の値である。
     /// </para>

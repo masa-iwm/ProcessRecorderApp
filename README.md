@@ -26,6 +26,10 @@ goes away.
   interval. The pre-buffer does not apply to it.
 - **Video sources** — screen capture, webcams (through Media Foundation), and test patterns.
 - **Live preview** — watch the selected recorder's video in the app window in real time.
+- **Watch a recording while it is still being recorded** — turn on a recorder's
+  `FragmentedOutput` and its file stays readable from the first byte, both while recording and
+  after a forced shutdown; the browser page can then play it and keep following it as it grows.
+  Other players cannot seek in such a file until the recording stops.
 - **Remote control from a browser** — optionally runs a small HTTP server so that a
   browser on another PC on the same LAN can watch the recorders, start and stop them, change
   settings, browse past recordings and see a live preview. Off by default, with **named users in

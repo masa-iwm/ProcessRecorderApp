@@ -369,6 +369,12 @@ public sealed class RecorderSpec(string name)
     public string? EncodingProperties { get; set; }
 
     /// <summary>
+    /// 録画ファイルを fragmented MP4 で書くか（製品の既定は false）。
+    /// true にすると <c>faststart</c> が外れ、<b>録画中のファイルにも中身がある</b>。
+    /// </summary>
+    public bool FragmentedOutput { get; set; }
+
+    /// <summary>
     /// カメラ設定（<c>brightness=128;focus=30</c>）。
     /// <b>ここはミラーテストの対象外</b>（5 箇所目の手書き）なので、
     /// <c>EventRecorderSettings</c> にプロパティを増やしたら手で足すこと。
@@ -484,6 +490,7 @@ public sealed class RecorderSpec(string name)
         ["Type"] = Type.ToString(),
         ["SrcPipeline"] = SrcPipeline,
         ["EncodingProperties"] = EncodingProperties,
+        ["FragmentedOutput"] = FragmentedOutput,
         ["CameraControls"] = CameraControls,
         ["ContinuousRecording"] = ContinuousRecording,
         ["ContinuousFramerate"] = ContinuousFramerate,

@@ -13,10 +13,16 @@ namespace ProcessRecorderApp.RemoteControl;
 /// <param name="Length">列挙した時点の長さ。</param>
 /// <param name="LastWriteTimeUtc">更新時刻（UTC）。</param>
 /// <param name="InProgress">
-/// 書き込み中で <c>moov</c> が未確定のもの。<b>取得はできるが再生はできない</b>
-/// （返るのは開いた時点の長さまで）。
+/// 書き込み中のもの。<b>取得はできる</b>（返るのは開いた時点の長さまで）が、
+/// <paramref name="Fragmented"/> でなければ <c>moov</c> が未確定なので再生はできない。
 /// </param>
-public sealed record RecordingFileDto(string Path, long Length, DateTime LastWriteTimeUtc, bool InProgress);
+/// <param name="Fragmented">
+/// fragmented MP4（<c>moov</c> の子に <c>mvex</c>）。<b>録画中でも先頭から順に取れば再生できる</b>
+/// ── ただし <c>&lt;video src&gt;</c> 直結ではなく MSE で食わせる必要がある
+/// （<c>moov</c> は書き直されないので尺が 0 のまま）。
+/// </param>
+public sealed record RecordingFileDto(
+    string Path, long Length, DateTime LastWriteTimeUtc, bool InProgress, bool Fragmented);
 
 /// <summary>
 /// 保存先の一覧。

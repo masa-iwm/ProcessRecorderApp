@@ -38,8 +38,10 @@ public sealed record SourceDefDto(
 /// <c>SrcPropertyKind</c> の名前と一致する）。
 /// </param>
 /// <param name="Choices">
-/// <c>Enum</c> のときに選べる値。<b>実行時に取れる候補（モニター・カメラ）は解決済み</b>で、
-/// 取れなければ null ＝ 自由入力。
+/// <c>Enum</c> のときに選べる値。<b>実行時に取れる候補（モニター・カメラ）は解決済み</b>。
+/// <b>取れなければ null で、そのプロパティは<u>どの値も通らない</u></b>
+/// （<c>SourcePresetRules.Validate</c> は候補の無い <c>Enum</c> を全て断る）
+/// ── 自由入力にはならないので、画面は入力欄を出さずに諦めること。
 /// </param>
 /// <param name="Description"><see cref="SourceDefDto.DisplayName"/> と同じく解決済み。無ければ null。</param>
 /// <param name="ConditionallyAvailable">
