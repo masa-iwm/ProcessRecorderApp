@@ -199,8 +199,9 @@ LAN** can watch what it is doing and drive it. It is **off by default**.
 
 **Turning it on.** Switch on `RemoteControlEnabled` on the Settings screen. An access token is
 generated the first time you do (32 random bytes, Base64Url — 43 characters) and is shown in the
-`RemoteControlAccessToken` row; the "…" button next to it mints a new one, which invalidates the
-old token together with every browser session opened with it. The server listens on
+`RemoteControlAccessToken` row. That row is read-only — you can select and copy the token, but the
+only way to change it is the "…" button next to it, which mints a new one and invalidates the old
+token together with every browser session opened with it. The server listens on
 `RemoteControlBindAddress` (`0.0.0.0` by default, meaning every network interface) and
 `RemoteControlPort` (`8752` by default; `0` lets the operating system pick a free port, and the
 port actually taken is recorded in `activity.log` as `remote.start`). From the other PC, open
@@ -231,10 +232,13 @@ what the transport adds).
   Whatever is on the captured screen is on the LAN.
 - **Writing needs the token, and holding the token is as good as sitting at the machine.**
   Starting and stopping recordings, changing settings and setting variables all require it.
-  Recorder settings are *not* filtered, so a holder of the token can write `SrcPipeline` and
-  `FilenameTemplate` — that is, run an arbitrary GStreamer pipeline and write files anywhere the
-  app can. Application settings *are* restricted to a fixed allow-list, so `OutputDirectory`,
-  the debug paths and the `RemoteControl*` settings themselves cannot be changed remotely.
+  Recorder settings are filtered too: `SrcPipeline`, `EncodingProperties`,
+  `ContinuousEncodingProperties`, `FilenameTemplate` and `ContinuousFilenameTemplate` are refused
+  (400), because the first three *are* what the app runs — the encoder strings are interpolated
+  into the pipeline exactly as they stand — and the other two accept absolute paths, which would
+  write outside `OutputDirectory`. Application
+  settings are restricted to a fixed allow-list, so `OutputDirectory`, the debug paths and the
+  `RemoteControl*` settings themselves cannot be changed remotely either.
 - **Plain HTTP, no TLS.** There is no mDNS either — you address the PC by its IP. Use this only
   on a network you trust, and leave it off otherwise.
 - **Windows Firewall is not opened for you.** Add the rule yourself, for example:

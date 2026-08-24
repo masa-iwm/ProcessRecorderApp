@@ -518,7 +518,8 @@ internal static class RecorderControlService
     }
 
     /// <summary>
-    /// 1 レコーダーの設定を部分更新する。
+    /// 1 レコーダーの設定を部分更新する。<b>拒否リストに載っているキーは断る</b>
+    /// （<see cref="RemoteApiRules.IsRemoteEditableRecorderSetting"/>）。
     ///
     /// <para>
     /// <b><c>Recorders[i]</c> を差し替えない。</b> 設定オブジェクトそのものを新しい実体に
@@ -532,6 +533,15 @@ internal static class RecorderControlService
         var (exitCode, live) = await ResolveSettingsAsync(target);
         if (live is null)
             return SettingsPatchOutcome.Rejected(exitCode, SettingsPatchRejection.None, null);
+
+        foreach (var pair in patch)
+        {
+            if (!RemoteApiRules.IsRemoteEditableRecorderSetting(pair.Key))
+            {
+                return SettingsPatchOutcome.Rejected(
+                    ActivationCommands.ExitCode_InvalidArguments, SettingsPatchRejection.NotEditable, pair.Key);
+            }
+        }
 
         return ApplyPatch(
             live, patch, Settings.AppSettings.RecorderTypeInfo,

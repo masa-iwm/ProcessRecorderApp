@@ -1,6 +1,7 @@
 using ProcessRecorderApp.Components;
 using System;
 using System.IO;
+using System.Reflection;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using Xunit;
@@ -169,6 +170,66 @@ public sealed class RemoteApiRulesTests
         Assert.False(RemoteApiRules.IsRemoteEditable("gstdebug"));
         Assert.False(RemoteApiRules.IsRemoteEditable("OutputDirectory"));
         Assert.False(RemoteApiRules.IsRemoteEditable(""));
+    }
+
+    /// <summary>
+    /// <b>拒否リストの名前が実在するレコーダー設定であること。</b> 文字列なので
+    /// 改名や削除にコンパイラは追随しない ── 綴りが外れると、拒否しているつもりの
+    /// キーが黙って書けるようになる。
+    /// </summary>
+    [Fact]
+    public void EveryDeniedRecorderSettingIsARealProperty()
+    {
+        var properties = typeof(ProcessRecorderApp.GStreamer.EventRecorderSettings)
+            .GetProperties(BindingFlags.Instance | BindingFlags.Public);
+
+        foreach (string name in RemoteApiRules.RemoteDeniedRecorderSettings)
+        {
+            Assert.Contains(properties, p => string.Equals(p.Name, name, StringComparison.Ordinal));
+        }
+    }
+
+    [Theory]
+    [InlineData("SrcPipeline")]
+    [InlineData("EncodingProperties")]
+    [InlineData("ContinuousEncodingProperties")]
+    [InlineData("FilenameTemplate")]
+    [InlineData("ContinuousFilenameTemplate")]
+    public void TheDeniedRecorderSettingsAreNotEditable(string name)
+        => Assert.False(RemoteApiRules.IsRemoteEditableRecorderSetting(name));
+
+    /// <summary>
+    /// <b>パイプライン記述へ生で入る設定は、増えたら必ず拒否リストへ載せること。</b>
+    /// 「載っている名前が実在するか」を見るだけでは<b>取りこぼしは見つからない</b> ──
+    /// <c>SrcPipeline</c> と同じ実行能力を持つ設定（エンコーダー指定）が許可のまま
+    /// 残ると、トークン所持者が任意の GStreamer 要素を注入できる。
+    /// 名前で拾えるのはここに書いた形だけなので、別の形の設定を足すときは
+    /// 拒否リストの xml-doc の基準で判断すること。
+    /// </summary>
+    [Fact]
+    public void EveryPipelineTextRecorderSettingIsDenied()
+    {
+        var properties = typeof(ProcessRecorderApp.GStreamer.EventRecorderSettings)
+            .GetProperties(BindingFlags.Instance | BindingFlags.Public);
+
+        foreach (var property in properties)
+        {
+            bool isPipelineText =
+                property.Name.EndsWith("SrcPipeline", StringComparison.Ordinal) ||
+                property.Name.EndsWith("EncodingProperties", StringComparison.Ordinal) ||
+                property.Name.EndsWith("FilenameTemplate", StringComparison.Ordinal);
+            if (isPipelineText)
+                Assert.False(RemoteApiRules.IsRemoteEditableRecorderSetting(property.Name));
+        }
+    }
+
+    [Fact]
+    public void IsRemoteEditableRecorderSettingIsOrdinal()
+    {
+        // 拒否リストなので、綴りが 1 文字でも違えば「許可」に落ちる。
+        Assert.False(RemoteApiRules.IsRemoteEditableRecorderSetting("SrcPipeline"));
+        Assert.True(RemoteApiRules.IsRemoteEditableRecorderSetting("srcpipeline"));
+        Assert.True(RemoteApiRules.IsRemoteEditableRecorderSetting("BufferDuration"));
     }
 
     // ---- PATCH の重ね合わせ ----

@@ -489,6 +489,93 @@ public sealed class RemoteControlTests(PublishedApp app, ITestOutputHelper outpu
             + Environment.NewLine + instance.DiagnosticDump());
     }
 
+    /// <summary>
+    /// <b>設定画面の「…」でトークンを作り直すと、その場で効くこと（L3）。</b>
+    /// <c>RemoteControlAccessToken</c> は <c>[ReadOnly(true)]</c> ＋ <c>[ValueBuilder]</c> ＝
+    /// 「直接は編集できないが、ビルダーでなら変更できる」行なので、
+    /// <b>これが唯一のトークン変更手段</b>である。
+    ///
+    /// <para>
+    /// <b>欄の表示が変わったことでは足りない。</b> ビルダーの結果を対象へ書かずに
+    /// 表示値だけ更新しても画面上は同じに見え、<c>settings.json</c> と待ち受け側は
+    /// 古いトークンのまま残る ── 古い資格が<b>通らなくなること</b>まで見る。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task RegeneratingTheTokenFromTheSettingsScreen_InvalidatesTheOldToken()
+    {
+        using var instance = AppInstance.Create(app, RemoteSettings());
+        int port = WaitForPort(instance);
+        using var client = CreateClient(port);
+
+        using (var response = await SendAsync(client, HttpMethod.Post, "api/ping"))
+        {
+            using var body = await ExpectAsync(response, HttpStatusCode.OK);
+            Assert.True(body.RootElement.GetProperty("ok").GetBoolean());
+        }
+
+        using var ui = AppUi.Activate(instance);
+        ui.SwitchTo(UiSection.Settings);
+        ui.WaitForPropertyRow("RemoteControlAccessToken");
+        Assert.Equal(Token, ui.GetPropertyText("RemoteControlAccessToken"));
+
+        ui.Click("RemoteControlAccessToken.Build");
+
+        string shown = ui.GetPropertyText("RemoteControlAccessToken");
+        var deadline = Stopwatch.StartNew();
+        while (shown == Token && deadline.Elapsed < DebounceMargin)
+        {
+            await Task.Delay(200, Ct);
+            shown = ui.GetPropertyText("RemoteControlAccessToken");
+        }
+        Assert.NotEqual(Token, shown);
+
+        // トークンの変更は待ち受けの作り直しを起こす（`RemoteControlService` が購読している）。
+        // `RemoteControlPort=0` なのでポートも変わる ── 2 本目の `remote.start` を待つ。
+        int newPort = WaitForRestartedPort(instance, port);
+        using var restarted = CreateClient(newPort);
+
+        // 古いトークンはもう通らない（＝表示だけでなく AppSettings が変わっている）。
+        using (var response = await SendAsync(restarted, HttpMethod.Post, "api/ping"))
+        {
+            Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        }
+
+        // 新しいトークンで通ること（＝差し替わっただけで、締め出しではない）。
+        using (var request = Post("api/ping"))
+        {
+            request.Headers.Add("Authorization", "Bearer " + shown);
+            request.Headers.Add("X-PRApp-Client", "1");
+            using var response = await restarted.SendAsync(request, Ct);
+            using var body = await ExpectAsync(response, HttpStatusCode.OK);
+            Assert.True(body.RootElement.GetProperty("ok").GetBoolean());
+        }
+    }
+
+    /// <summary>作り直された待ち受けのポートを <c>activity.log</c> の 2 本目以降から読む。</summary>
+    private int WaitForRestartedPort(AppInstance instance, int previousPort)
+    {
+        var deadline = Stopwatch.StartNew();
+        while (deadline.Elapsed < StartBudget)
+        {
+            foreach (string line in ActivityLogFile.Events(instance.ReadActivityLog(), "remote.start"))
+            {
+                var match = BindPattern.Match(ActivityLogFile.DetailOf(line));
+                if (match.Success && int.Parse(match.Groups[2].Value) != previousPort)
+                {
+                    output.WriteLine(line);
+                    return int.Parse(match.Groups[2].Value);
+                }
+            }
+            Thread.Sleep(200);
+        }
+
+        Assert.Fail(
+            $"待ち受けの作り直し（2 本目の remote.start）が {StartBudget.TotalSeconds:F0} 秒以内に"
+            + "現れませんでした。" + Environment.NewLine + instance.DiagnosticDump());
+        return 0;
+    }
+
     // ---- 操作・変数・設定の書き込み ----
 
     /// <summary>デバウンス保存（1 秒）が確実に走り終わるまでの待ち。</summary>
@@ -837,6 +924,77 @@ public sealed class RemoteControlTests(PublishedApp app, ITestOutputHelper outpu
     }
 
     /// <summary>
+    /// <b>レコーダー設定にも拒否キーがあること。</b> <c>SrcPipeline</c> は実行内容そのもので、
+    /// ファイル名テンプレート 2 つは絶対パスを許すので <c>OutputDirectory</c> の外へ書ける
+    /// （<c>RemoteApiRules.RemoteDeniedRecorderSettings</c>）。
+    ///
+    /// <para>
+    /// 断り方は<b>アプリ設定の拒否と同じ形</b>でなければならない ── 終了コードも本文も
+    /// 呼び出し側が同じ経路で読むものであり、面ごとに違うと「どちらの言い回しも扱う」
+    /// 分岐が呼び出し側に増える。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task PatchingDeniedRecorderSettings_IsRejectedLikeTheAppSettings()
+    {
+        using var instance = AppInstance.Create(app, RemoteSettings());
+        int port = WaitForPort(instance);
+        using var client = CreateClient(port);
+
+        string pipelineBefore;
+        string? encodingBefore;
+        using (var response = await client.GetAsync("api/recorders/0/settings", Ct))
+        {
+            using var body = await ExpectAsync(response, HttpStatusCode.OK);
+            pipelineBefore = body.RootElement.GetProperty("values").GetProperty("SrcPipeline").GetString() ?? "";
+            var encoding = body.RootElement.GetProperty("values").GetProperty("EncodingProperties");
+            encodingBefore = encoding.ValueKind == JsonValueKind.Null ? null : encoding.GetString();
+        }
+
+        // アプリ設定側の拒否（既に固定されている形）を取って、文言の型を比べる。
+        string appDenied;
+        using (var response = await SendAsync(client, Patch, "api/settings", "{\"OutputDirectory\":\"C:\\\\x\"}"))
+        {
+            using var body = await ExpectAsync(response, HttpStatusCode.BadRequest);
+            Assert.Equal(4, body.RootElement.GetProperty("exitCode").GetInt32());
+            appDenied = body.RootElement.GetProperty("error").GetString() ?? "";
+        }
+
+        using (var response = await SendAsync(
+            client, Patch, "api/recorders/0/settings", "{\"SrcPipeline\":\"videotestsrc\"}"))
+        {
+            using var body = await ExpectAsync(response, HttpStatusCode.BadRequest);
+            Assert.Equal(4, body.RootElement.GetProperty("exitCode").GetInt32());
+            Assert.Equal(
+                appDenied.Replace("OutputDirectory", "SrcPipeline", StringComparison.Ordinal),
+                body.RootElement.GetProperty("error").GetString());
+        }
+
+        // エンコーダーの指定も同じく拒否される ── 値は検証されずパイプライン記述へ
+        // 生で入るので、`SrcPipeline` と同じだけの実行能力がある。
+        using (var response = await SendAsync(
+            client, Patch, "api/recorders/0/settings",
+            "{\"EncodingProperties\":\"x264enc ! tee name=k ! queue ! fakesink k. ! queue\"}"))
+        {
+            using var body = await ExpectAsync(response, HttpStatusCode.BadRequest);
+            Assert.Equal(4, body.RootElement.GetProperty("exitCode").GetInt32());
+            Assert.Equal(
+                appDenied.Replace("OutputDirectory", "EncodingProperties", StringComparison.Ordinal),
+                body.RootElement.GetProperty("error").GetString());
+        }
+
+        // 断った要求は書いていないこと。
+        using (var response = await client.GetAsync("api/recorders/0/settings", Ct))
+        {
+            using var body = await ExpectAsync(response, HttpStatusCode.OK);
+            Assert.Equal(pipelineBefore,
+                body.RootElement.GetProperty("values").GetProperty("SrcPipeline").GetString());
+            Assert.Equal(encodingBefore,
+                body.RootElement.GetProperty("values").GetProperty("EncodingProperties").GetString());
+        }
+    }
+
+    /// <summary>
     /// <b>録画中の PATCH がパイプラインを落とさないこと。</b>
     ///
     /// <para>
@@ -991,7 +1149,7 @@ public sealed class RemoteControlTests(PublishedApp app, ITestOutputHelper outpu
         }
 
         using (var response = await SendAsync(
-            client, Patch, "api/recorders/0/settings", "{\"FilenameTemplate\":null}"))
+            client, Patch, "api/recorders/0/settings", "{\"Name\":null}"))
         {
             using var body = await ExpectAsync(response, HttpStatusCode.BadRequest);
             Assert.Equal(4, body.RootElement.GetProperty("exitCode").GetInt32());
@@ -1002,7 +1160,7 @@ public sealed class RemoteControlTests(PublishedApp app, ITestOutputHelper outpu
         {
             using var body = await ExpectAsync(response, HttpStatusCode.OK);
             Assert.False(string.IsNullOrEmpty(
-                body.RootElement.GetProperty("values").GetProperty("FilenameTemplate").GetString()));
+                body.RootElement.GetProperty("values").GetProperty("Name").GetString()));
         }
     }
 

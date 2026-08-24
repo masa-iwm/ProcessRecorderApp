@@ -456,12 +456,14 @@ public partial class AppSettings : JsonSettingsBase<AppSettings>
     public partial int RemoteControlPort { get; set; } = 8752;
 
     /// <summary>
-    /// 書き込み操作に要るアクセストークン。<b>「…」ボタンで作り直せる</b>
-    /// （読み取り専用にはしない ── 手元の控えを貼り付け直せる方が運用しやすい）。
+    /// 書き込み操作に要るアクセストークン。<b>読み取り専用</b>（選択・コピーはできる）で、
+    /// 値を変える手段は<b>「…」ボタンでの再生成だけ</b>
+    /// （<c>[ReadOnly(true)]</c> ＋ <c>[ValueBuilder]</c> ＝「ビルダーでのみ変更できる」）。
     /// <see cref="RemoteControlEnabled"/> を有効にした時点で空なら自動生成される。
     /// </summary>
     [System.ComponentModel.Category("PropCat_RemoteControl")]
     [System.ComponentModel.Description("PropDesc_RemoteControlAccessToken")]
+    [System.ComponentModel.ReadOnly(true)]
     [ValueBuilder(RemoteControlAccessTokenBuilderKey)]
     [ObservableProperty]
     public partial string RemoteControlAccessToken { get; set; } = "";

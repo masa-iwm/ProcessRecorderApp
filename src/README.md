@@ -1721,6 +1721,8 @@ UI スレッドで走る。`TryEnqueue` が false なら `RemoteApiException(12,
 `RemoteApiRules.GenerateAccessToken()`（`RandomNumberGenerator.GetBytes(32)` を Base64Url ＝
 **43 文字・パディング無し**）で自動生成する（`OnRemoteControlEnabledChanged`）。Settings 画面の
 「…」ボタンは同じ生成器で作り直す（古いトークンと、それで開いたブラウザのセッションが失効する）。
+**行そのものは読み取り専用**（`[ReadOnly(true)]` ＋ `[ValueBuilder]` ＝「ビルダーでのみ変更できる」。
+選択・コピーはできる）で、値を変える手段はこのボタンだけ。
 **`AppSettings.Reload()` が 4 キーを写す順序は「トークン → バインド → ポート → 有効」で固定**
 ── 有効を先に写すと変更ハンドラがトークンを生成し、その直後にファイル側の空文字で潰される。
 
@@ -1772,7 +1774,7 @@ UI スレッドで走る。`TryEnqueue` が false なら `RemoteApiException(12,
 | POST | `/api/recorders/{id}/start` | **要** | 1 台の録画を開始 |
 | POST | `/api/recorders/{id}/stop` | **要** | 1 台の録画を終了（確定まで待つ） |
 | GET | `/api/recorders/{id}/settings` | 不要 | 現在値（**キーは settings.json と同じ PascalCase**）＋ 項目の説明（`type` / **解決済みの** `category`・`description` / `choices` / `min` / `max` / `requiresReinitialize`） |
-| PATCH | `/api/recorders/{id}/settings` | **要** | 変更したいキーだけ。応答は `applied` / `clamped` / `requiresReinitialize` |
+| PATCH | `/api/recorders/{id}/settings` | **要** | 変更したいキーだけ。応答は `applied` / `clamped` / `requiresReinitialize`。拒否キー（`SrcPipeline`・`EncodingProperties`・`ContinuousEncodingProperties`・`FilenameTemplate`・`ContinuousFilenameTemplate`）は 400 |
 | GET | `/api/settings` | 不要 | アプリ設定（`RemoteControlAccessToken` を除く） |
 | PATCH | `/api/settings` | **要** | `RemoteApiRules.RemoteEditableAppSettings` の 9 キーだけ |
 | GET | `/api/variables` | 不要 | ファイル名テンプレートの変数の一覧 |
@@ -1794,8 +1796,12 @@ UI スレッドで走る。`TryEnqueue` が false なら `RemoteApiException(12,
 レコーダー設定の PATCH は `SerializeToNode` → マージ → `Deserialize` → **パッチに現れた
 プロパティだけ live インスタンスへ書き戻す**（要素を差し替えると録画が落ちるため。
 `RecorderSettingsMirrorTests` の言う「手書きミラーの 5 つ目」を作らないためでもある）。
-**こちらは絞っていない** ── トークン所持者は `SrcPipeline` と `FilenameTemplate` も書ける。
-「トークン所持者はローカル操作者と同等」という前提で、ルート README に明記してある。
+レコーダー設定も `RemoteApiRules.RemoteDeniedRecorderSettings`（`SrcPipeline`・
+`EncodingProperties`・`ContinuousEncodingProperties`・`FilenameTemplate`・
+`ContinuousFilenameTemplate`）で拒否する。理由: 前の 3 つは**実行内容そのもの**
+── エンコーダーの指定は検証されず `parse_launch` の記述へ生で補間されるので、
+`SrcPipeline` と同じだけの実行能力がある ── 後の 2 つは**絶対パスで `OutputDirectory` の
+外へ書ける**。
 
 #### 終了コード → HTTP の写像
 

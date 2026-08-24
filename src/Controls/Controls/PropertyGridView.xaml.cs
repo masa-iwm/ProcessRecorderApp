@@ -337,7 +337,8 @@ public sealed partial class PropertyGridView : UserControl
         string? result = await ValueBuilder(item.BuilderKey, item.Value);
         if (result is not null)
         {
-            item.Value = result;
+            // 読み取り専用の項目でも書き込む経路（`[ReadOnly(true)]` ＋ `[ValueBuilder]` の意味）。
+            item.CommitFromBuilder(result);
         }
     }
 

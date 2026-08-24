@@ -284,6 +284,30 @@ public static class RemoteApiRules
     }
 
     /// <summary>
+    /// リモートの PATCH で書き換えを拒否するレコーダー設定（settings.json のキー名）。
+    ///
+    /// <para>
+    /// 基準は 2 つだけ ── <b>アプリが実行する内容そのもの</b>か、
+    /// <b><c>OutputDirectory</c> の外へ書ける</b>か。エンコーダーの指定 2 つが載るのは
+    /// 前者に当たるためである: 値は検証されず <c>parse_launch</c> の記述へそのまま
+    /// 補間されるので（<c>EventRecorder.BuildEncoderCandidates</c> /
+    /// <c>ResolveContinuousEncoder</c> → <c>BuildSinkPipeline</c> の <c>{encoder}</c>）、
+    /// <c>SrcPipeline</c> と同じだけの実行能力を持つ（<c>filesink location=…</c> も差せる）。
+    /// </para>
+    /// </summary>
+    public static readonly string[] RemoteDeniedRecorderSettings =
+    [
+        "SrcPipeline",                 // 任意の GStreamer パイプライン ── 実行内容そのもの
+        "EncodingProperties",          // parse_launch へ生で補間される ── 同上
+        "ContinuousEncodingProperties",// 同上
+        "FilenameTemplate",            // 絶対パスを許すので OutputDirectory の外へ書ける
+        "ContinuousFilenameTemplate"   // 同上
+    ];
+
+    public static bool IsRemoteEditableRecorderSetting(string name)
+        => !Array.Exists(RemoteDeniedRecorderSettings, n => string.Equals(n, name, StringComparison.Ordinal));
+
+    /// <summary>
     /// 部分更新（PATCH）の本文を、現在値の JSON へ重ねる。
     ///
     /// <para>

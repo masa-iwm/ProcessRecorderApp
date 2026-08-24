@@ -59,6 +59,12 @@ public sealed partial class PropertyGridItem : INotifyPropertyChanged
     /// </summary>
     private string? _enterEcho;
 
+    /// <summary>
+    /// <see cref="CommitFromBuilder"/> の実行中だけ true。読み取り専用の項目でも
+    /// この間は <see cref="Value"/> の setter が対象へ書き込む。
+    /// </summary>
+    private bool _committingFromBuilder;
+
     /// <summary>Category が未指定の場合の既定値(リソースキー)。PropertyGridView.BuildItems の既定値と揃える。</summary>
     internal const string DefaultCategoryKey = "PropCat_General";
 
@@ -70,16 +76,18 @@ public sealed partial class PropertyGridItem : INotifyPropertyChanged
     public string ToolTipText => string.IsNullOrEmpty(Description) ? Name : $"{Name}\n{Description}";
 
     /// <summary>
-    /// true の場合、利用者は値を直接編集できない（<see cref="Value"/> の setter もコミットしない）。
+    /// true の場合、利用者は値を直接編集できない（<see cref="Value"/> の setter は
+    /// 表示値だけを更新し、対象へコミットしない）。<b>例外は
+    /// <see cref="CommitFromBuilder"/> だけ</b> ── <c>[ReadOnly(true)]</c> ＋
+    /// <c>[ValueBuilder]</c> は「直接は編集できないが、ビルダーでなら変更できる」
+    /// という意味なので、「…」の結果は読み取り専用でも書き込む。
     ///
     /// <para>
     /// <b>テキストの行は読み取り専用でも無効化しない。</b> 無効化すると選択もコピーも
     /// できなくなり、<c>LastError</c> / <c>ContinuousLastError</c> /
     /// <c>ActualEncodingProperties</c> のような<b>読むためだけに在る行の中身を
     /// 取り出す手段が無くなる</b>（貼り付けて調べるための値である）。
-    /// <see cref="PropertyEditKind.Builder"/> の行はさらに「…」ボタンも押せる
-    /// ── <c>[ReadOnly(true)]</c> ＋ <c>[ValueBuilder]</c> は「直接は編集できないが
-    /// ビルダーでなら変更できる」という意味だからである。
+    /// <see cref="PropertyEditKind.Builder"/> の行はさらに「…」ボタンも押せる。
     /// テキスト以外（トグル・選択肢）は従来どおり無効化される。
     /// </para>
     /// </summary>
@@ -301,7 +309,7 @@ public sealed partial class PropertyGridItem : INotifyPropertyChanged
                 return;
             }
 
-            if (_property is null || _target is null || IsReadOnly)
+            if (_property is null || _target is null || (IsReadOnly && !_committingFromBuilder))
             {
                 // コミット先を持たない項目、または読み取り専用項目はローカルの表示値のみ更新する。
                 _value = value;
@@ -351,6 +359,30 @@ public sealed partial class PropertyGridItem : INotifyPropertyChanged
 
         // 差し戻しや丸めのあとに**画面へ残る**文字列を控える。次に来る書き戻しはこれになる。
         _enterEcho = _value;
+    }
+
+    /// <summary>
+    /// 「…」ボタン（<see cref="PropertyGridView.ValueBuilder"/>）が返した値の確定。
+    ///
+    /// <para>
+    /// <b><see cref="IsReadOnly"/> でも対象へ書き込む。</b> <c>[ReadOnly(true)]</c> ＋
+    /// <c>[ValueBuilder]</c> は「直接は編集できないが、ビルダーでなら変更できる」という
+    /// 意味であり、<see cref="Value"/> へ直接代入すると<b>欄の表示だけが新しい値になり、
+    /// 設定は古いままになる</b>（黙って食い違うので気付けない）。
+    /// 変換・丸め・エラー表示は通常の確定と同じ経路を通す。
+    /// </para>
+    /// </summary>
+    internal void CommitFromBuilder(string value)
+    {
+        _committingFromBuilder = true;
+        try
+        {
+            Value = value;
+        }
+        finally
+        {
+            _committingFromBuilder = false;
+        }
     }
 
     /// <summary>

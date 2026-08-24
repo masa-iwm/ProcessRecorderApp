@@ -589,15 +589,20 @@ CLI 側は `/` 入りのキーを受けるので、ここだけ受け付けな�
 
 ### レコーダー設定 PATCH の非対称（この項目は性格が違う）
 
-**これは退行の穴ではなく、v1 で意図してそうした設計判断**である。アプリ設定の PATCH は
-`RemoteEditableAppSettings` の 9 キーに絞ってあり `OutputDirectory` を拒否するのに対し、
-**レコーダー設定の PATCH は全プロパティが対象**で、トークン所持者は `SrcPipeline`
-（任意の GStreamer パイプライン）と `FilenameTemplate`（絶対パス可）を書ける。さらに
-`GET /api/recorders/{id}/settings` は**無認証で**その 2 つを返す。
+**これは退行の穴ではなく、意図してそうした設計判断**である。アプリ設定の PATCH は
+`RemoteEditableAppSettings` の 9 キーだけを通す**許可リスト**であるのに対し、
+レコーダー設定の PATCH は `RemoteDeniedRecorderSettings`（`SrcPipeline`・`EncodingProperties`・
+`ContinuousEncodingProperties`・`FilenameTemplate`・`ContinuousFilenameTemplate`）だけを断る
+**拒否リスト**で、**残りのプロパティはトークン所持者が書ける**。拒否しているのは
+「実行内容そのもの」（前の 3 つ ── エンコーダーの指定も `parse_launch` へ生で補間される）と
+「`OutputDirectory` の外へ書ける」（後の 2 つ）に当たるものだけで、**同じ性格の設定を
+足したときに拒否リストへ載せ忘れると穴になる**（L1 の
+`EveryPipelineTextRecorderSettingIsDenied` が拾えるのは名前がこの形の設定だけ）。さらに `GET /api/recorders/{id}/settings` は**無認証で**
+拒否キーの値も返す（読み取りは絞っていない）。
 
 「トークン所持者はローカル操作者と同等」「読み取りは LAN に見える」という前提でこうしてあり、
 ルート [README.md](../README.md) の「Remote control from a browser」／
-「リモート操作（ブラウザから）」に明記してある。拒否リスト化は v1 の範囲外。
+「リモート操作（ブラウザから）」に明記してある。
 **この非対称を「バグ」として片側だけ直すと、README の記述と食い違う** ── 直すなら文書も対で直すこと。
 
 ### Mp4Probe.StartsOnASyncSample
