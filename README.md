@@ -30,7 +30,9 @@ goes away.
   browser on another PC on the same LAN can watch the recorders, start and stop them, change
   settings, browse past recordings and see a live preview. Off by default, with **named users in
   three roles** (`Viewer` / `Operator` / `Admin`) and an optional guest read — see the section
-  below before turning it on.
+  below before turning it on. An `Admin` can also switch a recorder's **video source** from the
+  page, by picking one of the supported source elements and filling in its properties — the
+  pipeline string itself is built on the app's side and never accepted from the browser.
 - **Burnt-in timestamp** — the date and time are rendered into the recorded video.
 - **Filename templates** — the output name is given as a template such as
   `{Now:yyyyMMdd_HHmmss}_{Name}.mp4`, and can embed the date and time, the recorder name,

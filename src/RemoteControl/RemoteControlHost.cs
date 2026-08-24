@@ -156,6 +156,7 @@ public sealed class RemoteControlHost : IAsyncDisposable
         ControlEndpoints.Map(app, backend, auth);
         VariableEndpoints.Map(app, backend, auth);
         SettingsEndpoints.Map(app, backend, auth);
+        SourceEndpoints.Map(app, backend, auth);
         EventsEndpoint.Map(app, backend, auth);
         RecordingEndpoints.Map(app, backend, auth);
         PreviewEndpoints.Map(app, backend, auth);

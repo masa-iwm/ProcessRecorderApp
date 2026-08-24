@@ -1757,7 +1757,7 @@ UI スレッドで走る。`TryEnqueue` が false なら `RemoteApiException(12,
 |---|---|
 | `Viewer` | すべての読み取り（一覧・状態・設定・録画ファイル・ライブプレビュー・SSE）と `POST /api/ping` / `POST /api/logout` / `GET /api/me` |
 | `Operator` | `Viewer` に加えて録画の開始・停止（個別と全台）と `PUT /api/variables/{key}` |
-| `Admin` | すべて。`PATCH /api/settings` と `PATCH /api/recorders/{id}/settings` はここだけ |
+| `Admin` | すべて。`PATCH /api/settings`・`PATCH /api/recorders/{id}/settings`・`PUT /api/recorders/{id}/source` はここだけ |
 
 - **アクセストークンは Admin 相当**（`Authorization: Bearer <トークン>` と `GET /?token=`）。
   名乗りの名前は `RemoteAuthRules.TokenPrincipalName` ＝ `token`。役割を足したことで、
@@ -1795,9 +1795,17 @@ UI スレッドで走る。`TryEnqueue` が false なら `RemoteApiException(12,
   ハッシュは総当たりの材料になるので、`Viewer` にも見せない。
 - `remote.auth fail` は **1 分に 1 行へ間引く**（`RemoteAuth.FailureLogInterval`、
   `Environment.TickCount64` 基準）。状態はプロセス全体で 1 つ＝**IP ごとではない**。
+  **最も多い発生源は攻撃ではなく、`RemoteControlAllowGuestRead` が OFF のときの
+  未認証の `GET`** である ── 期限の切れたタブ 1 つでも `/api/events` の再接続で毎分 1 行になる
+  （ブラウザ側は再接続の失敗ごとに `GET /api/me` を 1 回だけ確かめ、401 ならログイン画面へ
+  切り替えて SSE を閉じる）。
   **トークンもパスワードも書かない**（activity.log は利用者が貼り付けて共有する種類のファイル）。
   記録するのは 401 の枝だけで、403（ヘッダー不足・役割不足）は記録しない
   ── どちらも名乗りは通っているので、混ぜると「資格を当てにきている」行が薄まる。
+- **パスワードの照合はプロセス全体で同時 1 本**（`RemoteAuth.PasswordGate` ＝ `static` の
+  `SemaphoreSlim(1,1)`。待ちは `RequestAborted` で打ち切る）。PBKDF2 の 60 万回は
+  **未認証で叩ける経路**なので、並列に投げられると録画と同じ CPU をいくらでも奪える。
+  `static` なのは、ホストが設定変更のたびに作り直されるためである。
 - 要求本文は 64KB で頭打ち（`ApiResponse.MaxRequestBodyBytes`。超過は Kestrel の 413 で、
   JSON 本文は付かない）。`Content-Type` は検査しない。
 
@@ -1823,8 +1831,10 @@ UI スレッドで走る。`TryEnqueue` が false なら `RemoteApiException(12,
 | POST | `/api/recorders/stop-all` | `Operator`（**W**） | 全台の録画を終了（結果は `RecordingStopRules.Stronger` で畳む） |
 | POST | `/api/recorders/{id}/start` | `Operator`（**W**） | 1 台の録画を開始 |
 | POST | `/api/recorders/{id}/stop` | `Operator`（**W**） | 1 台の録画を終了（確定まで待つ） |
-| GET | `/api/recorders/{id}/settings` | `Viewer` | 現在値（**キーは settings.json と同じ PascalCase**）＋ 項目の説明（`type` / **解決済みの** `category`・`description` / `choices` / `min` / `max` / `requiresReinitialize`） |
+| GET | `/api/recorders/{id}/settings` | `Viewer` | 現在値（**キーは settings.json と同じ PascalCase**）＋ 項目の説明（`type` / **解決済みの** `category`・`description` / `choices` / `min` / `max` / `requiresReinitialize` / `remoteEditable`） |
 | PATCH | `/api/recorders/{id}/settings` | `Admin`（**W**） | 変更したいキーだけ。応答は `applied` / `clamped` / `requiresReinitialize`。拒否キー（`SrcPipeline`・`EncodingProperties`・`ContinuousEncodingProperties`・`FilenameTemplate`・`ContinuousFilenameTemplate`）は 400 |
+| GET | `/api/sources` | `Viewer` | 編集できるソース要素の候補（`element` / `displayName` / `memoryFeature` / `recordingType` ＋ `properties[]` ＋ `capsFields[]`）。モニターとカメラの選択肢は解決済み |
+| PUT | `/api/recorders/{id}/source` | `Admin`（**W**） | `{element, properties, caps}` から `SrcPipeline` と `Type` を組み立てて書く。応答は `PatchResultDto` の 3 つ ＋ `srcPipeline`。録画中は 409 |
 | GET | `/api/settings` | `Viewer` | アプリ設定（`RemoteControlAccessToken`・`RemoteUsers`・`RemoteUserList` を除く） |
 | PATCH | `/api/settings` | `Admin`（**W**） | `RemoteApiRules.RemoteEditableAppSettings` の 9 キーだけ |
 | GET | `/api/variables` | `Viewer` | ファイル名テンプレートの変数の一覧 |
@@ -1851,7 +1861,50 @@ UI スレッドで走る。`TryEnqueue` が false なら `RemoteApiException(12,
 `ContinuousFilenameTemplate`）で拒否する。理由: 前の 3 つは**実行内容そのもの**
 ── エンコーダーの指定は検証されず `parse_launch` の記述へ生で補間されるので、
 `SrcPipeline` と同じだけの実行能力がある ── 後の 2 つは**絶対パスで `OutputDirectory` の
-外へ書ける**。
+外へ書ける**。拒否キーかどうかは `GET /api/recorders/{id}/settings` の項目メタの
+`remoteEditable` で配る ── **画面はキー名を持たない**（写すと、拒否リストを増やした日に
+画面だけが古いまま編集欄を出し続ける）。
+
+#### リモートからの `SrcPipeline` はテンプレート経由のみ
+
+**`PATCH` で文字列を書く道は開けない。** リモートが `SrcPipeline` を変える唯一の口は
+`PUT /api/recorders/{id}/source` で、受け取るのは**カタログの座標**
+（`SrcPipelineBuilder.Sources` に在る要素名と、その要素に在るプロパティ名・caps フィールド名と値）
+だけである。パイプライン文字列を作るのはサーバー側の `SrcPipelineBuilder.Assemble` で、
+要求の中の文字列がそのまま `parse_launch` へ届くことはない。経路を分けてあるのは、
+**拒否リストに例外を作ると、そこから緩む**からである（拒否リストは「任意の文字列」を
+断り続ける）。
+
+検証は `Components/SourcePresetRules.Validate`（純関数。L1 の `SourcePresetRulesTests` が固定）で、
+断るのは ── 未知の要素（`unknown source element`）／定義に無いプロパティ名・caps フィールド名／
+`Enum` が選択肢に無い値（動的に埋めた候補を含む）／`Bool` が `true` `false` 以外／
+`Int` が十進整数でない（**範囲は見ない**）／`isResolution` の値が `幅x高さ` でない／
+値に `!`・改行・NUL が入っている／値の先頭が `{` `[`。最後の 2 つは `Assemble` の引用に頼らず
+**先に**落とす ── 引用の実装が変わった日に、値がパイプラインの構造として解釈される形へ
+戻らないためである。先頭のブレース・ブラケットを断るのは、`Assemble` が caps のリスト
+`{ NV12, I420 }` とレンジ `[ 1, 30 ]` を**引用せずに素通しする**からで、この形の値は
+空白ごと構文へ出る（要素をもう 1 つ足せる）。
+
+適用は `SrcPipeline` と `Type` を**同時に**書く。種別は `SourcePresetRules.RecordingTypeFor`
+（メモリ機能に `D3D12Memory` を含めば `D3d12`、それ以外は `System` ──
+**`memory:D3D11Memory` は `System` 側**）で、片方だけ書くと「D3D12 のメモリを
+`videoconvert` へ流す」構成になる。書き込みは `PATCH` と同じ `ApplyPatch`
+（全キー検証 → 一括適用 → `requiresReinitialize`）を通り、応答は `PatchResultDto` の 3 つに
+組み立て結果の `srcPipeline` を足した形。**録画中は 409**（終了コード 14）── どちらのキーも
+`PropertiesRequiringReinitialize` に載っており、書けば走っている録画が落ちる。
+
+`GET /api/sources` が返す候補のうち、モニターとカメラに依るもの（`monitor-index`・
+`monitor-device-path`・`monitor-resolution`・`mf-device-index`・`mf-device-name`）は
+`GstIntrospect` で解決してから配る。読めなければ `choices` は `null` ＝ 自由入力になる。
+**一覧は 30 秒だけ持ち回す**（`RemoteControlBackend.SourcesCacheLifetime`）── デバイスの列挙は
+1 回ごとに `monitor.devices` / `camera.devices` を activity.log へ書き、しかも UI スレッド上で走るので、
+要求ごとに列挙すると `Viewer` の GET だけで記録を押し流せる。
+**このランタイムに無いプロパティは配らない**（`capture-api` のようにビルド構成で有無が変わるもの。
+同梱の MinGW 版には無い）── 一覧に出さないだけでなく、送られても「未知のプロパティ」で断る。
+配ってしまうと適用は 200 で通り、次の初期化で `parse_launch` が `no property` で落ちる。
+**`monitor-resolution` だけはビルダーのダイアログと出し方が違う**（あちらは「いま選ばれている
+`monitor-index`」の実寸 1 つ、こちらは全モニターの実寸）── 候補の一覧に「選ばれているもの」は
+存在しないためである。
 
 #### 終了コード → HTTP の写像
 

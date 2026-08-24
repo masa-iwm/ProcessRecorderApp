@@ -86,6 +86,11 @@ public sealed record RecorderSettingsDto(JsonObject Values, IReadOnlyList<Settin
 /// <param name="Min">下限（丸めのある数値だけ）。</param>
 /// <param name="Max">上限（丸めのある数値だけ）。</param>
 /// <param name="RequiresReinitialize">変更しても初期化をやり直すまで効かないか。</param>
+/// <param name="RemoteEditable">
+/// <b>リモートの <c>PATCH</c> で書けるか</b>（<c>RemoteApiRules.IsRemoteEditableRecorderSetting</c>）。
+/// false の項目は読み取り専用として出すこと ── 画面が拒否キーの名前を持たずに済むように、
+/// 判定はサーバーから配る（名前を写すと、拒否リストを増やした日に画面だけが古いままになる）。
+/// </param>
 public sealed record SettingPropertyDto(
     string Name,
     string Type,
@@ -94,7 +99,8 @@ public sealed record SettingPropertyDto(
     IReadOnlyList<string>? Choices,
     long? Min,
     long? Max,
-    bool RequiresReinitialize);
+    bool RequiresReinitialize,
+    bool RemoteEditable);
 
 /// <summary>
 /// <c>PATCH</c> の結果。

@@ -253,6 +253,235 @@ internal sealed partial class RemoteControlBackend(DispatcherQueue dispatcherQue
         => RunOnUiAsync(() => Task.FromResult(
             ToPatchResult(RecorderControlService.PatchAppSettings(patch), string.Empty)));
 
+    /// <summary>
+    /// 候補の一覧を作り直さずに配る時間。<b>要求ごとには列挙しない</b> ── モニターとカメラの
+    /// 列挙は 1 回ごとに <c>monitor.devices</c> / <c>camera.devices</c> を activity.log へ書き、
+    /// しかも UI スレッド上で走る。この経路は <c>Viewer</c>（ゲスト読み取りが ON なら未認証）なので、
+    /// 繰り返し叩くだけで直近の記録を押し流せる形と、UI スレッドを占有できる形が同時に立つ。
+    /// 一覧の中身が変わるのは機器の抜き差しのときだけなので、この長さで足りる。
+    /// </summary>
+    private static readonly TimeSpan SourcesCacheLifetime = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// 一覧の構築を<b>同時 1 本</b>に絞る（束で届いた要求が同じ列挙を並べて走らせない）。
+    /// 待ちは要求の中断で打ち切る。
+    /// </summary>
+    private readonly SemaphoreSlim _sourcesGate = new(1, 1);
+
+    /// <summary>直前に組んだ一覧と、それを組んだ時刻（対で読み書きする）。</summary>
+    private readonly object _sourcesLock = new();
+    private SourcesDto? _sources;
+    private long _sourcesBuiltAt;
+
+    /// <inheritdoc/>
+    public async Task<SourcesDto> GetSourcesAsync(CancellationToken ct)
+    {
+        // **判定は UI スレッドへ乗り換える前に。** 乗り換えてから見ても列挙は避けられるが、
+        // 叩かれた数だけ UI スレッドに仕事が積まれる。
+        if (CachedSources() is { } fresh)
+            return fresh;
+
+        await _sourcesGate.WaitAsync(ct);
+        try
+        {
+            if (CachedSources() is { } cached)
+                return cached;
+
+            // **UI スレッドで組む。** カタログの遅延初期化はローカライズ資源を引き、
+            // 動的候補は GStreamer のデバイス列挙を通る ── どちらもビルダーのダイアログが
+            // UI スレッド上で行っているのと同じ呼び出しである。
+            var built = await RunOnUiAsync(() =>
+            {
+                var catalog = new DynamicSourceChoices();
+                return Task.FromResult(new SourcesDto(
+                    SrcPipelineBuilder.Sources.Select(def => ToSourceDef(def, catalog)).ToArray()));
+            });
+
+            lock (_sourcesLock)
+            {
+                _sources = built;
+                _sourcesBuiltAt = Environment.TickCount64;
+            }
+            return built;
+        }
+        finally
+        {
+            _sourcesGate.Release();
+        }
+    }
+
+    /// <summary>まだ古くなっていない一覧（無ければ <see langword="null"/>）。</summary>
+    private SourcesDto? CachedSources()
+    {
+        lock (_sourcesLock)
+        {
+            return _sources is not null
+                   && Environment.TickCount64 - _sourcesBuiltAt < (long)SourcesCacheLifetime.TotalMilliseconds
+                ? _sources
+                : null;
+        }
+    }
+
+    /// <summary>
+    /// このランタイムに<b>実在する</b>プロパティだけ。<c>capture-api</c> のように
+    /// ビルド構成で有無が変わるもの（GStreamer の conditionally available）をそのまま配ると、
+    /// 適用は 200 で通ったうえで <c>parse_launch</c> が <c>no property</c> で落ちる
+    /// ── 同梱の MinGW 版に <c>capture-api</c> は無く、画面は既定値をそのまま送ってくる。
+    /// 判定はビルダーのダイアログと同じ（<c>PipelineBuilderViewModel</c>）。
+    /// <b>配らないものは検証でも断る</b> ── 一覧も検証も組み立ても、この列だけを見る。
+    /// </summary>
+    private static IEnumerable<SrcPropertyDef> AvailableProperties(SrcElementDef def)
+        => def.Properties.Where(
+            p => !p.ConditionallyAvailable || GstIntrospect.ElementHasProperty(def.ElementName, p.Name));
+
+    private static SourceDefDto ToSourceDef(SrcElementDef def, DynamicSourceChoices catalog) => new(
+        def.ElementName,
+        def.DisplayName,
+        def.MemoryFeature,
+        SourcePresetRules.RecordingTypeFor(def.MemoryFeature),
+        AvailableProperties(def)
+            .Select(p => new RemoteControl.SourcePropertyDto(
+                p.Name, KindName(p.Kind), p.DefaultValue, ChoicesFor(p, catalog),
+                p.Description, p.ConditionallyAvailable))
+            .ToArray(),
+        def.CapsFields
+            .Select(c => new CapsFieldDto(c.Name, c.IsResolution, c.DefaultValue, ChoicesFor(c, catalog)))
+            .ToArray());
+
+    /// <summary>
+    /// 封筒に出る値の種別の名前。<b><c>Enum.ToString()</c> は使わない</b>
+    /// ── Native AOT で列挙のメタデータの保持を要求する（<c>AuthEndpoints.RoleName</c> と同じ理由）。
+    /// 綴りの正本は <see cref="SourcePresetRules.PropertyKinds"/> で、
+    /// 一致は L1 の <c>SourcePresetRulesTests</c> が縛る。
+    /// </summary>
+    private static string KindName(SrcPropertyKind kind) => kind switch
+    {
+        SrcPropertyKind.Bool => SourcePresetRules.KindBool,
+        SrcPropertyKind.Int => SourcePresetRules.KindInt,
+        SrcPropertyKind.Enum => SourcePresetRules.KindEnum,
+        SrcPropertyKind.String => SourcePresetRules.KindString,
+        _ => throw new ArgumentOutOfRangeException(nameof(kind)),
+    };
+
+    /// <summary>
+    /// そのプロパティで選べる値。<b>静的な選択肢を優先する</b>
+    /// （動的候補は「実行時にしか分からないもの」のためにある）。
+    /// </summary>
+    private static IReadOnlyList<string>? ChoicesFor(SrcPropertyDef def, DynamicSourceChoices catalog)
+        => def.EnumChoices ?? catalog.For(def.DynamicKey);
+
+    /// <inheritdoc cref="ChoicesFor(SrcPropertyDef, DynamicSourceChoices)"/>
+    private static IReadOnlyList<string>? ChoicesFor(CapsFieldDef def, DynamicSourceChoices catalog)
+        => def.Choices ?? catalog.For(def.DynamicKey);
+
+    /// <inheritdoc/>
+    public Task<SourceApplyResultDto> ApplySourceAsync(string id, SourcePresetDto preset)
+        => RunOnUiAsync(async () =>
+        {
+            var properties = preset.Properties ?? EmptyValues;
+            var caps = preset.Caps ?? EmptyValues;
+
+            // **要素が無ければ検証そのものが「未知の要素」で断る。** 判定を 2 か所に
+            // 分けない（純関数の側だけを見れば、何を通すかが全部読める）。
+            SrcElementDef? def = SrcPipelineBuilder.FindSource(preset.Element);
+            var catalog = new DynamicSourceChoices();
+            if (!SourcePresetRules.Validate(ToSpec(def, catalog), properties, caps, out string? error))
+                throw new RemoteApiException(ActivationCommands.ExitCode_InvalidArguments, error);
+
+            // ここまで来た＝カタログに在る（無ければ Validate が「未知の要素」で断っている）。
+            SrcElementDef element = def!;
+
+            // 出力の並びはカタログの並び（要求の JSON の並びに左右されない）。
+            var ordered = AvailableProperties(element)
+                .Where(p => properties.ContainsKey(p.Name))
+                .Select(p => (p.Name, properties[p.Name]))
+                .ToArray();
+
+            string srcPipeline = SrcPipelineBuilder.Assemble(
+                element, capsEnabled: 0 < caps.Count, ordered, caps);
+            string recordingType = SourcePresetRules.RecordingTypeFor(element.MemoryFeature);
+
+            var outcome = await RecorderControlService.ApplySourceAsync(id, srcPipeline, recordingType);
+            if (outcome.ExitCode == ActivationCommands.ExitCode_RecordingNotExecutable)
+                throw new RemoteApiException(outcome.ExitCode, "the recorder is recording");
+
+            var applied = ToPatchResult(outcome, id);
+            return new SourceApplyResultDto(
+                applied.Applied, applied.Clamped, applied.RequiresReinitialize, srcPipeline);
+        });
+
+    /// <summary>要求に片方しか無いときに渡す空の辞書（毎回作らない）。</summary>
+    private static readonly IReadOnlyDictionary<string, string> EmptyValues =
+        new Dictionary<string, string>();
+
+    /// <summary>
+    /// カタログ定義を、検証に要る情報だけの軽い記述へ写す
+    /// （<c>Components</c> は <c>GStreamer.GstSharpNet</c> を参照できない）。
+    /// </summary>
+    private static SourceSpec? ToSpec(SrcElementDef? def, DynamicSourceChoices catalog)
+        => def is null
+            ? null
+            : new SourceSpec(
+                def.ElementName,
+                AvailableProperties(def)
+                    .Select(p => new SourcePropertySpec(p.Name, KindName(p.Kind), ChoicesFor(p, catalog)))
+                    .ToArray(),
+                def.CapsFields.Select(c => new SourceCapsSpec(c.Name, c.IsResolution)).ToArray());
+
+    /// <summary>
+    /// 実行時にしか分からない選択肢（モニターとカメラ）。<b>1 回の組み立てのあいだだけ持つ</b>
+    /// ── 列挙は要素の数だけ現れるので、都度問い合わせるとカメラの列挙が何度も走る。
+    /// 一覧（<see cref="GetSourcesAsync"/>）はさらに組んだ DTO を
+    /// <see cref="SourcesCacheLifetime"/> だけ持ち回すので、列挙が走るのはその間隔に 1 回。
+    ///
+    /// <para>
+    /// <b>解決するキーはビルダーのダイアログと同じ規則で選ぶ</b>
+    /// （<c>PipelineBuilderViewModel.GetDynamicChoices</c>）。ただし
+    /// <c>monitor-resolution</c> だけは<b>全モニターの実寸</b>を並べる ── あちらは
+    /// 「いま選ばれている <c>monitor-index</c>」のものだけを出すが、候補の一覧に
+    /// 「選ばれているもの」は存在しない。
+    /// </para>
+    /// <para>読めなければ null（＝自由入力）を返す。ここで投げると一覧そのものが 500 になる。</para>
+    /// </summary>
+    private sealed class DynamicSourceChoices
+    {
+        private IReadOnlyList<MonitorInfo>? _monitors;
+        private IReadOnlyList<VideoDeviceInfo>? _devices;
+
+        private IReadOnlyList<MonitorInfo> Monitors => _monitors ??= GstIntrospect.GetMonitors();
+        private IReadOnlyList<VideoDeviceInfo> Devices => _devices ??= GstIntrospect.GetVideoSourceDevices();
+
+        public IReadOnlyList<string>? For(string? dynamicKey)
+        {
+            try
+            {
+                return dynamicKey switch
+                {
+                    "monitor-index" => Indices(Math.Max(1, GstIntrospect.GetMonitorCount())),
+                    "monitor-device-path" => NonEmpty(Monitors.Select(m => m.Path)),
+                    "monitor-resolution" => NonEmpty(Monitors.Select(m => m.Resolution)),
+                    "mf-device-index" => 0 < Devices.Count ? Indices(Devices.Count) : null,
+                    "mf-device-name" => NonEmpty(Devices.Select(d => d.Name)),
+                    _ => null,
+                };
+            }
+            catch (Exception ex)
+            {
+                ActivityLog.Warn("remote.error", $"source choices ({dynamicKey}): {ex.Message}");
+                return null;
+            }
+        }
+
+        private static string[] Indices(int count)
+            => [.. Enumerable.Range(0, count).Select(i => i.ToString(System.Globalization.CultureInfo.InvariantCulture))];
+
+        private static string[]? NonEmpty(IEnumerable<string> values)
+        {
+            string[] found = [.. values.Where(v => !string.IsNullOrEmpty(v)).Distinct(StringComparer.Ordinal)];
+            return 0 < found.Length ? found : null;
+        }
+    }
+
     private static PatchResultDto ToPatchResult(SettingsPatchOutcome outcome, string target)
     {
         if (outcome.ExitCode == 0)

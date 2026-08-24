@@ -26,6 +26,9 @@
     <label for="loginPassword">password</label>
     <input type="password" id="loginPassword" autocomplete="current-password">
     <button type="button" id="loginSubmit">Log in</button>
+    <!-- Only shown while guest reading is allowed: it is the only case where there
+         is a screen to go back to. -->
+    <button type="button" id="loginCancel" hidden>Cancel</button>
   </p>
   <p id="loginError" class="status error"></p>
 </section>
@@ -64,6 +67,22 @@
     <span id="recorderSettingsStatus" class="status"></span>
   </p>
   <div id="recorderSettingsForm"></div>
+</section>
+
+<!-- Admin only: this is the one way a browser may write SrcPipeline, and only as a
+     template the server assembles. Hidden entirely for the other roles. -->
+<section id="sourceSection" hidden>
+  <h2>Source</h2>
+  <p class="actions">
+    <span id="sourceCurrent" class="status"></span>
+  </p>
+  <p class="actions">
+    <label for="sourceSelect">Element</label>
+    <select id="sourceSelect"></select>
+    <button type="button" id="applySource">Apply</button>
+    <span id="sourceStatus" class="status"></span>
+  </p>
+  <div id="sourceForm"></div>
 </section>
 
 <section id="appSettingsSection">

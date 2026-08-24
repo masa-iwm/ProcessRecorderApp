@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Threading;
+using System.Threading.Tasks;
 using Microsoft.AspNetCore.Http;
 using ProcessRecorderApp.Components;
 
@@ -120,15 +121,45 @@ internal sealed class RemoteAuth(
             : null;
 
     /// <summary>
+    /// パスワードの照合を<b>プロセス全体で同時 1 本</b>に絞る門。
+    ///
+    /// <para>
+    /// PBKDF2 の 60 万回は 1 回で数十 ms の CPU を使う。<b>未認証で叩ける経路</b>である以上、
+    /// 並列に投げられると録画と同じ CPU をいくらでも奪える ── ここで直列にすれば、
+    /// どれだけ同時に来ても消費は 1 コア分で頭打ちになる。
+    /// </para>
+    /// <para>
+    /// <b><see langword="static"/> であることが仕様。</b> <see cref="RemoteAuth"/> は
+    /// 設定を変えるたびに作り直されるので、実体に持たせると作り直しのたびに上限が増える。
+    /// </para>
+    /// </summary>
+    private static readonly SemaphoreSlim PasswordGate = new(1, 1);
+
+    /// <summary>
     /// 利用者名とパスワードで名乗る。合えばセッションを発行して ID と本人を返す。
     /// 合わなければ <see langword="null"/>（照合に掛かる時間は名前の存否で変わらない）。
+    ///
+    /// <para>
+    /// <b>照合は <see cref="PasswordGate"/> の中だけで行う。</b> 待っているあいだに
+    /// 呼び出し側が切れば <paramref name="ct"/> で打ち切る ── 断った要求のために
+    /// 順番待ちの列を伸ばし続けない。
+    /// </para>
     /// </summary>
-    public (string SessionId, RemotePrincipal Principal)? TryLogin(string name, string password)
+    public async Task<(string SessionId, RemotePrincipal Principal)?> TryLoginAsync(
+        string name, string password, CancellationToken ct)
     {
-        if (RemoteAuthRules.Authenticate(_users, name, password) is not { } principal)
-            return null;
+        await PasswordGate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            if (RemoteAuthRules.Authenticate(_users, name, password) is not { } principal)
+                return null;
 
-        return (_sessions.Issue(principal.Name, principal.Role), principal);
+            return (_sessions.Issue(principal.Name, principal.Role), principal);
+        }
+        finally
+        {
+            PasswordGate.Release();
+        }
     }
 
     /// <summary>セッションを失効させる（ログアウト）。</summary>

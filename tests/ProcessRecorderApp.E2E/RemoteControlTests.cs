@@ -1629,4 +1629,252 @@ public sealed class RemoteControlTests(PublishedApp app, ITestOutputHelper outpu
         using (var response = await client.SendAsync(request, Ct))
             (await ExpectAsync(response, HttpStatusCode.OK)).Dispose();
     }
+
+    // ---- ソース候補とテンプレートからの適用 ----
+
+    /// <summary>
+    /// <c>GET /api/sources</c> が<b>カタログと録画種別を配る</b>こと。
+    ///
+    /// <para>
+    /// 種別はメモリ機能から導く（<c>SourcePresetRules.RecordingTypeFor</c>）── 画面は
+    /// 「この要素を選ぶと <c>Type</c> がこうなる」を、適用する前に知れなければならない。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task TheSourceCatalog_ReportsTheElementsAndTheirRecordingType()
+    {
+        using var instance = AppInstance.Create(app, RemoteSettings());
+        int port = WaitForPort(instance);
+        using var client = CreateClient(port);
+
+        using var response = await client.GetAsync("api/sources", Ct);
+        using var body = await ExpectAsync(response, HttpStatusCode.OK);
+
+        var sources = body.RootElement.GetProperty("sources").EnumerateArray().ToArray();
+        Assert.True(3 < sources.Length, $"候補が {sources.Length} 件しかありません。");
+
+        var system = sources.Single(s => s.GetProperty("element").GetString() == "videotestsrc");
+        Assert.Equal("System", system.GetProperty("recordingType").GetString());
+        Assert.NotEmpty(system.GetProperty("displayName").GetString() ?? "");
+
+        var d3d12 = sources.Single(s => s.GetProperty("element").GetString() == "d3d12testsrc");
+        Assert.Equal("D3d12", d3d12.GetProperty("recordingType").GetString());
+        Assert.Equal("memory:D3D12Memory", d3d12.GetProperty("memoryFeature").GetString());
+
+        // 画面が編集欄を組むために要る 4 つ。種別の綴りは L1（SourcePresetRulesTests）が
+        // SrcPropertyKind の名前と一致させている。
+        var pattern = system.GetProperty("properties").EnumerateArray()
+            .Single(p => p.GetProperty("name").GetString() == "pattern");
+        Assert.Equal("Enum", pattern.GetProperty("kind").GetString());
+        Assert.Contains("smpte", StringsOf(pattern.GetProperty("choices")));
+        Assert.Equal("smpte", pattern.GetProperty("defaultValue").GetString());
+        Assert.False(pattern.GetProperty("conditionallyAvailable").GetBoolean());
+
+        var resolution = system.GetProperty("capsFields").EnumerateArray()
+            .Single(c => c.GetProperty("name").GetString() == "resolution");
+        Assert.True(resolution.GetProperty("isResolution").GetBoolean());
+    }
+
+    /// <summary>
+    /// <b>テンプレートからの適用が <c>SrcPipeline</c> と <c>Type</c> を同時に書くこと。</b>
+    ///
+    /// <para>
+    /// 文字列そのものの <c>PATCH</c> は拒否のままで（<c>PatchingDeniedRecorderSettings_*</c>）、
+    /// ここが唯一の書き口である。種別まで書くのが要点 ── <c>d3d12testsrc</c> を
+    /// <c>Type=System</c> のまま適用すると、次の初期化でパイプラインが繋がらない。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task ApplyingASourceTemplate_WritesThePipelineAndTheRecordingType()
+    {
+        using var instance = AppInstance.Create(app, RemoteSettings());
+        int port = WaitForPort(instance);
+        using var client = CreateClient(port);
+
+        using (var response = await SendAsync(
+            client, HttpMethod.Put, "api/recorders/0/source",
+            "{\"element\":\"videotestsrc\",\"properties\":{\"pattern\":\"smpte\"}}"))
+        {
+            using var body = await ExpectAsync(response, HttpStatusCode.OK);
+            // 応答が組み立て結果を返すので、呼び出し側は逆パースをしなくてよい。
+            Assert.StartsWith(
+                "videotestsrc pattern=smpte",
+                body.RootElement.GetProperty("srcPipeline").GetString(),
+                StringComparison.Ordinal);
+            Assert.Contains("SrcPipeline", StringsOf(body.RootElement.GetProperty("applied")));
+            Assert.Contains("Type", StringsOf(body.RootElement.GetProperty("applied")));
+            // どちらも「初期化をやり直すまで効かない」項目である。
+            Assert.Contains("SrcPipeline", StringsOf(body.RootElement.GetProperty("requiresReinitialize")));
+            Assert.Contains("Type", StringsOf(body.RootElement.GetProperty("requiresReinitialize")));
+        }
+
+        using (var response = await client.GetAsync("api/recorders/0/settings", Ct))
+        {
+            using var body = await ExpectAsync(response, HttpStatusCode.OK);
+            var values = body.RootElement.GetProperty("values");
+            Assert.StartsWith(
+                "videotestsrc pattern=smpte", values.GetProperty("SrcPipeline").GetString(),
+                StringComparison.Ordinal);
+            Assert.Equal("System", values.GetProperty("Type").GetString());
+        }
+
+        // メモリ機能を持つ要素は D3d12 側へ落ちる（別のレコーダーで見る ── 上の 1 台の
+        // 結果を上書きすると、どちらの適用を見ているのか分からなくなる）。
+        using (var response = await SendAsync(
+            client, HttpMethod.Put, "api/recorders/R2/source",
+            "{\"element\":\"d3d12testsrc\",\"caps\":{\"resolution\":\"640x480\"}}"))
+        {
+            using var body = await ExpectAsync(response, HttpStatusCode.OK);
+            Assert.Contains(
+                "width=640, height=480", body.RootElement.GetProperty("srcPipeline").GetString() ?? "",
+                StringComparison.Ordinal);
+        }
+
+        using (var response = await client.GetAsync("api/recorders/R2/settings", Ct))
+        {
+            using var body = await ExpectAsync(response, HttpStatusCode.OK);
+            var values = body.RootElement.GetProperty("values");
+            Assert.StartsWith(
+                "d3d12testsrc", values.GetProperty("SrcPipeline").GetString(), StringComparison.Ordinal);
+            Assert.Equal("D3d12", values.GetProperty("Type").GetString());
+        }
+    }
+
+    /// <summary>
+    /// <b>カタログの外は 1 つも通らないこと。</b> ここが緩むと、リモートから任意の
+    /// GStreamer パイプラインを実行できる ── <c>pattern</c> に <c>"x ! filesink"</c> を
+    /// 通せば、それは <c>SrcPipeline</c> を直に書くのと同じことである。
+    /// </summary>
+    [Fact]
+    public async Task ASourceTemplateOutsideTheCatalog_IsRefused()
+    {
+        using var instance = AppInstance.Create(app, RemoteSettings());
+        int port = WaitForPort(instance);
+        using var client = CreateClient(port);
+
+        string before;
+        using (var response = await client.GetAsync("api/recorders/0/settings", Ct))
+        {
+            using var body = await ExpectAsync(response, HttpStatusCode.OK);
+            before = body.RootElement.GetProperty("values").GetProperty("SrcPipeline").GetString() ?? "";
+        }
+
+        (string Body, string Expected)[] refused =
+        [
+            ("{\"element\":\"filesrc\"}", "unknown source element"),
+            ("{\"element\":\"videotestsrc\",\"properties\":{\"location\":\"C:\\\\x.mp4\"}}", "location"),
+            ("{\"element\":\"videotestsrc\",\"properties\":{\"pattern\":\"x ! filesink\"}}", "pattern"),
+            ("{\"element\":\"videotestsrc\",\"caps\":{\"resolution\":\"huge\"}}", "resolution"),
+        ];
+
+        foreach (var (json, expected) in refused)
+        {
+            using var response = await SendAsync(client, HttpMethod.Put, "api/recorders/0/source", json);
+            using var body = await ExpectAsync(response, HttpStatusCode.BadRequest);
+            Assert.Equal(4, body.RootElement.GetProperty("exitCode").GetInt32());
+            Assert.Contains(
+                expected, body.RootElement.GetProperty("error").GetString() ?? "", StringComparison.Ordinal);
+        }
+
+        // 断った要求は 1 文字も書いていないこと。
+        using (var response = await client.GetAsync("api/recorders/0/settings", Ct))
+        {
+            using var body = await ExpectAsync(response, HttpStatusCode.OK);
+            Assert.Equal(before, body.RootElement.GetProperty("values").GetProperty("SrcPipeline").GetString());
+        }
+    }
+
+    /// <summary>
+    /// <b>適用は設定の変更なので <c>Admin</c> だけ。</b> <c>Operator</c> は 403
+    /// （<c>PATCH …/settings</c> と同じ切り分け）。
+    /// </summary>
+    [Fact]
+    public async Task ApplyingASourceTemplate_NeedsAnAdmin()
+    {
+        using var instance = AppInstance.Create(app, RemoteUserSettings(allowGuestRead: false));
+        int port = WaitForPort(instance);
+        using var client = CreateClient(port);
+
+        string cookie = await LoginAsync(client, OperatorUser, OperatorPassword, "Operator");
+
+        using (var request = AsSession(
+            HttpMethod.Put, "api/recorders/0/source", cookie, "{\"element\":\"videotestsrc\"}"))
+        using (var response = await client.SendAsync(request, Ct))
+        {
+            using var body = await ExpectAsync(response, HttpStatusCode.Forbidden);
+            Assert.Equal("insufficient role", body.RootElement.GetProperty("error").GetString());
+        }
+
+        // 一覧は読み取りなので Operator でも通る（Viewer 以上）。
+        using (var request = AsSession(HttpMethod.Get, "api/sources", cookie, clientHeader: false))
+        using (var response = await client.SendAsync(request, Ct))
+            (await ExpectAsync(response, HttpStatusCode.OK)).Dispose();
+    }
+
+    /// <summary>
+    /// <b>録画中は断る（409）。</b> <c>SrcPipeline</c> も <c>Type</c> も初期化をやり直させる
+    /// 項目なので、書けば走っている録画が黙って落ちる。
+    /// </summary>
+    [Fact]
+    public async Task ApplyingASourceTemplateWhileRecording_IsRefused()
+    {
+        using var instance = AppInstance.Create(app, RemoteSettings());
+        int port = WaitForPort(instance);
+        using var client = CreateClient(port);
+
+        string filename;
+        using (var response = await SendAsync(client, HttpMethod.Post, "api/recorders/0/start"))
+        {
+            using var body = await ExpectAsync(response, HttpStatusCode.OK);
+            filename = body.RootElement.GetProperty("filename").GetString() ?? string.Empty;
+        }
+
+        using (var response = await SendAsync(
+            client, HttpMethod.Put, "api/recorders/0/source", "{\"element\":\"videotestsrc\"}"))
+        {
+            using var body = await ExpectAsync(response, HttpStatusCode.Conflict);
+            Assert.Equal(14, body.RootElement.GetProperty("exitCode").GetInt32());
+        }
+
+        Thread.Sleep(RecordingWindow);
+
+        using (var response = await SendAsync(client, HttpMethod.Post, "api/recorders/0/stop"))
+            (await ExpectAsync(response, HttpStatusCode.OK)).Dispose();
+
+        // 断ったのだから、走っていた録画は無事でなければならない。
+        RecordedMp4.AssertUsable(filename, instance, output);
+    }
+
+    /// <summary>
+    /// <b>拒否キーはサーバーが「編集できない」と名乗ること。</b> 画面が名前を写すと、
+    /// 拒否リストを増やした日に画面だけが古いまま編集欄を出し続ける。
+    /// </summary>
+    [Fact]
+    public async Task RecorderSettings_SayWhichKeysTheRemoteApiRefuses()
+    {
+        using var instance = AppInstance.Create(app, RemoteSettings());
+        int port = WaitForPort(instance);
+        using var client = CreateClient(port);
+
+        using var response = await client.GetAsync("api/recorders/0/settings", Ct);
+        using var body = await ExpectAsync(response, HttpStatusCode.OK);
+
+        var properties = body.RootElement.GetProperty("properties").EnumerateArray().ToArray();
+        Assert.NotEmpty(properties);
+
+        foreach (string denied in new[]
+        {
+            "SrcPipeline", "EncodingProperties", "ContinuousEncodingProperties",
+            "FilenameTemplate", "ContinuousFilenameTemplate",
+        })
+        {
+            var property = properties.Single(p => p.GetProperty("name").GetString() == denied);
+            Assert.False(property.GetProperty("remoteEditable").GetBoolean(),
+                $"{denied} が編集可能として出ています。");
+        }
+
+        // 残りは編集できる ── 全部 false になっていても上の検査は通ってしまう。
+        var buffer = properties.Single(p => p.GetProperty("name").GetString() == "BufferDuration");
+        Assert.True(buffer.GetProperty("remoteEditable").GetBoolean());
+    }
 }

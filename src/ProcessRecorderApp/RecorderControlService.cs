@@ -514,7 +514,10 @@ internal static class RecorderControlService
             type.IsEnum ? Enum.GetNames(type) : null,
             min,
             max,
-            EventRecorderSettings.PropertiesRequiringReinitialize.Contains(prop.Name, StringComparer.Ordinal));
+            EventRecorderSettings.PropertiesRequiringReinitialize.Contains(prop.Name, StringComparer.Ordinal),
+            // **拒否キーかどうかも配る。** 画面が名前を写すと、拒否リストを増やした日に
+            // 画面だけが古いまま「編集できるように見える欄」を出し続ける。
+            RemoteApiRules.IsRemoteEditableRecorderSetting(prop.Name));
     }
 
     /// <summary>
@@ -542,6 +545,65 @@ internal static class RecorderControlService
                     ActivationCommands.ExitCode_InvalidArguments, SettingsPatchRejection.NotEditable, pair.Key);
             }
         }
+
+        return ApplyPatch(
+            live, patch, Settings.AppSettings.RecorderTypeInfo,
+            live.GetProperties().ToArray(),
+            EventRecorderSettings.PropertiesRequiringReinitialize);
+    }
+
+    /// <summary>
+    /// 1 レコーダーの <c>SrcPipeline</c> と <c>Type</c> を<b>同時に</b>書く
+    /// （テンプレートから組み立てた値。組み立てと検証は呼び出し側）。
+    ///
+    /// <para>
+    /// <b>拒否リストは通さない。</b> <see cref="RemoteApiRules.RemoteDeniedRecorderSettings"/> が
+    /// 断っているのは<b>任意の文字列</b>としての <c>SrcPipeline</c> であって、
+    /// カタログの範囲で組み立てた値ではない ── 経路そのものを分けることで、
+    /// 「拒否リストに例外を作る」形（＝あとから緩みうる形）にしない。
+    /// </para>
+    /// <para>
+    /// <b>録画中は断る（14）。</b> どちらのキーも
+    /// <see cref="EventRecorderSettings.PropertiesRequiringReinitialize"/> に載っており、
+    /// 書けばパイプラインが作り直される ── 走っている録画を黙って落とすことになる。
+    /// 判定は <c>Model.IsRecording</c>（実体）で行う ── ビューモデルの同名プロパティは
+    /// 復帰待ちを畳んだ表示用の値である。
+    /// </para>
+    /// </summary>
+    internal static async Task<SettingsPatchOutcome> ApplySourceAsync(
+        string target, string srcPipeline, string recordingType)
+    {
+        var controller = await WaitForControllerAsync();
+        if (controller is null)
+        {
+            return SettingsPatchOutcome.Rejected(
+                ActivationCommands.ExitCode_RecorderNotAvailable, SettingsPatchRejection.None, null);
+        }
+
+        var recorder = Resolve(controller, target);
+        if (recorder is null)
+        {
+            return SettingsPatchOutcome.Rejected(
+                ActivationCommands.ExitCode_RecorderNotFound, SettingsPatchRejection.None, null);
+        }
+
+        if (recorder.Model.IsRecording)
+        {
+            return SettingsPatchOutcome.Rejected(
+                ActivationCommands.ExitCode_RecordingNotExecutable, SettingsPatchRejection.None, null);
+        }
+
+        var (exitCode, live) = await ResolveSettingsAsync(target);
+        if (live is null)
+            return SettingsPatchOutcome.Rejected(exitCode, SettingsPatchRejection.None, null);
+
+        // **2 キーを 1 回の適用で書く。** 別々に書くと、種別だけが変わった状態で
+        // パイプラインが作り直される瞬間ができる（メモリ機能と種別が食い違う）。
+        var patch = new JsonObject
+        {
+            [nameof(EventRecorderSettings.SrcPipeline)] = srcPipeline,
+            [nameof(EventRecorderSettings.Type)] = recordingType,
+        };
 
         return ApplyPatch(
             live, patch, Settings.AppSettings.RecorderTypeInfo,

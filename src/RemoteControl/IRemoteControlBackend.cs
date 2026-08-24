@@ -130,6 +130,27 @@ public interface IRemoteControlBackend
     /// 4（引数が不正）で <see cref="RemoteApiException"/>。
     /// </summary>
     Task<PatchResultDto> PatchAppSettingsAsync(JsonObject patch);
+
+    /// <summary>
+    /// 編集対象としてサポートするソース要素の候補（<c>SrcPipelineBuilder</c> のカタログ）。
+    /// 実行時にしか分からない選択肢（モニター・カメラ）は解決してから返す。
+    /// </summary>
+    Task<SourcesDto> GetSourcesAsync(CancellationToken ct);
+
+    /// <summary>
+    /// 1 レコーダーの <c>SrcPipeline</c> と <c>Type</c> を<b>テンプレートから組み立てて</b>書く。
+    ///
+    /// <para>
+    /// <b>リモートが <c>SrcPipeline</c> を書ける唯一の口である。</b> 文字列そのものの
+    /// <c>PATCH</c> は拒否リストが拒み続ける ── ここを通る値はカタログに在る要素・
+    /// プロパティ・caps だけで、検証は <c>Components.SourcePresetRules</c>（純関数）。
+    /// </para>
+    /// <para>
+    /// 未知の要素・未知のプロパティ・読めない値は 4（引数が不正）、録画中は
+    /// 14（いまは実行できない）、12 / 13 は他の書き込みと同じ。
+    /// </para>
+    /// </summary>
+    Task<SourceApplyResultDto> ApplySourceAsync(string id, SourcePresetDto preset);
 }
 
 /// <summary>

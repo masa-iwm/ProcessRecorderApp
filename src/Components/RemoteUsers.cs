@@ -139,20 +139,30 @@ public static class RemoteUserRules
 
     /// <summary>
     /// 利用者名として使えるか。空でない・<see cref="MaxNameLength"/> 以内・
-    /// 前後に空白が無い・制御文字を含まない・<c>:</c> を含まない
-    /// （<c>activity.log</c> の <c>key=value</c> と衝突させないため）。
+    /// 制御文字を含まない・<b>空白を 1 文字も含まない</b>・<c>:</c> と <c>=</c> を含まない。
+    ///
+    /// <para>
+    /// <b>禁じる 3 種は <c>activity.log</c> の書式が理由である。</b> 成功の記録は
+    /// <c>remote.auth login user=&lt;名前&gt; role=&lt;役割&gt;</c> という <c>key=value</c> の並びで、
+    /// <c>:</c> は行の区切りと、空白と <c>=</c> は<b>偽の key=value</b> と衝突する
+    /// ── 名前に <c>alice role=Admin</c> と付けられると、記録の上では Admin として
+    /// 名乗ったように読める。<b>内側の空白も禁じる</b>のはそのためで、
+    /// 前後だけを見ても足りない。
+    /// </para>
+    /// <para>
+    /// <b>これは登録の規約であって、認証の条件ではない。</b> 既にこの規約に反する名前が
+    /// settings.json に在る場合、ログイン自体は通る（照合は名前の序数一致だけを見る）──
+    /// 通らなくなるのは編集ダイアログでの確定である。
+    /// </para>
     /// </summary>
     public static bool IsValidName(string name)
     {
         if (string.IsNullOrEmpty(name) || name.Length > MaxNameLength)
             return false;
 
-        if (char.IsWhiteSpace(name[0]) || char.IsWhiteSpace(name[^1]))
-            return false;
-
         foreach (char c in name)
         {
-            if (char.IsControl(c) || c == ':')
+            if (char.IsControl(c) || char.IsWhiteSpace(c) || c == ':' || c == '=')
                 return false;
         }
 

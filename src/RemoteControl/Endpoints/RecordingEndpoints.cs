@@ -10,8 +10,11 @@ using ProcessRecorderApp.Components;
 namespace ProcessRecorderApp.RemoteControl.Endpoints;
 
 /// <summary>
-/// 録画ファイルの一覧と配信。<b>GET だけなので認証は要らない</b>（読み取りの規律は
-/// 他の GET と同じ ── ここに秘密は無く、配信 root の外へは出ない）。
+/// 録画ファイルの一覧と配信。<b>読み取りなので <see cref="RemoteRole.Viewer"/> が要る</b>
+/// （他の GET と同じ規律 ── ゲスト読み取りが ON なら未認証でも通る）。
+/// <b>ここに出るのは録画そのものである</b>: 画面に写っていたものが読める以上、
+/// 「GET だから誰でも」にはしない。配信 root の外へは出ない
+/// （<c>RemoteApiRules.TryResolveUnderRoot</c>）。
 ///
 /// <para>
 /// <b>列挙と開封は <c>Components.RecordingFiles</c> が行う。</b> 保存先を持っているのは

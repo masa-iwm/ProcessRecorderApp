@@ -74,6 +74,10 @@
   function applyPermissions() {
     var controls = document.querySelectorAll('[data-need]');
     for (var i = 0; i < controls.length; i++) { permit(controls[i]); }
+    // The source form is hidden as a whole rather than disabled: it is not an
+    // "edit this value" control but a template builder, and half of it greyed out
+    // says nothing useful to a Viewer.
+    $('sourceSection').hidden = !allows('admin');
   }
 
   function permit(node) {
@@ -191,6 +195,8 @@
     getJson('/api/recorders/' + encodeURIComponent(id) + '/settings').then(function (settings) {
       buildRecorderForm(settings);
       recorderFormId = id;
+      // Shown, never parsed back: the pipeline string is the server's to build.
+      text($('sourceCurrent'), 'current: ' + (settings.values.SrcPipeline || ''));
       status($('recorderSettingsStatus'), 'loaded ' + id, false);
     }).catch(function (error) {
       status($('recorderSettingsStatus'), error.message, true);
@@ -260,7 +266,17 @@
     }
 
     if (property.description) { input.title = property.description; }
-    markWrite(input, 'admin');
+    // `remoteEditable` comes from the server (RemoteApiRules.RemoteDeniedRecorderSettings).
+    // The names are deliberately not copied into this file: a key added to the deny
+    // list would otherwise keep looking editable here until someone remembered.
+    // Not routed through `markWrite`, because `permit` would re-enable it for an Admin.
+    if (property.remoteEditable === false) {
+      input.disabled = true;
+      input.title = (property.description ? property.description + ' - ' : '')
+        + 'read-only over the remote API';
+    } else {
+      markWrite(input, 'admin');
+    }
     field.appendChild(input);
 
     if (property.requiresReinitialize) {
@@ -295,6 +311,9 @@
     var count = 0;
 
     recorderFields.forEach(function (entry) {
+      // The server refuses these keys outright, so sending them would turn every
+      // apply into a 400 that discards the rest of the form.
+      if (entry.property.remoteEditable === false) { return; }
       var value = readField(entry);
       // An emptied number field is not a value: the server has no null for an int,
       // and "clear this" is not something the form can express.
@@ -321,6 +340,126 @@
       loadRecorderSettings();
     }).catch(function (error) {
       status($('recorderSettingsStatus'), error.message, true);
+    });
+  }
+
+  // ---- source (template -> SrcPipeline, Admin only) ----
+  //
+  // The browser never sends a pipeline string. It sends the element name plus the
+  // values for the properties and caps fields the server offered, and the server
+  // assembles the string -- that is the whole reason `SrcPipeline` may be written
+  // here at all while `PATCH .../settings` still refuses it.
+
+  var sourceDefs = [];
+  var sourceFields = [];
+
+  function loadSources() {
+    getJson('/api/sources').then(function (result) {
+      sourceDefs = result.sources;
+      var select = $('sourceSelect');
+      select.replaceChildren();
+      sourceDefs.forEach(function (def) {
+        var option = document.createElement('option');
+        option.value = def.element;
+        option.textContent = def.displayName + ' (' + def.element + ')';
+        select.appendChild(option);
+      });
+      buildSourceForm();
+    }).catch(function (error) {
+      status($('sourceStatus'), error.message, true);
+    });
+  }
+
+  function selectedSource() {
+    var element = $('sourceSelect').value;
+    for (var i = 0; i < sourceDefs.length; i++) {
+      if (sourceDefs[i].element === element) { return sourceDefs[i]; }
+    }
+    return null;
+  }
+
+  function buildSourceForm() {
+    var host = $('sourceForm');
+    host.replaceChildren();
+    sourceFields = [];
+
+    var def = selectedSource();
+    if (def === null) { return; }
+
+    status($('sourceStatus'), 'recording type: ' + def.recordingType, false);
+
+    def.properties.forEach(function (property) {
+      host.appendChild(sourceField(property.name, property, 'properties'));
+    });
+    def.capsFields.forEach(function (capsField) {
+      host.appendChild(sourceField('caps ' + capsField.name, capsField, 'caps'));
+    });
+  }
+
+  // One row per property or caps field. Every value is a string on the wire, and an
+  // empty one is left out of the request: "not set" is how the server is told to
+  // leave that property off the pipeline entirely.
+  function sourceField(label, definition, group) {
+    var field = document.createElement('div');
+    field.className = 'field';
+
+    var caption = document.createElement('label');
+    text(caption, label);
+    if (definition.description) { caption.title = definition.description; }
+    field.appendChild(caption);
+
+    var input;
+    var choices = definition.kind === 'Bool' ? ['true', 'false'] : definition.choices;
+    if (choices && choices.length > 0) {
+      input = document.createElement('select');
+      appendOption(input, '');
+      choices.forEach(function (choice) { appendOption(input, choice); });
+    } else {
+      input = document.createElement('input');
+      input.type = 'text';
+    }
+    input.value = definition.defaultValue === null || definition.defaultValue === undefined
+      ? '' : String(definition.defaultValue);
+    if (definition.description) { input.title = definition.description; }
+    field.appendChild(input);
+
+    if (definition.conditionallyAvailable) {
+      var note = document.createElement('span');
+      note.className = 'status';
+      text(note, 'not on every build');
+      field.appendChild(note);
+    }
+
+    sourceFields.push({ name: definition.name, group: group, input: input });
+    return field;
+  }
+
+  function appendOption(select, value) {
+    var option = document.createElement('option');
+    option.value = value;
+    option.textContent = value;
+    select.appendChild(option);
+  }
+
+  function applySource() {
+    var id = $('recorderSelect').value;
+    var def = selectedSource();
+    if (!id || def === null) {
+      status($('sourceStatus'), 'select a recorder and a source', true);
+      return;
+    }
+
+    var body = { element: def.element, properties: {}, caps: {} };
+    sourceFields.forEach(function (entry) {
+      if (entry.input.value === '') { return; }
+      body[entry.group][entry.name] = entry.input.value;
+    });
+
+    send('PUT', '/api/recorders/' + encodeURIComponent(id) + '/source', body).then(function (result) {
+      status($('sourceStatus'), 'applied: ' + result.srcPipeline, false);
+      text($('sourceCurrent'), 'current: ' + result.srcPipeline);
+    }).catch(function (error) {
+      status($('sourceStatus'), error.message, true);
     });
   }
 
@@ -640,6 +779,9 @@
       credentials: 'same-origin'
     }).then(function (response) {
       if (!response.ok) {
+        // A 401 is not about the stream: this browser has no session any more, and
+        // the only repair is the sign-in form (which stops the preview as well).
+        if (response.status === 401) { showLogin('Sign in to continue.'); }
         // 404 and 503 are answers, not hiccups: reconnecting would just repeat them.
         return response.json().catch(function () { return {}; }).then(function (body) {
           throw new Error(describe(body, response.status));
@@ -721,11 +863,24 @@
   // directly. Reconnection is the browser's job for EventSource.
   // The handle is kept so that a 401 can close it: EventSource retries on its own
   // and would otherwise keep hammering an endpoint that is refusing this browser.
+  var identityCheckInFlight = false;
+
   function subscribe() {
     if (events !== null) { return; }
     events = new EventSource('/api/events');
     events.addEventListener('state', function (event) {
       renderRecorders(JSON.parse(event.data));
+    });
+    // EventSource retries on its own and never says why it failed. An expired tab
+    // would therefore reconnect forever, and every attempt writes another
+    // `remote.auth fail`. So each error asks once who we are: a 401 means the
+    // session is gone (getJson switches to the form, which closes this stream),
+    // anything else is left to the built-in retry.
+    events.addEventListener('error', function () {
+      if (identityCheckInFlight) { return; }
+      identityCheckInFlight = true;
+      getJson('/api/me').catch(function () { /* a 401 has already switched the page */ })
+        .then(function () { identityCheckInFlight = false; });
     });
   }
 
@@ -738,6 +893,9 @@
     $('identity').classList.add('hidden');
     $('loginSection').classList.remove('hidden');
     $('loginPassword').value = '';
+    // Only a guest has a screen to go back to: with guest reading off, cancelling
+    // would land on a page that answers 401 to everything.
+    $('loginCancel').hidden = !guest;
     text($('loginError'), message === undefined ? '' : message);
   }
 
@@ -791,6 +949,9 @@
       applyPermissions();
       showApp();
       subscribe();
+      // Only an Admin can use the result, and enumerating monitors and cameras is
+      // not free -- so it is not fetched for the roles that cannot apply it.
+      if (allows('admin')) { loadSources(); }
       loadAppSettings();
       loadVariables();
       loadRecordings();
@@ -813,10 +974,15 @@
     if (event.key === 'Enter') { submitLogin(); }
   });
   $('loginButton').addEventListener('click', function () { showLogin(); });
+  // Back to reading as a guest. Routed through `start()` so the page is rebuilt from
+  // `/api/me`: the session may have expired while the form was open.
+  $('loginCancel').addEventListener('click', function () { start(); });
   $('logoutButton').addEventListener('click', logout);
 
   $('loadRecorderSettings').addEventListener('click', loadRecorderSettings);
   markWrite($('applyRecorderSettings'), 'admin').addEventListener('click', applyRecorderSettings);
+  $('sourceSelect').addEventListener('change', buildSourceForm);
+  markWrite($('applySource'), 'admin').addEventListener('click', applySource);
   $('loadAppSettings').addEventListener('click', loadAppSettings);
   $('loadVariables').addEventListener('click', loadVariables);
   markWrite($('putVariable')).addEventListener('click', putVariable);

@@ -40,7 +40,10 @@ internal static class AuthEndpoints
                 return;
             }
 
-            if (auth.TryLogin(request.User ?? "", request.Password ?? "") is not { } session)
+            // **照合はプロセス全体で同時 1 本**（RemoteAuth.PasswordGate）。待ちは
+            // RequestAborted で打ち切る ── 切れた要求のために列を伸ばさない。
+            if (await auth.TryLoginAsync(request.User ?? "", request.Password ?? "", ctx.RequestAborted)
+                is not { } session)
             {
                 auth.ReportFailure(ctx);
                 await ApiResponse.WriteErrorAsync(

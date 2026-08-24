@@ -104,7 +104,6 @@ public class RemoteUserRulesTests
     [Theory]
     [InlineData("alice")]
     [InlineData("a")]
-    [InlineData("山田 太郎")]      // 途中の空白は使える
     [InlineData("a.b-c_d@example")]
     public void IsValidName_AcceptsOrdinaryNames(string name)
         => Assert.True(RemoteUserRules.IsValidName(name));
@@ -116,6 +115,12 @@ public class RemoteUserRulesTests
     [InlineData("ali\tce")]        // 制御文字
     [InlineData("ali\nce")]
     [InlineData("host:8752")]      // ':' は activity.log の key=value と衝突する
+    // **内側の空白と '=' も禁じる。** `remote.auth login user=<名前> role=<役割>` の
+    // 並びへ偽の key=value を差し込ませないため（"alice role=Admin" が
+    // 記録の上では Admin の名乗りに読める）。
+    [InlineData("山田 太郎")]
+    [InlineData("alice role=Admin")]
+    [InlineData("a=b")]
     public void IsValidName_RejectsTheseNames(string name)
         => Assert.False(RemoteUserRules.IsValidName(name));
 

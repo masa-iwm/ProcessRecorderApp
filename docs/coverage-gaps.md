@@ -515,9 +515,22 @@ L1 は `WebAssetManifestTests` が「資産の一覧が合っているか」を�
 はすべて無検査である。**サーバー側が正しく 403 を返していても、画面が押せるボタンを出し続ける
 という退行は緑のまま通る**（押した結果が 403 になるだけなので、被害は出ないが使えない画面になる）。
 
+**ソースの編集欄（`sourceSection`）と、レコーダー設定の読み取り専用表示も同じく無検査**である。
+L2 が見るのは HTTP の応答（`GET /api/sources` の中身・`PUT …/source` の 400/403/409・
+項目メタの `remoteEditable`）までで、
+
+- `Admin` 以外でセクションごと消えること（`applyPermissions`）
+- `kind` に応じて `<select>` と `<input type=text>` を出し分け、空欄は要求に入れないこと
+- `remoteEditable=false` の欄が `disabled` になり、`applyRecorderSettings` の本文から落ちること
+  （**`markWrite` を通していない**のが要点 ── 通すと `permit` が Admin で有効へ戻す）
+- SSE が切れたときに `GET /api/me` を 1 回だけ叩くこと、ゲストのログイン画面に「Cancel」が出ること
+
+は誰も実行しない。
+
 ここを触ったら、発行物を起動して**実際に Chrome か Edge で開く**こと。3 つの役割で順にログインし、
 出るボタンが変わること・ログアウトでフォームへ戻ること・そのあと同じ Cookie で読めないこと
-（DevTools の Network で 401）を目で確かめる。
+（DevTools の Network で 401）を目で確かめる。ソースの欄は `Admin` で 1 度適用し、
+レコーダーの設定画面の `SrcPipeline` が変わることまで見る。
 
 ### プレビューの初画までの時間
 
