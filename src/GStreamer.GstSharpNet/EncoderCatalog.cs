@@ -32,12 +32,24 @@ namespace ProcessRecorderApp.GStreamer;
 /// <b>単位を持つ定義は必ず <c>LaunchString</c> に <c>bitrate=</c> を含む</b>
 /// （<see cref="WithBitrateKbps"/> の前提。L1 がカタログ全体で縛る）。
 /// </param>
-public sealed record H264EncoderDef(
+public sealed partial record H264EncoderDef(
     string FactoryName, string LaunchString, bool NeedsSystemMemory, int? BitrateUnitPerKbps = null)
 {
-    /// <summary><c>bitrate=&lt;数値&gt;</c> のトークン（値だけを置き換える）。</summary>
-    private static readonly System.Text.RegularExpressions.Regex BitrateTokenRegex =
-        new(@"\bbitrate=\d+\b", System.Text.RegularExpressions.RegexOptions.Compiled);
+    /// <summary>
+    /// <c>bitrate=&lt;数値&gt;</c> のトークン（値だけを置き換える）。
+    ///
+    /// <para>
+    /// <b>先頭は <c>\b</c> ではなく <c>(?&lt;![-\w])</c> で切る。</b> <c>-</c> は語の境界なので、
+    /// <c>\bbitrate=</c> は <c>max-bitrate=</c> や <c>target-bitrate=</c> にも一致する
+    /// ── 別のプロパティの値を書き換えてしまう。
+    /// </para>
+    /// <para>
+    /// <b><see cref="System.Text.RegularExpressions.GeneratedRegexAttribute"/> で生成する。</b>
+    /// Native AOT では <c>RegexOptions.Compiled</c> が黙って解釈実行へ落ちる。
+    /// </para>
+    /// </summary>
+    [System.Text.RegularExpressions.GeneratedRegex(@"(?<![-\w])bitrate=\d+\b")]
+    private static partial System.Text.RegularExpressions.Regex BitrateTokenRegex();
 
     /// <summary>
     /// プロパティを一切付けない、ファクトリ名だけの定義を返す。
@@ -71,14 +83,16 @@ public sealed record H264EncoderDef(
 
         // 「見つからない」の判定は置換の前に行う ── 置換後の文字列が元と同じになるのは
         // 同じ値を指定した正常な場合（既定値の往復）でもありうる。
-        if (!BitrateTokenRegex.IsMatch(LaunchString))
+        if (!BitrateTokenRegex().IsMatch(LaunchString))
         {
             throw new InvalidOperationException(
                 $"{FactoryName}: BitrateUnitPerKbps is set but the launch string has no 'bitrate=' token: {LaunchString}");
         }
 
-        string value = (kbps * unit).ToString(System.Globalization.CultureInfo.InvariantCulture);
-        return this with { LaunchString = BitrateTokenRegex.Replace(LaunchString, $"bitrate={value}", 1) };
+        // **checked。** 単位が 1000 のエンコーダー（bit/sec で受ける定義）では
+        // 大きな kbps が int を溢れ、投げずに負の bitrate 文字列を書いてしまう。
+        string value = checked(kbps * unit).ToString(System.Globalization.CultureInfo.InvariantCulture);
+        return this with { LaunchString = BitrateTokenRegex().Replace(LaunchString, $"bitrate={value}", 1) };
     }
 }
 

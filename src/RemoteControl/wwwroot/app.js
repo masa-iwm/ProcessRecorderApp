@@ -654,9 +654,21 @@
   // How long to wait after a 416 before asking again (the file has not grown yet).
   var FOLLOW_POLL_MS = 1000;
 
-  // Playback follows this far behind the buffered end. Right at the end the
-  // decoder runs out on every fragment boundary.
+  // Where following starts: this far behind the buffered end. Right at the end the
+  // decoder runs out on every fragment boundary. This is used once, when the first
+  // playable moment arrives -- a follow that started at the beginning of what is
+  // buffered would play a minute-old picture and never catch up.
   var FOLLOW_LAG_SECONDS = 1;
+
+  // After that, ordinary playback keeps the position and a correction is made only
+  // when it has fallen further behind the buffered end than the trigger; the
+  // correction lands this far behind it.
+  //
+  // **The gap between the two is what removes the stutter.** Correcting toward a
+  // fixed distance on every `updateend` means one seek per fragment (one a second),
+  // and a decoder that is reset that often never plays smoothly.
+  var FOLLOW_CATCHUP_TRIGGER_SECONDS = 3;
+  var FOLLOW_CATCHUP_LAG_SECONDS = 1.5;
 
   // Bumped by every start and every stop: callbacks belonging to an older playback
   // (an in-flight fetch, a pending timer, an `updateend`) return without touching
@@ -668,10 +680,18 @@
 
   // Following the live edge stops for good once the user seeks. The corrections
   // this file makes itself must not count as that, so the position each one asks
-  // for is remembered: a `seeking` that lands exactly on it is ours, anything else
-  // is the user's. A plain boolean cannot tell the two apart -- a seek the user
-  // makes while a correction is pending would consume the flag and be taken for
-  // the correction.
+  // for is remembered: a `seeking` that lands near it is ours, anything else is
+  // the user's. A plain boolean cannot tell the two apart -- a seek the user makes
+  // while a correction is pending would consume the flag and be taken for the
+  // correction.
+  //
+  // **Near, not equal.** `seeking` is delivered as a task, and a seek that has
+  // already completed by then leaves the element a little past the position that
+  // was asked for (measured: 1.599999 asked, 1.60025 once seeked, and more while
+  // the machine is loaded). Comparing for equality drops the following at the very
+  // first correction, which is the whole of the live edge being followed.
+  var FOLLOW_SEEK_MATCH_SECONDS = 0.5;
+
   var followLive = true;
   var followSeekTarget = null;
 
@@ -780,6 +800,8 @@
     var receivedBytes = false;
     var started = false;
     var trimmed = false;
+    // Whether the one unconditional jump to the live edge has been made.
+    var joined = false;
 
     function fail(reason) {
       if (generation !== followGeneration) { return; }
@@ -952,14 +974,41 @@
     // position is theirs. A file that is no longer being written has no live edge
     // to follow -- doing it there would put playback one second before the end of
     // the recording and finish it at once.
+    //
+    // **Following is one jump plus rare corrections, not a position that is
+    // rewritten every time.** This runs on every `updateend`, which is once per
+    // fragment; assigning `currentTime` that often seeks the element once a
+    // second, and every seek resets the decoder.
     function followEdge() {
       if (!followLive || !inProgress) { return; }
+
+      // Nothing is corrected before the element has a position to correct. A seek
+      // asked for while the first frames are still being decoded is a seek the
+      // start of playback has to wait for, and `play()` has not even been called
+      // yet on the append that carries the first frame.
+      if (video.readyState < 2 /* HAVE_CURRENT_DATA */) { return; }
+
       var ranges = video.buffered;
       if (ranges.length === 0) { return; }
+      var end = ranges.end(ranges.length - 1);
 
-      var target = ranges.end(ranges.length - 1) - FOLLOW_LAG_SECONDS;
+      if (!joined) {
+        joined = true;
+        seekFollow(end - FOLLOW_LAG_SECONDS);
+        return;
+      }
+
+      if (FOLLOW_CATCHUP_TRIGGER_SECONDS < end - video.currentTime) {
+        seekFollow(end - FOLLOW_CATCHUP_LAG_SECONDS);
+      }
+    }
+
+    // Never seek backwards here: the correction exists to close a gap, and asking
+    // for a position behind the one that is playing would drop what has already
+    // been decoded. The position asked for is recorded so that the `seeking`
+    // listener does not read it as the user taking over.
+    function seekFollow(target) {
       if (target <= video.currentTime) { return; }
-
       followSeekTarget = target;
       video.currentTime = target;
     }
@@ -1412,9 +1461,12 @@
   $('loadRecordings').addEventListener('click', loadRecordings);
   $('stopPlayer').addEventListener('click', function () { stopFollow('stopped'); });
   // A seek the user made ends the live-edge following. A correction this file made
-  // is recognised by the position it asked for, and only that one is forgiven.
+  // is recognised by the position it asked for -- within FOLLOW_SEEK_MATCH_SECONDS,
+  // because the element has usually moved on by the time this runs -- and only
+  // that one is forgiven.
   $('player').addEventListener('seeking', function () {
-    if (followSeekTarget !== null && $('player').currentTime === followSeekTarget) {
+    if (followSeekTarget !== null
+        && Math.abs($('player').currentTime - followSeekTarget) < FOLLOW_SEEK_MATCH_SECONDS) {
       followSeekTarget = null;
       return;
     }

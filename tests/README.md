@@ -9,6 +9,7 @@ README 記載の契約の大半は UI 自動化(UIA)を使わずに検証でき�
 | L2 E2E | `ProcessRecorderApp.E2E` | 発行済み exe を起動し CLI + 生成MP4 + activity.log を検証 | 録画の中核契約・終了コード・変数・永続化・常駐/多重起動 |
 | L3 GUI | `ProcessRecorderApp.E2E` | FlaUI (UIA3) | GUI でしか触れない操作：プロパティ編集・画面切替・トレイ格納・正常終了パス・レコーダー管理・パイプライン編集ダイアログ・**表示言語の強制** |
 | L4 ローカライズ | `ProcessRecorderApp.Tests` | `.resw` / README をファイルとして直接検証 ＋ L3 で言語強制 | en-US / ja-JP のキー整合・書式整合・参照キー実在・README 言語対・フォールバック |
+| L2 ブラウザ | `ProcessRecorderApp.E2E` | headless Edge ＋ DevTools プロトコル（自前。`msedge` 不在なら Skip） | Web UI（`app.js`）でしか触れないもの：ログイン画面への切り替え・ゲストの取り消し・MSE の追いかけ再生 |
 
 > **この文書や docs/ でコードを指すときは、行番号ではなく型名・メソッド名で書くこと。**
 > 行番号は次の編集で腐るうえ、**腐ったことが目に見えない**。
@@ -46,6 +47,12 @@ L2 は発行物を外から叩くので、**先に publish が要る**（発行�
 その旨を出して即座に失敗する）。AOT 発行物に対して流すときは
 `PROCESSRECORDERAPP_E2E_PUBLISH_DIR` で発行ディレクトリを差し替える。
 デバッグ時は `PROCESSRECORDERAPP_E2E_KEEP=1` で一時ディレクトリを残せる。
+
+ブラウザ E2E（`WebUiBrowserTests`）も同じプロジェクトに入っている。**ブラウザ自動化の
+パッケージは足していない** ── BCL の `ClientWebSocket` とシステムの `msedge.exe` だけで
+DevTools プロトコルを話す（`EdgeCdp`）。プロファイルは 1 起動につき 1 つの一時ディレクトリなので、
+「古い `app.js` がキャッシュに残っていた」という結末が起こりえない。**Edge が入っていない環境では
+Skip する**ので、緑だから走ったとは限らない ── 実行結果の skip 件数を見ること。
 
 L3（GUI・UIA）は同じプロジェクトに入っている。**対話セッションとデスクトップが要る**
 （切断中の RDP セッションでも UIA から要素を辿れることは確認済み。ただし

@@ -23,6 +23,8 @@ CI は2つのワークフローに分かれる。`build.yml` は push のたび�
 
 両ジョブとも E2E の前に WER LocalDumps を武装する（DumpFolder を `runner.temp` 配下へ明示、DumpType=1 のミニダンプ）。書けたことを読み戻して `wer-status.log` に残す ── 武装できていない run の「ダンプが無い」を「クラッシュではない」と誤読しないため。AOT ではマネージドのスタックトレースが出ないので、ダンプが落ちた場所を知る唯一の手段になる。
 
+**ブラウザ E2E（`WebUiBrowserTests`）は `windows-latest` に Edge が同梱されている前提で走る**（`%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe`）。**入っていない環境では Skip する**ので、緑は「走った」の根拠にならない ── skip 件数を見ること。
+
 ## release.yml の構成と理由
 
 トリガーは `v*` タグの push と `workflow_dispatch`。`build.yml` と分けるのは、同梱用の GStreamer ランタイムを毎回取得するため push のたびに走らせる価値が無いから。**発行は Native AOT（`win-x64-aot`。`build.yml` の AOT ジョブと同じ形態）で、配布するのは AOT 版のみ** ── selfcontained(ReadyToRun) は CI の検証用で配布しない。**3つの zip** を作る（同梱ランタイムは MinGW 版と MSVC 版の2形態あり、どちらも配る）:
