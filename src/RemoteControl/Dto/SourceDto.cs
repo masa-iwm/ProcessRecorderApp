@@ -38,10 +38,14 @@ public sealed record SourceDefDto(
 /// <c>SrcPropertyKind</c> の名前と一致する）。
 /// </param>
 /// <param name="Choices">
-/// <c>Enum</c> のときに選べる値。<b>実行時に取れる候補（モニター・カメラ）は解決済み</b>。
-/// <b>取れなければ null で、そのプロパティは<u>どの値も通らない</u></b>
-/// （<c>SourcePresetRules.Validate</c> は候補の無い <c>Enum</c> を全て断る）
-/// ── 自由入力にはならないので、画面は入力欄を出さずに諦めること。
+/// 選べる値。<b>実行時に取れる候補（モニター・カメラ）は解決済み</b>で、
+/// 取れなければ null になる。
+/// <b>null の意味は種別で違う</b>:
+/// <c>Enum</c> は<u>どの値も通らない</u>（<c>SourcePresetRules.Validate</c> は
+/// 候補の無い <c>Enum</c> を全て断る）ので、画面は入力欄を出さずに諦めること。
+/// <c>String</c> は<u>自由入力が通る</u>（検証はパイプライン構文への漏れだけを見る）ので、
+/// 候補が無くても素の入力欄を出すこと ── <c>device-path</c> のように
+/// 候補を列挙できない機械でも手で書ける値がある。
 /// </param>
 /// <param name="Description"><see cref="SourceDefDto.DisplayName"/> と同じく解決済み。無ければ null。</param>
 /// <param name="ConditionallyAvailable">
@@ -61,6 +65,12 @@ public sealed record SourcePropertyDto(
 /// caps の 1 フィールド。
 /// </summary>
 /// <param name="IsResolution">値が <c>幅x高さ</c>（例 <c>1280x720</c>）でなければならないか。</param>
+/// <param name="Choices">
+/// 実行時に取れた候補（カメラの format / resolution / framerate）。取れなければ null。
+/// <b>caps のフィールドは候補が無くても自由入力が通る</b>
+/// （<c>SourcePresetRules</c> の検査は <paramref name="IsResolution"/> と
+/// パイプライン構文への漏れだけ）。
+/// </param>
 public sealed record CapsFieldDto(
     string Name,
     bool IsResolution,

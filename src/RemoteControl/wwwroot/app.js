@@ -666,16 +666,36 @@
   var followTimer = null;
   var followUrl = null;
 
-  // Following the live edge stops for good once the user seeks. `followSeeking`
-  // marks the corrections this file makes itself, which must not count as that.
+  // Following the live edge stops for good once the user seeks. The corrections
+  // this file makes itself must not count as that, so the position each one asks
+  // for is remembered: a `seeking` that lands exactly on it is ours, anything else
+  // is the user's. A plain boolean cannot tell the two apart -- a seek the user
+  // makes while a correction is pending would consume the flag and be taken for
+  // the correction.
   var followLive = true;
-  var followSeeking = false;
+  var followSeekTarget = null;
+
+  // The active follow's failure hook. The <video> element outlives every playback,
+  // so its `error` listener is attached once and routed through here (the same
+  // shape as the preview's).
+  var followOnFailure = null;
 
   function releaseFollowUrl() {
     if (followUrl !== null) {
       URL.revokeObjectURL(followUrl);
       followUrl = null;
     }
+  }
+
+  // Everything the <video> element holds on to: the element itself keeps decoding
+  // and the object URL keeps the MediaSource alive until both are let go.
+  function releaseFollowPlayer() {
+    followOnFailure = null;
+    var video = $('player');
+    video.pause();
+    video.removeAttribute('src');
+    video.load();
+    releaseFollowUrl();
   }
 
   function stopFollow(message) {
@@ -689,11 +709,7 @@
       followAbort = null;
     }
 
-    var video = $('player');
-    video.pause();
-    video.removeAttribute('src');
-    video.load();
-    releaseFollowUrl();
+    releaseFollowPlayer();
 
     status($('playerStatus'), message === undefined ? '' : message, false);
   }
@@ -729,7 +745,7 @@
         releaseFollowUrl();
         followUrl = URL.createObjectURL(source);
         followLive = true;
-        followSeeking = false;
+        followSeekTarget = null;
         video.src = followUrl;
 
         source.addEventListener('sourceopen', function () {
@@ -769,11 +785,16 @@
       if (generation !== followGeneration) { return; }
       // Bumping the generation is what stops the rest: a SourceBuffer that has
       // rejected one append never takes the next one, so there is nothing to
-      // salvage in place.
+      // salvage in place. The element and the object URL are let go for the same
+      // reason a stop does it -- what stays attached keeps a dead MediaSource
+      // alive and goes on reporting errors from it.
       followGeneration++;
       if (followAbort !== null) { followAbort.abort(); followAbort = null; }
+      releaseFollowPlayer();
       status($('playerStatus'), reason, true);
     }
+
+    followOnFailure = fail;
 
     // One place decides what happens next, and it only runs when the SourceBuffer
     // is idle, the queue is empty and the body has been read to its end.
@@ -939,13 +960,19 @@
       var target = ranges.end(ranges.length - 1) - FOLLOW_LAG_SECONDS;
       if (target <= video.currentTime) { return; }
 
-      followSeeking = true;
+      followSeekTarget = target;
       video.currentTime = target;
     }
 
     inProgress = first.headers.get('X-In-Progress') !== 'false';
     total = totalOf(first, 0);
-    read(first);
+    // The first body is read outside `request()`, so it needs the same catch:
+    // a connection lost while it is being read otherwise rejects into nothing and
+    // the player stops without a word.
+    read(first).catch(function (error) {
+      if (generation !== followGeneration || error.name === 'AbortError') { return; }
+      fail(error.message);
+    });
   }
 
   // Never cut past where playback is: the user may have seeked back into the part
@@ -1372,7 +1399,6 @@
   // there after the selection changes offers another recorder's value for Apply.
   $('recorderSelect').addEventListener('change', function () {
     text($('sourceCurrent'), '');
-    status($('recorderSettingsStatus'), '', false);
   });
   markWrite($('applyRecorderSettings'), 'admin').addEventListener('click', applyRecorderSettings);
   $('sourceSelect').addEventListener('change', buildSourceForm);
@@ -1385,11 +1411,24 @@
   markWrite($('variableValue'));
   $('loadRecordings').addEventListener('click', loadRecordings);
   $('stopPlayer').addEventListener('click', function () { stopFollow('stopped'); });
-  // A seek the user made ends the live-edge following. The corrections this file
-  // makes itself go through `followSeeking` and must not count.
+  // A seek the user made ends the live-edge following. A correction this file made
+  // is recognised by the position it asked for, and only that one is forgiven.
   $('player').addEventListener('seeking', function () {
-    if (followSeeking) { followSeeking = false; return; }
+    if (followSeekTarget !== null && $('player').currentTime === followSeekTarget) {
+      followSeekTarget = null;
+      return;
+    }
+    followSeekTarget = null;
     followLive = false;
+  });
+
+  // The element outlives every playback, so this is attached once. A decode
+  // failure is otherwise silent: the picture stops and the polling keeps running.
+  $('player').addEventListener('error', function () {
+    var media = $('player').error;
+    if (followOnFailure !== null) {
+      followOnFailure('playback error' + (media ? ' (code ' + media.code + ')' : ''));
+    }
   });
 
   $('stopPreview').addEventListener('click', function () { stopPreview('stopped'); });

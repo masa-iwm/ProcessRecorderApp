@@ -25,11 +25,61 @@ namespace ProcessRecorderApp.GStreamer;
 /// これを入れないと「リンクできない」で <c>ParseLaunch</c> が失敗する
 /// （＝まさに直したい AMD/NVIDIA 機で壊れる）。
 /// </param>
-public sealed record H264EncoderDef(string FactoryName, string LaunchString, bool NeedsSystemMemory)
+/// <param name="BitrateUnitPerKbps">
+/// <c>bitrate</c> プロパティ 1 単位が何 kbit/sec に当たるか。
+/// <see langword="null"/> は「この定義は <c>bitrate</c> を持たない」を意味する。
+/// <c>x264enc</c> / <c>mfh264enc</c> は kbit/sec なので 1、<c>openh264enc</c> は bit/sec なので 1000。
+/// <b>単位を持つ定義は必ず <c>LaunchString</c> に <c>bitrate=</c> を含む</b>
+/// （<see cref="WithBitrateKbps"/> の前提。L1 がカタログ全体で縛る）。
+/// </param>
+public sealed record H264EncoderDef(
+    string FactoryName, string LaunchString, bool NeedsSystemMemory, int? BitrateUnitPerKbps = null)
 {
-    /// <summary>プロパティを一切付けない、ファクトリ名だけの定義を返す。</summary>
+    /// <summary><c>bitrate=&lt;数値&gt;</c> のトークン（値だけを置き換える）。</summary>
+    private static readonly System.Text.RegularExpressions.Regex BitrateTokenRegex =
+        new(@"\bbitrate=\d+\b", System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    /// <summary>
+    /// プロパティを一切付けない、ファクトリ名だけの定義を返す。
+    /// <b><see cref="BitrateUnitPerKbps"/> も null へ戻す</b> ── 落とした
+    /// <c>LaunchString</c> にはもう <c>bitrate=</c> が無いので、残すと
+    /// <see cref="WithBitrateKbps"/> が置換先を見つけられない。
+    /// </summary>
     public H264EncoderDef WithoutProperties()
-        => LaunchString == FactoryName ? this : this with { LaunchString = FactoryName };
+        => LaunchString == FactoryName
+            ? this
+            : this with { LaunchString = FactoryName, BitrateUnitPerKbps = null };
+
+    /// <summary>
+    /// <c>bitrate</c> を指定の kbit/sec へ書き換えた定義を返す。
+    ///
+    /// <para>
+    /// <b><see cref="BitrateUnitPerKbps"/> が <see langword="null"/> の定義はそのまま返す</b>
+    /// ── 実機で単位を確認できていない GPU 系エンコーダーに <c>bitrate</c> を書くと、
+    /// プロパティ名も単位も当て推量になる（<see cref="EncoderCatalog.ExpandAttempts"/> の
+    /// 再試行に頼るだけの形になり、候補が 1 つ無駄になる）。
+    /// </para>
+    /// <para>
+    /// 単位を持つのに <c>bitrate=</c> が無い定義は<b>設計違反</b>なので投げる ──
+    /// 黙って元の値のまま返すと、指定した帯域が効いていないことに気付けない。
+    /// </para>
+    /// </summary>
+    public H264EncoderDef WithBitrateKbps(int kbps)
+    {
+        if (BitrateUnitPerKbps is not { } unit)
+            return this;
+
+        // 「見つからない」の判定は置換の前に行う ── 置換後の文字列が元と同じになるのは
+        // 同じ値を指定した正常な場合（既定値の往復）でもありうる。
+        if (!BitrateTokenRegex.IsMatch(LaunchString))
+        {
+            throw new InvalidOperationException(
+                $"{FactoryName}: BitrateUnitPerKbps is set but the launch string has no 'bitrate=' token: {LaunchString}");
+        }
+
+        string value = (kbps * unit).ToString(System.Globalization.CultureInfo.InvariantCulture);
+        return this with { LaunchString = BitrateTokenRegex.Replace(LaunchString, $"bitrate={value}", 1) };
+    }
 }
 
 /// <summary>プローブ1件の結果（どのファクトリが実機に存在したか）。</summary>
@@ -147,15 +197,18 @@ public static class EncoderCatalog
 
     /// <summary>x264（bitrate は kbit/sec。GOP は key-int-max）。</summary>
     private static H264EncoderDef X264(int gop) =>
-        new("x264enc", $"x264enc tune=zerolatency bitrate=2000 speed-preset=ultrafast key-int-max={gop}", NeedsSystemMemory: true);
+        new("x264enc", $"x264enc tune=zerolatency bitrate=2000 speed-preset=ultrafast key-int-max={gop}", NeedsSystemMemory: true,
+            BitrateUnitPerKbps: 1);
 
     /// <summary>OpenH264。**bitrate は bit/sec** なので x264 の数値をそのまま使ってはいけない。</summary>
     private static H264EncoderDef OpenH264(int gop) =>
-        new("openh264enc", $"openh264enc bitrate=2000000 gop-size={gop}", NeedsSystemMemory: true);
+        new("openh264enc", $"openh264enc bitrate=2000000 gop-size={gop}", NeedsSystemMemory: true,
+            BitrateUnitPerKbps: 1000);
 
     /// <summary>Media Foundation（bitrate は kbit/sec）。</summary>
     private static H264EncoderDef MediaFoundation(int gop) =>
-        new("mfh264enc", $"mfh264enc bitrate=2000 gop-size={gop} low-latency=true", NeedsSystemMemory: true);
+        new("mfh264enc", $"mfh264enc bitrate=2000 gop-size={gop} low-latency=true", NeedsSystemMemory: true,
+            BitrateUnitPerKbps: 1);
 
     // 以下はプロパティ未確認のため GOP 長のみ指定する（既定の GOP は長すぎることが多く、
     // 上記のとおり事前バッファを壊すため、ここだけは既定値に任せられない）。

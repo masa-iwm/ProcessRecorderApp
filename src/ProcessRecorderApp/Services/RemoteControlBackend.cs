@@ -431,8 +431,11 @@ internal sealed partial class RemoteControlBackend(DispatcherQueue dispatcherQue
     /// <summary>
     /// 実行時にしか分からない選択肢（モニターとカメラ）。<b>1 回の組み立てのあいだだけ持つ</b>
     /// ── 列挙は要素の数だけ現れるので、都度問い合わせるとカメラの列挙が何度も走る。
+    /// <b>失敗も覚える</b>（空の一覧として持つ）ので、1 回の組み立ての中で
+    /// 同じ列挙を何度も試すことはない。
     /// 一覧（<see cref="GetSourcesAsync"/>）はさらに組んだ DTO を
-    /// <see cref="SourcesCacheLifetime"/> だけ持ち回すので、列挙が走るのはその間隔に 1 回。
+    /// <see cref="SourcesCacheLifetime"/>（30 秒）だけ持ち回すので、列挙が走るのは
+    /// その間隔に 1 回であり、<b>機器を挿してから選択肢に出るまで最大でその分だけ遅れる</b>。
     ///
     /// <para>
     /// <b>解決するキーはビルダーのダイアログと同じ規則で選ぶ</b>
@@ -487,9 +490,12 @@ internal sealed partial class RemoteControlBackend(DispatcherQueue dispatcherQue
                     "mf-device-name" => NonEmpty(Devices.Select(d => d.Name)),
                     // **ここから 4 つはビルダーのダイアログと同じ規則**
                     // （<c>PipelineBuilderViewModel.GetDynamicChoices</c>）。
-                    // 落とすと、カメラを選んだブラウザにだけ選択肢が出ない
-                    // ── しかも Enum のプロパティは候補が無いと<b>どの値も通らない</b>ので、
-                    // 「画面から選べないうえに手で書いても断られる」形になる。
+                    // 対象は String のプロパティ（<c>device-path</c>）と caps のフィールド
+                    // （<c>format</c> / <c>resolution</c> / <c>framerate</c>）で、
+                    // どちらも候補が無くても自由入力は通る。落とすと、カメラを選んだ
+                    // ブラウザにだけ選択肢が出ず、<b>値を手で書き写すしかなくなる</b>
+                    // ── デバイスのシンボリックリンクや対応解像度は、画面から
+                    // 知る手立てが他に無い。
                     "mf-device-path" => NonEmpty(Devices.Select(d => d.Path)),
                     "mf-format" => NonEmpty(Devices.SelectMany(d => d.Formats)),
                     "mf-resolution" => NonEmpty(Devices.SelectMany(d => d.Resolutions)),

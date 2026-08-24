@@ -614,6 +614,7 @@ $cases.Add([pscustomobject]@{
 # the catalog: a missing candidate silently un-covers d3d12download on machines where only
 # that candidate exists (a skip is not a failure), and a stale property string makes the
 # case fail on real hardware and look like a product defect.
+# bitrate is parameterized via WithBitrateKbps; the default strings here stay as-is.
 $manualCandidates = @(
     [pscustomobject]@{ Name = 'x264enc';     Props = 'x264enc tune=zerolatency bitrate=2000 speed-preset=ultrafast key-int-max=60' }
     [pscustomobject]@{ Name = 'openh264enc'; Props = 'openh264enc bitrate=2000000 gop-size=60' }

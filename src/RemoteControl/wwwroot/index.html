@@ -123,7 +123,10 @@
     <button type="button" id="stopPlayer">Stop</button>
     <span id="playerStatus" class="status"></span>
   </p>
-  <video id="player" controls preload="none"></video>
+  <!-- No preload="none": the follow-along player builds its MediaSource before the
+       first append, and an element told not to preload never reaches `sourceopen`
+       (nothing is appended, so play() is never called, so the load never starts). -->
+  <video id="player" controls></video>
   <table id="recordingsTable">
     <thead><tr><th>path</th><th>size</th><th>lastWrite</th><th>state</th><th></th></tr></thead>
     <tbody id="recordingsBody"></tbody>

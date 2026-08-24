@@ -332,6 +332,9 @@
   <data name="PropCat_Output" xml:space="preserve">
     <value>出力</value>
   </data>
+  <data name="PropCat_Preview" xml:space="preserve">
+    <value>プレビュー</value>
+  </data>
   <data name="PropCat_Continuous" xml:space="preserve">
     <value>常時録画</value>
   </data>
@@ -541,6 +544,18 @@
   </data>
   <data name="PropDesc_Rec_FragmentedOutput" xml:space="preserve">
     <value>録画ファイルを fragmented MP4 で書きます。ヘッダーを最初に書いたまま書き直さないので、録画中のファイルも、強制終了で残ったファイルも読めます。代わりに尺は 0 のままになり、他のプレイヤーでは録画中のファイルをシークできません（ブラウザからは追いかけ再生を使います）。次回の初期化から効きます。</value>
+  </data>
+  <data name="PropDesc_Rec_PreviewWidth" xml:space="preserve">
+    <value>ブラウザーへ配信するプレビューの幅（ピクセル）。160 から 3840 まで。範囲の外の値は近い方の端に丸めます。</value>
+  </data>
+  <data name="PropDesc_Rec_PreviewHeight" xml:space="preserve">
+    <value>ブラウザーへ配信するプレビューの高さ（ピクセル）。120 から 2160 まで。範囲の外の値は近い方の端に丸めます。</value>
+  </data>
+  <data name="PropDesc_Rec_PreviewFps" xml:space="preserve">
+    <value>ブラウザーへ配信するプレビューのフレームレート（fps）。1 から 60 まで。範囲の外の値は近い方の端に丸めます。</value>
+  </data>
+  <data name="PropDesc_Rec_PreviewBitrateKbps" xml:space="preserve">
+    <value>ブラウザーへ配信するプレビューのビットレート（kbit/s）。100 から 20000 まで。範囲の外の値は近い方の端に丸めます。</value>
   </data>
   <data name="PropDesc_Rec_ContinuousRecording" xml:space="preserve">
     <value>イベント録画とは別に、常に回して一定時間ごとにファイルを切り替える録画を行うかどうか。事前バッファは効きません。次にレコーダーを初期化したときから反映されます。</value>

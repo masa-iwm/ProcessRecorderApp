@@ -1877,4 +1877,73 @@ public sealed class RemoteControlTests(PublishedApp app, ITestOutputHelper outpu
         var buffer = properties.Single(p => p.GetProperty("name").GetString() == "BufferDuration");
         Assert.True(buffer.GetProperty("remoteEditable").GetBoolean());
     }
+
+    /// <summary>
+    /// <b>プレビューの 4 設定が、リモートから編集できる数値項目として出ること。</b>
+    ///
+    /// <para>
+    /// 画面（<c>buildRecorderForm</c>）はこのメタだけを見て欄を組む ── 型が <c>int</c> で
+    /// 上下限が載り、<c>remoteEditable</c> が真でなければ、値を持っていても編集できない。
+    /// </para>
+    /// <para>
+    /// <b>範囲外は 400 ではなく丸めて 200。</b> 丸めるのはモデルの setter で、
+    /// PATCH の経路には範囲の検査を置いていない（<c>BufferDuration</c> と同じ挙動）
+    /// ── 置くと同じ規則が 2 か所に書かれ、片方だけ動いた日に食い違う。
+    /// <b>録画パイプラインには影響しない</b>ので <c>requiresReinitialize</c> は空である。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task PreviewSettings_AreEditableNumbersThatTheServerClamps()
+    {
+        using var instance = AppInstance.Create(app, RemoteSettings());
+        int port = WaitForPort(instance);
+        using var client = CreateClient(port);
+
+        (string Name, long Min, long Max)[] expected =
+        [
+            ("PreviewWidth", 160, 3840),
+            ("PreviewHeight", 120, 2160),
+            ("PreviewFps", 1, 60),
+            ("PreviewBitrateKbps", 100, 20_000),
+        ];
+
+        using (var response = await client.GetAsync("api/recorders/0/settings", Ct))
+        {
+            using var body = await ExpectAsync(response, HttpStatusCode.OK);
+            var properties = body.RootElement.GetProperty("properties").EnumerateArray().ToArray();
+
+            foreach (var (name, min, max) in expected)
+            {
+                var property = properties.Single(p => p.GetProperty("name").GetString() == name);
+                Assert.Equal("int", property.GetProperty("type").GetString());
+                Assert.True(property.GetProperty("remoteEditable").GetBoolean(),
+                    $"{name} が編集不可として出ています。");
+                Assert.False(property.GetProperty("requiresReinitialize").GetBoolean(),
+                    $"{name} が「再初期化が要る」として出ています（録画パイプラインには影響しません）。");
+                Assert.Equal(min, property.GetProperty("min").GetInt64());
+                Assert.Equal(max, property.GetProperty("max").GetInt64());
+            }
+        }
+
+        // 範囲外の指定は断らずに丸める（応答は 200 で、丸めたことを clamped で伝える）。
+        using (var response = await SendAsync(
+            client, Patch, "api/recorders/0/settings", "{\"PreviewFps\":999}"))
+        {
+            using var body = await ExpectAsync(response, HttpStatusCode.OK);
+            Assert.Contains("PreviewFps", StringsOf(body.RootElement.GetProperty("applied")));
+            Assert.Contains("PreviewFps", StringsOf(body.RootElement.GetProperty("clamped")));
+            Assert.Empty(body.RootElement.GetProperty("requiresReinitialize").EnumerateArray());
+        }
+
+        using (var response = await client.GetAsync("api/recorders/0/settings", Ct))
+        {
+            using var body = await ExpectAsync(response, HttpStatusCode.OK);
+            var values = body.RootElement.GetProperty("values");
+            Assert.Equal(60, values.GetProperty("PreviewFps").GetInt32());
+            // 触っていない 3 つは既定のまま。
+            Assert.Equal(1280, values.GetProperty("PreviewWidth").GetInt32());
+            Assert.Equal(720, values.GetProperty("PreviewHeight").GetInt32());
+            Assert.Equal(2000, values.GetProperty("PreviewBitrateKbps").GetInt32());
+        }
+    }
 }

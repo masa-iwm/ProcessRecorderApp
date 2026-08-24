@@ -802,3 +802,115 @@ public class EncoderCatalogToPipelineTests
         Assert.Contains("d3d12download ! videoconvert ! x264enc", encoderBranch);
     }
 }
+/// <summary>
+/// <c>H264EncoderDef.WithBitrateKbps</c> ── <b>単位差を 1 か所に閉じ込める</b>ための変換。
+///
+/// <para>
+/// <c>x264enc</c> / <c>mfh264enc</c> の <c>bitrate</c> は kbit/sec だが
+/// <c>openh264enc</c> は bit/sec で、数値をそのまま写すと 2000 bit/sec（＝2kbps）になる。
+/// 呼び出し側が単位を知らずに済むよう、定義そのものに単位を持たせてある。
+/// </para>
+/// <para>
+/// <b>既定値の往復が文字列同一であることを固定する。</b> <c>LaunchString</c> の既定は
+/// <c>EncoderCatalogScriptSyncTests</c> と <c>tools/Verify-GpuEncoders.ps1</c> が
+/// 完全一致で縛っており、ここが崩れると<b>実機検証のケースだけが古い文字列で回る</b>。
+/// </para>
+/// </summary>
+public class EncoderBitrateParameterizationTests
+{
+    private static H264EncoderDef Def(string factoryName)
+        => EncoderCatalog.D3d12Candidates.Concat(EncoderCatalog.SystemCandidates)
+            .First(c => string.Equals(c.FactoryName, factoryName, StringComparison.Ordinal));
+
+    [Fact]
+    public void X264_TakesKilobitsPerSecondUnchanged()
+    {
+        var def = Def("x264enc").WithBitrateKbps(8000);
+        Assert.Contains("bitrate=8000", def.LaunchString, StringComparison.Ordinal);
+        Assert.DoesNotContain("bitrate=2000 ", def.LaunchString, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void OpenH264_TakesBitsPerSecond()
+    {
+        var def = Def("openh264enc").WithBitrateKbps(8000);
+        Assert.Contains("bitrate=8000000", def.LaunchString, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void MediaFoundation_TakesKilobitsPerSecondUnchanged()
+    {
+        var def = Def("mfh264enc").WithBitrateKbps(8000);
+        Assert.Contains("bitrate=8000", def.LaunchString, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// 単位を持たない定義（実機で <c>bitrate</c> を確認できていない GPU 系）は
+    /// <b>同じインスタンスをそのまま返す</b> ── 当て推量のプロパティを書かない。
+    /// </summary>
+    [Theory]
+    [InlineData("d3d12h264enc")]
+    [InlineData("qsvh264enc")]
+    [InlineData("nvd3d11h264enc")]
+    [InlineData("nvh264enc")]
+    [InlineData("nvautogpuh264enc")]
+    [InlineData("amfh264enc")]
+    public void DefinitionsWithoutABitrateUnit_AreReturnedAsIs(string factoryName)
+    {
+        var def = Def(factoryName);
+        Assert.Null(def.BitrateUnitPerKbps);
+        Assert.Same(def, def.WithBitrateKbps(8000));
+    }
+
+    /// <summary>
+    /// <b>既定値（2000 kbit/sec）を与えた結果が現行の起動文字列と 1 文字も違わないこと。</b>
+    /// これが成り立っているあいだは、<c>Verify-GpuEncoders.ps1</c> との文字列一致検査を
+    /// 巻き込まずに bitrate をパラメータ化できている。
+    /// </summary>
+    [Fact]
+    public void ApplyingTheDefaultBitrate_ReproducesTheCurrentLaunchStrings()
+    {
+        foreach (var def in EncoderCatalog.SystemCandidates)
+            Assert.Equal(def.LaunchString, def.WithBitrateKbps(2000).LaunchString);
+    }
+
+    /// <summary>
+    /// カタログ全体で「単位を持つ ⇔ <c>bitrate=</c> トークンがある」が成り立つこと。
+    /// <b><c>WithoutProperties()</c> の後も見る</b> ── プロパティを落とした定義に単位が
+    /// 残っていると、<c>WithoutProperties().WithBitrateKbps(…)</c> が実行時に投げる。
+    /// </summary>
+    [Fact]
+    public void EveryDefinitionAgreesOnWhetherItHasABitrate()
+    {
+        var all = EncoderCatalog.D3d12Candidates.Concat(EncoderCatalog.SystemCandidates).ToArray();
+        Assert.NotEmpty(all);
+
+        foreach (var def in all)
+        {
+            AssertAgrees(def);
+            AssertAgrees(def.WithoutProperties());
+        }
+
+        static void AssertAgrees(H264EncoderDef def)
+        {
+            bool hasToken = Regex.IsMatch(def.LaunchString, @"\bbitrate=\d+\b");
+            Assert.True(def.BitrateUnitPerKbps is null || hasToken,
+                $"{def.FactoryName}: BitrateUnitPerKbps が非 null なのに 'bitrate=' が無い: {def.LaunchString}");
+            Assert.True(!hasToken || def.BitrateUnitPerKbps is not null,
+                $"{def.FactoryName}: 'bitrate=' があるのに BitrateUnitPerKbps が null: {def.LaunchString}");
+        }
+    }
+
+    /// <summary>
+    /// 単位だけが残った定義は<b>投げる</b>（黙って元の値を返さない）。
+    /// カタログの不変条件が壊れたことを、指定が効かない録画物ではなく例外で知る。
+    /// </summary>
+    [Fact]
+    public void AUnitWithoutABitrateToken_Throws()
+    {
+        var broken = new H264EncoderDef("x264enc", "x264enc tune=zerolatency", NeedsSystemMemory: true,
+            BitrateUnitPerKbps: 1);
+
+        Assert.Throws<InvalidOperationException>(() => broken.WithBitrateKbps(8000));
+    }
+}

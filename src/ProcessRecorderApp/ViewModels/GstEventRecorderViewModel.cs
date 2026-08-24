@@ -39,6 +39,10 @@ namespace ProcessRecorderApp.ViewModels
             FragmentedOutput = model.FragmentedOutput;
             CameraControls = model.CameraControls;
             CameraControlsLastError = model.CameraControlsLastError;
+            PreviewWidth = model.PreviewWidth;
+            PreviewHeight = model.PreviewHeight;
+            PreviewFps = model.PreviewFps;
+            PreviewBitrateKbps = model.PreviewBitrateKbps;
             ActualType = model.ActualType;
             ActualSrcPipeline = model.ActualSrcPipeline;
             ActualEncodingProperties = model.ActualEncodingProperties;
@@ -107,6 +111,10 @@ namespace ProcessRecorderApp.ViewModels
                 case nameof(Model.FragmentedOutput): if (FragmentedOutput != Model.FragmentedOutput) FragmentedOutput = Model.FragmentedOutput; break;
                 case nameof(Model.CameraControls): if (CameraControls != Model.CameraControls) CameraControls = Model.CameraControls; break;
                 case nameof(Model.CameraControlsLastError): if (CameraControlsLastError != Model.CameraControlsLastError) CameraControlsLastError = Model.CameraControlsLastError; break;
+                case nameof(Model.PreviewWidth): if (PreviewWidth != Model.PreviewWidth) PreviewWidth = Model.PreviewWidth; break;
+                case nameof(Model.PreviewHeight): if (PreviewHeight != Model.PreviewHeight) PreviewHeight = Model.PreviewHeight; break;
+                case nameof(Model.PreviewFps): if (PreviewFps != Model.PreviewFps) PreviewFps = Model.PreviewFps; break;
+                case nameof(Model.PreviewBitrateKbps): if (PreviewBitrateKbps != Model.PreviewBitrateKbps) PreviewBitrateKbps = Model.PreviewBitrateKbps; break;
                 case nameof(Model.ActualType): if (ActualType != Model.ActualType) ActualType = Model.ActualType; break;
                 case nameof(Model.ActualSrcPipeline): if (ActualSrcPipeline != Model.ActualSrcPipeline) ActualSrcPipeline = Model.ActualSrcPipeline; break;
                 case nameof(Model.ActualEncodingProperties): if (ActualEncodingProperties != Model.ActualEncodingProperties) ActualEncodingProperties = Model.ActualEncodingProperties; break;
@@ -184,6 +192,11 @@ namespace ProcessRecorderApp.ViewModels
         }
         private int _bufferDuration;
 
+        /// <summary>
+        /// 録画ファイル名のテンプレート（<c>EventRecorderSettings.FilenameTemplate</c> のミラー）。
+        /// カテゴリも設定側と揃える ── ずれると画面の組分けだけが別物になる。
+        /// </summary>
+        [Category("PropCat_Output")]
         [Description("PropDesc_Rec_FilenameTemplate")]
         [ObservableProperty]
         public partial string FilenameTemplate { get; set; }
@@ -343,6 +356,85 @@ namespace ProcessRecorderApp.ViewModels
         [Description("PropDesc_Rec_CameraControlsLastError")]
         [ObservableProperty]
         public partial string? CameraControlsLastError { get; private set; }
+
+        /// <summary>
+        /// プレビュー配信の幅(px)。Model / Settings と同じく、ここでも
+        /// <see cref="EventRecorderSettings.ClampPreviewWidth"/> で丸める
+        /// （3 箇所すべてで丸めないと、範囲外の値が UI 上に残り続ける）。
+        /// </summary>
+        [Category("PropCat_Preview")]
+        [Description("PropDesc_Rec_PreviewWidth")]
+        public int PreviewWidth
+        {
+            get => _previewWidth;
+            set
+            {
+                if (SetProperty(ref _previewWidth, EventRecorderSettings.ClampPreviewWidth(value))
+                    && Model.PreviewWidth != _previewWidth)
+                {
+                    Model.PreviewWidth = _previewWidth;
+                }
+            }
+        }
+        private int _previewWidth;
+
+        /// <summary>
+        /// プレビュー配信の高さ(px)。<see cref="PreviewWidth"/> と同じく 3 箇所すべてで丸める。
+        /// </summary>
+        [Category("PropCat_Preview")]
+        [Description("PropDesc_Rec_PreviewHeight")]
+        public int PreviewHeight
+        {
+            get => _previewHeight;
+            set
+            {
+                if (SetProperty(ref _previewHeight, EventRecorderSettings.ClampPreviewHeight(value))
+                    && Model.PreviewHeight != _previewHeight)
+                {
+                    Model.PreviewHeight = _previewHeight;
+                }
+            }
+        }
+        private int _previewHeight;
+
+        /// <summary>
+        /// プレビュー配信のフレームレート(fps)。<see cref="PreviewWidth"/> と同じく 3 箇所すべてで丸める。
+        /// </summary>
+        [Category("PropCat_Preview")]
+        [Description("PropDesc_Rec_PreviewFps")]
+        public int PreviewFps
+        {
+            get => _previewFps;
+            set
+            {
+                if (SetProperty(ref _previewFps, EventRecorderSettings.ClampPreviewFps(value))
+                    && Model.PreviewFps != _previewFps)
+                {
+                    Model.PreviewFps = _previewFps;
+                }
+            }
+        }
+        private int _previewFps;
+
+        /// <summary>
+        /// プレビュー配信のビットレート(kbit/s)。<see cref="PreviewWidth"/> と同じく
+        /// 3 箇所すべてで丸める。
+        /// </summary>
+        [Category("PropCat_Preview")]
+        [Description("PropDesc_Rec_PreviewBitrateKbps")]
+        public int PreviewBitrateKbps
+        {
+            get => _previewBitrateKbps;
+            set
+            {
+                if (SetProperty(ref _previewBitrateKbps, EventRecorderSettings.ClampPreviewBitrateKbps(value))
+                    && Model.PreviewBitrateKbps != _previewBitrateKbps)
+                {
+                    Model.PreviewBitrateKbps = _previewBitrateKbps;
+                }
+            }
+        }
+        private int _previewBitrateKbps;
 
         [ReadOnly(true)]
         [Description("PropDesc_Rec_ActualType")]

@@ -332,6 +332,9 @@
   <data name="PropCat_Output" xml:space="preserve">
     <value>Output</value>
   </data>
+  <data name="PropCat_Preview" xml:space="preserve">
+    <value>Preview</value>
+  </data>
   <data name="PropCat_Continuous" xml:space="preserve">
     <value>Continuous recording</value>
   </data>
@@ -541,6 +544,18 @@
   </data>
   <data name="PropDesc_Rec_FragmentedOutput" xml:space="preserve">
     <value>Write the recording as a fragmented MP4. The file stays readable while it is being recorded and after a forced shutdown, because the header is written first and never rewritten. In exchange the duration stays 0: other players cannot seek in a file that is still being recorded, and the browser needs the follow-along player. Takes effect the next time the recorder is initialized.</value>
+  </data>
+  <data name="PropDesc_Rec_PreviewWidth" xml:space="preserve">
+    <value>Width in pixels of the preview delivered to the browser. Between 160 and 3840. A value outside that range is rounded to the nearer bound.</value>
+  </data>
+  <data name="PropDesc_Rec_PreviewHeight" xml:space="preserve">
+    <value>Height in pixels of the preview delivered to the browser. Between 120 and 2160. A value outside that range is rounded to the nearer bound.</value>
+  </data>
+  <data name="PropDesc_Rec_PreviewFps" xml:space="preserve">
+    <value>Frames per second of the preview delivered to the browser. Between 1 and 60. A value outside that range is rounded to the nearer bound.</value>
+  </data>
+  <data name="PropDesc_Rec_PreviewBitrateKbps" xml:space="preserve">
+    <value>Bit rate of the preview delivered to the browser, in kbit/s. Between 100 and 20000. A value outside that range is rounded to the nearer bound.</value>
   </data>
   <data name="PropDesc_Rec_ContinuousRecording" xml:space="preserve">
     <value>Whether to keep a second recording running at all times, cut into files on a fixed interval. The pre-buffer does not apply to it. Takes effect the next time the recorder is initialized.</value>

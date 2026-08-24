@@ -121,6 +121,12 @@ GStreamer が使われる」という取り違えもここから起きる（ど�
 | 設定 | 既定 | 意味 |
 |---|---|---|
 | `FragmentedOutput` | `false` | 録画ファイルを fragmented MP4（`ftyp` `moov`(`mvex`) `moof` `mdat` …）で書く。**録画中・強制終了後でもファイルが読める**。EOS で足すのは末尾の `mfra` だけで **`moov` は書き直さない**ので、`mvhd` の尺は 0 のまま ── 他のプレイヤーでは録画中のファイルをシークできず、ブラウザからも MSE 経路（追いかけ再生）でしか正しい尺にならない。**反映は `Initialize` で効く**（src パイプラインの文字列そのもの） |
+| `PreviewWidth` | `1280` | ブラウザーへ配信するプレビューの幅(px)。160〜3840（範囲外は近い方の端へ丸める）。**録画パイプラインには影響しない**ので再初期化は要らない |
+| `PreviewHeight` | `720` | ブラウザーへ配信するプレビューの高さ(px)。120〜2160（同上） |
+| `PreviewFps` | `15` | ブラウザーへ配信するプレビューのフレームレート(fps)。1〜60（同上） |
+| `PreviewBitrateKbps` | `2000` | ブラウザーへ配信するプレビューのビットレート(kbit/s)。100〜20000（同上）。エンコーダーごとの単位差は `H264EncoderDef.WithBitrateKbps` が吸収する |
+
+プレビューの 4 設定は **まだ配信面に配線していない**（現在のライブプレビューは録画と同じ画質のまま流す）。値を変えても今のところ配信物は変わらない。
 
 `faststart=true`（既定）は EOS のあとにファイル全体を書き直して `moov` を先頭へ移すので、
 **書き込み中の `filesink` の出力先は 0 バイトのまま**である（強制終了すれば何も残らない）。
@@ -418,6 +424,15 @@ I フレームゲートが次の I まで捨てる ── そのぶんの映像�
   **kbit/sec** だが `openh264enc` は **bit/sec**。数値をコピーすると 2000 bit/sec（＝2kbps）に
   なって実質壊れるため、`FactoryName` とは別に `LaunchString` を持たせている。
   実機で確認できていない GPU 系エンコーダーには、後述の GOP 長以外のプロパティを付けていない。
+- **帯域の指定は `H264EncoderDef.WithBitrateKbps(kbps)` を通す**。定義は `BitrateUnitPerKbps`
+  として「`bitrate` 1 単位が何 kbit/sec か」を持ち（`x264enc` / `mfh264enc` は `1`、
+  `openh264enc` は **bit/sec なので `1000`**）、`LaunchString` の `bitrate=` の値だけを
+  書き換えた定義を返す。**単位を持たない定義（実機未確認の GPU 系）は素通りする** ──
+  プロパティ名も単位も当て推量になるため。`WithoutProperties()` は単位も `null` へ戻す
+  （プロパティを落とした文字列にはもう `bitrate=` が無い）。
+  既定値（2000 kbit/sec）を与えた結果は現行の `LaunchString` と文字列同一で、
+  L1（`EncoderBitrateParameterizationTests`）が固定している ── `EncoderCatalogScriptSyncTests` と
+  `tools/Verify-GpuEncoders.ps1` は既定の文字列を完全一致で縛っているため。
 
 #### GOP 長は `BufferDuration` より十分に短くなければならない（重要）
 

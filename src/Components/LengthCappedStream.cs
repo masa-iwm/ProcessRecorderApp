@@ -21,6 +21,11 @@ namespace ProcessRecorderApp.Components;
 /// </summary>
 /// <param name="inner">元のストリーム（シーク可能であること）。</param>
 /// <param name="length">見せる長さ。元の長さより大きい値は意味を持たない。</param>
+/// <remarks>
+/// <c>partial</c> は外せない ── <c>Stream</c> は WinRT のインターフェイスを実装するため、
+/// CsWinRT の解析器が <c>CsWinRT1028</c>（trimming / AOT で ABI を跨ぐ型は partial）で
+/// ビルドを止める。
+/// </remarks>
 public sealed partial class LengthCappedStream(Stream inner, long length) : Stream
 {
     private readonly Stream _inner = inner ?? throw new ArgumentNullException(nameof(inner));

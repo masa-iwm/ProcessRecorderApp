@@ -74,6 +74,13 @@ internal static class RecordingEndpoints
 
             using (stream)
             {
+                // **「録画中か」は長さより先に採る。** 逆順にすると、2 つの読み取りの
+                // 隙間で録画が確定したときに「長さは古い・録画中は false」の組が返り、
+                // ブラウザは末尾の fragment を取り切らないまま `endOfStream()` する。
+                // この順なら最悪でも「長さは新しい・録画中は true」になり、
+                // 次の要求が 416 と `X-In-Progress: false` で終端を伝える。
+                bool inProgress = RecordingFiles.IsInProgress(stream.Name);
+
                 // **長さと更新時刻は開いた後のものを使う。** 録画中のファイルは
                 // 列挙してから開くまでの間にも伸びており、一覧の値で ETag を作ると
                 // 実際に返す本文と食い違う。更新時刻は開いてあるハンドルから取る
@@ -96,8 +103,7 @@ internal static class RecordingEndpoints
                 // `X-In-Progress` の判定は一覧の `inProgress` と同じ関数
                 // （共有読み取りで開けるか）で、ブラウザはこれが false になった時点で
                 // 残りを取り切って `endOfStream()` する。
-                ctx.Response.Headers["X-In-Progress"] =
-                    RecordingFiles.IsInProgress(stream.Name) ? "true" : "false";
+                ctx.Response.Headers["X-In-Progress"] = inProgress ? "true" : "false";
 
                 // MSE の `codecs` パラメータ。読めなければヘッダーを付けない
                 // （ブラウザ側が既定値へ倒す）── 付ける値が違うと

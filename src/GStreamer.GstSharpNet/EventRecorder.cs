@@ -69,8 +69,12 @@ public partial class EventRecorderSettings : ObservableObject, Components.IPrope
     /// </para>
     /// <para>
     /// <b>ここに<u>無い</u>のは <see cref="Name"/> / <see cref="BufferDuration"/> /
-    /// <see cref="FilenameTemplate"/> の 3 つだけ</b>で、いずれも動作中に読み直される
-    /// （バッファ長はサンプルごと、ファイル名は録画開始ごと）。
+    /// <see cref="FilenameTemplate"/> と、プレビュー配信の 4 つ
+    /// （<see cref="PreviewWidth"/> / <see cref="PreviewHeight"/> / <see cref="PreviewFps"/> /
+    /// <see cref="PreviewBitrateKbps"/>）である。</b> 前の 3 つは動作中に読み直され
+    /// （バッファ長はサンプルごと、ファイル名は録画開始ごと）、
+    /// 後の 4 つは録画パイプラインの組み立てに一切関わらない
+    /// （配信側が畳んで組み直す）。
     /// <see cref="FragmentedOutput"/> は src パイプラインの文字列そのものなので載る。
     /// </para>
     /// <para>
@@ -110,6 +114,13 @@ public partial class EventRecorderSettings : ObservableObject, Components.IPrope
         set => SetProperty(ref _bufferDuration, ClampBufferDuration(value));
     }
     private int _bufferDuration = 10_000;
+
+    /// <summary>
+    /// 録画ファイル名のテンプレート。<see cref="FragmentedOutput"/> と同じ
+    /// <c>PropCat_Output</c> の組に置く ── どちらも「録画ファイルをどう書くか」であり、
+    /// 分けると片方だけの組が残る。
+    /// </summary>
+    [Category("PropCat_Output")]
     [Description("PropDesc_Rec_FilenameTemplate")]
     [ObservableProperty]
     public partial string FilenameTemplate { get; set; } = "{Now:yyyyMMdd_HHmmss}_{Name}.mp4";
@@ -181,6 +192,98 @@ public partial class EventRecorderSettings : ObservableObject, Components.IPrope
     [Description("PropDesc_Rec_CameraControls")]
     [ObservableProperty]
     public partial string? CameraControls { get; set; }
+
+    /// <summary>プレビュー配信の幅(px)の下限。</summary>
+    public const int MinPreviewWidth = 160;
+
+    /// <summary>プレビュー配信の幅(px)の上限。</summary>
+    public const int MaxPreviewWidth = 3840;
+
+    /// <summary>プレビュー配信の幅(px)を有効範囲へ丸める。</summary>
+    public static int ClampPreviewWidth(int value) => Math.Clamp(value, MinPreviewWidth, MaxPreviewWidth);
+
+    /// <summary>プレビュー配信の高さ(px)の下限。</summary>
+    public const int MinPreviewHeight = 120;
+
+    /// <summary>プレビュー配信の高さ(px)の上限。</summary>
+    public const int MaxPreviewHeight = 2160;
+
+    /// <summary>プレビュー配信の高さ(px)を有効範囲へ丸める。</summary>
+    public static int ClampPreviewHeight(int value) => Math.Clamp(value, MinPreviewHeight, MaxPreviewHeight);
+
+    /// <summary>プレビュー配信のフレームレート(fps)の下限。</summary>
+    public const int MinPreviewFps = 1;
+
+    /// <summary>プレビュー配信のフレームレート(fps)の上限。</summary>
+    public const int MaxPreviewFps = 60;
+
+    /// <summary>プレビュー配信のフレームレート(fps)を有効範囲へ丸める。</summary>
+    public static int ClampPreviewFps(int value) => Math.Clamp(value, MinPreviewFps, MaxPreviewFps);
+
+    /// <summary>プレビュー配信のビットレート(kbit/s)の下限。</summary>
+    public const int MinPreviewBitrateKbps = 100;
+
+    /// <summary>プレビュー配信のビットレート(kbit/s)の上限。</summary>
+    public const int MaxPreviewBitrateKbps = 20_000;
+
+    /// <summary>プレビュー配信のビットレート(kbit/s)を有効範囲へ丸める。</summary>
+    public static int ClampPreviewBitrateKbps(int value)
+        => Math.Clamp(value, MinPreviewBitrateKbps, MaxPreviewBitrateKbps);
+
+    /// <summary>
+    /// プレビュー配信の幅(px)。設定値は常に <see cref="ClampPreviewWidth"/> で丸める
+    /// （<see cref="BufferDuration"/> と同じ理由で <c>[ObservableProperty]</c> にしない
+    ///   ── 丸め後の値が現在値と一致すると PropertyChanged が飛ばず、
+    ///   UI が範囲外の値を表示したまま残る）。
+    /// </summary>
+    [Category("PropCat_Preview")]
+    [Description("PropDesc_Rec_PreviewWidth")]
+    public int PreviewWidth
+    {
+        get => _previewWidth;
+        set => SetProperty(ref _previewWidth, ClampPreviewWidth(value));
+    }
+    private int _previewWidth = 1280;
+
+    /// <summary>
+    /// プレビュー配信の高さ(px)。設定値は常に <see cref="ClampPreviewHeight"/> で丸める
+    /// （<see cref="PreviewWidth"/> と同じ理由で <c>[ObservableProperty]</c> にしない）。
+    /// </summary>
+    [Category("PropCat_Preview")]
+    [Description("PropDesc_Rec_PreviewHeight")]
+    public int PreviewHeight
+    {
+        get => _previewHeight;
+        set => SetProperty(ref _previewHeight, ClampPreviewHeight(value));
+    }
+    private int _previewHeight = 720;
+
+    /// <summary>
+    /// プレビュー配信のフレームレート(fps)。設定値は常に <see cref="ClampPreviewFps"/> で丸める
+    /// （<see cref="PreviewWidth"/> と同じ理由で <c>[ObservableProperty]</c> にしない）。
+    /// </summary>
+    [Category("PropCat_Preview")]
+    [Description("PropDesc_Rec_PreviewFps")]
+    public int PreviewFps
+    {
+        get => _previewFps;
+        set => SetProperty(ref _previewFps, ClampPreviewFps(value));
+    }
+    private int _previewFps = 15;
+
+    /// <summary>
+    /// プレビュー配信のビットレート(kbit/s)。設定値は常に
+    /// <see cref="ClampPreviewBitrateKbps"/> で丸める
+    /// （<see cref="PreviewWidth"/> と同じ理由で <c>[ObservableProperty]</c> にしない）。
+    /// </summary>
+    [Category("PropCat_Preview")]
+    [Description("PropDesc_Rec_PreviewBitrateKbps")]
+    public int PreviewBitrateKbps
+    {
+        get => _previewBitrateKbps;
+        set => SetProperty(ref _previewBitrateKbps, ClampPreviewBitrateKbps(value));
+    }
+    private int _previewBitrateKbps = 2000;
 
     /// <summary>常時録画のセグメント長(秒)の下限。</summary>
     public const int MinContinuousSegmentSeconds = 5;
@@ -615,6 +718,70 @@ public partial class EventRecorder : ObservableObject, IDisposable
             _currentSettings?.ContinuousFilenameTemplate = value;
     }
 
+    /// <summary>プレビュー配信の幅(px)。設定・VM と同じく 3 箇所すべてで丸める。</summary>
+    public int PreviewWidth
+    {
+        get => _previewWidth;
+        set
+        {
+            if (SetProperty(ref _previewWidth, EventRecorderSettings.ClampPreviewWidth(value))
+                && _currentSettings is { } settings
+                && settings.PreviewWidth != _previewWidth)
+            {
+                settings.PreviewWidth = _previewWidth;
+            }
+        }
+    }
+    private int _previewWidth;
+
+    /// <summary>プレビュー配信の高さ(px)。設定・VM と同じく 3 箇所すべてで丸める。</summary>
+    public int PreviewHeight
+    {
+        get => _previewHeight;
+        set
+        {
+            if (SetProperty(ref _previewHeight, EventRecorderSettings.ClampPreviewHeight(value))
+                && _currentSettings is { } settings
+                && settings.PreviewHeight != _previewHeight)
+            {
+                settings.PreviewHeight = _previewHeight;
+            }
+        }
+    }
+    private int _previewHeight;
+
+    /// <summary>プレビュー配信のフレームレート(fps)。設定・VM と同じく 3 箇所すべてで丸める。</summary>
+    public int PreviewFps
+    {
+        get => _previewFps;
+        set
+        {
+            if (SetProperty(ref _previewFps, EventRecorderSettings.ClampPreviewFps(value))
+                && _currentSettings is { } settings
+                && settings.PreviewFps != _previewFps)
+            {
+                settings.PreviewFps = _previewFps;
+            }
+        }
+    }
+    private int _previewFps;
+
+    /// <summary>プレビュー配信のビットレート(kbit/s)。設定・VM と同じく 3 箇所すべてで丸める。</summary>
+    public int PreviewBitrateKbps
+    {
+        get => _previewBitrateKbps;
+        set
+        {
+            if (SetProperty(ref _previewBitrateKbps, EventRecorderSettings.ClampPreviewBitrateKbps(value))
+                && _currentSettings is { } settings
+                && settings.PreviewBitrateKbps != _previewBitrateKbps)
+            {
+                settings.PreviewBitrateKbps = _previewBitrateKbps;
+            }
+        }
+    }
+    private int _previewBitrateKbps;
+
     /// <summary>常時録画のセグメント長(秒)。設定・VM と同じく 3 箇所すべてで丸める。</summary>
     public int ContinuousSegmentSeconds
     {
@@ -672,6 +839,10 @@ public partial class EventRecorder : ObservableObject, IDisposable
             case nameof(EncodingProperties): if (EncodingProperties != settings.EncodingProperties) EncodingProperties = settings.EncodingProperties; break;
             case nameof(FragmentedOutput): if (FragmentedOutput != settings.FragmentedOutput) FragmentedOutput = settings.FragmentedOutput; break;
             case nameof(CameraControls): if (CameraControls != settings.CameraControls) CameraControls = settings.CameraControls; break;
+            case nameof(PreviewWidth): if (PreviewWidth != settings.PreviewWidth) PreviewWidth = settings.PreviewWidth; break;
+            case nameof(PreviewHeight): if (PreviewHeight != settings.PreviewHeight) PreviewHeight = settings.PreviewHeight; break;
+            case nameof(PreviewFps): if (PreviewFps != settings.PreviewFps) PreviewFps = settings.PreviewFps; break;
+            case nameof(PreviewBitrateKbps): if (PreviewBitrateKbps != settings.PreviewBitrateKbps) PreviewBitrateKbps = settings.PreviewBitrateKbps; break;
             case nameof(ContinuousRecording): if (ContinuousRecording != settings.ContinuousRecording) ContinuousRecording = settings.ContinuousRecording; break;
             case nameof(ContinuousFramerate): if (ContinuousFramerate != settings.ContinuousFramerate) ContinuousFramerate = settings.ContinuousFramerate; break;
             case nameof(ContinuousResolution): if (ContinuousResolution != settings.ContinuousResolution) ContinuousResolution = settings.ContinuousResolution; break;
@@ -700,6 +871,11 @@ public partial class EventRecorder : ObservableObject, IDisposable
         this.EncodingProperties = settings.EncodingProperties ?? string.Empty;
         this.FragmentedOutput = settings.FragmentedOutput;
         this.CameraControls = settings.CameraControls ?? string.Empty;
+
+        this.PreviewWidth = settings.PreviewWidth;
+        this.PreviewHeight = settings.PreviewHeight;
+        this.PreviewFps = settings.PreviewFps;
+        this.PreviewBitrateKbps = settings.PreviewBitrateKbps;
 
         this.ContinuousRecording = settings.ContinuousRecording;
         this.ContinuousFramerate = settings.ContinuousFramerate;

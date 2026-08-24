@@ -489,6 +489,18 @@
               "null"
             ]
           },
+          "PreviewWidth": {
+            "type": "integer"
+          },
+          "PreviewHeight": {
+            "type": "integer"
+          },
+          "PreviewFps": {
+            "type": "integer"
+          },
+          "PreviewBitrateKbps": {
+            "type": "integer"
+          },
           "ContinuousRecording": {
             "type": "boolean"
           },

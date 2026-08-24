@@ -381,6 +381,18 @@ public sealed class RecorderSpec(string name)
     /// </summary>
     public string? CameraControls { get; set; }
 
+    /// <summary>プレビュー配信の幅(px)。製品の既定と同じ値。</summary>
+    public int PreviewWidth { get; set; } = 1280;
+
+    /// <summary>プレビュー配信の高さ(px)。製品の既定と同じ値。</summary>
+    public int PreviewHeight { get; set; } = 720;
+
+    /// <summary>プレビュー配信のフレームレート(fps)。製品の既定と同じ値。</summary>
+    public int PreviewFps { get; set; } = 15;
+
+    /// <summary>プレビュー配信のビットレート(kbit/s)。製品の既定と同じ値。</summary>
+    public int PreviewBitrateKbps { get; set; } = 2000;
+
     /// <summary>1280x720/30fps・約20Mbit（排出コストを可視化できる大きさ）にする。</summary>
     public RecorderSpec AsLarge()
     {
@@ -492,6 +504,10 @@ public sealed class RecorderSpec(string name)
         ["EncodingProperties"] = EncodingProperties,
         ["FragmentedOutput"] = FragmentedOutput,
         ["CameraControls"] = CameraControls,
+        ["PreviewWidth"] = PreviewWidth,
+        ["PreviewHeight"] = PreviewHeight,
+        ["PreviewFps"] = PreviewFps,
+        ["PreviewBitrateKbps"] = PreviewBitrateKbps,
         ["ContinuousRecording"] = ContinuousRecording,
         ["ContinuousFramerate"] = ContinuousFramerate,
         ["ContinuousResolution"] = ContinuousResolution,

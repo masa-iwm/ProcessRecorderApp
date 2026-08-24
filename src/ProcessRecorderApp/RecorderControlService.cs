@@ -500,6 +500,14 @@ internal static class RecorderControlService
                 (EventRecorderSettings.MinBufferDuration, EventRecorderSettings.MaxBufferDuration),
             nameof(EventRecorderSettings.ContinuousSegmentSeconds) =>
                 (EventRecorderSettings.MinContinuousSegmentSeconds, EventRecorderSettings.MaxContinuousSegmentSeconds),
+            nameof(EventRecorderSettings.PreviewWidth) =>
+                (EventRecorderSettings.MinPreviewWidth, EventRecorderSettings.MaxPreviewWidth),
+            nameof(EventRecorderSettings.PreviewHeight) =>
+                (EventRecorderSettings.MinPreviewHeight, EventRecorderSettings.MaxPreviewHeight),
+            nameof(EventRecorderSettings.PreviewFps) =>
+                (EventRecorderSettings.MinPreviewFps, EventRecorderSettings.MaxPreviewFps),
+            nameof(EventRecorderSettings.PreviewBitrateKbps) =>
+                (EventRecorderSettings.MinPreviewBitrateKbps, EventRecorderSettings.MaxPreviewBitrateKbps),
             // 丸めの無い項目に範囲を出さない ── 出すと「その範囲なら通る」という嘘になる。
             _ => ((long?)null, (long?)null),
         };
