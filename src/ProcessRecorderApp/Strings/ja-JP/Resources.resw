@@ -359,6 +359,63 @@
   <data name="PropDesc_RemoteControlAccessToken" xml:space="preserve">
     <value>書き込み操作（録画の開始・停止、設定の変更）に要る秘密の文字列。リモート操作を初めて有効にしたときに生成されます。「…」ボタンで作り直すと、古いトークンとそれで開いたブラウザのセッションは無効になります。読み取りはこのトークンでは保護されません。</value>
   </data>
+  <data name="PropDesc_RemoteControlAllowGuestRead" xml:space="preserve">
+    <value>ログインなしの読み取り専用アクセスを許可する</value>
+  </data>
+  <data name="PropDesc_RemoteUserList" xml:space="preserve">
+    <value>リモート利用者（名前／役割）。「…」で編集</value>
+  </data>
+  <data name="RemoteUserList_Count" xml:space="preserve">
+    <value>{0} 人</value>
+  </data>
+  <data name="RemoteUserEditor_Title" xml:space="preserve">
+    <value>リモート利用者</value>
+  </data>
+  <data name="RemoteUserEditor_Add" xml:space="preserve">
+    <value>追加</value>
+  </data>
+  <data name="RemoteUserEditor_Remove" xml:space="preserve">
+    <value>削除</value>
+  </data>
+  <data name="RemoteUserEditor_Name" xml:space="preserve">
+    <value>名前</value>
+  </data>
+  <data name="RemoteUserEditor_Password" xml:space="preserve">
+    <value>パスワード</value>
+  </data>
+  <data name="RemoteUserEditor_SetPassword" xml:space="preserve">
+    <value>パスワードを設定</value>
+  </data>
+  <data name="RemoteUserEditor_Role" xml:space="preserve">
+    <value>役割</value>
+  </data>
+  <data name="RemoteUserEditor_Save" xml:space="preserve">
+    <value>保存</value>
+  </data>
+  <data name="RemoteUserEditor_Cancel" xml:space="preserve">
+    <value>取り消し</value>
+  </data>
+  <data name="RemoteUserEditor_RoleViewer" xml:space="preserve">
+    <value>閲覧者</value>
+  </data>
+  <data name="RemoteUserEditor_RoleOperator" xml:space="preserve">
+    <value>操作者</value>
+  </data>
+  <data name="RemoteUserEditor_RoleAdmin" xml:space="preserve">
+    <value>管理者</value>
+  </data>
+  <data name="RemoteUserEditor_DuplicateName" xml:space="preserve">
+    <value>名前「{0}」は他の利用者が使っています。</value>
+  </data>
+  <data name="RemoteUserEditor_InvalidName" xml:space="preserve">
+    <value>「{0}」は名前に使えません。前後の空白・制御文字・':' は使えず、空欄と長すぎる名前も不可です。</value>
+  </data>
+  <data name="RemoteUserEditor_PasswordRequired" xml:space="preserve">
+    <value>保存する前に「{0}」のパスワードを設定してください。</value>
+  </data>
+  <data name="RemoteUserEditor_TooManyUsers" xml:space="preserve">
+    <value>登録できる利用者は {0} 人までです。</value>
+  </data>
   <data name="PropDesc_PreferredEncoder" xml:space="preserve">
     <value>優先する H.264 エンコーダーの要素ファクトリ名（例: x264enc、qsvh264enc）。空欄の場合は、この実機で利用できるエンコーダーから自動選択します。指定した要素が利用できない場合は自動選択の優先順位にフォールバックします。実際に採用されたエンコーダーは各レコーダーの「実際のエンコード設定」に表示されます。</value>
   </data>

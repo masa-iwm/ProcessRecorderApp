@@ -1,4 +1,4 @@
-using CommunityToolkit.Mvvm.ComponentModel;
+﻿using CommunityToolkit.Mvvm.ComponentModel;
 using ProcessRecorderApp.Components;
 using System;
 using System.Collections.ObjectModel;
@@ -475,6 +475,61 @@ public partial class AppSettings : JsonSettingsBase<AppSettings>
     public const string RemoteControlAccessTokenBuilderKey = "RemoteControlAccessToken";
 
     /// <summary>
+    /// リモート利用者一覧の編集の起動口。<b>現在の人数を表示するだけ</b>で、直接は編集できない
+    /// （<c>[ReadOnly(true)]</c> ＋ <c>[ValueBuilder]</c> ＝「ビルダーでのみ変更できる」）。
+    /// 「…」ボタンで利用者一覧の編集ダイアログが開く（MainPage が
+    /// <c>PropertyGridView.ValueBuilder</c> にこのキーで応答する）。
+    /// 正本は <see cref="RemoteUsers"/> なので、この値は永続化しない。
+    /// </summary>
+    [System.ComponentModel.Category("PropCat_RemoteControl")]
+    [System.ComponentModel.Description("PropDesc_RemoteUserList")]
+    [System.ComponentModel.ReadOnly(true)]
+    [ValueBuilder(RemoteUserBuilderKey)]
+    [JsonIgnore]
+    [ObservableProperty]
+    public partial string RemoteUserList { get; set; } = "";
+
+    /// <summary>
+    /// <see cref="RemoteUserList"/> に出す人数の表示文字列。
+    /// キーは文字列リテラルで渡す ── 補間で組むと L4 が参照を拾えず、未参照キーとして報告される。
+    /// </summary>
+    private static string FormatRemoteUserCount(int count)
+        => Components.Localization.GetString("Resources/RemoteUserList_Count", count);
+
+    partial void OnRemoteUsersChanged(List<Components.RemoteUserDefinition> value)
+        // null は手で編集された settings.json（"RemoteUsers": null）で起こりうる
+        => RemoteUserList = FormatRemoteUserCount(value is null ? 0 : value.Count);
+
+    /// <summary>
+    /// <see cref="RemoteUserList"/> のビルダー識別キー。
+    /// <b><c>PropCat_</c> / <c>PropDesc_</c> で始めてはいけない</b>（<see cref="EncoderChoiceListKey"/> と同じ理由）。
+    /// </summary>
+    public const string RemoteUserBuilderKey = "RemoteUserList";
+
+    /// <summary>
+    /// リモート利用者の定義（正本）。編集は利用者一覧の編集ダイアログ経由のみで、
+    /// PropertyGrid には出さない（パスワードのハッシュを表に出さないため）。
+    ///
+    /// <para>
+    /// ダイアログは常に新しい写しを返すので、<b>変更はリストごと差し替える</b>（要素の in-place
+    /// 変更をしない）。<see cref="UiaTriggers"/> と同じ運用で、差し替えなら PropertyChanged が
+    /// 飛んでデバウンス保存が効き、バックグラウンドからの参照読みも安全になる。
+    /// </para>
+    /// </summary>
+    [System.ComponentModel.Browsable(false)]
+    [JsonInclude]
+    [ObservableProperty]
+    public partial List<Components.RemoteUserDefinition> RemoteUsers { get; internal set; } = [];
+
+    /// <summary>
+    /// ログインしていない相手に、読み取り専用のアクセスを許すか。
+    /// </summary>
+    [System.ComponentModel.Category("PropCat_RemoteControl")]
+    [System.ComponentModel.Description("PropDesc_RemoteControlAllowGuestRead")]
+    [ObservableProperty]
+    public partial bool RemoteControlAllowGuestRead { get; set; }
+
+    /// <summary>
     /// UIA トリガ監視全体の有効/無効。無効にすると監視スレッドごと止める
     /// （<c>UiaTriggerService</c> がこのプロパティの変更を購読している）。
     /// </summary>
@@ -869,6 +924,12 @@ public partial class AppSettings : JsonSettingsBase<AppSettings>
         OutputDirectory = loaded.OutputDirectory;
         RecordingRetentionDays = loaded.RecordingRetentionDays;
         RecordingCleanupIntervalHours = loaded.RecordingCleanupIntervalHours;
+        RemoteControlAllowGuestRead = loaded.RemoteControlAllowGuestRead;
+        // 利用者定義は差し替え運用（要素を in-place 変更しない）なので参照コピーでよい。
+        // null は手で編集された settings.json（"RemoteUsers": null）で起こりうる。
+        RemoteUsers = loaded.RemoteUsers ?? [];
+        // RemoteUserList は表示専用の人数。永続値が無いので loaded からは写さず、ここで組み立てる
+        RemoteUserList = FormatRemoteUserCount(RemoteUsers.Count);
         // **順序が効く。** RemoteControlEnabled を先に写すと OnRemoteControlEnabledChanged が
         // トークンを生成し、その直後にファイル側の空文字が上書きして消す。
         RemoteControlAccessToken = loaded.RemoteControlAccessToken;
@@ -919,6 +980,8 @@ public partial class AppSettings : JsonSettingsBase<AppSettings>
         // ── settings.json に UiaTriggers キーが無いと setter が呼ばれず
         // OnUiaTriggersChanged も走らないので、空欄のまま残る。
         UiaTriggerList = FormatTriggerCount(UiaTriggers.Count);
+        // RemoteUsers も同じ。キーが無ければ OnRemoteUsersChanged は走らない。
+        RemoteUserList = FormatRemoteUserCount(RemoteUsers.Count);
 
         // 読み込み値を GStreamer 層の static ミラーへ反映する。
         // （[ObservableProperty] の OnChanged は「変化した場合」しか走らないため、
@@ -1104,6 +1167,10 @@ public partial class AppSettings : JsonSettingsBase<AppSettings>
 // `.AppSettings` の JsonTypeInfo だけを使う。AppSettings 経由で到達可能な型なので
 // 生成物も実質増えないが、生成器の実装詳細に依存しないよう入口を明示的に開けておく。
 [JsonSerializable(typeof(GStreamer.EventRecorderSettings))]
+// リモート利用者の定義。AppSettings 経由で到達できるが、Role の変換器（総称版の
+// JsonStringEnumConverter）がソース生成の契約に確実に載るよう入口を明示しておく。
+[JsonSerializable(typeof(Components.RemoteUserDefinition))]
+[JsonSerializable(typeof(List<Components.RemoteUserDefinition>))]
 internal partial class AppSettingsJsonContext : JsonSerializerContext
 {
 }

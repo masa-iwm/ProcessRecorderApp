@@ -521,6 +521,50 @@ public class JsonSettingsBaseTests : IDisposable
 
     // ---- 変更通知 ----
 
+    /// <summary>
+    /// リモート利用者の <c>Role</c> が<b>名前で</b>保存され、読み直しても同じ役割になること。
+    ///
+    /// <para>
+    /// 数値で書かれると手で開いても意味が読めず、<c>RemoteRole</c> の並びを変えた瞬間に
+    /// 既存ファイルの意味が黙って変わる（管理者が閲覧者になる、の向きもある）。
+    /// 保証しているのは <c>RemoteUserDefinition.Role</c> の
+    /// <c>[JsonConverter(typeof(JsonStringEnumConverter&lt;RemoteRole&gt;))]</c> 1 つで、
+    /// これが外れてもビルドは通る。
+    /// </para>
+    /// <para>
+    /// <b>正本の <c>AppSettings</c> は L1 から参照できない</b>ので、同じ基底クラス上の
+    /// <see cref="RemoteUserSettings"/> で往復させる（このファイルの他のテストと同じ理由）。
+    /// アプリが実際に書く形は L2 の <c>SettingsSchemaTests</c> が見る。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void Save_ThenLoad_WritesTheRemoteUserRoleByName()
+    {
+        RemoteUserSettings settings = new();
+        settings.RemoteUsers.Add(new RemoteUserDefinition
+        {
+            Name = "alice",
+            PasswordHash = RemoteUserRules.HashPassword("pw"),
+            Role = RemoteRole.Admin,
+        });
+
+        settings.Save(FilePath, RemoteUserSettingsJsonContext.Default.RemoteUserSettings);
+
+        using (JsonDocument document = JsonDocument.Parse(File.ReadAllText(FilePath)))
+        {
+            JsonElement role = document.RootElement.GetProperty("RemoteUsers")[0].GetProperty("Role");
+            Assert.Equal(JsonValueKind.String, role.ValueKind);   // 数値なら 2 になる
+            Assert.Equal("Admin", role.GetString());
+        }
+
+        RemoteUserSettings loaded = RemoteUserSettings.Load(FilePath);
+
+        RemoteUserDefinition user = Assert.Single(loaded.RemoteUsers);
+        Assert.Equal("alice", user.Name);
+        Assert.Equal(RemoteRole.Admin, user.Role);
+        Assert.True(RemoteUserRules.Verify("pw", user.PasswordHash));
+    }
+
     [Fact]
     public void SettingAProperty_RaisesPropertyChanged()
     {
@@ -579,5 +623,23 @@ public partial class SampleSettings : JsonSettingsBase<SampleSettings>
 
 [JsonSerializable(typeof(SampleSettings))]
 internal partial class SampleSettingsJsonContext : JsonSerializerContext
+{
+}
+
+/// <summary>
+/// リモート利用者を持つ設定の最小形。<c>AppSettings.RemoteUsers</c> と同じ形
+/// （<c>[JsonInclude]</c> ＋ リスト）を L1 で往復させるための器。
+/// </summary>
+public partial class RemoteUserSettings : JsonSettingsBase<RemoteUserSettings>
+{
+    [JsonInclude]
+    public List<RemoteUserDefinition> RemoteUsers { get; set; } = [];
+
+    public static RemoteUserSettings Load(string filePath)
+        => LoadOrCreate(filePath, RemoteUserSettingsJsonContext.Default.RemoteUserSettings, () => new());
+}
+
+[JsonSerializable(typeof(RemoteUserSettings))]
+internal partial class RemoteUserSettingsJsonContext : JsonSerializerContext
 {
 }

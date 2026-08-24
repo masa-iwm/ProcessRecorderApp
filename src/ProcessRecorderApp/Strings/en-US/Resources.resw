@@ -359,6 +359,63 @@
   <data name="PropDesc_RemoteControlAccessToken" xml:space="preserve">
     <value>Secret required for every write (starting and stopping recordings, changing settings). It is generated when remote control is first turned on; the "..." button makes a new one, which invalidates the old one and any browser session opened with it. Reading is not covered by this token.</value>
   </data>
+  <data name="PropDesc_RemoteControlAllowGuestRead" xml:space="preserve">
+    <value>Allow read-only access without signing in.</value>
+  </data>
+  <data name="PropDesc_RemoteUserList" xml:space="preserve">
+    <value>Remote users (name / role). Edit with the ... button.</value>
+  </data>
+  <data name="RemoteUserList_Count" xml:space="preserve">
+    <value>{0} user(s)</value>
+  </data>
+  <data name="RemoteUserEditor_Title" xml:space="preserve">
+    <value>Remote users</value>
+  </data>
+  <data name="RemoteUserEditor_Add" xml:space="preserve">
+    <value>Add</value>
+  </data>
+  <data name="RemoteUserEditor_Remove" xml:space="preserve">
+    <value>Remove</value>
+  </data>
+  <data name="RemoteUserEditor_Name" xml:space="preserve">
+    <value>Name</value>
+  </data>
+  <data name="RemoteUserEditor_Password" xml:space="preserve">
+    <value>Password</value>
+  </data>
+  <data name="RemoteUserEditor_SetPassword" xml:space="preserve">
+    <value>Set password</value>
+  </data>
+  <data name="RemoteUserEditor_Role" xml:space="preserve">
+    <value>Role</value>
+  </data>
+  <data name="RemoteUserEditor_Save" xml:space="preserve">
+    <value>Save</value>
+  </data>
+  <data name="RemoteUserEditor_Cancel" xml:space="preserve">
+    <value>Cancel</value>
+  </data>
+  <data name="RemoteUserEditor_RoleViewer" xml:space="preserve">
+    <value>Viewer</value>
+  </data>
+  <data name="RemoteUserEditor_RoleOperator" xml:space="preserve">
+    <value>Operator</value>
+  </data>
+  <data name="RemoteUserEditor_RoleAdmin" xml:space="preserve">
+    <value>Admin</value>
+  </data>
+  <data name="RemoteUserEditor_DuplicateName" xml:space="preserve">
+    <value>The name "{0}" is already used by another user.</value>
+  </data>
+  <data name="RemoteUserEditor_InvalidName" xml:space="preserve">
+    <value>"{0}" cannot be used as a name. Spaces at either end, control characters and ':' are not allowed, and the name must be neither empty nor too long.</value>
+  </data>
+  <data name="RemoteUserEditor_PasswordRequired" xml:space="preserve">
+    <value>Set a password for "{0}" before saving.</value>
+  </data>
+  <data name="RemoteUserEditor_TooManyUsers" xml:space="preserve">
+    <value>No more than {0} users can be registered.</value>
+  </data>
   <data name="PropDesc_PreferredEncoder" xml:space="preserve">
     <value>Element factory name of the preferred H.264 encoder (for example x264enc or qsvh264enc). Leave empty to pick automatically from the encoders available on this machine. If the specified element is not available, the automatic order is used instead. The encoder actually used is shown in each recorder's Actual Encoding Properties.</value>
   </data>

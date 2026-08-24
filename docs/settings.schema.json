@@ -81,6 +81,30 @@
     "RemoteControlAccessToken": {
       "type": "string"
     },
+    "RemoteUsers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "Name": {
+            "type": "string"
+          },
+          "PasswordHash": {
+            "type": "string"
+          },
+          "Role": {
+            "enum": [
+              "Viewer",
+              "Operator",
+              "Admin"
+            ]
+          }
+        }
+      }
+    },
+    "RemoteControlAllowGuestRead": {
+      "type": "boolean"
+    },
     "UiaTriggersEnabled": {
       "type": "boolean"
     },

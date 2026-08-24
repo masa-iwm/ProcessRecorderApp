@@ -1704,7 +1704,7 @@ UI スレッドで走る。`TryEnqueue` が false なら `RemoteApiException(12,
 停止は内側 3 秒・外側 8 秒で有界。**サーバーが立たなくても録画は止めない**ので、起動の失敗は
 `remote.error` にしか現れない。
 
-### 設定（`AppSettings` のフラット 4 キー）
+### 設定（`AppSettings` の 6 キー）
 
 | 設定 | 型・既定 | 意味 |
 |---|---|---|
@@ -1712,10 +1712,14 @@ UI スレッドで走る。`TryEnqueue` が false なら `RemoteApiException(12,
 | `RemoteControlBindAddress` | `string` / `"0.0.0.0"` | 待ち受ける IP アドレス。`0.0.0.0` は全てのネットワークインターフェイス（「別 PC から」にはこれが要る）、`127.0.0.1` はこの PC のみ。変更するとサーバーを再起動する |
 | `RemoteControlPort` | `int` / `8752` | 待ち受ける TCP ポート。`0` なら空いているポートを OS が選ぶ ── **実際に使われたポートは `remote.start` にしか出ない** |
 | `RemoteControlAccessToken` | `string` / `""` | 書き込み操作（録画の開始・停止、設定の変更）に要る秘密の文字列。**読み取りはこれでは保護されない** |
+| `RemoteControlAllowGuestRead` | `bool` / `false` | ログインしていない相手に読み取り専用のアクセスを許すか。**現在の実装では読み取りは無認証で応答する**ので、この値はまだサーバーの挙動を変えない |
+| `RemoteUsers` | `RemoteUserDefinition[]` / `[]` | リモート利用者（名前・パスワードのハッシュ・役割）。**PropertyGrid には出ない**（settings.json を直に書くか、`RemoteUserList` の行の「…」で開く編集ダイアログでのみ変わる）。役割は `Viewer` / `Operator` / `Admin` を名前で保存する。パスワードは `RemoteUserRules` の PBKDF2-SHA256（`pbkdf2-sha256$<iter>$<salt>$<hash>`）で、平文は保存しない。**現在の実装では認証に使われていない** |
 
-ネストではなくフラットな 4 キーなのは、`AppSettings` がフラット構造で PropertyGrid が
+待ち受けの 4 キーがネストではなくフラットなのは、`AppSettings` がフラット構造で PropertyGrid が
 ネストを展開しないため。既定のバインドが `0.0.0.0` なのは「別 PC から操作する」が目的そのもので、
 守りは **オフ既定 ＋ トークン ＋ Firewall** の 3 つで行う（Firewall の規則はアプリが登録しない）。
+`RemoteUsers` だけは 1 人分が 3 つの値を持つのでオブジェクトの配列で、PropertyGrid には出さず
+`RemoteUserList`（人数を出すだけの読み取り専用の行）の「…」から開く編集ダイアログで扱う。
 
 トークンは `RemoteControlEnabled` を true にした瞬間、空なら
 `RemoteApiRules.GenerateAccessToken()`（`RandomNumberGenerator.GetBytes(32)` を Base64Url ＝

@@ -930,6 +930,12 @@ public sealed partial class MainPage : Page
     private bool _uiaTriggerEditorOpen;
 
     /// <summary>
+    /// リモート利用者の編集ダイアログが開いているあいだ true。
+    /// <c>_uiaTriggerEditorOpen</c> と同じ理由の 2 枚目防止ガード。
+    /// </summary>
+    private bool _remoteUserEditorOpen;
+
+    /// <summary>
     /// カメラ設定の編集ウィンドウが開いているあいだ true。
     /// <b>非モーダル</b>（プレビューを見ながら合わせるため）なので、
     /// 開いたまま「…」をもう一度押せてしまう ── 2 枚目を開かせないためのガード。
@@ -958,6 +964,30 @@ public sealed partial class MainPage : Page
         // 新しい値が欄へ入るだけで、確定するのは通常の設定変更と同じ経路だからである。
         if (string.Equals(key, AppSettings.RemoteControlAccessTokenBuilderKey, StringComparison.Ordinal))
             return Components.RemoteApiRules.GenerateAccessToken();
+
+        // 「…」＝リモート利用者の一覧を編集する。確定なら正本（AppSettings.RemoteUsers）を
+        // 丸ごと差し替える。戻り値は常に null ── RemoteUserList の文字列値に意味は無い。
+        if (string.Equals(key, AppSettings.RemoteUserBuilderKey, StringComparison.Ordinal))
+        {
+            if (_remoteUserEditorOpen)
+                return null;
+            _remoteUserEditorOpen = true;
+            try
+            {
+                // ダイアログは渡したリストに触れず写しを返す。
+                IReadOnlyList<Components.RemoteUserDefinition>? edited =
+                    await RemoteUserEditorDialog.EditAsync(this.XamlRoot, AppSettings.Default.RemoteUsers);
+                if (edited is null)
+                    return null; // 取り消し。正本は変わっていない
+
+                AppSettings.Default.RemoteUsers = [.. edited];
+                return null;
+            }
+            finally
+            {
+                _remoteUserEditorOpen = false;
+            }
+        }
 
         if (!string.Equals(key, AppSettings.UiaTriggerBuilderKey, StringComparison.Ordinal))
             return null;

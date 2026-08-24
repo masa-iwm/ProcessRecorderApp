@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ContentDialog
+    x:Class="ProcessRecorderApp.Views.RemoteUserEditorDialog"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:v="using:ProcessRecorderApp.Views"
+    xmlns:au="using:Microsoft.UI.Xaml.Automation"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d"
+    DefaultButton="Primary"
+    PrimaryButtonClick="OnPrimaryButtonClick">
+
+    <StackPanel Width="460" Spacing="12">
+
+        <!-- 一覧（名前・役割）と、行の追加・削除 -->
+        <Grid ColumnSpacing="8">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <ListView x:Name="UserList" Grid.Column="0" Height="180"
+                      SelectionMode="Single"
+                      SelectionChanged="OnSelectionChanged"
+                      BorderThickness="1"
+                      BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                      au:AutomationProperties.AutomationId="RemoteUserList">
+                <ListView.ItemTemplate>
+                    <DataTemplate x:DataType="v:RemoteUserRow">
+                        <TextBlock Text="{x:Bind Display, Mode=OneWay}" TextTrimming="CharacterEllipsis" />
+                    </DataTemplate>
+                </ListView.ItemTemplate>
+            </ListView>
+            <StackPanel Grid.Column="1" Spacing="4" VerticalAlignment="Top">
+                <Button x:Name="AddButton" Click="OnAddClick" HorizontalAlignment="Stretch"
+                        au:AutomationProperties.AutomationId="RemoteUserAdd" />
+                <Button x:Name="RemoveButton" Click="OnRemoveClick" HorizontalAlignment="Stretch"
+                        au:AutomationProperties.AutomationId="RemoteUserRemove" />
+            </StackPanel>
+        </Grid>
+
+        <!-- 選択行の編集欄 -->
+        <StackPanel Spacing="4">
+            <TextBlock x:Name="NameLabel" />
+            <TextBox x:Name="NameBox" TextChanged="OnNameBoxTextChanged"
+                     au:AutomationProperties.AutomationId="RemoteUserName" />
+
+            <TextBlock x:Name="RoleLabel" />
+            <ComboBox x:Name="RoleCombo" HorizontalAlignment="Stretch"
+                      SelectionChanged="OnRoleComboSelectionChanged"
+                      au:AutomationProperties.AutomationId="RemoteUserRole" />
+
+            <TextBlock x:Name="PasswordLabel" />
+            <Grid ColumnSpacing="8">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <PasswordBox x:Name="PasswordInput" Grid.Column="0"
+                             au:AutomationProperties.AutomationId="RemoteUserPassword" />
+                <Button x:Name="SetPasswordButton" Grid.Column="1" Click="OnSetPasswordClick"
+                        au:AutomationProperties.AutomationId="RemoteUserSetPassword" />
+            </Grid>
+        </StackPanel>
+
+        <!-- 確定を拒否した理由（名前の重複・不正、パスワード未設定、人数の上限） -->
+        <InfoBar x:Name="ErrorBar" Severity="Error" IsOpen="False" IsClosable="False"
+                 au:AutomationProperties.AutomationId="RemoteUserError" />
+
+    </StackPanel>
+</ContentDialog>
