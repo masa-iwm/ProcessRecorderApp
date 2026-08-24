@@ -62,13 +62,33 @@
 .PARAMETER KeepWorkDir
     Keep the work directory (MP4s, stderr, report) even when every judgment passes.
 
+.PARAMETER Spike
+    Run the one-off measurement spike instead of the three-run verification above.
+    For every mp4mux fragment-mode value (discovered live via gst-inspect-1.0, never
+    hard-coded) this writes to a seekable filesink and measures: the box list of a
+    mid-write snapshot, the box list after a clean EOS, the box list after the writer
+    process is killed mid-stream, whether a kill'd file still demuxes end to end
+    (qtdemux ! h264parse ! fakesink) and its gst-discoverer-1.0 duration, plus one
+    faststart=true (non-fragmented, current default) reference snapshot. Writes an
+    MSE smoke-test page (check.html) alongside the MP4s. Always keeps WorkDir.
+
+.PARAMETER SpikeSeconds
+    Total source duration for each -Spike run, in seconds.
+
+.PARAMETER SpikeSampleSeconds
+    When to take the mid-write snapshot / kill the process, in seconds from start.
+    Must be less than SpikeSeconds.
+
 .EXAMPLE
     .\Verify-Fmp4Fragments.ps1
     .\Verify-Fmp4Fragments.ps1 -GopFrames 30 -KeepWorkDir
+    .\Verify-Fmp4Fragments.ps1 -Spike
 
 .OUTPUTS
     A markdown report at <WorkDir>\fmp4-fragment-report.md and the same summary on stdout.
     Exit code 0 only if all three judgments are conclusive PASS; 1 otherwise.
+    With -Spike: measurement tables on stdout and artefacts (MP4s, check.html) under
+    WorkDir (default %TEMP%\prapp-fmp4-spike); exit code is always 0.
 #>
 [CmdletBinding()]
 param(
@@ -79,7 +99,10 @@ param(
     [int]$GopFrames  = 60,
     [int]$FragmentMs = 1000,
     [string]$Encoder = '',
-    [switch]$KeepWorkDir
+    [switch]$KeepWorkDir,
+    [switch]$Spike,
+    [int]$SpikeSeconds = 10,
+    [int]$SpikeSampleSeconds = 3
 )
 
 $ErrorActionPreference = 'Stop'
@@ -116,7 +139,11 @@ if (-not (Test-Path $gstLaunch))  { throw "gst-launch-1.0.exe not found under '$
 if (-not (Test-Path $gstInspect)) { throw "gst-inspect-1.0.exe not found under '$GStreamerBin'. Pass -GStreamerBin." }
 
 if (-not $WorkDir) {
-    $WorkDir = Join-Path ([System.IO.Path]::GetTempPath()) ("pra-fmp4-verify-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
+    if ($Spike) {
+        $WorkDir = Join-Path ([System.IO.Path]::GetTempPath()) 'prapp-fmp4-spike'
+    } else {
+        $WorkDir = Join-Path ([System.IO.Path]::GetTempPath()) ("pra-fmp4-verify-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
+    }
 }
 $null = New-Item -ItemType Directory -Force $WorkDir
 $WorkDir = [System.IO.Path]::GetFullPath($WorkDir)
@@ -374,6 +401,49 @@ function Get-VideoSampleEntry {
     return $null
 }
 
+# mvhd (movie header, direct child of moov) carries the movie-wide duration that a
+# non-fragmented or in-place-patched muxer rewrites at EOS. Distinct from mdhd (per-track,
+# read by Get-MediaTimescale above): mixing the two would silently compare the wrong field.
+function Get-MvhdInfo {
+    param([byte[]]$Data, $Moov)
+    if ($null -eq $Moov) { return $null }
+    $mvhd = Get-ChildBox -Data $Data -Parent $Moov -Type 'mvhd'
+    if ($null -eq $mvhd) { return $null }
+    $ver = $Data[$mvhd.ContentStart]
+    if ($ver -eq 1) {
+        $timescale = Read-U32 $Data ($mvhd.ContentStart + 4 + 16)
+        $duration  = Read-U64 $Data ($mvhd.ContentStart + 4 + 20)
+    } else {
+        $timescale = Read-U32 $Data ($mvhd.ContentStart + 4 + 8)
+        $duration  = Read-U32 $Data ($mvhd.ContentStart + 4 + 12)
+    }
+    return [pscustomobject]@{ Version = $ver; Timescale = $timescale; Duration = $duration }
+}
+
+# avc1.PPCCLL codec string (ISO/IEC 14496-15) read directly from avcC: byte 1 is
+# AVCProfileIndication, byte 2 profile_compatibility, byte 3 AVCLevelIndication. Used to
+# drive the MSE smoke-test page with the codec the spike actually produced, not a guess.
+function Get-AvcCCodecString {
+    param([byte[]]$Data, $Moov)
+    if ($null -eq $Moov) { return $null }
+    foreach ($trak in (Get-ChildBoxes -Data $Data -Parent $Moov -Type 'trak')) {
+        $mdia = Get-ChildBox -Data $Data -Parent $trak -Type 'mdia'
+        $minf = Get-ChildBox -Data $Data -Parent $mdia -Type 'minf'
+        $stbl = Get-ChildBox -Data $Data -Parent $minf -Type 'stbl'
+        $stsd = Get-ChildBox -Data $Data -Parent $stbl -Type 'stsd'
+        if ($null -eq $stsd) { continue }
+        foreach ($entry in (Get-Boxes -Data $Data -Start ($stsd.ContentStart + 8) -End $stsd.ContentEnd)) {
+            if (($entry.ContentStart + 78) -ge $entry.ContentEnd) { continue }
+            foreach ($c in (Get-Boxes -Data $Data -Start ($entry.ContentStart + 78) -End $entry.ContentEnd)) {
+                if ($c.Type -ne 'avcC') { continue }
+                if (($c.ContentStart + 4) -gt $c.ContentEnd) { continue }
+                return ('avc1.{0:X2}{1:X2}{2:X2}' -f $Data[$c.ContentStart + 1], $Data[$c.ContentStart + 2], $Data[$c.ContentStart + 3])
+            }
+        }
+    }
+    return $null
+}
+
 function Get-TrafInfo {
     param([byte[]]$Data, $Traf, $TrexDefaultSampleFlags)
 
@@ -461,6 +531,8 @@ function Get-Fmp4Analysis {
     $timescale = Get-MediaTimescale -Data $data -Moov $moov
     $trexFlags = Get-TrexDefaultSampleFlags -Data $data -Moov $moov
     $sampleEnt = Get-VideoSampleEntry -Data $data -Moov $moov
+    $mvhd      = Get-MvhdInfo -Data $data -Moov $moov
+    $avcCodec  = Get-AvcCCodecString -Data $data -Moov $moov
 
     $fragments = New-Object System.Collections.Generic.List[object]
     $index = 0
@@ -530,6 +602,9 @@ function Get-Fmp4Analysis {
     $ftypIndex = [array]::IndexOf($order, 'ftyp')
     $moovIndex = [array]::IndexOf($order, 'moov')
 
+    $moovBox = $null
+    if ($null -ne $moov) { $moovBox = $top | Where-Object { $_.Type -eq 'moov' } | Select-Object -First 1 }
+
     return [pscustomobject]@{
         Path            = $Path
         Bytes           = $data.Length
@@ -542,11 +617,17 @@ function Get-Fmp4Analysis {
         TrexFlags       = $trexFlags
         SampleFormat    = $(if ($sampleEnt) { $sampleEnt.Format } else { $null })
         HasAvcC         = $(if ($sampleEnt) { $sampleEnt.HasAvcC } else { $false })
+        AvcCodec        = $avcCodec
         Fragments       = $fragments
         FtypIndex       = $ftypIndex
         MoovIndex       = $moovIndex
         FirstMoofIndex  = $firstMoofIndex
         Truncated       = ($null -ne ($top | Where-Object { $_.Truncated }))
+        MoovStart       = $(if ($moovBox) { $moovBox.Start } else { $null })
+        MoovSize        = $(if ($moovBox) { $moovBox.Size } else { $null })
+        MvhdDuration    = $(if ($mvhd) { $mvhd.Duration } else { $null })
+        MvhdTimescale   = $(if ($mvhd) { $mvhd.Timescale } else { $null })
+        MvhdSeconds     = $(if (($mvhd) -and ($mvhd.Timescale -gt 0)) { [math]::Round($mvhd.Duration / $mvhd.Timescale, 2) } else { $null })
     }
 }
 
@@ -559,6 +640,423 @@ function Get-MessageLines {
         if ($l -match 'WARNING|ERROR|CRITICAL') { $lines += $l.Trim() }
     }
     return $lines
+}
+
+# ---------------------------------------------------------------- spike-mode helpers
+
+# Copies a file that a live gst-launch process still has open for writing. filesink
+# opens with FILE_SHARE_READ (not WRITE), so a plain Copy-Item intermittently hits a
+# sharing violation right when a fragment is being flushed; retry briefly instead of
+# treating that race as a failure.
+function Copy-SnapshotFile {
+    param([string]$Source, [string]$Dest)
+    $attempt = 0
+    while ($true) {
+        try {
+            $src = [System.IO.File]::Open($Source, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete)
+            try {
+                $dst = [System.IO.File]::Create($Dest)
+                try { $src.CopyTo($dst) } finally { $dst.Dispose() }
+            } finally { $src.Dispose() }
+            return
+        } catch {
+            $attempt++
+            if ($attempt -ge 5) { throw }
+            Start-Sleep -Milliseconds 200
+        }
+    }
+}
+
+# Same Process-based launch as Invoke-GstLaunch, but returned as a live handle: the spike
+# needs to sleep, snapshot the still-growing file, and only THEN decide whether to wait
+# for EOS or kill the process -- Invoke-GstLaunch's single blocking Wait does not allow
+# that interjection.
+function Start-SpikeProcess {
+    param([string]$Arguments)
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName               = $gstLaunch
+    $psi.Arguments              = $Arguments
+    $psi.WorkingDirectory       = $WorkDir
+    $psi.UseShellExecute        = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError  = $true
+    $p = [System.Diagnostics.Process]::Start($psi)
+    return [pscustomobject]@{
+        Process = $p
+        OutTask = $p.StandardOutput.ReadToEndAsync()
+        ErrTask = $p.StandardError.ReadToEndAsync()
+    }
+}
+
+function Wait-SpikeProcess {
+    param($Handle, [int]$TimeoutMs = 60000)
+    $timedOut = -not $Handle.Process.WaitForExit($TimeoutMs)
+    if ($timedOut) { try { $Handle.Process.Kill() } catch { }; $null = $Handle.Process.WaitForExit(5000) }
+    $out = ''; $err = ''
+    try { if ($Handle.OutTask.Wait(10000)) { $out = $Handle.OutTask.Result } } catch { }
+    try { if ($Handle.ErrTask.Wait(10000)) { $err = $Handle.ErrTask.Result } } catch { }
+    $exit = -1
+    if (-not $timedOut) { $exit = $Handle.Process.ExitCode }
+    return [pscustomobject]@{ ExitCode = $exit; TimedOut = $timedOut; StdOut = $out; StdErr = $err }
+}
+
+# Simulates a crash: the process is killed outright (not asked to shut down), so only
+# bytes already handed to the OS via write() are on disk -- exactly the scenario (c) asks
+# about.
+function Stop-SpikeProcess {
+    param($Handle)
+    try { $Handle.Process.Kill() } catch { }
+    $null = $Handle.Process.WaitForExit(5000)
+    $out = ''; $err = ''
+    try { if ($Handle.OutTask.Wait(5000)) { $out = $Handle.OutTask.Result } } catch { }
+    try { if ($Handle.ErrTask.Wait(5000)) { $err = $Handle.ErrTask.Result } } catch { }
+    return [pscustomobject]@{ StdOut = $out; StdErr = $err }
+}
+
+# Does the file demux end to end? Frame count comes from 'gst-launch -v ... fakesink
+# silent=false': that combination makes fakesink emit a deep-notify on its
+# 'last-message' property for every buffer, and '-v' is what makes gst-launch print
+# deep-notify at all. This build has debug logging compiled out (GST_DEBUG has no
+# effect), so this notify path is the only per-buffer signal available from the CLI --
+# confirmed empirically before writing this function, not assumed.
+function Test-DemuxToEnd {
+    param([string]$FileName)
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName               = $gstLaunch
+    $psi.Arguments              = "-v filesrc location=$FileName ! qtdemux ! h264parse ! fakesink silent=false"
+    $psi.WorkingDirectory       = $WorkDir
+    $psi.UseShellExecute        = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError  = $true
+    $p = [System.Diagnostics.Process]::Start($psi)
+    $outTask = $p.StandardOutput.ReadToEndAsync()
+    $errTask = $p.StandardError.ReadToEndAsync()
+    $timedOut = -not $p.WaitForExit(60000)
+    if ($timedOut) { try { $p.Kill() } catch { }; $null = $p.WaitForExit(5000) }
+    $out = ''; $err = ''
+    try { if ($outTask.Wait(10000)) { $out = $outTask.Result } } catch { }
+    try { if ($errTask.Wait(10000)) { $err = $errTask.Result } } catch { }
+    $exit = -1
+    if (-not $timedOut) { $exit = $p.ExitCode }
+    return [pscustomobject]@{
+        ExitCode   = $exit
+        TimedOut   = $timedOut
+        FrameCount = ([regex]::Matches($out, 'last-message = chain')).Count
+        GotEos     = ($out -match 'Got EOS')
+        Messages   = @(Get-MessageLines ($out + "`n" + $err))
+    }
+}
+
+# gst-discoverer-1.0.exe is NOT in the bundled runtime (verified: only gst-launch-1.0.exe
+# and gst-inspect-1.0.exe ship there). Borrow the one from the full dev-machine install --
+# safe only because both report the same 'GStreamer 1.28.6', checked by the caller before
+# ever invoking this.
+function Resolve-Discoverer {
+    param([string]$Bin)
+    $candidate = Join-Path $Bin 'gst-discoverer-1.0.exe'
+    if (Test-Path $candidate) { return $candidate }
+    if ($env:LOCALAPPDATA) {
+        $fallback = Join-Path $env:LOCALAPPDATA 'Programs\gstreamer\1.0\msvc_x86_64\bin\gst-discoverer-1.0.exe'
+        if (Test-Path $fallback) { return $fallback }
+    }
+    return $null
+}
+
+function Get-DiscovererDuration {
+    param([string]$DiscovererExe, [string]$FileName)
+    if (-not $DiscovererExe) { return 'gst-discoverer-1.0.exe not found' }
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName               = $DiscovererExe
+    $psi.Arguments              = $FileName
+    $psi.WorkingDirectory       = $WorkDir
+    $psi.UseShellExecute        = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError  = $true
+    $p = [System.Diagnostics.Process]::Start($psi)
+    $outTask = $p.StandardOutput.ReadToEndAsync()
+    $errTask = $p.StandardError.ReadToEndAsync()
+    $null = $p.WaitForExit(30000)
+    $out = ''
+    try { if ($outTask.Wait(5000)) { $out = $outTask.Result } } catch { }
+    try { $null = $errTask.Wait(5000) } catch { }
+    $m = [regex]::Match($out, 'Duration:\s*([0-9:\.]+)')
+    if ($m.Success) { return $m.Groups[1].Value }
+    $firstLine = ($out -split "`r?`n" | Select-Object -First 1)
+    return "unavailable ($firstLine)"
+}
+
+# Reads the fragment-mode enum and the streamable/faststart property descriptions
+# straight from gst-inspect-1.0 output -- never hard-coded, so a runtime with a different
+# GstQTMuxFragmentMode (e.g. a future GStreamer version adding a third mode) is measured
+# as it actually is, not as remembered.
+function Get-Mp4MuxFragmentModes {
+    param([string]$GstInspectExe)
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName               = $GstInspectExe
+    $psi.Arguments              = 'mp4mux'
+    $psi.UseShellExecute        = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError  = $true
+    $p = [System.Diagnostics.Process]::Start($psi)
+    $outTask = $p.StandardOutput.ReadToEndAsync()
+    $errTask = $p.StandardError.ReadToEndAsync()
+    $null = $p.WaitForExit(30000)
+    $out = ''
+    try { if ($outTask.Wait(5000)) { $out = $outTask.Result } } catch { }
+    try { $null = $errTask.Wait(5000) } catch { }
+    # gst-inspect lists several OTHER enum properties too (e.g. qtmux's own sort-mode,
+    # aggregator's start-time-selection) whose '(N): name - desc' lines look identical to
+    # fragment-mode's. Scope the scan to the lines between the 'fragment-mode' property
+    # header and the next blank line, or every enum in the whole element would be
+    # mistaken for a fragment-mode value.
+    $lines = $out -split "`r?`n"
+    $startIdx = -1
+    for ($i = 0; $i -lt $lines.Count; $i++) { if ($lines[$i] -match '^\s*fragment-mode\s') { $startIdx = $i; break } }
+    $modes = New-Object System.Collections.Generic.List[object]
+    if ($startIdx -ge 0) {
+        for ($i = $startIdx + 1; $i -lt $lines.Count; $i++) {
+            if ($lines[$i].Trim() -eq '') { break }
+            $mm = [regex]::Match($lines[$i], '^\s*\((\d+)\):\s+(\S+)\s+-\s+(.+)$')
+            if ($mm.Success) {
+                $modes.Add([pscustomobject]@{ Value = [int]$mm.Groups[1].Value; Name = $mm.Groups[2].Value; Description = $mm.Groups[3].Value.Trim() })
+            }
+        }
+    }
+    return [pscustomobject]@{
+        Modes          = $modes
+        StreamableLine = (($lines | Where-Object { $_ -match '^\s*streamable\s' } | Select-Object -First 1))
+        FaststartLine  = (($lines | Where-Object { $_ -match '^\s*faststart\s' } | Select-Object -First 1))
+    }
+}
+
+function Format-BoxOrder {
+    param($Order)
+    if (-not $Order -or $Order.Count -eq 0) { return '(empty)' }
+    if ($Order.Count -le 10) { return ($Order -join ' ') }
+    $head = ($Order[0..4] -join ' ')
+    $tail = ($Order[($Order.Count - 3)..($Order.Count - 1)] -join ' ')
+    return "$head ... $tail (x$($Order.Count))"
+}
+
+function Invoke-Fmp4Spike {
+    Write-Host "== fmp4 spike: fragment-mode enumeration (gst-inspect-1.0 mp4mux)"
+    $modeInfo = Get-Mp4MuxFragmentModes -GstInspectExe $gstInspect
+    foreach ($m in $modeInfo.Modes) { Write-Host ("  ({0}) {1} - {2}" -f $m.Value, $m.Name, $m.Description) }
+    Write-Host "  streamable: $($modeInfo.StreamableLine)"
+    Write-Host "  faststart : $($modeInfo.FaststartLine)"
+    Write-Host ''
+
+    $discoverer = Resolve-Discoverer -Bin $GStreamerBin
+    Write-Host "gst-discoverer-1.0: $(if ($discoverer) { $discoverer } else { 'not found (duration will read as unavailable)' })"
+    Write-Host ''
+
+    # $encoderSpec (picked earlier for the base 3-run verification) does not set
+    # low-latency behaviour: mfh264enc without 'low-latency=true' buffers several
+    # seconds of lookahead before it emits a single frame, which made the very first
+    # spike run (SpikeSeconds=3 SpikeSampleSeconds=1) observe 0 bytes at the sample
+    # point on BOTH fragment-modes -- the encoder, not the muxer, was the bottleneck.
+    # Confirmed by re-running with this override before trusting the mid-stream numbers.
+    $spikeEncoderSpec = $encoderSpec
+    if ($chosen.Name -eq 'mfh264enc') { $spikeEncoderSpec = "mfh264enc bitrate=2000 low-latency=true gop-size=$GopFrames" }
+    if ($spikeEncoderSpec -ne $encoderSpec) { Write-Host "Spike encoder (low-latency override): $spikeEncoderSpec" }
+    Write-Host ''
+
+    $numBuffers = $SpikeSeconds * $Framerate
+    $results = New-Object System.Collections.Generic.List[object]
+
+    foreach ($mode in $modeInfo.Modes) {
+        $tag          = "mode$($mode.Value)"
+        $completeName = "$tag-complete.mp4"
+        $snapshotName = "$tag-3s.mp4"
+        $killName     = "$tag-kill.mp4"
+        $head = "videotestsrc is-live=true num-buffers=$numBuffers ! video/x-raw,format=NV12,width=320,height=240,framerate=$Framerate/1 ! $spikeEncoderSpec ! h264parse ! mp4mux fragment-duration=$FragmentMs fragment-mode=$($mode.Value)"
+
+        Write-Host "== $tag ($($mode.Name)): run to completion, snapshot at ${SpikeSampleSeconds}s"
+        $hA = Start-SpikeProcess -Arguments "$head ! filesink location=$completeName"
+        Start-Sleep -Seconds $SpikeSampleSeconds
+        Copy-SnapshotFile -Source (Join-Path $WorkDir $completeName) -Dest (Join-Path $WorkDir $snapshotName)
+        $runA = Wait-SpikeProcess -Handle $hA -TimeoutMs 60000
+        Write-Host ("   complete run exit={0} timedOut={1}" -f $runA.ExitCode, $runA.TimedOut)
+
+        Write-Host "== $tag ($($mode.Name)): separate run, kill at ${SpikeSampleSeconds}s"
+        $hB = Start-SpikeProcess -Arguments "$head ! filesink location=$killName"
+        Start-Sleep -Seconds $SpikeSampleSeconds
+        $null = Stop-SpikeProcess -Handle $hB
+
+        $aSnap = $null; $aComplete = $null; $aKill = $null
+        if (Test-Path (Join-Path $WorkDir $snapshotName)) { $aSnap     = Get-Fmp4Analysis -Path (Join-Path $WorkDir $snapshotName) }
+        if (Test-Path (Join-Path $WorkDir $completeName)) { $aComplete = Get-Fmp4Analysis -Path (Join-Path $WorkDir $completeName) }
+        if (Test-Path (Join-Path $WorkDir $killName))     { $aKill     = Get-Fmp4Analysis -Path (Join-Path $WorkDir $killName) }
+
+        $moofOffsetsStable = $null
+        if (($null -ne $aSnap) -and ($null -ne $aComplete)) {
+            $n = [Math]::Min($aSnap.Fragments.Count, $aComplete.Fragments.Count)
+            if ($n -gt 0) {
+                $stable = $true
+                for ($i = 0; $i -lt $n; $i++) {
+                    if ($aSnap.Fragments[$i].Offset -ne $aComplete.Fragments[$i].Offset) { $stable = $false; break }
+                }
+                $moofOffsetsStable = $stable
+            }
+        }
+
+        $demuxComplete = $null
+        if ($null -ne $aComplete) { $demuxComplete = Test-DemuxToEnd -FileName $completeName }
+        $demuxKill = $null
+        if ($null -ne $aKill) { $demuxKill = Test-DemuxToEnd -FileName $killName }
+
+        $durComplete = Get-DiscovererDuration -DiscovererExe $discoverer -FileName $completeName
+        $durKill     = Get-DiscovererDuration -DiscovererExe $discoverer -FileName $killName
+
+        $results.Add([pscustomobject]@{
+            Mode               = $mode.Name
+            ModeValue          = $mode.Value
+            SnapBoxes          = $(if ($aSnap) { Format-BoxOrder $aSnap.TopLevelOrder } else { '(no file)' })
+            SnapHasMvex        = $(if ($aSnap) { $aSnap.HasMvex } else { $null })
+            SnapMvhdSeconds    = $(if ($aSnap) { $aSnap.MvhdSeconds } else { $null })
+            SnapBytes          = $(if ($aSnap) { $aSnap.Bytes } else { 0 })
+            CompleteBoxes      = $(if ($aComplete) { Format-BoxOrder $aComplete.TopLevelOrder } else { '(no file)' })
+            CompleteTrailing   = $(if ($aComplete) { $(if ($aComplete.TrailingOrder.Count) { $aComplete.TrailingOrder -join ' ' } else { '(none)' }) } else { $null })
+            CompleteMoovStart  = $(if ($aComplete) { $aComplete.MoovStart } else { $null })
+            CompleteMoovSize   = $(if ($aComplete) { $aComplete.MoovSize } else { $null })
+            CompleteMvhdSeconds= $(if ($aComplete) { $aComplete.MvhdSeconds } else { $null })
+            CompleteBytes      = $(if ($aComplete) { $aComplete.Bytes } else { 0 })
+            MoofOffsetsStable  = $moofOffsetsStable
+            CompleteDemuxExit  = $(if ($demuxComplete) { $demuxComplete.ExitCode } else { $null })
+            CompleteDemuxGotEos= $(if ($demuxComplete) { $demuxComplete.GotEos } else { $null })
+            CompleteDemuxFrames= $(if ($demuxComplete) { $demuxComplete.FrameCount } else { $null })
+            KillBoxes          = $(if ($aKill) { Format-BoxOrder $aKill.TopLevelOrder } else { '(no file)' })
+            KillBytes          = $(if ($aKill) { $aKill.Bytes } else { 0 })
+            KillDemuxExit      = $(if ($demuxKill) { $demuxKill.ExitCode } else { $null })
+            KillDemuxGotEos    = $(if ($demuxKill) { $demuxKill.GotEos } else { $null })
+            KillDemuxFrames    = $(if ($demuxKill) { $demuxKill.FrameCount } else { $null })
+            KillDemuxMessages  = $(if ($demuxKill) { ($demuxKill.Messages -join ' | ') } else { '' })
+            DurationComplete   = $durComplete
+            DurationKill       = $durKill
+            CompleteFile       = (Join-Path $WorkDir $completeName)
+            SnapshotFile       = (Join-Path $WorkDir $snapshotName)
+            KillFile           = (Join-Path $WorkDir $killName)
+        })
+    }
+
+    # (e) reference: current (non-fragmented) faststart=true behaviour, 3s snapshot only.
+    Write-Host "== reference: faststart=true (fragment-duration=0, current default), snapshot at ${SpikeSampleSeconds}s"
+    $fsName = 'faststart-3s.mp4'
+    $fsSnapName = 'faststart-3s-snapshot.mp4'
+    $headFs = "videotestsrc is-live=true num-buffers=$numBuffers ! video/x-raw,format=NV12,width=320,height=240,framerate=$Framerate/1 ! $spikeEncoderSpec ! h264parse ! mp4mux faststart=true"
+    $hF = Start-SpikeProcess -Arguments "$headFs ! filesink location=$fsName"
+    Start-Sleep -Seconds $SpikeSampleSeconds
+    Copy-SnapshotFile -Source (Join-Path $WorkDir $fsName) -Dest (Join-Path $WorkDir $fsSnapName)
+    $null = Stop-SpikeProcess -Handle $hF
+    $aFs = $null
+    if (Test-Path (Join-Path $WorkDir $fsSnapName)) { $aFs = Get-Fmp4Analysis -Path (Join-Path $WorkDir $fsSnapName) }
+
+    Write-Host ''
+    Write-Host '---------------------------------------------------------------'
+    Write-Host 'fragment-mode spike results'
+    Write-Host '---------------------------------------------------------------'
+    foreach ($r in $results) {
+        Write-Host ("mode {0} ({1})" -f $r.ModeValue, $r.Mode)
+        Write-Host ("  (a) snapshot @${SpikeSampleSeconds}s : boxes=[$($r.SnapBoxes)] hasMvex=$($r.SnapHasMvex) mvhdSeconds=$($r.SnapMvhdSeconds) bytes=$($r.SnapBytes)")
+        Write-Host ("  (b) EOS complete       : boxes=[$($r.CompleteBoxes)] trailing=[$($r.CompleteTrailing)] moovStart=$($r.CompleteMoovStart) moovSize=$($r.CompleteMoovSize) mvhdSeconds=$($r.CompleteMvhdSeconds) bytes=$($r.CompleteBytes) moofOffsetsStableVsSnapshot=$($r.MoofOffsetsStable)")
+        Write-Host ("  (c) killed @${SpikeSampleSeconds}s    : boxes=[$($r.KillBoxes)] bytes=$($r.KillBytes) demux(exit=$($r.KillDemuxExit) gotEos=$($r.KillDemuxGotEos) frames=$($r.KillDemuxFrames) msgs=$($r.KillDemuxMessages))")
+        Write-Host ("  (d) qtdemux end-to-end : complete(exit=$($r.CompleteDemuxExit) gotEos=$($r.CompleteDemuxGotEos) frames=$($r.CompleteDemuxFrames))  kill(exit=$($r.KillDemuxExit) gotEos=$($r.KillDemuxGotEos) frames=$($r.KillDemuxFrames))")
+        Write-Host ("  (d) discoverer duration: complete=$($r.DurationComplete) kill=$($r.DurationKill)")
+        Write-Host ''
+    }
+    if ($null -ne $aFs) {
+        Write-Host ("(e) faststart=true @${SpikeSampleSeconds}s: boxes=[$(Format-BoxOrder $aFs.TopLevelOrder)] hasMoov=$($aFs.MoovIndex -ge 0) bytes=$($aFs.Bytes)")
+    } else {
+        Write-Host "(e) faststart=true @${SpikeSampleSeconds}s: 0 bytes written to the target sink yet"
+    }
+    Write-Host '---------------------------------------------------------------'
+
+    # ---- MSE smoke-test page. fetch()/XHR do not work on file:// in Chromium/Edge, so
+    # the page shows that failure and then does the real test via a <input type=file> +
+    # Blob.slice appendBuffer walk at arbitrary (non-fragment-aligned) 4 KB boundaries.
+    $firstOk = $results | Where-Object { $_.CompleteBytes -gt 0 } | Select-Object -First 1
+    $codecStr = 'avc1.640014'
+    if ($firstOk -and (Test-Path $firstOk.CompleteFile)) {
+        $a = Get-Fmp4Analysis -Path $firstOk.CompleteFile
+        if ($a.AvcCodec) { $codecStr = $a.AvcCodec }
+    }
+    $videoLis = ($results | ForEach-Object {
+        $cn = "mode$($_.ModeValue)-complete.mp4"; $kn = "mode$($_.ModeValue)-kill.mp4"
+        "<li>mode $($_.ModeValue) ($($_.Mode)) complete: <a href=`"$cn`">$cn</a> / kill: <a href=`"$kn`">$kn</a></li>"
+    }) -join "`n    "
+    $html = @"
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>fmp4 spike check</title></head>
+<body>
+<h1>fmp4 spike check</h1>
+<h2>Files produced (open this page via file:// next to them)</h2>
+<ul>
+    $videoLis
+</ul>
+<h2>Plain video element playback / seek check</h2>
+<p>Point each below at one file at a time by editing the src, or open the mp4 directly.</p>
+<video id="v" controls style="width:480px" src="mode0-complete.mp4"></video>
+<h2>MSE arbitrary-4KB-boundary appendBuffer test</h2>
+<p>fetch() probe (expected to fail on file://):</p>
+<pre id="fetchResult">(not run yet)</pre>
+<p>Pick a local mp4 file to feed through MediaSource in 4KB chunks at arbitrary byte offsets (not aligned to fragment boundaries):</p>
+<input type="file" id="picker" accept="video/mp4">
+<video id="mse" controls style="width:480px"></video>
+<pre id="mseLog"></pre>
+<script>
+var codec = 'video/mp4; codecs="$codecStr"';
+fetch('mode0-complete.mp4').then(function(r){
+  document.getElementById('fetchResult').textContent = 'fetch ok, status=' + r.status;
+}).catch(function(e){
+  document.getElementById('fetchResult').textContent = 'fetch failed as expected on file:// -> ' + e;
+});
+
+document.getElementById('picker').addEventListener('change', function(ev){
+  var log = document.getElementById('mseLog');
+  log.textContent = '';
+  function line(s){ log.textContent += s + "\n"; }
+  var file = ev.target.files[0];
+  if (!file) { return; }
+  if (!window.MediaSource || !MediaSource.isTypeSupported(codec)) {
+    line('MediaSource.isTypeSupported(' + codec + ') = false in this browser'); return;
+  }
+  line('codec = ' + codec);
+  var video = document.getElementById('mse');
+  var ms = new MediaSource();
+  video.src = URL.createObjectURL(ms);
+  ms.addEventListener('sourceopen', function(){
+    var sb;
+    try { sb = ms.addSourceBuffer(codec); } catch (e) { line('addSourceBuffer threw: ' + e); return; }
+    var CHUNK = 4096;
+    var offset = 0;
+    function pump(){
+      if (offset >= file.size) { try { ms.endOfStream(); } catch (e) {} line('done, appended ' + offset + ' bytes total'); return; }
+      var end = Math.min(offset + CHUNK, file.size);
+      var slice = file.slice(offset, end);
+      var reader = new FileReader();
+      reader.onload = function(){
+        try {
+          sb.appendBuffer(new Uint8Array(reader.result));
+        } catch (e) {
+          line('appendBuffer threw at offset ' + offset + ': ' + e); return;
+        }
+        offset = end;
+      };
+      reader.readAsArrayBuffer(slice);
+    }
+    sb.addEventListener('updateend', pump);
+    sb.addEventListener('error', function(){ line('sourceBuffer error at offset ' + offset); });
+    pump();
+  });
+});
+</script>
+</body></html>
+"@
+    $checkHtmlPath = Join-Path $WorkDir 'check.html'
+    Set-Content -Path $checkHtmlPath -Value $html -Encoding utf8
+    Write-Host ''
+    Write-Host "check.html written to: $checkHtmlPath"
+    Write-Host "WorkDir (all artefacts): $WorkDir"
 }
 
 # ---------------------------------------------------------------- probe the runtime
@@ -639,6 +1137,12 @@ if ($null -eq $chosen) {
 $encoderSpec = [string]::Format($chosen.Template, $GopFrames)
 Write-Host "Encoder       : $encoderSpec"
 Write-Host ''
+
+if ($Spike) {
+    Invoke-Fmp4Spike
+    Restore-CallerEnvironment
+    exit 0
+}
 
 # ---------------------------------------------------------------- run the three cases
 
