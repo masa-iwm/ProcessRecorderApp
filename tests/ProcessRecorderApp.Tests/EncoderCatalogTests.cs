@@ -822,6 +822,14 @@ public class EncoderBitrateParameterizationTests
         => EncoderCatalog.D3d12Candidates.Concat(EncoderCatalog.SystemCandidates)
             .First(c => string.Equals(c.FactoryName, factoryName, StringComparison.Ordinal));
 
+    /// <summary>
+    /// <c>bitrate=&lt;数値&gt;</c> のトークン。<b><c>H264EncoderDef</c> 側の
+    /// <c>BitrateTokenRegex</c> と同一のパターンでなければならない</b> ──
+    /// 緩い <c>\bbitrate=</c> にすると <c>max-bitrate=</c> / <c>target-bitrate=</c> にも
+    /// 一致し、カタログの不変条件が「別のプロパティで満たされている」定義を見逃す。
+    /// </summary>
+    private const string BitrateToken = @"(?<![-\w])bitrate=\d+\b";
+
     [Fact]
     public void X264_TakesKilobitsPerSecondUnchanged()
     {
@@ -893,7 +901,7 @@ public class EncoderBitrateParameterizationTests
 
         static void AssertAgrees(H264EncoderDef def)
         {
-            bool hasToken = Regex.IsMatch(def.LaunchString, @"\bbitrate=\d+\b");
+            bool hasToken = Regex.IsMatch(def.LaunchString, BitrateToken);
             Assert.True(def.BitrateUnitPerKbps is null || hasToken,
                 $"{def.FactoryName}: BitrateUnitPerKbps が非 null なのに 'bitrate=' が無い: {def.LaunchString}");
             Assert.True(!hasToken || def.BitrateUnitPerKbps is not null,
@@ -912,5 +920,53 @@ public class EncoderBitrateParameterizationTests
             BitrateUnitPerKbps: 1);
 
         Assert.Throws<InvalidOperationException>(() => broken.WithBitrateKbps(8000));
+    }
+
+    /// <summary>
+    /// <b><c>max-bitrate=</c> のような別のプロパティは書き換えない。</b>
+    /// <c>-</c> は語の境界なので <c>\bbitrate=</c> では一致してしまう ──
+    /// 一致すると、指定した帯域は当のプロパティに入らないまま
+    /// <b>上限だけが黙って書き換わった</b>起動文字列ができる。
+    /// </summary>
+    [Fact]
+    public void OnlyTheBareBitratePropertyIsRewritten()
+    {
+        var def = new H264EncoderDef(
+            "x264enc", "x264enc max-bitrate=2000 bitrate=1000", NeedsSystemMemory: false,
+            BitrateUnitPerKbps: 1);
+
+        var applied = def.WithBitrateKbps(8000);
+
+        Assert.Equal("x264enc max-bitrate=2000 bitrate=8000", applied.LaunchString);
+    }
+
+    /// <summary>
+    /// <c>target-bitrate=</c> しか持たない定義は<b>「トークンが無い」と判定されて投げる</b>
+    /// ── 緩い正規表現だと一致してしまい、別のプロパティが書き換わって正常終了する。
+    /// </summary>
+    [Fact]
+    public void APrefixedBitratePropertyDoesNotCountAsTheToken()
+    {
+        var def = new H264EncoderDef(
+            "x264enc", "x264enc target-bitrate=2000", NeedsSystemMemory: false,
+            BitrateUnitPerKbps: 1);
+
+        Assert.Throws<InvalidOperationException>(() => def.WithBitrateKbps(8000));
+    }
+
+    /// <summary>
+    /// <b>単位との積は <c>checked</c> である。</b> 単位 1000 の定義（bit/sec で受ける
+    /// <c>openh264enc</c>）に大きな kbps を渡すと <c>int</c> を溢れる ──
+    /// 溢れたまま書くと<b>負の bitrate</b> の起動文字列ができ、例外も出ずに
+    /// 「指定が効かない」形で現れる。
+    /// </summary>
+    [Fact]
+    public void AKilobitValueThatOverflowsTheUnit_Throws()
+    {
+        var def = Def("openh264enc");
+        Assert.Equal(1000, def.BitrateUnitPerKbps);
+
+        Assert.Throws<OverflowException>(() => def.WithBitrateKbps(int.MaxValue));
+        Assert.Throws<OverflowException>(() => def.WithBitrateKbps((int.MaxValue / 1000) + 1));
     }
 }

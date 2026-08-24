@@ -1,4 +1,5 @@
 using ProcessRecorderApp.GStreamer;
+using System.Text.RegularExpressions;
 using Xunit;
 
 namespace ProcessRecorderApp.Tests;
@@ -127,8 +128,27 @@ public class PreviewSettingBudgetTests
         int end = text.IndexOf("</data>", start, StringComparison.Ordinal);
         string entry = text[start..end];
 
-        Assert.Contains(setting.Min.ToString(), entry, StringComparison.Ordinal);
-        Assert.Contains(setting.Max.ToString(), entry, StringComparison.Ordinal);
+        AssertNumberAppears(setting.Min, entry, $"{locale} の {setting.ResourceKey}");
+        AssertNumberAppears(setting.Max, entry, $"{locale} の {setting.ResourceKey}");
+    }
+
+    /// <summary>
+    /// 数値が<b>数字の境界つきで</b>現れること。
+    ///
+    /// <para>
+    /// <b>素の <c>Contains</c> では 1 桁の下限（<c>PreviewFps</c> の <c>1</c>）が
+    /// 事実上無検査になる</b> ── <c>160</c> にも <c>2160</c> にも <c>1</c> は含まれるので、
+    /// 文言から下限が消えても緑のままになる。<c>\b</c> は使えない
+    /// （.NET では仮名も <c>\w</c> なので「1 から」の書き方に依存してしまう）ので、
+    /// 前後が数字でないことだけを見る。
+    /// </para>
+    /// </summary>
+    private static void AssertNumberAppears(int value, string text, string where)
+    {
+        string pattern = $@"(?<!\d){value}(?!\d)";
+        Assert.True(
+            Regex.IsMatch(text, pattern),
+            $"{where} に {value} が（数字の境界つきで）現れない: {text}");
     }
 
     /// <summary>同じ数字が <c>src/README.md</c> の設定表にも書いてあること。</summary>
@@ -146,7 +166,7 @@ public class PreviewSettingBudgetTests
         int end = readme.IndexOf('\n', start);
         string row = readme[start..(end < 0 ? readme.Length : end)];
 
-        Assert.Contains(setting.Min.ToString(), row, StringComparison.Ordinal);
-        Assert.Contains(setting.Max.ToString(), row, StringComparison.Ordinal);
+        AssertNumberAppears(setting.Min, row, $"src/README.md の {setting.ReadmeKey} の行");
+        AssertNumberAppears(setting.Max, row, $"src/README.md の {setting.ReadmeKey} の行");
     }
 }

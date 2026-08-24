@@ -149,7 +149,8 @@ public class ContinuousRuntimeDependencyTests
     [Fact]
     public void TheSplitterIsNotAGStreamerElement()
     {
-        Assert.DoesNotContain("splitmuxsink", ContinuousBranch.SegmentWriterPipeline, StringComparison.Ordinal);
+        Assert.DoesNotContain("splitmuxsink", ContinuousBranch.BuildSegmentWriterPipeline(fragmented: false), StringComparison.Ordinal);
+        Assert.DoesNotContain("splitmuxsink", ContinuousBranch.BuildSegmentWriterPipeline(fragmented: true), StringComparison.Ordinal);
         Assert.DoesNotContain(
             "splitmuxsink",
             Build(EventRecordingType.D3d12, "x264enc", false, "5/1", "640x360"),

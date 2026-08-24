@@ -223,6 +223,7 @@ public static class RemoteApiRules
     public static readonly string[] RemoteEditableAppSettings =
     [
         "ConfirmRecorderRemoval",
+        "FragmentedOutput",
         "FramingGrid",
         "GstDebug",
         "LogScrollbackLines",

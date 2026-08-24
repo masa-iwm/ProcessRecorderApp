@@ -1458,6 +1458,53 @@ public sealed class RemoteControlTests(PublishedApp app, ITestOutputHelper outpu
     }
 
     /// <summary>
+    /// <b><c>FragmentedOutput</c> はアプリ全体の設定で、Admin なら切り替えられる。</b>
+    ///
+    /// <para>
+    /// レコーダーごとの設定ではないので、<c>PATCH /api/recorders/…/settings</c> ではなく
+    /// <c>PATCH /api/settings</c> で扱う。<c>Viewer</c> は 403。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task FragmentedOutput_IsAnAppSettingThatOnlyAnAdminCanChange()
+    {
+        using var instance = AppInstance.Create(app, RemoteUserSettings(allowGuestRead: false));
+        int port = WaitForPort(instance);
+        using var client = CreateClient(port);
+
+        string viewer = await LoginAsync(client, ViewerUser, ViewerPassword, "Viewer");
+        using (var request = AsSession(Patch, "api/settings", viewer, "{\"FragmentedOutput\":true}"))
+        using (var response = await client.SendAsync(request, Ct))
+        {
+            using var body = await ExpectAsync(response, HttpStatusCode.Forbidden);
+            Assert.Equal("insufficient role", body.RootElement.GetProperty("error").GetString());
+        }
+
+        string admin = await LoginAsync(client, AdminUser, AdminPassword, "Admin");
+
+        using (var request = AsSession(HttpMethod.Get, "api/settings", admin, clientHeader: false))
+        using (var response = await client.SendAsync(request, Ct))
+        {
+            using var body = await ExpectAsync(response, HttpStatusCode.OK);
+            Assert.False(body.RootElement.GetProperty("FragmentedOutput").GetBoolean());
+        }
+
+        using (var request = AsSession(Patch, "api/settings", admin, "{\"FragmentedOutput\":true}"))
+        using (var response = await client.SendAsync(request, Ct))
+        {
+            using var body = await ExpectAsync(response, HttpStatusCode.OK);
+            Assert.Contains("FragmentedOutput", StringsOf(body.RootElement.GetProperty("applied")));
+        }
+
+        using (var request = AsSession(HttpMethod.Get, "api/settings", admin, clientHeader: false))
+        using (var response = await client.SendAsync(request, Ct))
+        {
+            using var body = await ExpectAsync(response, HttpStatusCode.OK);
+            Assert.True(body.RootElement.GetProperty("FragmentedOutput").GetBoolean());
+        }
+    }
+
+    /// <summary>
     /// <b>Admin は設定まで変えられる。</b> 併せて成功のログ
     /// （<c>remote.auth login user=admin role=Admin</c>）が残ることを見る。
     /// </summary>

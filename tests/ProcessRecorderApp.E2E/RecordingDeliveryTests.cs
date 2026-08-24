@@ -184,11 +184,11 @@ public sealed class RecordingDeliveryTests(PublishedApp app, ITestOutputHelper o
     /// <summary>fragment が書かれるのを待つ上限。<c>fragment-duration</c> は 1 秒。</summary>
     private static readonly TimeSpan FragmentBudget = TimeSpan.FromSeconds(20);
 
-    /// <summary><see cref="RemoteSettings"/> の R1 を fragmented 出力にしたもの。</summary>
+    /// <summary><see cref="RemoteSettings"/> を fragmented 出力（アプリ全体）にしたもの。</summary>
     private static SettingsFile FragmentedSettings()
     {
         var settings = RemoteSettings();
-        settings.Recorders[0].FragmentedOutput = true;
+        settings.FragmentedOutput = true;
         return settings;
     }
 
@@ -330,6 +330,150 @@ public sealed class RecordingDeliveryTests(PublishedApp app, ITestOutputHelper o
         // **尺は 0 のまま**（moov を書き直さないので mvhd の duration が伸びない）。
         // だから `<video src>` 直結では 1 秒に見え、ブラウザ側は完成後も MSE 経路で読む。
         Assert.True(asPlainMp4.DurationSeconds is null or 0, "fragmented なのに mvhd の尺が入っている: " + asPlainMp4);
+    }
+
+    /// <summary>常時録画のセグメント長(秒)。製品の下限。</summary>
+    private const int ContinuousSegmentSeconds = 5;
+
+    /// <summary>セグメントが現れ、伸び、切り替わるまでの待ち上限（それぞれ別に測る）。</summary>
+    private static readonly TimeSpan SegmentBudget = TimeSpan.FromSeconds(60);
+
+    /// <summary>fragmented 出力（アプリ全体）＋常時録画（最短セグメント）の構成。</summary>
+    private static SettingsFile FragmentedContinuousSettings()
+    {
+        var settings = RemoteSettings();
+        settings.FragmentedOutput = true;
+        settings.Recorders[0].WithContinuous(ContinuousSegmentSeconds);
+        return settings;
+    }
+
+    /// <summary>
+    /// <b>常時録画のセグメントも fMP4 で書かれ、追いかけ再生の対象になる。</b>
+    ///
+    /// <para>
+    /// 常時録画は<b>イベント録画の開始を待たない</b>（枝は sink パイプラインの一部）ので、
+    /// 起動しただけで書き込み中のセグメントが一覧に出る。
+    /// そのセグメントが <c>inProgress=true, fragmented=true</c> で現れ、
+    /// <c>Range: bytes=&lt;next&gt;-</c> で伸びを追え、切り替わったあとの前セグメントは
+    /// <c>inProgress=false, fragmented=true</c> のまま単体で読めること。
+    /// </para>
+    /// <para>
+    /// 既定（<c>FragmentedOutput=false</c>）では書き込み中のセグメントに
+    /// <c>moof</c> は 1 つも無く、ここは成立しない。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task AFragmentedContinuousSegment_IsFollowableAndSurvivesRotation()
+    {
+        using var instance = AppInstance.Create(app, FragmentedContinuousSettings(), configure: UseIsolatedRoot);
+        int port = WaitForPort(instance);
+        using var client = CreateClient(port);
+
+        // 書き込み中のセグメントが fragment を持って一覧に出るまで待つ。
+        string relativePath = "";
+        long snapshot = 0;
+        Fmp4Probe? probe = null;
+        var appearing = Stopwatch.StartNew();
+
+        while (appearing.Elapsed < SegmentBudget && probe is null)
+        {
+            var (_, files) = await ListAsync(client);
+            foreach (var file in files)
+            {
+                if (!file.GetProperty("inProgress").GetBoolean() || !file.GetProperty("fragmented").GetBoolean())
+                    continue;
+
+                string path = file.GetProperty("path").GetString()!;
+                using var live = await client.GetAsync("api/recordings/" + Uri.EscapeDataString(path), Ct);
+                Assert.Equal(HttpStatusCode.OK, live.StatusCode);
+                Assert.Equal("true", Assert.Single(live.Headers.GetValues("X-In-Progress")));
+
+                long length = Assert.IsType<long>(live.Content.Headers.ContentLength);
+                byte[] body = await live.Content.ReadAsByteArrayAsync(Ct);
+                var candidate = Fmp4File.Probe(path, body);
+                if (candidate.MoofCount == 0)
+                    continue;
+
+                relativePath = path;
+                snapshot = length;
+                probe = candidate;
+                break;
+            }
+
+            if (probe is null)
+                Thread.Sleep(500);
+        }
+
+        Assert.NotNull(probe);
+        output.WriteLine(relativePath + ": " + probe);
+
+        // イベント録画は一度も開始していないので、出てくるのは常時録画のセグメントだけ。
+        Assert.Contains("_c", relativePath, StringComparison.Ordinal);
+        Assert.True(probe.StartsWithInitSegment, "書き込み中のセグメントの先頭が ftyp+moov ではない: " + probe);
+        Assert.True(probe.HasMvex, "moov に mvex が無い（fragmented ではない）: " + probe);
+
+        // 伸びが Range で追えること（追いかけ再生の土台）。
+        long grown = 0;
+        var growing = Stopwatch.StartNew();
+        while (growing.Elapsed < SegmentBudget && grown == 0)
+        {
+            using var request = new HttpRequestMessage(
+                HttpMethod.Get, "api/recordings/" + Uri.EscapeDataString(relativePath));
+            request.Headers.Range = new RangeHeaderValue(snapshot, null);
+            using var more = await client.SendAsync(request, Ct);
+
+            if (more.StatusCode == HttpStatusCode.RequestedRangeNotSatisfiable)
+            {
+                // まだ 1 バイトも増えていない。次の fragment を待つ。
+                Thread.Sleep(250);
+                continue;
+            }
+
+            Assert.Equal(HttpStatusCode.PartialContent, more.StatusCode);
+            grown = Assert.IsType<long>(more.Content.Headers.ContentRange?.Length);
+            byte[] tail = await more.Content.ReadAsByteArrayAsync(Ct);
+            Assert.Equal(grown - snapshot, tail.Length);
+        }
+
+        output.WriteLine($"total {snapshot} -> {grown}");
+        Assert.True(snapshot < grown, $"書き込み中のセグメントが伸びていない（{snapshot} -> {grown}）。");
+
+        // セグメントが切り替わると、前のセグメントは確定して inProgress が下りる。
+        JsonElement finished = default;
+        var rotating = Stopwatch.StartNew();
+        while (rotating.Elapsed < SegmentBudget && finished.ValueKind != JsonValueKind.Object)
+        {
+            var (_, files) = await ListAsync(client);
+            foreach (var file in files)
+            {
+                if (!string.Equals(file.GetProperty("path").GetString(), relativePath, StringComparison.OrdinalIgnoreCase))
+                    continue;
+                if (file.GetProperty("inProgress").GetBoolean())
+                    continue;
+
+                finished = file;
+                break;
+            }
+
+            if (finished.ValueKind != JsonValueKind.Object)
+                Thread.Sleep(500);
+        }
+
+        Assert.Equal(JsonValueKind.Object, finished.ValueKind);
+        output.WriteLine(finished.ToString());
+        Assert.True(finished.GetProperty("fragmented").GetBoolean(),
+            "確定したセグメントが fragmented として出ていない: " + finished);
+
+        var (_, after) = await ListAsync(client);
+        Assert.True(1 < after.Length, $"セグメントが切り替わっていない（{after.Length} 本）。");
+
+        // 確定したセグメントは単体で読める（moov(mvex) ＋ moof/mdat の対）。
+        var complete = Fmp4File.Probe(Path.Combine(instance.RecordingsDir, relativePath));
+        output.WriteLine(complete.ToString());
+        Assert.True(complete.StartsWithInitSegment, complete.ToString());
+        Assert.True(complete.HasMvex, complete.ToString());
+        Assert.True(0 < complete.MoofCount, complete.ToString());
+        Assert.True(complete.MediaSegmentsAlternate(), "moof/mdat の対になっていない: " + complete);
     }
 
     /// <summary>

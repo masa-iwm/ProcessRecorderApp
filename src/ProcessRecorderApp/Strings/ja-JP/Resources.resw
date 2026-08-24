@@ -347,6 +347,9 @@
   <data name="PropDesc_RecordingCleanupIntervalHours" xml:space="preserve">
     <value>自動削除を実行する間隔（時間）。起動直後にも1回実行するため、間隔を長くしても起動のたびに掃除されます。1 未満の値は 1、1000 を超える値は 1000 として扱います。</value>
   </data>
+  <data name="PropDesc_FragmentedOutput" xml:space="preserve">
+    <value>イベント録画・常時録画のファイルを fragmented MP4 で書きます。録画中のファイルも、強制終了で残ったファイルも読めます。適用は、イベント録画はレコーダーの初期化から、常時録画は次のセグメントからです。</value>
+  </data>
   <data name="PropCat_RemoteControl" xml:space="preserve">
     <value>リモート操作</value>
   </data>
@@ -541,9 +544,6 @@
   </data>
   <data name="PropDesc_Rec_EncodingProperties" xml:space="preserve">
     <value>録画パイプラインに適用するエンコード設定。</value>
-  </data>
-  <data name="PropDesc_Rec_FragmentedOutput" xml:space="preserve">
-    <value>録画ファイルを fragmented MP4 で書きます。ヘッダーを最初に書いたまま書き直さないので、録画中のファイルも、強制終了で残ったファイルも読めます。代わりに尺は 0 のままになり、他のプレイヤーでは録画中のファイルをシークできません（ブラウザからは追いかけ再生を使います）。次回の初期化から効きます。</value>
   </data>
   <data name="PropDesc_Rec_PreviewWidth" xml:space="preserve">
     <value>ブラウザーへ配信するプレビューの幅（ピクセル）。160 から 3840 まで。範囲の外の値は近い方の端に丸めます。</value>

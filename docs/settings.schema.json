@@ -69,6 +69,9 @@
     "RecordingCleanupIntervalHours": {
       "type": "integer"
     },
+    "FragmentedOutput": {
+      "type": "boolean"
+    },
     "RemoteControlEnabled": {
       "type": "boolean"
     },
@@ -479,9 +482,6 @@
               "string",
               "null"
             ]
-          },
-          "FragmentedOutput": {
-            "type": "boolean"
           },
           "CameraControls": {
             "type": [

@@ -75,7 +75,6 @@ public partial class EventRecorderSettings : ObservableObject, Components.IPrope
     /// （バッファ長はサンプルごと、ファイル名は録画開始ごと）、
     /// 後の 4 つは録画パイプラインの組み立てに一切関わらない
     /// （配信側が畳んで組み直す）。
-    /// <see cref="FragmentedOutput"/> は src パイプラインの文字列そのものなので載る。
     /// </para>
     /// <para>
     /// 用途は<b>助言</b>である ── 変更そのものは常に受け付ける。
@@ -87,7 +86,6 @@ public partial class EventRecorderSettings : ObservableObject, Components.IPrope
     [
         nameof(Type),
         nameof(SrcPipeline),
-        nameof(FragmentedOutput),
         nameof(EncodingProperties),
         nameof(CameraControls),
         nameof(ContinuousRecording),
@@ -116,9 +114,8 @@ public partial class EventRecorderSettings : ObservableObject, Components.IPrope
     private int _bufferDuration = 10_000;
 
     /// <summary>
-    /// 録画ファイル名のテンプレート。<see cref="FragmentedOutput"/> と同じ
-    /// <c>PropCat_Output</c> の組に置く ── どちらも「録画ファイルをどう書くか」であり、
-    /// 分けると片方だけの組が残る。
+    /// 録画ファイル名のテンプレート。「録画ファイルをどう書くか」なので
+    /// <c>PropCat_Output</c> の組に置く。
     /// </summary>
     [Category("PropCat_Output")]
     [Description("PropDesc_Rec_FilenameTemplate")]
@@ -146,33 +143,6 @@ public partial class EventRecorderSettings : ObservableObject, Components.IPrope
     [Description("PropDesc_Rec_EncodingProperties")]
     [ObservableProperty]
     public partial string? EncodingProperties { get; set; }
-
-    /// <summary>
-    /// 録画ファイルを fragmented MP4（<c>moof</c>＋<c>mdat</c> の連なり）で書くか。
-    ///
-    /// <para>
-    /// <b>録画中・強制終了後でもファイルが読める。</b> 通常の MP4（既定）は
-    /// <c>faststart=true</c> で、EOS まで <c>filesink</c> の出力先が 0 バイトのままなので、
-    /// 途中の状態には何も残らない。fragmented では <c>ftyp</c> と
-    /// <c>moov</c>（<c>mvex</c> 入り）が最初に書かれ、以後は fragment ごとに
-    /// <c>moof</c>＋<c>mdat</c> が追記される ── 打ち切られたファイルも、
-    /// 最後の完全な fragment までが読める。
-    /// </para>
-    /// <para>
-    /// <b>EOS で足すのは末尾の <c>mfra</c> だけで、<c>moov</c> は書き直さない</b>（実測）。
-    /// そのため完成したファイルでも <c>mvhd</c> の尺は 0 のままで、
-    /// <b>他のプレイヤーでは録画中のファイルのシークが効かない</b>
-    /// （<c>&lt;video src&gt;</c> 直結や WMP は尺を moov から読む）。
-    /// 追いかけ再生は MSE 経路で行う。
-    /// </para>
-    /// <para>
-    /// <b>反映は <c>Initialize</c> で効く</b> ── src パイプラインの文字列そのものである。
-    /// </para>
-    /// </summary>
-    [Category("PropCat_Output")]
-    [Description("PropDesc_Rec_FragmentedOutput")]
-    [ObservableProperty]
-    public partial bool FragmentedOutput { get; set; }
 
     /// <summary>
     /// カメラ（<c>mfvideosrc</c>）のフォーカス・明るさ等。
@@ -642,19 +612,6 @@ public partial class EventRecorder : ObservableObject, IDisposable
             _currentSettings?.EncodingProperties = value;
     }
 
-    /// <summary>
-    /// 録画ファイルを fragmented MP4 で書くか
-    /// （設定側 <see cref="EventRecorderSettings.FragmentedOutput"/> のミラー）。
-    /// 反映は <c>Initialize</c> で効く。
-    /// </summary>
-    [ObservableProperty]
-    public partial bool FragmentedOutput { get; set; }
-    partial void OnFragmentedOutputChanged(bool value)
-    {
-        if (_currentSettings?.FragmentedOutput != value)
-            _currentSettings?.FragmentedOutput = value;
-    }
-
 
     /// <summary>
     /// カメラ制御の設定（設定側 <c>EventRecorderSettings.CameraControls</c> のミラー）。
@@ -837,7 +794,6 @@ public partial class EventRecorder : ObservableObject, IDisposable
             case nameof(Type): if (Type != settings.Type) Type = settings.Type; break;
             case nameof(SrcPipeline): if (SrcPipeline != settings.SrcPipeline) SrcPipeline = settings.SrcPipeline; break;
             case nameof(EncodingProperties): if (EncodingProperties != settings.EncodingProperties) EncodingProperties = settings.EncodingProperties; break;
-            case nameof(FragmentedOutput): if (FragmentedOutput != settings.FragmentedOutput) FragmentedOutput = settings.FragmentedOutput; break;
             case nameof(CameraControls): if (CameraControls != settings.CameraControls) CameraControls = settings.CameraControls; break;
             case nameof(PreviewWidth): if (PreviewWidth != settings.PreviewWidth) PreviewWidth = settings.PreviewWidth; break;
             case nameof(PreviewHeight): if (PreviewHeight != settings.PreviewHeight) PreviewHeight = settings.PreviewHeight; break;
@@ -869,7 +825,6 @@ public partial class EventRecorder : ObservableObject, IDisposable
         this.Type = settings.Type;
         this.SrcPipeline = settings.SrcPipeline;
         this.EncodingProperties = settings.EncodingProperties ?? string.Empty;
-        this.FragmentedOutput = settings.FragmentedOutput;
         this.CameraControls = settings.CameraControls ?? string.Empty;
 
         this.PreviewWidth = settings.PreviewWidth;
@@ -893,6 +848,23 @@ public partial class EventRecorder : ObservableObject, IDisposable
     /// <c>EventRecorder.TemplateVariables</c> と同じく static のミラーとして受け取る。
     /// </summary>
     public static string? PreferredH264Encoder { get; set; }
+
+    /// <summary>
+    /// アプリ層から設定される、録画ファイルを fragmented MP4 で書くか
+    /// （<c>AppSettings.FragmentedOutput</c>）。
+    ///
+    /// <para>
+    /// イベント録画は <see cref="BuildSrcPipeline"/> の入力なので<b>次の
+    /// <c>Initialize</c> から</b>、常時録画は
+    /// <c>ContinuousBranch.BuildSegmentWriterPipeline</c> の入力なので
+    /// <b>次のセグメントから</b>効く。
+    /// </para>
+    /// <para>
+    /// <c>GStreamer.GstSharpNet</c> は <c>AppSettings</c> を知らない設計なので、
+    /// <see cref="PreferredH264Encoder"/> と同じく static のミラーとして受け取る。
+    /// </para>
+    /// </summary>
+    public static bool FragmentedOutput { get; set; }
 
     /// <summary>
     /// fragmented 出力の fragment の長さ(ms)。<b>1 つの <c>moof</c>＋<c>mdat</c> が覆う時間</b>で、
@@ -1581,7 +1553,7 @@ public partial class EventRecorder : ObservableObject, IDisposable
             // 失敗したときに「何を組もうとしたのか」を残す。リンク失敗のメッセージは
             // 要素名しか言わないので、これが無いと caps の書き方の誤りを机上で追えない。
             _lastAttemptedSinkPipeline = SinkPipelineStr;
-            string SrcPipelineStr = BuildSrcPipeline(FragmentedOutput);
+            string SrcPipelineStr = BuildSrcPipeline(EventRecorder.FragmentedOutput);
 
             // 新しいパイプラインなので EOS の記憶も畳む（次の障害は要素単位から試せる）。
             // **組み立てより前に畳む。** バスの購読（と溜まっていた分の汲み切り）より後ろに

@@ -1,4 +1,6 @@
 ﻿using ProcessRecorderApp.GStreamer;
+using System;
+using System.Globalization;
 using System.Text.RegularExpressions;
 using Xunit;
 
@@ -371,15 +373,71 @@ public class ContinuousBranchTests
         Assert.Contains("alignment=au", branch);
     }
 
+    /// <summary>既定（<c>FragmentedOutput=false</c>）のセグメントの文字列そのもの。</summary>
+    private const string LegacySegmentWriterPipeline =
+        "appsrc format=time name=src ! h264parse ! mp4mux name=mux ! filesink name=file";
+
+    /// <summary>
+    /// <b>非 fragmented 側の文字列は 1 文字も動かさない。</b>
+    /// 既定のセグメントのバイト列がこれで決まっている。
+    /// </summary>
+    [Fact]
+    public void TheDefaultSegmentWriterIsUnchanged()
+    {
+        Assert.Equal(
+            LegacySegmentWriterPipeline,
+            ContinuousBranch.BuildSegmentWriterPipeline(fragmented: false));
+    }
+
     /// <summary>
     /// セグメントの書き出しに <c>faststart=true</c> を付けない
     /// ── EOS のたびにファイル全体を書き直すので、数分ごとの切り替えでは I/O が跳ねる。
+    /// <b>どちらの形でも付けない</b>（fragmented 側では fragment を出す意味が消える）。
+    /// </summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void TheSegmentWriterDoesNotRewriteEveryFileOnClose(bool fragmented)
+    {
+        string pipeline = ContinuousBranch.BuildSegmentWriterPipeline(fragmented);
+
+        Assert.Contains("mp4mux", pipeline, StringComparison.Ordinal);
+        Assert.DoesNotContain("faststart", pipeline, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// <c>faststart</c> と <c>fragment-mode</c> の排他（<c>RecordingSrcPipelineTests</c> と同じ流儀）。
+    /// 非 fragmented 側に fragment の指定が漏れると、既定の常時録画の書き方が黙って変わる。
     /// </summary>
     [Fact]
-    public void TheSegmentWriterDoesNotRewriteEveryFileOnClose()
+    public void FragmentModeAppearsOnlyInTheFragmentedForm()
     {
-        Assert.Contains("mp4mux", ContinuousBranch.SegmentWriterPipeline);
-        Assert.DoesNotContain("faststart", ContinuousBranch.SegmentWriterPipeline);
+        string plain = ContinuousBranch.BuildSegmentWriterPipeline(fragmented: false);
+        string fragmented = ContinuousBranch.BuildSegmentWriterPipeline(fragmented: true);
+
+        Assert.DoesNotContain("fragment-mode", plain, StringComparison.Ordinal);
+        Assert.DoesNotContain("fragment-duration", plain, StringComparison.Ordinal);
+
+        Assert.Contains("fragment-mode=dash-or-mss", fragmented, StringComparison.Ordinal);
+        Assert.Contains(
+            "fragment-duration=" + EventRecorder.FragmentDurationMs.ToString(CultureInfo.InvariantCulture),
+            fragmented,
+            StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// 名前は <c>GetByName</c> で掴む契約そのもの（消すと実行時に NullReference になる）。
+    /// 変えてよいのは mux の書き方だけである。
+    /// </summary>
+    [Theory]
+    [InlineData("appsrc format=time name=src")]
+    [InlineData("h264parse")]
+    [InlineData("name=mux")]
+    [InlineData("filesink name=file")]
+    public void BothSegmentFormsKeepTheSameElements(string fragment)
+    {
+        Assert.Contains(fragment, ContinuousBranch.BuildSegmentWriterPipeline(fragmented: false), StringComparison.Ordinal);
+        Assert.Contains(fragment, ContinuousBranch.BuildSegmentWriterPipeline(fragmented: true), StringComparison.Ordinal);
     }
 
     /// <summary>

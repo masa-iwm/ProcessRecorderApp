@@ -520,18 +520,20 @@ L1 は `WebAssetManifestTests` が「資産の一覧が合っているか」を�
   **`appendBuffer` が投げたときの `fail`**。注入する手立てが無い。
 - **タブを複数開いた場合**、および**追いかけ再生とライブプレビューを同時に開いた場合**。
 
-ここを触ったら、`FragmentedOutput` を ON にしたレコーダーで**実際に Chrome か Edge で開き**、
+ここを触ったら、`FragmentedOutput`（アプリ設定）を ON にして**実際に Chrome か Edge で開き**、
 映像が出ること・1 分以上放置しても伸び続けること・途中で手動シークすると先頭へ引き戻されなく
 なること・完了済みの行が最初から最後まで再生できることを目で確かめる。
 
 ### `FragmentedOutput` は既定 off なので、E2E の大半は fMP4 経路を踏まない
 
-`FragmentedOutput` の既定は `false` で、**既定構成の録画物・パイプライン文字列は 1 バイトも
-変わらない**（そのための既定である）。裏返すと、fMP4 の経路を踏むのは
-`RecordingDeliveryTests` と `WebUiBrowserTests` の数件（設定を明示的に ON にしたもの）だけで、
-事前バッファ・停止の同期性・自動復帰・常時録画・強制終了といった録画系 E2E は
-**すべて `faststart` 側だけを見ている**。fMP4 側の停止の排出や自動復帰との組み合わせは
-無検査なので、`FragmentedOutput` を実運用で使う前に、その構成で一度手で確かめること。
+`FragmentedOutput` はアプリ全体の設定で、既定は `false` ── **既定構成の録画物・
+パイプライン文字列は 1 バイトも変わらない**（そのための既定である）。裏返すと、fMP4 の経路を
+踏むのは `RecordingDeliveryTests` と `WebUiBrowserTests` の数件（設定を明示的に ON にしたもの）
+だけで、事前バッファ・停止の同期性・自動復帰・強制終了といった録画系 E2E は
+**すべて `faststart` 側だけを見ている**（常時録画のセグメントは
+`RecordingDeliveryTests` が fMP4 側も見るが、`ContinuousRecordingTests` の分割・隔離・
+共存の検査はすべて非 fragmented のままである）。fMP4 側の停止の排出や自動復帰との
+組み合わせは無検査なので、`FragmentedOutput` を実運用で使う前に、その構成で一度手で確かめること。
 
 ### プレビューの 4 設定は配信に配線されていない
 
@@ -554,6 +556,7 @@ Admin で名乗ると一覧の画面へ移って見出しが `name (role)` に�
 **役割ごとの出し分けの中身は無検査**である。テストが通るのは Admin とゲスト（Viewer）の
 2 通りだけで、
 
+- `401` を受けたときに SSE（`EventSource`）とプレビューを止めること
 - `Operator` 未満で開始/停止のボタンが消え、`Admin` 未満で設定の欄が無効になること
   （`applyPermissions` と `permit`）
 - ログアウトでフォームへ戻り、そのあと同じ Cookie で読めないこと

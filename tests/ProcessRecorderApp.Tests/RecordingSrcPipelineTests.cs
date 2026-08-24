@@ -73,22 +73,27 @@ public sealed class RecordingSrcPipelineTests
     }
 
     /// <summary>
-    /// <c>FragmentedOutput</c> は src パイプラインの文字列そのものなので、
-    /// 動いているパイプラインへ後から効かせる道が無い。
+    /// <b>既定は false</b>（既存の録画物と挙動を変えない）。
+    /// アプリ全体の設定 <c>AppSettings.FragmentedOutput</c> の static ミラーで、
+    /// 何も読み込まれていない状態がこの値である。
     /// </summary>
     [Fact]
-    public void FragmentedOutputRequiresReinitialize()
+    public void TheStaticMirrorDefaultsToOff()
     {
-        Assert.Contains(
-            nameof(EventRecorderSettings.FragmentedOutput),
-            EventRecorderSettings.PropertiesRequiringReinitialize,
-            StringComparer.Ordinal);
+        Assert.False(EventRecorder.FragmentedOutput);
     }
 
-    /// <summary>既定は false（既存の録画物と挙動を変えない）。</summary>
+    /// <summary>
+    /// <c>FragmentedOutput</c> は<b>レコーダーごとの設定ではない</b> ──
+    /// 再初期化の助言の一覧に載せる対象でもない（アプリ全体の設定なので、
+    /// レコーダー設定の PATCH では現れない）。
+    /// </summary>
     [Fact]
-    public void TheDefaultIsOff()
+    public void FragmentedOutputIsNotARecorderSetting()
     {
-        Assert.False(new EventRecorderSettings().FragmentedOutput);
+        Assert.DoesNotContain(
+            "FragmentedOutput",
+            EventRecorderSettings.PropertiesRequiringReinitialize,
+            StringComparer.Ordinal);
     }
 }

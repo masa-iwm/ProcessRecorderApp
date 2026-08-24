@@ -115,12 +115,13 @@ GStreamer が使われる」という取り違えもここから起きる（ど�
   （常時録画が有効なら 3 本目の枝 `appsink name=cont` が加わる。後述「常時録画」）
 - **srcパイプライン**（録画中のみ稼働）:
   `appsrc name=src ! h264parse ! mp4mux faststart=true name=mux ! filesink name=file`
-  （`FragmentedOutput` が ON なら `mp4mux fragment-duration=1000 fragment-mode=dash-or-mss`。
-  文字列は `EventRecorder.BuildSrcPipeline` が組み立てる）
+  （アプリ設定の `FragmentedOutput` が ON なら
+  `mp4mux fragment-duration=1000 fragment-mode=dash-or-mss`。
+  文字列は `EventRecorder.BuildSrcPipeline` が組み立てる。設定は
+  「保存先と自動削除（`AppSettings`）」の表）
 
 | 設定 | 既定 | 意味 |
 |---|---|---|
-| `FragmentedOutput` | `false` | 録画ファイルを fragmented MP4（`ftyp` `moov`(`mvex`) `moof` `mdat` …）で書く。**録画中・強制終了後でもファイルが読める**。EOS で足すのは末尾の `mfra` だけで **`moov` は書き直さない**ので、`mvhd` の尺は 0 のまま ── 他のプレイヤーでは録画中のファイルをシークできず、ブラウザからも MSE 経路（追いかけ再生）でしか正しい尺にならない。**反映は `Initialize` で効く**（src パイプラインの文字列そのもの） |
 | `PreviewWidth` | `1280` | ブラウザーへ配信するプレビューの幅(px)。160〜3840（範囲外は近い方の端へ丸める）。**録画パイプラインには影響しない**ので再初期化は要らない |
 | `PreviewHeight` | `720` | ブラウザーへ配信するプレビューの高さ(px)。120〜2160（同上） |
 | `PreviewFps` | `15` | ブラウザーへ配信するプレビューのフレームレート(fps)。1〜60（同上） |
@@ -335,6 +336,16 @@ I フレームゲートが次の I まで捨てる ── そのぶんの映像�
 セグメントの書き出しに **`faststart=true` は付けない** ── faststart は EOS のあとに
 ファイル全体を書き直すので、数分ごとの切り替えでそれをやると分割のたびに I/O が跳ねる。
 常時録画のセグメントは書庫であって、先頭からのシークの即応性は要らない。
+文字列は `ContinuousBranch.BuildSegmentWriterPipeline` が組み立てる。
+
+アプリ設定の **`FragmentedOutput` が ON なら、セグメントも fragmented MP4 で書く**
+（`mp4mux fragment-duration=1000 fragment-mode=dash-or-mss`）。書き込み中のセグメントも
+先頭から読めるので、**ブラウザの一覧に `fragmented` かつ `inProgress` として出て、
+そのまま追いかけ再生できる**。確定（EOS）で足すのは末尾の `mfra` だけで、
+分割・確定の流れは変わらない。**読むのはセグメントを開くたび**なので、
+走行中に設定を切り替えると 1 つの録画期間の中に fragmented と非 fragmented の
+セグメントが混ざりうる ── 各ファイルは単体で完結しており、一覧の `fragmented` は
+ファイルごとに判定されるので、これは受け入れている挙動である。
 
 **ファイル名はセグメントごとに展開し直す**（`{Now}` が毎回変わるので自然に一意になる）。
 それでも直前のセグメント、**または まだ排出中のセグメント**と同じ名前になった場合は
@@ -738,6 +749,7 @@ sink パイプラインのバスを購読しているハンドラ（`HandleBusMe
 | `OutputDirectory` | 空欄 | 録画の保存先。空欄なら実行ファイルのあるディレクトリ。相対パスもそこからの相対。Settings 画面では「…」でフォルダー選択ダイアログが開く（後述） |
 | `RecordingRetentionDays` | `0` | この日数を過ぎた mp4 を自動削除する。**0 なら削除しない** |
 | `RecordingCleanupIntervalHours` | `6` | 自動削除の間隔（時間）。1 未満は 1、**1000 を超える値は 1000** として扱う（`Task.Delay` の上限 ≒ 1,193 時間より手前で頭打ちにする。超えると周回が例外死して保持期限が無音で効かなくなる） |
+| `FragmentedOutput` | `false` | イベント録画・常時録画のファイルを fragmented MP4（`ftyp` `moov`(`mvex`) `moof` `mdat` …）で書く。**録画中・強制終了後でもファイルが読める**。EOS で足すのは末尾の `mfra` だけで **`moov` は書き直さない**ので、`mvhd` の尺は 0 のまま ── 他のプレイヤーでは録画中のファイルをシークできず、ブラウザからも MSE 経路（追いかけ再生）でしか正しい尺にならない。**適用はイベント録画が `Initialize` から、常時録画は次のセグメントから**（どちらもパイプラインの文字列そのもので、走行中の書き出しには効かない）。`GStreamer.EventRecorder.FragmentedOutput`（static ミラー）経由で録画エンジンへ渡る |
 | `RemoteControlEnabled` | `false` | ブラウザからのリモート操作の HTTP サーバーを動かす。要求には利用者のログインかアクセストークンが要る（`RemoteControlAllowGuestRead` を ON にすると**読み取り（GET）だけ**は無認証になり、ポートに到達できる相手には全て見える）。詳細は「リモート操作（内蔵 HTTP サーバー）」の節 |
 | `RemoteControlBindAddress` | `0.0.0.0` | 待ち受ける IP アドレス。`0.0.0.0` は全てのネットワークインターフェイス、`127.0.0.1` はこの PC のみ。変更するとサーバーを再起動する |
 | `RemoteControlPort` | `8752` | 待ち受ける TCP ポート。`0` なら空いているポートを OS が選ぶ（実際に使われたポートは `remote.start` に出る） |
@@ -1861,7 +1873,7 @@ UI スレッドで走る。`TryEnqueue` が false なら `RemoteApiException(12,
 | GET | `/api/sources` | `Viewer` | 編集できるソース要素の候補（`element` / `displayName` / `memoryFeature` / `recordingType` ＋ `properties[]` ＋ `capsFields[]`）。モニターとカメラの選択肢は解決済み |
 | PUT | `/api/recorders/{id}/source` | `Admin`（**W**） | `{element, properties, caps}` から `SrcPipeline` と `Type` を組み立てて書く。応答は `PatchResultDto` の 3 つ ＋ `srcPipeline`。録画中は 409 |
 | GET | `/api/settings` | `Viewer` | アプリ設定（`RemoteControlAccessToken`・`RemoteUsers`・`RemoteUserList` を除く） |
-| PATCH | `/api/settings` | `Admin`（**W**） | `RemoteApiRules.RemoteEditableAppSettings` の 9 キーだけ |
+| PATCH | `/api/settings` | `Admin`（**W**） | `RemoteApiRules.RemoteEditableAppSettings` の 10 キーだけ |
 | GET | `/api/variables` | `Viewer` | ファイル名テンプレートの変数の一覧 |
 | PUT | `/api/variables/{key}` | `Operator`（**W**） | `{value, persist}`（`--set` / `--persist` / `--no-persist` と同義）。両方 null は 400 |
 | POST | `/api/ping` | `Viewer`（**W**） | 認証の疎通確認（`{"ok":true}`）。**書き込み扱い**なのでヘッダーの有無まで切り分けられる |
@@ -1874,7 +1886,7 @@ UI スレッドで走る。`TryEnqueue` が false なら `RemoteApiException(12,
 ミドルウェアも入れていない。未知の経路は `MapFallback` が 404 ＋ 終了コード 4 で返す。
 
 アプリ設定の PATCH は `RemoteApiRules` の**明示 2 配列**で決める ──
-`RemoteEditableAppSettings`（9 キー）と `RemoteDeniedAppSettings`（21 キー）。L1 が
+`RemoteEditableAppSettings`（10 キー）と `RemoteDeniedAppSettings`（24 キー）。L1 が
 「`AppSettings` の全 public プロパティ ＝ 許可 ∪ 拒否、かつ過不足なし」を検査するので、
 プロパティを増やして書き忘れると赤くなる（「拒否リストに無いものは書ける」という既定にはしない）。
 `OutputDirectory` を拒否しているのは、**動かせると録画配信の root ごと動く**ため。

@@ -439,7 +439,11 @@ internal sealed partial class ContinuousRecorder : IDisposable
 
         // ParseLaunch は失敗すると Gst.GLib.GException を投げる
         // （サンプルのコールバックの catch が報告する）。
-        var pipeline = (Pipeline)Gst.Global.ParseLaunch(ContinuousBranch.SegmentWriterPipeline);
+        // **セグメントごとに読み直す。** 走行中に AppSettings.FragmentedOutput を
+        // 切り替えると、1 つの録画期間の中に fragmented と非 fragmented のセグメントが
+        // 混ざりうるが、各ファイルは単体で完結しているので受け入れる。
+        var pipeline = (Pipeline)Gst.Global.ParseLaunch(
+            ContinuousBranch.BuildSegmentWriterPipeline(EventRecorder.FragmentedOutput));
         SegmentWriter? writer = null;
         try
         {

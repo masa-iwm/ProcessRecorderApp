@@ -76,17 +76,31 @@ public static class ContinuousBranch
         "queue leaky=downstream max-size-buffers=8 max-size-bytes=0 max-size-time=0";
 
     /// <summary>
-    /// セグメント 1 本ぶんの書き出しパイプライン。
+    /// セグメント 1 本ぶんの書き出しパイプラインを組み立てる。純粋関数なので
+    /// 単体テストから直接検証できる（<c>EventRecorder.BuildSrcPipeline</c> と同型）。
     ///
     /// <para>
-    /// <b><c>faststart=true</c> は付けない。</b> faststart は EOS のあとにファイル全体を
-    /// 書き直して <c>moov</c> を先頭へ移すもので、数分ごとの切り替えでそれをやると
-    /// 分割のたびに I/O が跳ねる。常時録画のセグメントは書庫であって、
+    /// <b>どちらの形でも <c>faststart=true</c> は付けない。</b> faststart は EOS のあとに
+    /// ファイル全体を書き直して <c>moov</c> を先頭へ移すもので、数分ごとの切り替えで
+    /// それをやると分割のたびに I/O が跳ねる。常時録画のセグメントは書庫であって、
     /// 先頭からのシークの即応性は要らない。
     /// </para>
+    /// <para>
+    /// <b>false のときの文字列は動かさない</b> ── 既定のセグメントのバイト列がこれで決まっている。
+    /// </para>
+    /// <para>
+    /// true では <c>fragment-mode=dash-or-mss</c> で fragment ごとに <c>moof</c>＋<c>mdat</c> を
+    /// 書き出させる ── 書き込み中のセグメントも読め、追いかけ再生の対象になる。
+    /// EOS で足すのは末尾の <c>mfra</c> だけである。
+    /// </para>
     /// </summary>
-    public const string SegmentWriterPipeline =
-        "appsrc format=time name=src ! h264parse ! mp4mux name=mux ! filesink name=file";
+    /// <param name="fragmented">fragmented MP4 で書くか（<c>EventRecorder.FragmentedOutput</c>）。</param>
+    public static string BuildSegmentWriterPipeline(bool fragmented)
+        => fragmented
+            ? "appsrc format=time name=src ! h264parse ! mp4mux fragment-duration="
+              + EventRecorder.FragmentDurationMs.ToString(CultureInfo.InvariantCulture)
+              + " fragment-mode=dash-or-mss name=mux ! filesink name=file"
+            : "appsrc format=time name=src ! h264parse ! mp4mux name=mux ! filesink name=file";
 
     /// <summary>
     /// フレームレートの上書きが指定されているか（＝<c>videorate</c> が要るか）。

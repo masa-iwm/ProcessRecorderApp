@@ -299,7 +299,22 @@ internal sealed class EdgeCdp : IAsyncDisposable
             var deadline = Stopwatch.StartNew();
             while (deadline.Elapsed < CommandBudget)
             {
-                JsonDocument message = await ReceiveAsync(ct);
+                // **受信にも予算を効かせる。** while の条件だけでは受信待ちを縛れない
+                // ── CDP が黙ると `ReceiveAsync` から戻らず、条件は二度と評価されない。
+                using var receiveCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                receiveCts.CancelAfter(CommandBudget - deadline.Elapsed);
+
+                JsonDocument message;
+                try
+                {
+                    message = await ReceiveAsync(receiveCts.Token);
+                }
+                catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                {
+                    // 予算切れ。呼び出し側の取り消しと取り違えないよう、下の throw で終わらせる。
+                    break;
+                }
+
                 bool mine = message.RootElement.TryGetProperty("id", out var replyId) && replyId.GetInt32() == id;
                 if (!mine)
                 {
@@ -447,10 +462,6 @@ internal sealed class EdgeCdp : IAsyncDisposable
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
                 Thread.Sleep(200);
-            }
-            catch (DirectoryNotFoundException)
-            {
-                return;
             }
         }
     }

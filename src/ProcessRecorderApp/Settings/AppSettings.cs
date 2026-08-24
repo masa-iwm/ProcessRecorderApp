@@ -417,6 +417,27 @@ public partial class AppSettings : JsonSettingsBase<AppSettings>
     public partial int RecordingCleanupIntervalHours { get; set; } = 6;
 
     /// <summary>
+    /// イベント録画・常時録画のファイルを fragmented MP4
+    /// （<c>ftyp</c> <c>moov</c>(<c>mvex</c>) <c>moof</c> <c>mdat</c> …）で書くか。
+    ///
+    /// <para>
+    /// <b>録画中でも強制終了後でもファイルが読める。</b> EOS で足すのは末尾の <c>mfra</c> だけで
+    /// <c>moov</c> は書き直さないため、<c>mvhd</c> の尺は 0 のまま ──
+    /// 他のプレイヤーでは録画中のファイルをシークできず、ブラウザからは MSE 経路
+    /// （追いかけ再生）で見る。
+    /// </para>
+    /// <para>
+    /// <b>適用: イベント録画はレコーダーの初期化から、常時録画は次のセグメントから。</b>
+    /// </para>
+    /// </summary>
+    [System.ComponentModel.Category("PropCat_Output")]
+    [System.ComponentModel.Description("PropDesc_FragmentedOutput")]
+    [ObservableProperty]
+    public partial bool FragmentedOutput { get; set; }
+    partial void OnFragmentedOutputChanged(bool value)
+        => GStreamer.EventRecorder.FragmentedOutput = value;
+
+    /// <summary>
     /// LAN の別 PC のブラウザから操作するための HTTP サーバーを動かすか。
     ///
     /// <para>
@@ -924,6 +945,7 @@ public partial class AppSettings : JsonSettingsBase<AppSettings>
         OutputDirectory = loaded.OutputDirectory;
         RecordingRetentionDays = loaded.RecordingRetentionDays;
         RecordingCleanupIntervalHours = loaded.RecordingCleanupIntervalHours;
+        FragmentedOutput = loaded.FragmentedOutput;
         RemoteControlAllowGuestRead = loaded.RemoteControlAllowGuestRead;
         // 利用者定義は差し替え運用（要素を in-place 変更しない）なので参照コピーでよい。
         // null は手で編集された settings.json（"RemoteUsers": null）で起こりうる。
@@ -989,6 +1011,7 @@ public partial class AppSettings : JsonSettingsBase<AppSettings>
         // （[ObservableProperty] の OnChanged は「変化した場合」しか走らないため、
         //   既定値と同じ値が読み込まれた場合に取りこぼさないよう明示的に代入する）
         GStreamer.EventRecorder.PreferredH264Encoder = PreferredH264Encoder;
+        GStreamer.EventRecorder.FragmentedOutput = FragmentedOutput;
         GStreamer.EventRecorder.StopFinalizeTimeoutMs = StopFinalizeTimeoutMs;
         GStreamer.EventRecorder.OutputDirectory = Components.AppDirectories.ResolveOrBase(OutputDirectory);
         GStreamer.EventRecorder.DebugDumpDotDirectory =

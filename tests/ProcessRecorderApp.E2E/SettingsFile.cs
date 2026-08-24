@@ -222,6 +222,17 @@ public sealed class SettingsFile
     public int? RecordingCleanupIntervalHours { get; set; }
 
     /// <summary>
+    /// 録画ファイル（イベント録画・常時録画のセグメント）を fragmented MP4 で書くか。
+    /// null なら書かない（＝製品の既定＝false）。true にすると <c>faststart</c> が外れ、
+    /// <b>書き込み中のファイルにも中身がある</b>。
+    ///
+    /// <para>
+    /// <b>これは <c>AppSettings</c> の 5 箇所目の手書きミラーで、テストは縛っていない。</b>
+    /// </para>
+    /// </summary>
+    public bool? FragmentedOutput { get; set; }
+
+    /// <summary>
     /// リモート操作（HTTP サーバー）の設定。null なら書かない（＝製品の既定＝無効）。
     ///
     /// <para>
@@ -302,6 +313,8 @@ public sealed class SettingsFile
             root["RecordingRetentionDays"] = retentionDays;
         if (RecordingCleanupIntervalHours is { } intervalHours)
             root["RecordingCleanupIntervalHours"] = intervalHours;
+        if (FragmentedOutput is { } fragmentedOutput)
+            root["FragmentedOutput"] = fragmentedOutput;
 
         // リモート操作。**指定されたキーだけを書く** ── 既定で 4 キーを書くと、
         // この機能に無関係なテストの settings.json まで形が変わる。
@@ -367,12 +380,6 @@ public sealed class RecorderSpec(string name)
 
     /// <summary>null なら自動選択（<c>PreferredH264Encoder</c> が効く）。</summary>
     public string? EncodingProperties { get; set; }
-
-    /// <summary>
-    /// 録画ファイルを fragmented MP4 で書くか（製品の既定は false）。
-    /// true にすると <c>faststart</c> が外れ、<b>録画中のファイルにも中身がある</b>。
-    /// </summary>
-    public bool FragmentedOutput { get; set; }
 
     /// <summary>
     /// カメラ設定（<c>brightness=128;focus=30</c>）。
@@ -502,7 +509,6 @@ public sealed class RecorderSpec(string name)
         ["Type"] = Type.ToString(),
         ["SrcPipeline"] = SrcPipeline,
         ["EncodingProperties"] = EncodingProperties,
-        ["FragmentedOutput"] = FragmentedOutput,
         ["CameraControls"] = CameraControls,
         ["PreviewWidth"] = PreviewWidth,
         ["PreviewHeight"] = PreviewHeight,

@@ -70,11 +70,12 @@ public sealed class WebUiBrowserTests(PublishedApp app, ITestOutputHelper output
         return settings;
     }
 
-    /// <summary>追いかけ再生を見るケースの構成（fMP4 で書くレコーダー 1 台・ゲスト読み取り）。</summary>
+    /// <summary>追いかけ再生を見るケースの構成（fMP4 出力・レコーダー 1 台・ゲスト読み取り）。</summary>
     private static SettingsFile FragmentedSettings()
     {
         var settings = RemoteBase(allowGuestRead: true);
-        settings.AddRecorder("R1").FragmentedOutput = true;
+        settings.FragmentedOutput = true;
+        settings.AddRecorder("R1");
         return settings;
     }
 
@@ -163,6 +164,17 @@ public sealed class WebUiBrowserTests(PublishedApp app, ITestOutputHelper output
     /// <summary>再生を実時間の半分にする（追い付けない再生を作るため）。</summary>
     private const string HalfSpeed =
         "(function () { document.getElementById('player').playbackRate = 0.5; return true; })()";
+
+    /// <summary>
+    /// バッファの終端（＝取り込み済みの尺）。バッファが空なら -1。
+    /// <c>complete</c>（<c>endOfStream()</c> 済み）で読めば、そのファイルの長さそのものになる。
+    /// </summary>
+    private const string BufferedEnd = """
+        (function () {
+          var ranges = document.getElementById('player').buffered;
+          return ranges.length === 0 ? -1 : ranges.end(ranges.length - 1);
+        })()
+        """;
 
     /// <summary>ライブ端からの遅れ（バッファの終端 − 現在位置）。バッファが空なら -1。</summary>
     private const string LiveLag = """
@@ -363,6 +375,14 @@ public sealed class WebUiBrowserTests(PublishedApp app, ITestOutputHelper output
                 $"{TextOf("playerStatus")}.indexOf('complete') === 0", PlaybackBudget, Ct),
             "停止しても complete になりませんでした: " + await browser.EvaluateStringAsync(TextOf("playerStatus"), Ct));
 
+        // **判定の基準は録画の長さそのものにする。** 「3 秒未満」のような固定のしきい値は
+        // 録画が伸びるほど余裕が薄くなる（実測 4.11 秒 vs 3 秒）── ここは
+        // 「末尾へ飛んでいないこと」が見たいのだから、末尾との比で見る。
+        // `complete` は `endOfStream()` の後に出るので、バッファの終端が尺そのものである。
+        double length = await browser.EvaluateNumberAsync(BufferedEnd, Ct);
+        output.WriteLine($"recorded length {length:F2}s");
+        Assert.True(2 < length, $"録画の長さが読めませんでした（{length:F2} 秒）。");
+
         // 同じ行を開き直す。一覧の state から `recording` が消えるのを待ってから押す
         // ── 消える前に押すと「録画中の再生」をもう一度見ることになる。
         await browser.EvaluateBoolAsync(Click("stopPlayer"), Ct);
@@ -376,8 +396,10 @@ public sealed class WebUiBrowserTests(PublishedApp app, ITestOutputHelper output
             "開き直した再生が始まりませんでした: " + await browser.EvaluateStringAsync(TextOf("playerStatus"), Ct));
 
         double resumed = await browser.EvaluateNumberAsync(PlayerTime, Ct);
-        output.WriteLine($"reopened at {resumed:F2}s");
-        Assert.True(resumed < 3, $"開き直した再生が先頭付近から始まっていません（{resumed:F2} 秒）。");
+        output.WriteLine($"reopened at {resumed:F2}s of {length:F2}s");
+        Assert.True(
+            resumed < length / 2,
+            $"開き直した再生が先頭より末尾に近い位置から始まっています（{length:F2} 秒のうち {resumed:F2} 秒）。");
 
         Assert.True(
             await browser.WaitUntilAsync($"{resumed.ToString("R", System.Globalization.CultureInfo.InvariantCulture)} + 1 < {PlayerTime}",
@@ -447,7 +469,7 @@ public sealed class WebUiBrowserTests(PublishedApp app, ITestOutputHelper output
         // 数え終えてから止める（停止で最後のフラグメントが届くと、そこでの寄せまで数に入る）。
         double seeks = await browser.EvaluateNumberAsync(SeekCount, Ct);
 
-        instance.Run("stop-recording-all");
+        Assert.Equal(0, instance.Run("stop-recording-all").ExitCode);
 
         string trace =
             $"seeks={seeks:F0} pos=[{string.Join(", ", samples.Select(s => s.ToString("F2")))}]"
