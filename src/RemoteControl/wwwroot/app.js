@@ -1,13 +1,22 @@
 // ProcessRecorderApp remote control UI. No framework, no third-party script.
 //
-// The access token is never held here: opening the page once with `?token=<token>`
-// makes the server set a session cookie, and every write request just says
+// No secret is held here. A session cookie is set either by opening the page once
+// with `?token=<token>` or by `POST /api/login`, and every request just says
 // `credentials: 'same-origin'`. A 401 therefore means "this browser has no session",
-// which is a state of the page, not a value this file can repair.
+// and the only repair the page can offer is the sign-in form.
+//
+// What each role may do is decided by the server; this file only decides what to
+// draw. `GET /api/me` is the single source for that, so the controls are switched
+// in exactly one place (`applyPermissions`).
 'use strict';
 
 (function () {
-  var writeAllowed = true;
+  // 'Viewer' until /api/me answers. Starting permissive would flash controls that
+  // the server is going to refuse.
+  var role = 'Viewer';
+  var guest = true;
+  var userName = '';
+  var events = null;
 
   function $(id) { return document.getElementById(id); }
 
@@ -22,6 +31,7 @@
 
   function getJson(url) {
     return fetch(url, { credentials: 'same-origin' }).then(function (response) {
+      if (response.status === 401) { showLogin('Sign in to continue.'); }
       return response.json().then(function (body) {
         if (!response.ok) { throw new Error(describe(body, response.status)); }
         return body;
@@ -38,7 +48,7 @@
       body: body === undefined ? undefined : JSON.stringify(body),
       credentials: 'same-origin'
     }).then(function (response) {
-      if (response.status === 401) { denyWrites(); }
+      if (response.status === 401) { showLogin('Sign in to continue.'); }
       return response.json().catch(function () { return {}; }).then(function (parsed) {
         if (!response.ok) { throw new Error(describe(parsed, response.status)); }
         return parsed;
@@ -51,34 +61,38 @@
     return 'HTTP ' + statusCode;
   }
 
-  // The readable half of the page keeps working without a session; only the
-  // controls that write are switched off, so the failure is visible once
-  // instead of once per click.
-  function denyWrites() {
-    writeAllowed = false;
-    var notice = $('authNotice');
-    text(notice, 'Not authenticated. Open this page with ?token=<access token> once; the session cookie carries it afterwards.');
-    notice.className = 'notice';
-    var controls = document.querySelectorAll('button, input, select');
-    for (var i = 0; i < controls.length; i++) {
-      if (controls[i].dataset.write === '1') { controls[i].disabled = true; }
-    }
+  // ---- roles ----
+
+  // The server's rule, mirrored for drawing only: Viewer < Operator < Admin.
+  function allows(need) {
+    if (need === 'admin') { return role === 'Admin'; }
+    return role === 'Admin' || role === 'Operator';
   }
 
-  function writeButton(label, onClick) {
+  // Buttons are hidden and fields are disabled: a hidden field would leave its
+  // label pointing at nothing, and a disabled button reads as "temporarily busy".
+  function applyPermissions() {
+    var controls = document.querySelectorAll('[data-need]');
+    for (var i = 0; i < controls.length; i++) { permit(controls[i]); }
+  }
+
+  function permit(node) {
+    var ok = allows(node.dataset.need);
+    if (node.tagName === 'BUTTON') { node.hidden = !ok; } else { node.disabled = !ok; }
+    return node;
+  }
+
+  function writeButton(label, onClick, level) {
     var button = document.createElement('button');
     button.type = 'button';
     button.textContent = label;
-    button.dataset.write = '1';
-    button.disabled = !writeAllowed;
     button.addEventListener('click', onClick);
-    return button;
+    return markWrite(button, level);
   }
 
-  function markWrite(node) {
-    node.dataset.write = '1';
-    if (!writeAllowed) { node.disabled = true; }
-    return node;
+  function markWrite(node, level) {
+    node.dataset.need = level || 'operator';
+    return permit(node);
   }
 
   function cell(row, value) {
@@ -111,7 +125,8 @@
       actions.appendChild(writeButton('Start', function () { control('/api/recorders/' + encodeURIComponent(recorder.name) + '/start'); }));
       actions.appendChild(writeButton('Stop', function () { control('/api/recorders/' + encodeURIComponent(recorder.name) + '/stop'); }));
 
-      // Watching is a read: it needs no session, so this is not a write button.
+      // Watching is a read, so every role that can see this table can watch:
+      // it is not gated on the write roles.
       var preview = document.createElement('button');
       preview.type = 'button';
       preview.textContent = 'Preview';
@@ -123,8 +138,8 @@
       body.appendChild(row);
     });
 
-    $('startAll').disabled = !writeAllowed || !snapshot.canStartAll;
-    $('stopAll').disabled = !writeAllowed || !snapshot.canStopAll;
+    $('startAll').disabled = !snapshot.canStartAll;
+    $('stopAll').disabled = !snapshot.canStopAll;
 
     syncRecorderSelect();
   }
@@ -245,7 +260,7 @@
     }
 
     if (property.description) { input.title = property.description; }
-    markWrite(input);
+    markWrite(input, 'admin');
     field.appendChild(input);
 
     if (property.requiresReinitialize) {
@@ -325,14 +340,14 @@
         text(label, key);
         field.appendChild(label);
 
-        var input = markWrite(document.createElement('input'));
+        var input = markWrite(document.createElement('input'), 'admin');
         input.type = 'text';
         input.value = settings[key] === null || settings[key] === undefined ? '' : String(settings[key]);
         field.appendChild(input);
 
         field.appendChild(writeButton('Apply', function () {
           patchAppSetting(key, input.value);
-        }));
+        }, 'admin'));
 
         host.appendChild(field);
       });
@@ -704,10 +719,85 @@
 
   // The server already debounces the state events (200ms), so the handler redraws
   // directly. Reconnection is the browser's job for EventSource.
+  // The handle is kept so that a 401 can close it: EventSource retries on its own
+  // and would otherwise keep hammering an endpoint that is refusing this browser.
   function subscribe() {
-    var source = new EventSource('/api/events');
-    source.addEventListener('state', function (event) {
+    if (events !== null) { return; }
+    events = new EventSource('/api/events');
+    events.addEventListener('state', function (event) {
       renderRecorders(JSON.parse(event.data));
+    });
+  }
+
+  // ---- sign in / sign out ----
+
+  function showLogin(message) {
+    stopPreview();
+    if (events !== null) { events.close(); events = null; }
+    $('mainSections').classList.add('hidden');
+    $('identity').classList.add('hidden');
+    $('loginSection').classList.remove('hidden');
+    $('loginPassword').value = '';
+    text($('loginError'), message === undefined ? '' : message);
+  }
+
+  function showApp() {
+    $('loginSection').classList.add('hidden');
+    $('mainSections').classList.remove('hidden');
+    $('identity').classList.remove('hidden');
+    text($('identityName'), guest ? 'guest (Viewer)' : userName + ' (' + role + ')');
+    $('loginButton').hidden = !guest;
+    $('logoutButton').hidden = guest;
+  }
+
+  // Deliberately not routed through `send`: a 401 here is the answer to this form,
+  // not a lost session, so it must stay on this screen with the reason visible.
+  function submitLogin() {
+    text($('loginError'), 'signing in...');
+    fetch('/api/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-PRApp-Client': '1' },
+      body: JSON.stringify({ user: $('loginUser').value, password: $('loginPassword').value }),
+      credentials: 'same-origin'
+    }).then(function (response) {
+      return response.json().catch(function () { return {}; }).then(function (body) {
+        if (!response.ok) { throw new Error(describe(body, response.status)); }
+        return body;
+      });
+    }).then(function () {
+      $('loginPassword').value = '';
+      text($('loginError'), '');
+      start();
+    }).catch(function (error) {
+      text($('loginError'), error.message);
+    });
+  }
+
+  function logout() {
+    send('POST', '/api/logout').then(function () {
+      showLogin('Signed out.');
+    }).catch(function (error) {
+      showLogin(error.message);
+    });
+  }
+
+  // The whole page hangs off this one answer: who we are decides both what is
+  // drawn and whether the reads are allowed to start at all.
+  function start() {
+    getJson('/api/me').then(function (me) {
+      role = me.role;
+      guest = me.guest;
+      userName = me.name;
+      applyPermissions();
+      showApp();
+      subscribe();
+      loadAppSettings();
+      loadVariables();
+      loadRecordings();
+    }).catch(function () {
+      // A 401 has already switched the page to the form; anything else lands there
+      // too, because nothing on the main page can be trusted to have loaded.
+      showLogin('Sign in to continue.');
     });
   }
 
@@ -718,8 +808,15 @@
   markWrite($('startAll'));
   markWrite($('stopAll'));
 
+  $('loginSubmit').addEventListener('click', submitLogin);
+  $('loginPassword').addEventListener('keydown', function (event) {
+    if (event.key === 'Enter') { submitLogin(); }
+  });
+  $('loginButton').addEventListener('click', function () { showLogin(); });
+  $('logoutButton').addEventListener('click', logout);
+
   $('loadRecorderSettings').addEventListener('click', loadRecorderSettings);
-  markWrite($('applyRecorderSettings')).addEventListener('click', applyRecorderSettings);
+  markWrite($('applyRecorderSettings'), 'admin').addEventListener('click', applyRecorderSettings);
   $('loadAppSettings').addEventListener('click', loadAppSettings);
   $('loadVariables').addEventListener('click', loadVariables);
   markWrite($('putVariable')).addEventListener('click', putVariable);
@@ -741,8 +838,5 @@
   // when the response ends, and a background tab would hold it indefinitely.
   window.addEventListener('pagehide', function () { stopPreview(); });
 
-  subscribe();
-  loadAppSettings();
-  loadVariables();
-  loadRecordings();
+  start();
 })();

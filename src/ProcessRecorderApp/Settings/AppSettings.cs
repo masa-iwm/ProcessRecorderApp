@@ -981,7 +981,9 @@ public partial class AppSettings : JsonSettingsBase<AppSettings>
         // OnUiaTriggersChanged も走らないので、空欄のまま残る。
         UiaTriggerList = FormatTriggerCount(UiaTriggers.Count);
         // RemoteUsers も同じ。キーが無ければ OnRemoteUsersChanged は走らない。
-        RemoteUserList = FormatRemoteUserCount(RemoteUsers.Count);
+        // **null 安全にする。** ここは逆シリアライズ直後の一時インスタンスでも走り、
+        // 手で書かれた `"RemoteUsers": null` はそのまま入っている。
+        RemoteUserList = FormatRemoteUserCount(RemoteUsers is { } users ? users.Count : 0);
 
         // 読み込み値を GStreamer 層の static ミラーへ反映する。
         // （[ObservableProperty] の OnChanged は「変化した場合」しか走らないため、

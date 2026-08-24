@@ -6,6 +6,7 @@ using System.Threading.Channels;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
+using ProcessRecorderApp.Components;
 
 namespace ProcessRecorderApp.RemoteControl.Endpoints;
 
@@ -36,10 +37,13 @@ internal static class EventsEndpoint
     /// <summary>購読者ごとに保持する状態の数。</summary>
     public const int ChannelCapacity = 8;
 
-    public static void Map(WebApplication app, IRemoteControlBackend backend)
+    public static void Map(WebApplication app, IRemoteControlBackend backend, RemoteAuth auth)
     {
         app.MapGet("/api/events", async (HttpContext ctx) =>
         {
+            if (!await AuthGate.AllowAsync(ctx, auth, RemoteRole.Viewer, write: false))
+                return;
+
             var channel = Channel.CreateBounded<RecordersSnapshot>(
                 new BoundedChannelOptions(ChannelCapacity)
                 {

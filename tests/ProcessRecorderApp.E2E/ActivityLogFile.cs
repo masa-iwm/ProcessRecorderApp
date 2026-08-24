@@ -121,6 +121,11 @@ public static class ActivityLogFile
         "remote.stop",
         "remote.error",
         "remote.auth fail",
+        // 成功も記録する。**"remote.auth fail" より長い名前を先に置く必要はない**
+        // （切り出しは最長一致でこの表を並べ替えるため）が、載せ忘れると
+        // ログインの行が丸ごと未知イベントとして落ちる。
+        "remote.auth login",
+        "remote.auth logout",
         // パイプラインのグラフ(.dot)を保存した。
         "gst.dot",
     ];

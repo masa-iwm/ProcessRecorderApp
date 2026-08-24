@@ -222,7 +222,7 @@ public sealed class SettingsFile
     public int? RecordingCleanupIntervalHours { get; set; }
 
     /// <summary>
-    /// リモート操作（HTTP サーバー）の 4 設定。null なら書かない（＝製品の既定＝無効）。
+    /// リモート操作（HTTP サーバー）の設定。null なら書かない（＝製品の既定＝無効）。
     ///
     /// <para>
     /// <b>これは <c>AppSettings</c> の 5 箇所目の手書きミラーで、テストは縛っていない。</b>
@@ -240,6 +240,18 @@ public sealed class SettingsFile
 
     /// <inheritdoc cref="RemoteControlEnabled"/>
     public string? RemoteControlAccessToken { get; set; }
+
+    /// <summary>
+    /// 名乗っていない相手に読み取りを許すか。null なら書かない（＝製品の既定＝false ＝
+    /// <b>読み取りにも認証が要る</b>）。
+    /// </summary>
+    public bool? RemoteControlAllowGuestRead { get; set; }
+
+    /// <summary>
+    /// リモート利用者。空なら書かない。<b>パスワードは平文を持たない</b>ので、
+    /// テストは <see cref="RemoteUserSpec"/> の固定ハッシュを使う。
+    /// </summary>
+    public List<RemoteUserSpec> RemoteUsers { get; } = [];
 
     public Dictionary<string, string> TemplateVariables { get; } = [];
     public List<RecorderSpec> Recorders { get; } = [];
@@ -301,6 +313,16 @@ public sealed class SettingsFile
             root["RemoteControlPort"] = remotePort;
         if (RemoteControlAccessToken is { } remoteToken)
             root["RemoteControlAccessToken"] = remoteToken;
+        if (RemoteControlAllowGuestRead is { } allowGuestRead)
+            root["RemoteControlAllowGuestRead"] = allowGuestRead;
+
+        if (RemoteUsers.Count > 0)
+        {
+            var users = new JsonArray();
+            foreach (var user in RemoteUsers)
+                users.Add(user.ToJson());
+            root["RemoteUsers"] = users;
+        }
 
         if (TemplateVariables.Count > 0)
         {
@@ -478,4 +500,47 @@ public enum EventRecordingType
 {
     System = 0,
     D3d12 = 1,
+}
+
+/// <summary>
+/// settings.json 内のリモート利用者 1 人分。
+///
+/// <para>
+/// <b>ハッシュは固定の文字列として持つ。</b> このプロジェクトは製品側を一切参照しないので
+/// <c>RemoteUserRules.HashPassword</c> を呼べない ── 形式
+/// （<c>pbkdf2-sha256$&lt;iter&gt;$&lt;saltB64&gt;$&lt;hashB64&gt;</c>）と反復回数 60 万は
+/// <b>製品が実際に書くもの</b>に合わせてあり、これも「外から見た契約」の表明である。
+/// </para>
+/// <para>
+/// salt を固定してあるのはこの3行を再現可能にするためで、製品は毎回引き直す
+/// （L1 の <c>RemoteUserRulesTests</c> がそちらを縛る）。
+/// </para>
+/// </summary>
+public sealed class RemoteUserSpec(string name, string passwordHash, string role)
+{
+    /// <summary>パスワード <c>pw-viewer</c> のハッシュ。</summary>
+    public const string ViewerPasswordHash =
+        "pbkdf2-sha256$600000$RTJFLXNhbHQtdmlld2VyIQ==$1ci935DZw0POI4lq5aGYhMo3ZqpP0EbQwnecaXzgCLM=";
+
+    /// <summary>パスワード <c>pw-operator</c> のハッシュ。</summary>
+    public const string OperatorPasswordHash =
+        "pbkdf2-sha256$600000$RTJFLXNhbHQtb3BlcmF0cg==$JzrIgaGt4Nc3Uws2CUQ8Y2JTO5QPkQa3yDDm8PbVTuc=";
+
+    /// <summary>パスワード <c>pw-admin</c> のハッシュ。</summary>
+    public const string AdminPasswordHash =
+        "pbkdf2-sha256$600000$RTJFLXNhbHQtYWRtaW4hIQ==$2VbnN3vCUlghmW6QLTHRppj4FQQWhQ8d24zESZClzMY=";
+
+    public string Name { get; set; } = name;
+
+    public string PasswordHash { get; set; } = passwordHash;
+
+    /// <summary>役割。<b>settings.json には名前で書く</b>（<c>Viewer</c> / <c>Operator</c> / <c>Admin</c>）。</summary>
+    public string Role { get; set; } = role;
+
+    internal JsonObject ToJson() => new()
+    {
+        ["Name"] = Name,
+        ["PasswordHash"] = PasswordHash,
+        ["Role"] = Role,
+    };
 }

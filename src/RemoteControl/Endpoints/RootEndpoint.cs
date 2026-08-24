@@ -35,15 +35,10 @@ internal static class RootEndpoint
                     return;
                 }
 
-                ctx.Response.Cookies.Append(RemoteAuth.CookieName, session, new CookieOptions
-                {
-                    // HTTP のみ（HTTPS は v1 の対象外）なので Secure は付けない。
-                    // HttpOnly はスクリプトから読ませないため、SameSite=Strict は
-                    // 他所のページからの遷移で Cookie を送らせないため。
-                    HttpOnly = true,
-                    SameSite = SameSiteMode.Strict,
-                    Path = "/",
-                });
+                // 属性は POST /api/login と共有する（RemoteAuth.SessionCookieOptions）
+                // ── 写して置くと、片方だけ直された日に食い違う。
+                ctx.Response.Cookies.Append(
+                    RemoteAuth.CookieName, session, RemoteAuth.SessionCookieOptions());
                 ctx.Response.Headers.Location = "/";
                 ctx.Response.StatusCode = 302;
                 return;

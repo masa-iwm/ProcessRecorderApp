@@ -2,16 +2,20 @@ using System;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
+using ProcessRecorderApp.Components;
 
 namespace ProcessRecorderApp.RemoteControl.Endpoints;
 
 /// <summary>レコーダーの状態を読む経路。</summary>
 internal static class RecorderEndpoints
 {
-    public static void Map(WebApplication app, IRemoteControlBackend backend)
+    public static void Map(WebApplication app, IRemoteControlBackend backend, RemoteAuth auth)
     {
         app.MapGet("/api/recorders", async (HttpContext ctx) =>
         {
+            if (!await AuthGate.AllowAsync(ctx, auth, RemoteRole.Viewer, write: false))
+                return;
+
             var snapshot = await backend.GetRecordersAsync(ctx.RequestAborted);
             await ApiResponse.WriteJsonAsync(
                 ctx, 200, snapshot, RemoteApiJsonContext.Default.RecordersSnapshot);
@@ -19,6 +23,9 @@ internal static class RecorderEndpoints
 
         app.MapGet("/api/recorders/{id}", async (HttpContext ctx) =>
         {
+            if (!await AuthGate.AllowAsync(ctx, auth, RemoteRole.Viewer, write: false))
+                return;
+
             string id = ctx.Request.RouteValues["id"]?.ToString() ?? string.Empty;
             var snapshot = await backend.GetRecordersAsync(ctx.RequestAborted);
 

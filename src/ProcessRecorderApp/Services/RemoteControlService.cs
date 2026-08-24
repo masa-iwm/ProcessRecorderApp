@@ -12,10 +12,11 @@ namespace ProcessRecorderApp.Services;
 /// <c>UiaTriggerService</c> と同じ形 ── 設定の変更を購読し、背景で作り直す。
 ///
 /// <para>
-/// <b>4 つの設定のどれが変わっても作り直す。</b> アクセストークンは
+/// <b>6 つの設定のどれが変わっても作り直す。</b> トークン・利用者・ゲスト許可は
 /// <see cref="RemoteControlOptions"/> として起動時に渡すので、変更を反映する手段が
-/// 再起動しかない ── 待ち受けとトークンで扱いを分けても得るものが無いため、
-/// 4 つとも同じ扱いに統一してある。
+/// 再起動しかない ── 待ち受けと資格で扱いを分けても得るものが無いため、
+/// 6 つとも同じ扱いに統一してある。<b>作り直すと全セッションが失効する</b>
+/// （<c>SessionStore</c> はホストと同じ寿命）。
 /// </para>
 /// <para>
 /// <b>失敗してもアプリの中核（録画）は殺さない。</b> ポートが使われている・
@@ -81,7 +82,9 @@ public sealed partial class RemoteControlService : IDisposable
         if (e.PropertyName is nameof(Settings.AppSettings.RemoteControlEnabled)
             or nameof(Settings.AppSettings.RemoteControlBindAddress)
             or nameof(Settings.AppSettings.RemoteControlPort)
-            or nameof(Settings.AppSettings.RemoteControlAccessToken))
+            or nameof(Settings.AppSettings.RemoteControlAccessToken)
+            or nameof(Settings.AppSettings.RemoteUsers)
+            or nameof(Settings.AppSettings.RemoteControlAllowGuestRead))
         {
             RequestReload();
         }
@@ -134,8 +137,18 @@ public sealed partial class RemoteControlService : IDisposable
                 return;
             }
 
+            // **利用者は写しを渡す。** 正本の List は UI スレッド（設定画面の編集）が
+            // 差し替える対象で、そのまま渡すと要求スレッドが読んでいる最中に
+            // 書き換わりうる。null は手で編集された settings.json で起こりうる。
+            Components.RemoteUserDefinition[] users =
+                settings.RemoteUsers is { } definitions ? [.. definitions] : [];
+
             var options = new RemoteControlOptions(
-                settings.RemoteControlBindAddress, settings.RemoteControlPort, token);
+                settings.RemoteControlBindAddress,
+                settings.RemoteControlPort,
+                token,
+                users,
+                settings.RemoteControlAllowGuestRead);
 
             try
             {

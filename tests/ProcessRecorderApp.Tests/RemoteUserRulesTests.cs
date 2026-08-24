@@ -126,4 +126,28 @@ public class RemoteUserRulesTests
         Assert.True(RemoteUserRules.IsValidName(new string('a', RemoteUserRules.MaxNameLength)));
         Assert.False(RemoteUserRules.IsValidName(new string('a', RemoteUserRules.MaxNameLength + 1)));
     }
+
+    /// <summary>
+    /// 反復回数の上限（<see cref="RemoteUserRules.MaxIterations"/>）。
+    ///
+    /// <para>
+    /// <b>settings.json は手で編集できる。</b> 上限が無いと、大きな数を 1 つ書くだけで
+    /// ログイン要求 1 本が何分も CPU を回すことになる ── 壊れた値と同じく
+    /// 「不正な形式」として断る。<b>ちょうど上限は通す</b>（境界を両側から縛る）。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void IsWellFormedHash_RejectsAnIterationCountAboveTheCap()
+    {
+        string salt = Convert.ToBase64String(new byte[RemoteUserRules.SaltBytes]);
+        string hash = Convert.ToBase64String(new byte[RemoteUserRules.HashBytes]);
+
+        string atCap = $"{RemoteUserRules.HashPrefix}${RemoteUserRules.MaxIterations}${salt}${hash}";
+        string overCap = $"{RemoteUserRules.HashPrefix}${RemoteUserRules.MaxIterations + 1}${salt}${hash}";
+
+        Assert.True(RemoteUserRules.IsWellFormedHash(atCap));
+        Assert.False(RemoteUserRules.IsWellFormedHash(overCap));
+        // Verify も同じ判定を通る（上限超えは照合そのものを行わない）。
+        Assert.False(RemoteUserRules.Verify("pw", overCap));
+    }
 }

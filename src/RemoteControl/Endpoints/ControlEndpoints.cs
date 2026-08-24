@@ -1,6 +1,7 @@
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
+using ProcessRecorderApp.Components;
 
 namespace ProcessRecorderApp.RemoteControl.Endpoints;
 
@@ -32,7 +33,7 @@ internal static class ControlEndpoints
     {
         app.MapPost("/api/recorders/start-all", async (HttpContext ctx) =>
         {
-            if (!await AuthGate.AllowAsync(ctx, auth))
+            if (!await AuthGate.AllowAsync(ctx, auth, RemoteRole.Operator, write: true))
                 return;
 
             var result = await backend.StartAllAsync();
@@ -42,7 +43,7 @@ internal static class ControlEndpoints
 
         app.MapPost("/api/recorders/stop-all", async (HttpContext ctx) =>
         {
-            if (!await AuthGate.AllowAsync(ctx, auth))
+            if (!await AuthGate.AllowAsync(ctx, auth, RemoteRole.Operator, write: true))
                 return;
 
             var result = await backend.StopAllAsync();
@@ -52,7 +53,7 @@ internal static class ControlEndpoints
 
         app.MapPost("/api/recorders/{id}/start", async (HttpContext ctx) =>
         {
-            if (!await AuthGate.AllowAsync(ctx, auth))
+            if (!await AuthGate.AllowAsync(ctx, auth, RemoteRole.Operator, write: true))
                 return;
 
             var result = await backend.StartAsync(RouteId(ctx));
@@ -62,7 +63,7 @@ internal static class ControlEndpoints
 
         app.MapPost("/api/recorders/{id}/stop", async (HttpContext ctx) =>
         {
-            if (!await AuthGate.AllowAsync(ctx, auth))
+            if (!await AuthGate.AllowAsync(ctx, auth, RemoteRole.Operator, write: true))
                 return;
 
             var result = await backend.StopAsync(RouteId(ctx));

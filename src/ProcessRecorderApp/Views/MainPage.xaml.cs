@@ -976,7 +976,9 @@ public sealed partial class MainPage : Page
             {
                 // ダイアログは渡したリストに触れず写しを返す。
                 IReadOnlyList<Components.RemoteUserDefinition>? edited =
-                    await RemoteUserEditorDialog.EditAsync(this.XamlRoot, AppSettings.Default.RemoteUsers);
+                    // `?? []` は手で書かれた `"RemoteUsers": null` への備え
+                    // ── 渡せないとダイアログが二度と開けなくなる。
+                    await RemoteUserEditorDialog.EditAsync(this.XamlRoot, AppSettings.Default.RemoteUsers ?? []);
                 if (edited is null)
                     return null; // 取り消し。正本は変わっていない
 

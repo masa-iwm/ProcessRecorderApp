@@ -7,9 +7,30 @@
 <link rel="stylesheet" href="app.css">
 </head>
 <body>
-<p id="authNotice" class="notice hidden"></p>
+<header class="topbar">
+  <h1>ProcessRecorderApp</h1>
+  <p id="identity" class="identity hidden">
+    <span id="identityName" class="status"></span>
+    <button type="button" id="loginButton" hidden>Log in</button>
+    <button type="button" id="logoutButton" hidden>Log out</button>
+  </p>
+</header>
 
-<h1>ProcessRecorderApp</h1>
+<!-- Sign-in. Present in the document from the start and only unhidden when the
+     server answers 401: the page has no other way back once a session is gone. -->
+<section id="loginSection" class="hidden">
+  <h2>Sign in</h2>
+  <p class="actions">
+    <label for="loginUser">user</label>
+    <input type="text" id="loginUser" autocomplete="username">
+    <label for="loginPassword">password</label>
+    <input type="password" id="loginPassword" autocomplete="current-password">
+    <button type="button" id="loginSubmit">Log in</button>
+  </p>
+  <p id="loginError" class="status error"></p>
+</section>
+
+<div id="mainSections" class="hidden">
 
 <section id="recordersSection">
   <h2>Recorders</h2>
@@ -85,6 +106,8 @@
     <tbody id="recordingsBody"></tbody>
   </table>
 </section>
+
+</div>
 
 <script src="app.js"></script>
 </body>

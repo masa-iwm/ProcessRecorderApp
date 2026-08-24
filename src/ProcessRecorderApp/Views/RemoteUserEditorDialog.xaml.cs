@@ -194,36 +194,86 @@ public sealed partial class RemoteUserEditorDialog : ContentDialog
     /// <summary>
     /// 入力されたパスワードをその場でハッシュ化し、平文の入力欄を空にする。
     /// </summary>
-    private void OnSetPasswordClick(object sender, RoutedEventArgs e)
+    private async void OnSetPasswordClick(object sender, RoutedEventArgs e)
     {
         if (Selected is not { } row)
             return;
 
-        string password = PasswordInput.Password;
-        if (string.IsNullOrEmpty(password))
+        if (string.IsNullOrEmpty(PasswordInput.Password))
         {
             ShowError(Localization.GetString("Resources/RemoteUserEditor_PasswordRequired", row.Name));
             return;
         }
 
-        row.PasswordHash = RemoteUserRules.HashPassword(password);
-        PasswordInput.Password = "";
+        await ApplyPasswordAsync(row);
         ClearError();
     }
 
     /// <summary>
-    /// 確定。妥当でなければ閉じずに理由を出す（<c>args.Cancel</c>）。
+    /// 入力欄の平文をハッシュ化して行へ入れ、欄を空にする。
+    ///
+    /// <para>
+    /// <b>ハッシュ化はスレッドプールで回す</b>（<see cref="RemoteUserRules.Iterations"/> ＝
+    /// 60 万回の PBKDF2）── UI スレッドで回すと、押してから返るまで画面が固まる。
+    /// 回している間は「パスワードを設定」と確定ボタンを無効にする
+    /// （二重に走らせると、後から終わった方が勝つ）。
+    /// </para>
     /// </summary>
-    private void OnPrimaryButtonClick(ContentDialog sender, ContentDialogButtonClickEventArgs args)
+    private async Task ApplyPasswordAsync(RemoteUserRow row)
     {
-        if (!TryBuildResult(out IReadOnlyList<RemoteUserDefinition>? edited))
+        string password = PasswordInput.Password;
+        SetHashingBusy(true);
+        try
         {
-            args.Cancel = true;
-            return;
+            row.PasswordHash = await Task.Run(() => RemoteUserRules.HashPassword(password));
+            PasswordInput.Password = "";
         }
+        finally
+        {
+            SetHashingBusy(false);
+        }
+    }
 
-        _result = edited;
-        PasswordInput.Password = "";
+    /// <summary>ハッシュ化の最中だけ、押すと二重に走るものを止める。</summary>
+    private void SetHashingBusy(bool busy)
+    {
+        IsPrimaryButtonEnabled = !busy;
+        SetPasswordButton.IsEnabled = !busy && Selected is not null;
+        PasswordInput.IsEnabled = !busy && Selected is not null;
+    }
+
+    /// <summary>
+    /// 確定。妥当でなければ閉じずに理由を出す（<c>args.Cancel</c>）。
+    ///
+    /// <para>
+    /// <b>入力欄に平文が残っていれば、確定の前にハッシュ化して当該行へ適用する</b>
+    /// ── 「パスワードを設定」を押し忘れただけで入力が黙って捨てられ、
+    /// 「パスワード未設定」で拒否されるのは、利用者から見て理由の分からない失敗である。
+    /// 待ちが要るので <c>GetDeferral</c> を取る（取らずに await すると、
+    /// ハッシュが出来上がる前にダイアログが閉じる）。
+    /// </para>
+    /// </summary>
+    private async void OnPrimaryButtonClick(ContentDialog sender, ContentDialogButtonClickEventArgs args)
+    {
+        ContentDialogButtonClickDeferral deferral = args.GetDeferral();
+        try
+        {
+            if (Selected is { } row && !string.IsNullOrEmpty(PasswordInput.Password))
+                await ApplyPasswordAsync(row);
+
+            if (!TryBuildResult(out IReadOnlyList<RemoteUserDefinition>? edited))
+            {
+                args.Cancel = true;
+                return;
+            }
+
+            _result = edited;
+            PasswordInput.Password = "";
+        }
+        finally
+        {
+            deferral.Complete();
+        }
     }
 
     /// <summary>

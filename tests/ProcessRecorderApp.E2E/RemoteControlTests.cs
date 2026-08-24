@@ -35,6 +35,24 @@ public sealed class RemoteControlTests(PublishedApp app, ITestOutputHelper outpu
     /// <summary>誤ったトークン（長さは同じ ── 長さ違いだけで弾いていないことを見るため）。</summary>
     private const string WrongToken = "E2E-remote-control-token-9876543210-gfedcba";
 
+    /// <summary>役割ごとの利用者名とパスワード（ハッシュは <see cref="RemoteUserSpec"/> の定数）。</summary>
+    private const string ViewerUser = "viewer";
+
+    /// <inheritdoc cref="ViewerUser"/>
+    private const string ViewerPassword = "pw-viewer";
+
+    /// <inheritdoc cref="ViewerUser"/>
+    private const string OperatorUser = "operator";
+
+    /// <inheritdoc cref="ViewerUser"/>
+    private const string OperatorPassword = "pw-operator";
+
+    /// <inheritdoc cref="ViewerUser"/>
+    private const string AdminUser = "admin";
+
+    /// <inheritdoc cref="ViewerUser"/>
+    private const string AdminPassword = "pw-admin";
+
     /// <summary><c>remote.start</c> が出るまでの待ち。</summary>
     private static readonly TimeSpan StartBudget = TimeSpan.FromSeconds(30);
 
@@ -61,7 +79,26 @@ public sealed class RemoteControlTests(PublishedApp app, ITestOutputHelper outpu
             RemoteControlBindAddress = "127.0.0.1",
             RemoteControlPort = 0,
             RemoteControlAccessToken = Token,
+            // **既存のケースの前提を保つ。** 波 3 で読み取りにも役割が要るように
+            // なったので、ここでゲスト読み取りを明示して「未認証の GET は 200」を
+            // 従来どおりにする ── 認証そのものを見るケースは RemoteUserSettings()
+            // で自分の settings を組み立てる。
+            RemoteControlAllowGuestRead = true,
         };
+    }
+
+    /// <summary>ログインを見るケースが使う構成（利用者 3 人・レコーダー 2 台）。</summary>
+    /// <param name="allowGuestRead">名乗っていない相手に読み取りを許すか。</param>
+    private static SettingsFile RemoteUserSettings(bool allowGuestRead)
+    {
+        var settings = RemoteBase();
+        settings.RemoteControlAllowGuestRead = allowGuestRead;
+        settings.RemoteUsers.Add(new RemoteUserSpec(ViewerUser, RemoteUserSpec.ViewerPasswordHash, "Viewer"));
+        settings.RemoteUsers.Add(new RemoteUserSpec(OperatorUser, RemoteUserSpec.OperatorPasswordHash, "Operator"));
+        settings.RemoteUsers.Add(new RemoteUserSpec(AdminUser, RemoteUserSpec.AdminPasswordHash, "Admin"));
+        settings.AddRecorder("R1");
+        settings.AddRecorder("R2");
+        return settings;
     }
 
     /// <summary>読み取り系が使う既定の構成（レコーダー 2 台）。</summary>
@@ -191,20 +228,27 @@ public sealed class RemoteControlTests(PublishedApp app, ITestOutputHelper outpu
     [Fact]
     public async Task TheSettingsEndpoint_HidesTheTokenAndThePaths()
     {
-        using var instance = AppInstance.Create(app, RemoteSettings());
+        // **利用者が実際に居る構成で見る。** 空の一覧では「落としている」のか
+        // 「そもそも何も無い」のかが区別できない。
+        using var instance = AppInstance.Create(app, RemoteUserSettings(allowGuestRead: true));
         int port = WaitForPort(instance);
         using var client = CreateClient(port);
 
         using var response = await client.GetAsync("api/settings", Ct);
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
-        using var body = await ReadJsonAsync(response);
+        string text = await response.Content.ReadAsStringAsync(Ct);
+        using var body = JsonDocument.Parse(text);
         string[] keys = [.. body.RootElement.EnumerateObject().Select(p => p.Name)];
         output.WriteLine(string.Join(", ", keys));
 
         Assert.DoesNotContain("RemoteControlAccessToken", keys);
         Assert.DoesNotContain("OutputDirectory", keys);
         Assert.DoesNotContain("Recorders", keys);
+        // パスワードのハッシュは Viewer から見えてはいけない（総当たりの材料になる）。
+        Assert.DoesNotContain("RemoteUsers", keys);
+        Assert.DoesNotContain("RemoteUserList", keys);
+        Assert.DoesNotContain(RemoteUserSpec.AdminPasswordHash, text, StringComparison.Ordinal);
         Assert.Contains("RecordingRetentionDays", keys);
     }
 
@@ -1204,5 +1248,385 @@ public sealed class RemoteControlTests(PublishedApp app, ITestOutputHelper outpu
 
         foreach (string filename in filenames)
             RecordedMp4.AssertUsable(filename, instance, output);
+    }
+
+    // ---- 役割ベースの認証（ログイン・ゲスト） ----
+
+    /// <summary>Cookie で名乗る要求（書き込みならクライアントヘッダーも要る）。</summary>
+    private static HttpRequestMessage AsSession(
+        HttpMethod method, string path, string cookie, string? json = null, bool clientHeader = true)
+    {
+        var request = new HttpRequestMessage(method, path);
+        request.Headers.Add("Cookie", cookie);
+        if (clientHeader)
+            request.Headers.Add("X-PRApp-Client", "1");
+        if (json is not null)
+            request.Content = new StringContent(json, Encoding.UTF8, "application/json");
+        return request;
+    }
+
+    /// <summary>ログインの要求本文。<b>組み立ては 1 か所</b>にして綴りの取り違えを防ぐ。</summary>
+    private static HttpRequestMessage LoginRequest(string user, string password, bool clientHeader = true)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Post, "api/login");
+        if (clientHeader)
+            request.Headers.Add("X-PRApp-Client", "1");
+        request.Content = new StringContent(
+            JsonSerializer.Serialize(new Dictionary<string, string> { ["user"] = user, ["password"] = password }),
+            Encoding.UTF8,
+            "application/json");
+        return request;
+    }
+
+    /// <summary>名乗って Cookie を持ち帰る（名前と役割が応答に出ることも確かめる）。</summary>
+    private async Task<string> LoginAsync(HttpClient client, string user, string password, string expectedRole)
+    {
+        using var request = LoginRequest(user, password);
+        using var response = await client.SendAsync(request, Ct);
+        using var body = await ExpectAsync(response, HttpStatusCode.OK);
+
+        Assert.Equal(user, body.RootElement.GetProperty("name").GetString());
+        Assert.Equal(expectedRole, body.RootElement.GetProperty("role").GetString());
+
+        string setCookie = Assert.Single(response.Headers.GetValues("Set-Cookie"));
+        output.WriteLine(setCookie);
+        // 属性は `?token=` の入口と同一（RemoteAuth.SessionCookieOptions が唯一の出所）。
+        Assert.Contains("prapp_session=", setCookie, StringComparison.Ordinal);
+        Assert.Contains("httponly", setCookie, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("samesite=strict", setCookie, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("path=/", setCookie, StringComparison.OrdinalIgnoreCase);
+
+        return setCookie.Split(';')[0];
+    }
+
+    /// <summary>
+    /// <b>ゲスト読み取りを許していなければ、読み取りにも名乗りが要る。</b>
+    ///
+    /// <para>
+    /// <b>静的資産だけは無認証のまま</b>でなければならない ── ログインの画面そのものが
+    /// そこから配られるので、ここを閉じると誰も名乗れない鍵の掛かった箱になる。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task WithoutGuestRead_TheApiNeedsASession_ButThePageIsStillServed()
+    {
+        using var instance = AppInstance.Create(app, RemoteUserSettings(allowGuestRead: false));
+        int port = WaitForPort(instance);
+        using var client = CreateClient(port);
+
+        foreach (string path in new[] { "api/recorders", "api/settings", "api/variables", "api/recordings" })
+        {
+            using var response = await client.GetAsync(path, Ct);
+            using var body = await ExpectAsync(response, HttpStatusCode.Unauthorized);
+            Assert.Equal(4, body.RootElement.GetProperty("exitCode").GetInt32());
+            Assert.Equal("authentication required", body.RootElement.GetProperty("error").GetString());
+        }
+
+        using (var index = await client.GetAsync("/", Ct))
+        {
+            Assert.Equal(HttpStatusCode.OK, index.StatusCode);
+            Assert.Contains("ProcessRecorderApp", await index.Content.ReadAsStringAsync(Ct), StringComparison.Ordinal);
+        }
+
+        using (var script = await client.GetAsync("app.js", Ct))
+            Assert.Equal(HttpStatusCode.OK, script.StatusCode);
+    }
+
+    /// <summary>
+    /// <b>ゲスト読み取りは読み取りだけ。</b> 「読ませるだけ」のつもりの設定で
+    /// 録画を止められては、この設定に意味が無い。
+    /// </summary>
+    [Fact]
+    public async Task WithGuestRead_ReadsPass_ButWritesAreStillRefused()
+    {
+        using var instance = AppInstance.Create(app, RemoteUserSettings(allowGuestRead: true));
+        int port = WaitForPort(instance);
+        using var client = CreateClient(port);
+
+        using (var response = await client.GetAsync("api/recorders", Ct))
+            (await ExpectAsync(response, HttpStatusCode.OK)).Dispose();
+
+        // 名乗っていない相手は「ゲスト」として自分を読める。
+        using (var response = await client.GetAsync("api/me", Ct))
+        {
+            using var body = await ExpectAsync(response, HttpStatusCode.OK);
+            Assert.Equal("", body.RootElement.GetProperty("name").GetString());
+            Assert.Equal("Viewer", body.RootElement.GetProperty("role").GetString());
+            Assert.True(body.RootElement.GetProperty("guest").GetBoolean());
+        }
+
+        // 書き込みは、クライアントヘッダーが付いていても 401（資格の判定が先）。
+        using (var request = Post("api/recorders/R1/start"))
+        {
+            request.Headers.Add("X-PRApp-Client", "1");
+            using var response = await client.SendAsync(request, Ct);
+            using var body = await ExpectAsync(response, HttpStatusCode.Unauthorized);
+            Assert.Equal("authentication required", body.RootElement.GetProperty("error").GetString());
+        }
+    }
+
+    /// <summary>
+    /// <b>Viewer は読めるだけ。</b> 開始（Operator）も設定の変更（Admin）も
+    /// <c>403 insufficient role</c> で断られる ── 401 ではないのが要点で、
+    /// 「名乗りは通っているが権限が足りない」と呼び出し側に伝わる。
+    /// </summary>
+    [Fact]
+    public async Task AViewer_CanRead_ButCannotOperateOrConfigure()
+    {
+        using var instance = AppInstance.Create(app, RemoteUserSettings(allowGuestRead: false));
+        int port = WaitForPort(instance);
+        using var client = CreateClient(port);
+
+        string cookie = await LoginAsync(client, ViewerUser, ViewerPassword, "Viewer");
+
+        // 読み取りは通る（クライアントヘッダーは要らない ── <video> も EventSource も付けられない）。
+        using (var request = AsSession(HttpMethod.Get, "api/recorders", cookie, clientHeader: false))
+        using (var response = await client.SendAsync(request, Ct))
+            (await ExpectAsync(response, HttpStatusCode.OK)).Dispose();
+
+        using (var request = AsSession(HttpMethod.Get, "api/me", cookie, clientHeader: false))
+        using (var response = await client.SendAsync(request, Ct))
+        {
+            using var body = await ExpectAsync(response, HttpStatusCode.OK);
+            Assert.Equal(ViewerUser, body.RootElement.GetProperty("name").GetString());
+            Assert.Equal("Viewer", body.RootElement.GetProperty("role").GetString());
+            Assert.False(body.RootElement.GetProperty("guest").GetBoolean());
+        }
+
+        using (var request = AsSession(HttpMethod.Post, "api/recorders/R1/start", cookie))
+        using (var response = await client.SendAsync(request, Ct))
+        {
+            using var body = await ExpectAsync(response, HttpStatusCode.Forbidden);
+            Assert.Equal(4, body.RootElement.GetProperty("exitCode").GetInt32());
+            Assert.Equal("insufficient role", body.RootElement.GetProperty("error").GetString());
+        }
+
+        using (var request = AsSession(Patch, "api/settings", cookie, "{\"RecordingRetentionDays\":7}"))
+        using (var response = await client.SendAsync(request, Ct))
+        {
+            using var body = await ExpectAsync(response, HttpStatusCode.Forbidden);
+            Assert.Equal("insufficient role", body.RootElement.GetProperty("error").GetString());
+        }
+
+        // 断られた 2 回は remote.auth fail に出ない（資格は正しいので、
+        // 「当てにきている」ものを見る行が薄まってはいけない）。
+        Assert.Empty(ActivityLogFile.Events(instance.ReadActivityLog(), "remote.auth fail"));
+    }
+
+    /// <summary>
+    /// <b>Operator は動かせるが、設定は変えられない。</b>
+    /// 開始と停止が実際に成果物を残すところまで見る（403 と 200 の差が本物であること）。
+    /// </summary>
+    [Fact]
+    public async Task AnOperator_CanStartAndStop_ButCannotConfigure()
+    {
+        using var instance = AppInstance.Create(app, RemoteUserSettings(allowGuestRead: false));
+        int port = WaitForPort(instance);
+        using var client = CreateClient(port);
+
+        string cookie = await LoginAsync(client, OperatorUser, OperatorPassword, "Operator");
+
+        string filename;
+        using (var request = AsSession(HttpMethod.Post, "api/recorders/0/start", cookie))
+        using (var response = await client.SendAsync(request, Ct))
+        {
+            using var body = await ExpectAsync(response, HttpStatusCode.OK);
+            filename = body.RootElement.GetProperty("filename").GetString() ?? "";
+            Assert.NotEmpty(filename);
+        }
+
+        Thread.Sleep(RecordingWindow);
+
+        using (var request = AsSession(HttpMethod.Post, "api/recorders/0/stop", cookie))
+        using (var response = await client.SendAsync(request, Ct))
+            (await ExpectAsync(response, HttpStatusCode.OK)).Dispose();
+
+        RecordedMp4.AssertUsable(filename, instance, output);
+
+        // 変数の書き換えも Operator の範囲。
+        using (var request = AsSession(HttpMethod.Put, "api/variables/Site", cookie, "{\"value\":\"lab\"}"))
+        using (var response = await client.SendAsync(request, Ct))
+            (await ExpectAsync(response, HttpStatusCode.OK)).Dispose();
+
+        // 設定は Admin の範囲。
+        using (var request = AsSession(Patch, "api/settings", cookie, "{\"RecordingRetentionDays\":7}"))
+        using (var response = await client.SendAsync(request, Ct))
+        {
+            using var body = await ExpectAsync(response, HttpStatusCode.Forbidden);
+            Assert.Equal("insufficient role", body.RootElement.GetProperty("error").GetString());
+        }
+    }
+
+    /// <summary>
+    /// <b>Admin は設定まで変えられる。</b> 併せて成功のログ
+    /// （<c>remote.auth login user=admin role=Admin</c>）が残ることを見る。
+    /// </summary>
+    [Fact]
+    public async Task AnAdmin_CanPatchTheAppSettings()
+    {
+        using var instance = AppInstance.Create(app, RemoteUserSettings(allowGuestRead: false));
+        int port = WaitForPort(instance);
+        using var client = CreateClient(port);
+
+        string cookie = await LoginAsync(client, AdminUser, AdminPassword, "Admin");
+
+        using (var request = AsSession(Patch, "api/settings", cookie, "{\"RecordingRetentionDays\":7}"))
+        using (var response = await client.SendAsync(request, Ct))
+        {
+            using var body = await ExpectAsync(response, HttpStatusCode.OK);
+            Assert.Contains("RecordingRetentionDays", StringsOf(body.RootElement.GetProperty("applied")));
+        }
+
+        using (var request = AsSession(Patch, "api/recorders/0/settings", cookie, "{\"BufferDuration\":1500}"))
+        using (var response = await client.SendAsync(request, Ct))
+            (await ExpectAsync(response, HttpStatusCode.OK)).Dispose();
+
+        string login = Assert.Single(ActivityLogFile.Events(instance.ReadActivityLog(), "remote.auth login"));
+        output.WriteLine(login);
+        Assert.Contains($"user={AdminUser}", login, StringComparison.Ordinal);
+        Assert.Contains("role=Admin", login, StringComparison.Ordinal);
+        // パスワードは記録に残さない（activity.log は貼り付けて共有される）。
+        Assert.DoesNotContain(AdminPassword, string.Join('\n', instance.ReadActivityLog()), StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// <b>合わない資格は 401 <c>invalid credentials</c>。</b> 記録は既存の
+    /// <c>remote.auth fail</c> が受け持ち、<b>1 分に 1 行へ間引かれる</b>
+    /// ── 総当たりで activity.log を使い切らせないため。
+    /// </summary>
+    [Fact]
+    public async Task AFailedLogin_IsRefusedAndRecordedOnce()
+    {
+        using var instance = AppInstance.Create(app, RemoteUserSettings(allowGuestRead: false));
+        int port = WaitForPort(instance);
+        using var client = CreateClient(port);
+
+        foreach ((string user, string password) in new[]
+        {
+            (AdminUser, "wrong-password"),
+            ("nobody", AdminPassword),
+            (AdminUser, ""),
+        })
+        {
+            using var request = LoginRequest(user, password);
+            using var response = await client.SendAsync(request, Ct);
+            using var body = await ExpectAsync(response, HttpStatusCode.Unauthorized);
+            Assert.Equal(4, body.RootElement.GetProperty("exitCode").GetInt32());
+            Assert.Equal("invalid credentials", body.RootElement.GetProperty("error").GetString());
+            // 断った要求は Cookie を配らない。
+            Assert.False(response.Headers.Contains("Set-Cookie"));
+        }
+
+        var failures = ActivityLogFile.Events(instance.ReadActivityLog(), "remote.auth fail");
+        Assert.True(failures.Count == 1,
+            $"remote.auth fail が {failures.Count} 行あります（間引きが効いていれば 1 行）:"
+            + Environment.NewLine + string.Join(Environment.NewLine, failures));
+
+        // 利用者名もパスワードも記録には出さない。
+        string log = string.Join('\n', instance.ReadActivityLog());
+        Assert.DoesNotContain(AdminPassword, log, StringComparison.Ordinal);
+
+        // 正しい資格なら通る（上の 3 回が「全部落ちる」実装で緑にならないように）。
+        _ = await LoginAsync(client, AdminUser, AdminPassword, "Admin");
+    }
+
+    /// <summary>
+    /// <b>ログアウトした Cookie は二度と通らない。</b> ブラウザ側で消えるだけでは
+    /// 「その値を控えていた相手」に対して何も変わらない ── サーバー側で失効させる。
+    /// </summary>
+    [Fact]
+    public async Task LoggingOut_InvalidatesTheSameCookie()
+    {
+        using var instance = AppInstance.Create(app, RemoteUserSettings(allowGuestRead: false));
+        int port = WaitForPort(instance);
+        using var client = CreateClient(port);
+
+        string cookie = await LoginAsync(client, ViewerUser, ViewerPassword, "Viewer");
+
+        using (var request = AsSession(HttpMethod.Get, "api/recorders", cookie, clientHeader: false))
+        using (var response = await client.SendAsync(request, Ct))
+            (await ExpectAsync(response, HttpStatusCode.OK)).Dispose();
+
+        using (var request = AsSession(HttpMethod.Post, "api/logout", cookie))
+        using (var response = await client.SendAsync(request, Ct))
+            (await ExpectAsync(response, HttpStatusCode.OK)).Dispose();
+
+        using (var request = AsSession(HttpMethod.Get, "api/recorders", cookie, clientHeader: false))
+        using (var response = await client.SendAsync(request, Ct))
+        {
+            using var body = await ExpectAsync(response, HttpStatusCode.Unauthorized);
+            Assert.Equal("authentication required", body.RootElement.GetProperty("error").GetString());
+        }
+
+        string logout = Assert.Single(ActivityLogFile.Events(instance.ReadActivityLog(), "remote.auth logout"));
+        output.WriteLine(logout);
+        Assert.Contains($"user={ViewerUser}", logout, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// <b>ログインにもクライアントヘッダーが要る。</b> CSRF 対策は「Cookie を持っている
+    /// 相手」ではなく「他所のページからの送信」を止めるもので、セッションを<b>作る</b>
+    /// 要求もその対象に入る。断りは 403 で、<b>資格の照合まで到達しない</b>。
+    /// </summary>
+    [Fact]
+    public async Task LoggingInWithoutTheClientHeader_IsRefusedBeforeTheCredentials()
+    {
+        using var instance = AppInstance.Create(app, RemoteUserSettings(allowGuestRead: false));
+        int port = WaitForPort(instance);
+        using var client = CreateClient(port);
+
+        using (var request = LoginRequest(AdminUser, AdminPassword, clientHeader: false))
+        using (var response = await client.SendAsync(request, Ct))
+        {
+            using var body = await ExpectAsync(response, HttpStatusCode.Forbidden);
+            Assert.Equal(4, body.RootElement.GetProperty("exitCode").GetInt32());
+            Assert.Equal("client header required", body.RootElement.GetProperty("error").GetString());
+            Assert.False(response.Headers.Contains("Set-Cookie"));
+        }
+
+        // 記録しない ── ここへ来るのは資格を当てにきているものではない。
+        Assert.Empty(ActivityLogFile.Events(instance.ReadActivityLog(), "remote.auth fail"));
+        Assert.Empty(ActivityLogFile.Events(instance.ReadActivityLog(), "remote.auth login"));
+    }
+
+    /// <summary>
+    /// <b>既存のアクセストークンは Admin のまま。</b> 役割を足したことで、
+    /// これまでトークンで動いていた呼び出し側（バッチ・curl）の意味を変えない。
+    /// <c>?token=</c> で配られる Cookie も同じく Admin。
+    /// </summary>
+    [Fact]
+    public async Task TheAccessToken_StillActsAsAnAdmin()
+    {
+        using var instance = AppInstance.Create(app, RemoteUserSettings(allowGuestRead: false));
+        int port = WaitForPort(instance);
+        using var client = CreateClient(port);
+
+        // Bearer は読み取りにも書き込みにも効く。
+        using (var request = Authorized(HttpMethod.Get, "api/recorders"))
+        using (var response = await client.SendAsync(request, Ct))
+            (await ExpectAsync(response, HttpStatusCode.OK)).Dispose();
+
+        using (var response = await SendAsync(client, Patch, "api/settings", "{\"RecordingRetentionDays\":7}"))
+            (await ExpectAsync(response, HttpStatusCode.OK)).Dispose();
+
+        using (var request = Authorized(HttpMethod.Get, "api/me"))
+        using (var response = await client.SendAsync(request, Ct))
+        {
+            using var body = await ExpectAsync(response, HttpStatusCode.OK);
+            Assert.Equal("token", body.RootElement.GetProperty("name").GetString());
+            Assert.Equal("Admin", body.RootElement.GetProperty("role").GetString());
+            Assert.False(body.RootElement.GetProperty("guest").GetBoolean());
+        }
+
+        string cookie;
+        using (var landing = await client.GetAsync("?token=" + Token, Ct))
+        {
+            Assert.Equal(HttpStatusCode.Redirect, landing.StatusCode);
+            cookie = Assert.Single(landing.Headers.GetValues("Set-Cookie")).Split(';')[0];
+        }
+
+        using (var request = AsSession(Patch, "api/settings", cookie, "{\"RecordingRetentionDays\":9}"))
+        using (var response = await client.SendAsync(request, Ct))
+            (await ExpectAsync(response, HttpStatusCode.OK)).Dispose();
     }
 }

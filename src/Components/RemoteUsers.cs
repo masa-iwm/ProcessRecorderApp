@@ -64,6 +64,18 @@ public static class RemoteUserRules
     /// <summary>新しく作るハッシュの反復回数。</summary>
     public const int Iterations = 600_000;
 
+    /// <summary>
+    /// 保存済みのハッシュで受け付ける反復回数の上限（<see cref="Iterations"/> の 4 倍）。
+    ///
+    /// <para>
+    /// <b>上限が無いと、settings.json に大きな数を書くだけでログイン 1 回が数分の
+    /// CPU になる</b> ── 手で編集できるファイルの値をそのまま PBKDF2 へ渡すのだから、
+    /// 壊れた値と同じく「不正な形式」として扱う。4 倍あるのは、
+    /// <see cref="Iterations"/> を将来引き上げても古いハッシュが読めるようにするための余地。
+    /// </para>
+    /// </summary>
+    public const int MaxIterations = Iterations * 4;
+
     /// <summary>salt の長さ（バイト）。</summary>
     public const int SaltBytes = 16;
 
@@ -105,7 +117,8 @@ public static class RemoteUserRules
     ///
     /// <para>
     /// <b>反復回数は保存側の値を使う</b> ── <see cref="Iterations"/> を将来引き上げても、
-    /// 古い設定ファイルのハッシュが照合できなくなってはいけない。
+    /// 古い設定ファイルのハッシュが照合できなくなってはいけない。ただし
+    /// <see cref="MaxIterations"/> を超える値は不正な形式として false にする。
     /// </para>
     /// <para>
     /// <b>不正な形式では例外を投げず false を返す</b>。settings.json は手で編集できるので、
@@ -167,8 +180,11 @@ public static class RemoteUserRules
         if (!string.Equals(parts[0], HashPrefix, StringComparison.Ordinal))
             return false;
 
-        if (!int.TryParse(parts[1], NumberStyles.None, CultureInfo.InvariantCulture, out iterations) || iterations <= 0)
+        if (!int.TryParse(parts[1], NumberStyles.None, CultureInfo.InvariantCulture, out iterations)
+            || iterations <= 0 || MaxIterations < iterations)
+        {
             return false;
+        }
 
         if (!TryFromBase64(parts[2], out salt) || salt.Length == 0)
             return false;

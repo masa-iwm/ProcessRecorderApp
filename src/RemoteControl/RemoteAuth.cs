@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using Microsoft.AspNetCore.Http;
 using ProcessRecorderApp.Components;
@@ -6,20 +7,20 @@ using ProcessRecorderApp.Components;
 namespace ProcessRecorderApp.RemoteControl;
 
 /// <summary>
-/// 書き込み要求の認証と、ブラウザ用のセッション発行。
+/// 要求の認証（誰であるか）と、ブラウザ用のセッション発行。認可の規則そのものは
+/// <see cref="RemoteAuthRules"/>（純粋関数、L1 が固定）にあり、ここは
+/// <b>HTTP から資格を取り出してそちらへ渡すだけ</b>である。
 ///
 /// <para>
-/// <b>読み取り（GET）は認証しない。</b> 画面の内容が LAN に見えることは利用者の決定であり、
-/// <c>&lt;video&gt;</c> や <c>EventSource</c> がヘッダーを付けられない以上、
-/// 読み取りに Bearer を要求すると成立しない。守りは「機能オフ既定」「トークン」
-/// 「Firewall」の 3 つが担う。
+/// <b>読み取りにも名乗りが要る。</b> 例外は <c>RemoteControlAllowGuestRead</c> が
+/// true のときの読み取りだけで、その場合は誰でも <see cref="RemoteRole.Viewer"/> 相当に見える。
+/// 静的資産（<c>/</c>・<c>/{name}</c>）は無認証のまま ── ログインの画面そのものが
+/// そこから配られる。
 /// </para>
 /// <para>
-/// <b>書き込みの判定順は ① 資格（Bearer か Cookie）② クライアントヘッダー。</b>
-/// 資格が無ければ 401、資格はあるが <c>X-PRApp-Client: 1</c> が無ければ 403 と、
-/// <b>状態が「誰であるか」と「どこから来たか」で分かれる</b> ── 資格の有無を
-/// 先に答えるので、ヘッダーを忘れた呼び出し側は 403 を見て
-/// 「トークンは合っている」と分かる。
+/// <b>判定順は ① 名乗り ② クライアントヘッダー ③ 役割。</b> 名乗れていなければ 401、
+/// 名乗れているのに <c>X-PRApp-Client: 1</c> が無ければ 403、役割が足りなければ 403 と、
+/// <b>状態が「誰であるか」「どこから来たか」「何をしてよいか」で分かれる</b>。
 /// </para>
 /// <para>
 /// <b>ヘッダーの検査は CSRF 対策である。</b> 「他所のページが仕込んだフォーム送信」は
@@ -28,7 +29,11 @@ namespace ProcessRecorderApp.RemoteControl;
 /// そのため<b>正しい Cookie でもヘッダーが無ければ通さない</b>。
 /// </para>
 /// </summary>
-internal sealed class RemoteAuth(string accessToken, SessionStore sessions)
+internal sealed class RemoteAuth(
+    string accessToken,
+    IReadOnlyList<RemoteUserDefinition> users,
+    bool allowGuestRead,
+    SessionStore sessions)
 {
     /// <summary>ブラウザのセッション Cookie 名。</summary>
     public const string CookieName = "prapp_session";
@@ -46,37 +51,41 @@ internal sealed class RemoteAuth(string accessToken, SessionStore sessions)
     /// </summary>
     public static readonly TimeSpan FailureLogInterval = TimeSpan.FromMinutes(1);
 
+    /// <summary>
+    /// セッション Cookie の属性。<b>発行するのは 2 箇所（<c>GET /?token=</c> と
+    /// <c>POST /api/login</c>）あるので、値ではなくこの関数を共有する</b>
+    /// ── 写して置くと、片方だけ直された日に属性が食い違う。
+    ///
+    /// <para>
+    /// HTTP のみ（HTTPS は v1 の対象外）なので <c>Secure</c> は付けない。
+    /// <c>HttpOnly</c> はスクリプトから読ませないため、<c>SameSite=Strict</c> は
+    /// 他所のページからの遷移で Cookie を送らせないため。
+    /// <b>有効期限を付けない</b>のでブラウザを閉じると消える（サーバー側の絶対期限は
+    /// <see cref="SessionStore.SessionLifetime"/> が別に持つ）。
+    /// </para>
+    /// </summary>
+    public static CookieOptions SessionCookieOptions() => new()
+    {
+        HttpOnly = true,
+        SameSite = SameSiteMode.Strict,
+        Path = "/",
+    };
+
     private readonly SessionStore _sessions = sessions;
     private readonly string _accessToken = accessToken;
+    private readonly IReadOnlyList<RemoteUserDefinition> _users = users;
+    private readonly bool _allowGuestRead = allowGuestRead;
     private long _lastFailureLogMs = long.MinValue;
 
-    /// <summary>認証の判定結果。</summary>
-    public enum Decision
-    {
-        /// <summary>通す。</summary>
-        Allow,
-
-        /// <summary>クライアントヘッダーが無い（403）。</summary>
-        MissingClientHeader,
-
-        /// <summary>資格が無いか間違っている（401）。</summary>
-        Unauthorized,
-    }
-
-    /// <summary>書き込み要求を通してよいか。</summary>
-    public Decision AuthorizeWrite(HttpContext ctx)
-    {
-        if (!HasCredentials(ctx))
-            return Decision.Unauthorized;
-
-        if (!string.Equals(ctx.Request.Headers[ClientHeaderName].ToString(), ClientHeaderValue, StringComparison.Ordinal))
-            return Decision.MissingClientHeader;
-
-        return Decision.Allow;
-    }
-
-    /// <summary>Bearer か セッション Cookie の<b>どちらか</b>が正しいか。</summary>
-    private bool HasCredentials(HttpContext ctx)
+    /// <summary>
+    /// この要求が誰であるか。名乗れていなければ <see langword="null"/>。
+    ///
+    /// <para>
+    /// <b>誤った Bearer でも短絡せず Cookie を見る</b> ── ブラウザは Cookie を自動で
+    /// 送るので、手で付けた古い <c>Authorization</c> が同居しうる。
+    /// </para>
+    /// </summary>
+    public RemotePrincipal? Resolve(HttpContext ctx)
     {
         string authorization = ctx.Request.Headers.Authorization.ToString();
         if (0 < authorization.Length)
@@ -85,22 +94,49 @@ internal sealed class RemoteAuth(string accessToken, SessionStore sessions)
             if (authorization.StartsWith(Prefix, StringComparison.Ordinal)
                 && RemoteApiRules.TokenEquals(_accessToken, authorization[Prefix.Length..]))
             {
-                return true;
+                return new RemotePrincipal(RemoteAuthRules.TokenPrincipalName, RemoteRole.Admin);
             }
         }
 
-        // 誤った Bearer でも Cookie は見る ── ブラウザは Cookie を自動で送るので、
-        // 手で付けた古い Authorization が同居しうる。
-        return _sessions.Contains(ctx.Request.Cookies[CookieName]);
+        return _sessions.TryGet(ctx.Request.Cookies[CookieName], out SessionEntry entry)
+            ? new RemotePrincipal(entry.Name, entry.Role)
+            : null;
     }
 
-    /// <summary>クエリの <c>token</c> が正しければセッションを発行する。誤りなら null。</summary>
+    /// <summary>この要求を通してよいか（判定は <see cref="RemoteAuthRules.Decide"/>）。</summary>
+    public RemoteAuthDecision Authorize(HttpContext ctx, RemoteRole required, bool write)
+        => RemoteAuthRules.Decide(Resolve(ctx), required, write, HasClientHeader(ctx), _allowGuestRead);
+
+    /// <summary><c>X-PRApp-Client: 1</c> が付いているか（序数一致）。</summary>
+    public static bool HasClientHeader(HttpContext ctx)
+        => string.Equals(ctx.Request.Headers[ClientHeaderName].ToString(), ClientHeaderValue, StringComparison.Ordinal);
+
+    /// <summary>
+    /// クエリの <c>token</c> が正しければ Admin のセッションを発行する。誤りなら null。
+    /// </summary>
     public string? TryIssueSession(string? presentedToken)
-        => RemoteApiRules.TokenEquals(_accessToken, presentedToken) ? _sessions.Issue() : null;
+        => RemoteApiRules.TokenEquals(_accessToken, presentedToken)
+            ? _sessions.Issue(RemoteAuthRules.TokenPrincipalName, RemoteRole.Admin)
+            : null;
+
+    /// <summary>
+    /// 利用者名とパスワードで名乗る。合えばセッションを発行して ID と本人を返す。
+    /// 合わなければ <see langword="null"/>（照合に掛かる時間は名前の存否で変わらない）。
+    /// </summary>
+    public (string SessionId, RemotePrincipal Principal)? TryLogin(string name, string password)
+    {
+        if (RemoteAuthRules.Authenticate(_users, name, password) is not { } principal)
+            return null;
+
+        return (_sessions.Issue(principal.Name, principal.Role), principal);
+    }
+
+    /// <summary>セッションを失効させる（ログアウト）。</summary>
+    public void RemoveSession(string? sessionId) => _sessions.Remove(sessionId);
 
     /// <summary>
     /// 認証の失敗を記録する（<see cref="FailureLogInterval"/> に 1 行へ間引く）。
-    /// <b>トークンは絶対に書かない</b> ── activity.log は利用者が貼り付けて共有する種類のファイル。
+    /// <b>トークンも利用者名も書かない</b> ── activity.log は利用者が貼り付けて共有する種類のファイル。
     /// </summary>
     public void ReportFailure(HttpContext ctx)
     {

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
 using System.Net;
@@ -22,11 +23,25 @@ namespace ProcessRecorderApp.RemoteControl;
 /// <param name="BindAddress">待ち受ける IP アドレス（<c>0.0.0.0</c> で全インターフェイス）。</param>
 /// <param name="Port">待ち受けるポート。<b>0 は「空いているものを OS に選ばせる」</b>。</param>
 /// <param name="AccessToken">
-/// 書き込み要求に要る秘密。<b>空文字での起動は呼び出し側が拒む</b>
-/// （<c>TokenEquals</c> は空文字同士でも false を返すので通りはしないが、
-/// 「トークン無しで動いているように見える」状態を作らない）。
+/// それ 1 つで <see cref="RemoteRole.Admin"/> として通る秘密。<b>空文字での起動は
+/// 呼び出し側が拒む</b>（<c>TokenEquals</c> は空文字同士でも false を返すので
+/// 通りはしないが、「トークン無しで動いているように見える」状態を作らない）。
 /// </param>
-public sealed record RemoteControlOptions(string BindAddress, int Port, string AccessToken);
+/// <param name="Users">
+/// 名前とパスワードで名乗れる利用者。<b>写しを渡すこと</b> ── 設定側の実体を渡すと、
+/// UI スレッドが書き換えているリストを要求スレッドが読むことになる。
+/// </param>
+/// <param name="AllowGuestRead">
+/// 名乗っていない相手に <see cref="RemoteRole.Viewer"/> の読み取りを許すか。
+/// <b>この 2 つも他の設定と同じくホストの作り直しでしか変わらない</b>
+/// ── 作り直せば全セッションが失効する。
+/// </param>
+public sealed record RemoteControlOptions(
+    string BindAddress,
+    int Port,
+    string AccessToken,
+    IReadOnlyList<RemoteUserDefinition> Users,
+    bool AllowGuestRead);
 
 /// <summary>
 /// リモート操作サーバー（Kestrel）の 1 実体。
@@ -71,7 +86,7 @@ public sealed class RemoteControlHost : IAsyncDisposable
         var builder = WebApplication.CreateSlimBuilder(new WebApplicationOptions());
         // このプロセスにコンソールは無い（常駐ワーカーは非表示で起動する）。
         // 出さない理由はそれだけではなく、要求ごとのアクセスログを activity.log へ
-        // 混ぜないためでもある ── 記録するのは remote.* の 4 種だけ。
+        // 混ぜないためでもある ── 記録するのは remote.* の 6 種だけ。
         builder.Logging.ClearProviders();
         // **UseUrls は使わない。** あちらは文字列を経由するぶん解釈の余地があり、
         // 「0.0.0.0 と書いたのに localhost だけで待っていた」を作りうる。
@@ -79,7 +94,7 @@ public sealed class RemoteControlHost : IAsyncDisposable
 
         WebApplication app = builder.Build();
 
-        var auth = new RemoteAuth(options.AccessToken, new SessionStore());
+        var auth = new RemoteAuth(options.AccessToken, options.Users, options.AllowGuestRead, new SessionStore());
 
         // 例外の受け口は経路より手前に置く（WebApplication は利用者のミドルウェアを
         // ルーティングとエンドポイント実行の間に挟む）。
@@ -135,14 +150,15 @@ public sealed class RemoteControlHost : IAsyncDisposable
         }
 
         RootEndpoint.Map(app, auth);
+        AuthEndpoints.Map(app, auth);
         PingEndpoint.Map(app, auth);
-        RecorderEndpoints.Map(app, backend);
+        RecorderEndpoints.Map(app, backend, auth);
         ControlEndpoints.Map(app, backend, auth);
         VariableEndpoints.Map(app, backend, auth);
         SettingsEndpoints.Map(app, backend, auth);
-        EventsEndpoint.Map(app, backend);
-        RecordingEndpoints.Map(app, backend);
-        PreviewEndpoints.Map(app, backend);
+        EventsEndpoint.Map(app, backend, auth);
+        RecordingEndpoints.Map(app, backend, auth);
+        PreviewEndpoints.Map(app, backend, auth);
 
         app.MapFallback(async (HttpContext ctx) =>
             await ApiResponse.WriteErrorAsync(

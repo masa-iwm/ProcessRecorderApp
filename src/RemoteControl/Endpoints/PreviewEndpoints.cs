@@ -3,12 +3,14 @@ using System.Threading.Channels;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Features;
+using ProcessRecorderApp.Components;
 
 namespace ProcessRecorderApp.RemoteControl.Endpoints;
 
 /// <summary>
 /// ライブプレビューの配信（<c>GET /api/recorders/{id}/preview.mp4</c>）。
-/// <b>GET だけなので認証は要らない</b>（読み取りの規律は他の GET と同じ）。
+/// <b>要る役割は <see cref="RemoteRole.Viewer"/></b>（読み取りの規律は他の GET と同じ ──
+/// ゲスト読み取りを許していれば未認証でも見える）。
 ///
 /// <para>
 /// <b>本文は fMP4 の連続で、終端は無い。</b> 最初の 1 件が init セグメント
@@ -31,10 +33,13 @@ internal static class PreviewEndpoints
     /// <summary>配信する MIME 型（中身は fragmented MP4）。</summary>
     private const string PreviewContentType = "video/mp4";
 
-    public static void Map(WebApplication app, IRemoteControlBackend backend)
+    public static void Map(WebApplication app, IRemoteControlBackend backend, RemoteAuth auth)
     {
         app.MapGet("/api/recorders/{id}/preview.mp4", async (HttpContext ctx) =>
         {
+            if (!await AuthGate.AllowAsync(ctx, auth, RemoteRole.Viewer, write: false))
+                return;
+
             string id = ctx.Request.RouteValues["id"]?.ToString() ?? string.Empty;
             var ct = ctx.RequestAborted;
 

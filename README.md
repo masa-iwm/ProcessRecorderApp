@@ -28,8 +28,9 @@ goes away.
 - **Live preview** — watch the selected recorder's video in the app window in real time.
 - **Remote control from a browser** — optionally runs a small HTTP server so that a
   browser on another PC on the same LAN can watch the recorders, start and stop them, change
-  settings, browse past recordings and see a live preview. Off by default, and **reading is
-  deliberately unauthenticated** — see the section below before turning it on.
+  settings, browse past recordings and see a live preview. Off by default, with **named users in
+  three roles** (`Viewer` / `Operator` / `Admin`) and an optional guest read — see the section
+  below before turning it on.
 - **Burnt-in timestamp** — the date and time are rendered into the recorded video.
 - **Filename templates** — the output name is given as a template such as
   `{Now:yyyyMMdd_HHmmss}_{Name}.mp4`, and can embed the date and time, the recorder name,
@@ -212,7 +213,27 @@ http://<the IP address of the PC running the app>:8752/?token=<the access token>
 
 once. The server answers with a session cookie (`HttpOnly`, `SameSite=Strict`, gone when the
 browser closes) and redirects to `/`, so the token never has to appear in the address bar again.
-Scripts can send `Authorization: Bearer <the access token>` instead of holding a cookie.
+Scripts can send `Authorization: Bearer <the access token>` instead of holding a cookie. The token
+is **the administrator's key**: whoever holds it may do everything.
+
+**Users and roles.** Instead of handing the token around, add named users on the Settings screen —
+the `RemoteUserList` row shows how many there are and its "…" button opens the editor. Each user
+has a password (stored only as a PBKDF2-SHA256 hash; the plain text is never written anywhere) and
+one of three roles:
+
+| Role | May do |
+|---|---|
+| `Viewer` | Read everything the page shows, including the live preview. |
+| `Operator` | Everything a `Viewer` may, plus start/stop recordings and set filename-template variables. |
+| `Admin` | Everything, including changing the application and recorder settings. |
+
+Users sign in on the page itself (the form appears whenever the server answers `401`), and the
+session lasts **at most 24 hours** — it is not extended by use. Turning `RemoteControlAllowGuestRead`
+on lets anyone who can reach the port read without signing in, exactly as in previous versions;
+leaving it off (the default) means **even reading needs a sign-in**.
+
+**Changing users or the guest setting restarts the server**, which signs everybody out. Changing
+the token, the bind address or the port does the same.
 
 **What you get.** The page lists every recorder with the same state the `status` command reports
 and lets you start and stop them one at a time or all at once; edit each recorder's settings and
@@ -225,13 +246,17 @@ what the transport adds).
 
 **Security — read this before turning it on.**
 
-- **Every `GET` is unauthenticated.** The recorder list and state, the application settings, the
-  recorder settings (including `SrcPipeline`, the raw GStreamer pipeline, and `FilenameTemplate`,
-  which may be an absolute path), the list of recordings, the recording files themselves and the
-  live preview are all readable by **anyone who can reach the port**, with no token at all.
-  Whatever is on the captured screen is on the LAN.
-- **Writing needs the token, and holding the token is as good as sitting at the machine.**
-  Starting and stopping recordings, changing settings and setting variables all require it.
+- **Reading is not free unless you say so.** With `RemoteControlAllowGuestRead` on, the recorder
+  list and state, the application settings, the recorder settings (including `SrcPipeline`, the raw
+  GStreamer pipeline, and `FilenameTemplate`, which may be an absolute path), the list of
+  recordings, the recording files themselves and the live preview become readable by **anyone who
+  can reach the port** — whatever is on the captured screen is on the LAN. The web page itself
+  (`/`, `app.js`, `app.css`) is always served without a sign-in, because that is where the sign-in
+  form comes from. The access token and the stored password hashes are **never** part of any
+  response.
+- **Writing needs a session, and an `Admin` session is as good as sitting at the machine.**
+  Starting and stopping recordings and setting variables need `Operator`; changing settings needs
+  `Admin`; the access token counts as `Admin`.
   Recorder settings are filtered too: `SrcPipeline`, `EncodingProperties`,
   `ContinuousEncodingProperties`, `FilenameTemplate` and `ContinuousFilenameTemplate` are refused
   (400), because the first three *are* what the app runs — the encoder strings are interpolated

@@ -25,10 +25,13 @@ internal static class RecordingEndpoints
     /// <summary>配信する MIME 型。録画は必ず MP4（<c>RecordingCleanup.Extension</c> で絞ってある）。</summary>
     private const string VideoContentType = "video/mp4";
 
-    public static void Map(WebApplication app, IRemoteControlBackend backend)
+    public static void Map(WebApplication app, IRemoteControlBackend backend, RemoteAuth auth)
     {
         app.MapGet("/api/recordings", async (HttpContext ctx) =>
         {
+            if (!await AuthGate.AllowAsync(ctx, auth, RemoteRole.Viewer, write: false))
+                return;
+
             string root = await backend.GetRecordingsRootAsync(ctx.RequestAborted);
 
             // **列挙はスレッドプールの別スレッドへ逃がす。** 1 件ずつ開いて
@@ -47,6 +50,9 @@ internal static class RecordingEndpoints
 
         app.MapGet("/api/recordings/{*path}", async (HttpContext ctx) =>
         {
+            if (!await AuthGate.AllowAsync(ctx, auth, RemoteRole.Viewer, write: false))
+                return;
+
             string root = await backend.GetRecordingsRootAsync(ctx.RequestAborted);
             string urlPath = ctx.Request.RouteValues["path"]?.ToString() ?? string.Empty;
 

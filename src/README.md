@@ -713,10 +713,12 @@ sink パイプラインのバスを購読しているハンドラ（`HandleBusMe
 | `OutputDirectory` | 空欄 | 録画の保存先。空欄なら実行ファイルのあるディレクトリ。相対パスもそこからの相対。Settings 画面では「…」でフォルダー選択ダイアログが開く（後述） |
 | `RecordingRetentionDays` | `0` | この日数を過ぎた mp4 を自動削除する。**0 なら削除しない** |
 | `RecordingCleanupIntervalHours` | `6` | 自動削除の間隔（時間）。1 未満は 1、**1000 を超える値は 1000** として扱う（`Task.Delay` の上限 ≒ 1,193 時間より手前で頭打ちにする。超えると周回が例外死して保持期限が無音で効かなくなる） |
-| `RemoteControlEnabled` | `false` | ブラウザからのリモート操作の HTTP サーバーを動かす。**読み取り（GET）はトークン不要**なので、ポートに到達できる相手には全て見える。詳細は「リモート操作（内蔵 HTTP サーバー）」の節 |
+| `RemoteControlEnabled` | `false` | ブラウザからのリモート操作の HTTP サーバーを動かす。要求には利用者のログインかアクセストークンが要る（`RemoteControlAllowGuestRead` を ON にすると**読み取り（GET）だけ**は無認証になり、ポートに到達できる相手には全て見える）。詳細は「リモート操作（内蔵 HTTP サーバー）」の節 |
 | `RemoteControlBindAddress` | `0.0.0.0` | 待ち受ける IP アドレス。`0.0.0.0` は全てのネットワークインターフェイス、`127.0.0.1` はこの PC のみ。変更するとサーバーを再起動する |
 | `RemoteControlPort` | `8752` | 待ち受ける TCP ポート。`0` なら空いているポートを OS が選ぶ（実際に使われたポートは `remote.start` に出る） |
-| `RemoteControlAccessToken` | 空欄 | 書き込み（POST/PATCH/PUT）に要る秘密の文字列。有効化した時点で 32 バイト乱数の Base64Url（43 文字）が自動生成される。**読み取りはこれでは保護されない** |
+| `RemoteControlAccessToken` | 空欄 | **それ 1 つで `Admin` として通る**秘密の文字列。有効化した時点で 32 バイト乱数の Base64Url（43 文字）が自動生成される |
+| `RemoteControlAllowGuestRead` | `false` | ログインしていない相手に `Viewer` 相当の読み取りを許すか。書き込みは値に関わらず 401 |
+| `RemoteUsers` | `[]` | リモート利用者（名前・パスワードのハッシュ・役割）。PropertyGrid には出ず、`RemoteUserList` の行の「…」で開く編集ダイアログで扱う |
 
 削除は `Components.RecordingCleanup.Sweep`（サブフォルダーも再帰的に探す。判定は更新時刻。
 **リパースポイント［ジャンクション・シンボリックリンク］には降りない** ── リンク先は
@@ -1699,7 +1701,8 @@ UI スレッドで走る。`TryEnqueue` が false なら `RemoteApiException(12,
 ＝ 503。UI スレッドから返す値はすべて不変 DTO へ写してから境界を越える。
 
 サーバーの寿命は `Services/RemoteControlService`（アプリの起動時に `Start`、
-`AppWindow.Destroying` で `Dispose`）。設定 4 キーのいずれかが変わると 300ms 合流させたうえで
+`AppWindow.Destroying` で `Dispose`）。設定 6 キー（待ち受け 3 ＋ トークン ＋ `RemoteUsers` ＋
+`RemoteControlAllowGuestRead`）のいずれかが変わると 300ms 合流させたうえで
 **必ず停止 → 起動**をやり直す（`activity.log` には `remote.stop` → `remote.start` の順で出る）。
 停止は内側 3 秒・外側 8 秒で有界。**サーバーが立たなくても録画は止めない**ので、起動の失敗は
 `remote.error` にしか現れない。
@@ -1708,12 +1711,12 @@ UI スレッドで走る。`TryEnqueue` が false なら `RemoteApiException(12,
 
 | 設定 | 型・既定 | 意味 |
 |---|---|---|
-| `RemoteControlEnabled` | `bool` / `false` | ブラウザから操作するための HTTP サーバーを動かす。読み取り（レコーダーの一覧・状態・設定の閲覧）はトークン不要で応答するため、**ポートに到達できる相手には全て見える** |
+| `RemoteControlEnabled` | `bool` / `false` | ブラウザから操作するための HTTP サーバーを動かす。`RemoteControlAllowGuestRead` を ON にすると読み取り（レコーダーの一覧・状態・設定の閲覧）が無認証になり、**ポートに到達できる相手には全て見える** |
 | `RemoteControlBindAddress` | `string` / `"0.0.0.0"` | 待ち受ける IP アドレス。`0.0.0.0` は全てのネットワークインターフェイス（「別 PC から」にはこれが要る）、`127.0.0.1` はこの PC のみ。変更するとサーバーを再起動する |
 | `RemoteControlPort` | `int` / `8752` | 待ち受ける TCP ポート。`0` なら空いているポートを OS が選ぶ ── **実際に使われたポートは `remote.start` にしか出ない** |
-| `RemoteControlAccessToken` | `string` / `""` | 書き込み操作（録画の開始・停止、設定の変更）に要る秘密の文字列。**読み取りはこれでは保護されない** |
-| `RemoteControlAllowGuestRead` | `bool` / `false` | ログインしていない相手に読み取り専用のアクセスを許すか。**現在の実装では読み取りは無認証で応答する**ので、この値はまだサーバーの挙動を変えない |
-| `RemoteUsers` | `RemoteUserDefinition[]` / `[]` | リモート利用者（名前・パスワードのハッシュ・役割）。**PropertyGrid には出ない**（settings.json を直に書くか、`RemoteUserList` の行の「…」で開く編集ダイアログでのみ変わる）。役割は `Viewer` / `Operator` / `Admin` を名前で保存する。パスワードは `RemoteUserRules` の PBKDF2-SHA256（`pbkdf2-sha256$<iter>$<salt>$<hash>`）で、平文は保存しない。**現在の実装では認証に使われていない** |
+| `RemoteControlAccessToken` | `string` / `""` | **それ 1 つで `Admin` として通る**秘密の文字列（`Authorization: Bearer` と `GET /?token=`）。利用者を登録していなくても、これだけで全操作ができる |
+| `RemoteControlAllowGuestRead` | `bool` / `false` | ログインしていない相手に `Viewer` 相当の読み取りを許すか。**既定は false ＝ 読み取りにも名乗りが要る**。書き込みは値に関わらず 401 |
+| `RemoteUsers` | `RemoteUserDefinition[]` / `[]` | リモート利用者（名前・パスワードのハッシュ・役割）。**PropertyGrid には出ない**（settings.json を直に書くか、`RemoteUserList` の行の「…」で開く編集ダイアログでのみ変わる）。役割は `Viewer` / `Operator` / `Admin` を名前で保存する。パスワードは `RemoteUserRules` の PBKDF2-SHA256（`pbkdf2-sha256$<iter>$<salt>$<hash>`）で、平文は保存しない。**`GET /api/settings` の応答には出さない** |
 
 待ち受けの 4 キーがネストではなくフラットなのは、`AppSettings` がフラット構造で PropertyGrid が
 ネストを展開しないため。既定のバインドが `0.0.0.0` なのは「別 PC から操作する」が目的そのもので、
@@ -1727,37 +1730,74 @@ UI スレッドで走る。`TryEnqueue` が false なら `RemoteApiException(12,
 「…」ボタンは同じ生成器で作り直す（古いトークンと、それで開いたブラウザのセッションが失効する）。
 **行そのものは読み取り専用**（`[ReadOnly(true)]` ＋ `[ValueBuilder]` ＝「ビルダーでのみ変更できる」。
 選択・コピーはできる）で、値を変える手段はこのボタンだけ。
-**`AppSettings.Reload()` が 4 キーを写す順序は「トークン → バインド → ポート → 有効」で固定**
+**`AppSettings.Reload()` が待ち受け 4 キーを写す順序は「トークン → バインド → ポート → 有効」で固定**
 ── 有効を先に写すと変更ハンドラがトークンを生成し、その直後にファイル側の空文字で潰される。
 
-### 認証（読み取りは無認証・書き込みはトークン必須）
+### 認証（ユーザー・役割・ゲスト）
 
-判定は `RemoteAuth.AuthorizeWrite`。**順序そのものが仕様**である:
+判定核は `Components/RemoteAuthRules.Decide`（純粋関数。L1 の `RemoteAuthRulesTests` が
+全分岐を表駆動で固定する）。HTTP から資格を取り出すのは `RemoteAuth.Resolve` / `Authorize`、
+断り方は `AuthGate.AllowAsync`。**順序そのものが仕様**である:
 
-1. 資格情報が無い／合わない → **401**（`remote.auth fail` を記録）
-2. `X-PRApp-Client: 1`（`RemoteAuth.ClientHeaderName` / `ClientHeaderValue`、序数比較）が
-   付いていない → **403**（記録しない）
+1. **名乗れていない** → ゲスト読み取りが許可されていて、要る役割が `Viewer` で、書き込みでない
+   なら **Allow**。それ以外は **401** `authentication required`（`remote.auth fail` を記録）
+2. **書き込みなのに `X-PRApp-Client: 1` が無い**（`RemoteAuth.ClientHeaderName` /
+   `ClientHeaderValue`、序数比較）→ **403** `client header required`（記録しない）
+3. **役割が足りない** → **403** `insufficient role`（記録しない）
+4. Allow
 
-資格情報を先に見るのは、ヘッダーを付け忘れただけの呼び出し元に「トークンは合っている」と
+資格を役割より先に見るのは、ヘッダーを付け忘れただけの呼び出し元に「名乗りは通っている」と
 分かる 403 を返すため。`X-PRApp-Client` は CSRF 対策で、**CORS を一切設定していない**ので
-他オリジンの `fetch` からはこのヘッダーを付けられない。
+他オリジンの `fetch` からはこのヘッダーを付けられない。読み取りにヘッダーを要求しないのは、
+`<video>` も `EventSource` もヘッダーを付けられないからである。
 
+役割は `Components.RemoteRole`（**数値の順序がそのまま権限の強さ**）:
+
+| 役割 | 通る操作 |
+|---|---|
+| `Viewer` | すべての読み取り（一覧・状態・設定・録画ファイル・ライブプレビュー・SSE）と `POST /api/ping` / `POST /api/logout` / `GET /api/me` |
+| `Operator` | `Viewer` に加えて録画の開始・停止（個別と全台）と `PUT /api/variables/{key}` |
+| `Admin` | すべて。`PATCH /api/settings` と `PATCH /api/recorders/{id}/settings` はここだけ |
+
+- **アクセストークンは Admin 相当**（`Authorization: Bearer <トークン>` と `GET /?token=`）。
+  名乗りの名前は `RemoteAuthRules.TokenPrincipalName` ＝ `token`。役割を足したことで、
+  これまでトークンで動いていた呼び出し側の意味を変えない。
+- **ゲスト**は `RemoteControlAllowGuestRead` が true のときだけ。名乗っていない相手が
+  `Viewer` の**読み取りだけ**通る（書き込みは役割に関わらず 401 ── 「読ませるだけ」の設定で
+  録画を止められてはいけない）。`GET /api/me` は `{"name":"", "role":"Viewer", "guest":true}` を返す。
+- **静的資産（`/`・`/{name}`）は無認証のまま。** ログインの画面がそこから配られる以上、
+  ここを閉じると誰も名乗れない。`MapFallback` の 404 も同じく無認証。
+- 利用者は `AppSettings.RemoteUsers`（`RemoteUserDefinition` ＝ 名前・パスワードのハッシュ・役割）。
+  照合は `RemoteAuthRules.Authenticate` → `RemoteUserRules.Verify`（PBKDF2-SHA256）。
+  **見つからない名前でも `RemoteAuthRules.DummyPasswordHash` で 1 回照合する** ──
+  早く断ると応答時間が「その利用者は居る」を答えてしまう。保存側の反復回数は
+  `RemoteUserRules.MaxIterations`（＝ `Iterations` の 4 倍）で頭打ち。
 - Cookie は `prapp_session`（`HttpOnly` ＋ `SameSite=Strict` ＋ `Path=/`。有効期限を付けないので
-  ブラウザを閉じると消える）。**`Secure` は付けていない** ── HTTP のみだから。
-  **HTTPS 化するときは `Secure` を必ず付けること**（`RootEndpoint` の `CookieOptions` 1 箇所）。
-- セッションを発行するのは `GET /?token=<トークン>` だけ。成功で `Set-Cookie` ＋ **302 → `/`**
-  （トークンがアドレスバーに残らない）、失敗は 401。セッション ID もトークンと同じ生成器で作り、
-  `SessionStore` がメモリ上に最大 64 本だけ持つ（古いものから追い出す。永続化しない）。
+  ブラウザを閉じると消える）。属性の出所は **`RemoteAuth.SessionCookieOptions()` 1 か所**で、
+  `GET /?token=` と `POST /api/login` が共有する。**`Secure` は付けていない** ── HTTP のみだから。
+  **HTTPS 化するときは `Secure` を必ず付けること**（この関数 1 箇所）。
+- セッションを発行するのは `GET /?token=<トークン>`（Admin）と `POST /api/login`（その利用者の役割）。
+  成功で `Set-Cookie`、`?token=` はさらに **302 → `/`**（トークンがアドレスバーに残らない）。
+  セッション ID はトークンと同じ生成器で作り、`SessionStore` がメモリ上に最大 64 本だけ持つ
+  （古いものから追い出す。永続化しない）。**絶対期限は 24 時間**
+  （`SessionStore.SessionLifetime`。使っても延びない ── 延長式にすると開いたままのタブ 1 つで
+  永久に生き残る）。期限切れは読んだときに削除する（`RemoteAuthRules.IsExpired`。境界は切れている扱い）。
+- **`RemoteUsers` と `RemoteControlAllowGuestRead` を変えるとホストを作り直す**
+  （`RemoteControlService` が待ち受け 3 キーとトークンと同じ扱いで購読している）。
+  `SessionStore` はホストと同じ寿命なので、**変更するたびに全セッションが失効する**。
 - `Authorization: Bearer <トークン>` も受ける。**Bearer が違っても短絡せず** Cookie も見る
   ── 手で足した古いヘッダーと、ブラウザが自動送信する Cookie は同居しうる。
 - 比較は `RemoteApiRules.TokenEquals` ＝ UTF-8 バイトに対する
   `CryptographicOperations.FixedTimeEquals`（どちらかが空なら false）。
-- `GET /api/settings` の応答からは `RemoteControlAccessToken` を**二重に**落とす
-  ── `RemoteApiRules.RemoteDeniedAppSettings` に入れたうえで、`SettingsEndpoints` の応答側でも
-  `Remove` する。
+- `GET /api/settings` の応答からは `RemoteControlAccessToken`・`RemoteUsers`・`RemoteUserList` を
+  **二重に**落とす ── `RemoteApiRules.RemoteDeniedAppSettings` に入れたうえで、
+  `SettingsEndpoints.HiddenKeys` で応答側でも `Remove` する。トークンは Admin の鍵そのもの、
+  ハッシュは総当たりの材料になるので、`Viewer` にも見せない。
 - `remote.auth fail` は **1 分に 1 行へ間引く**（`RemoteAuth.FailureLogInterval`、
   `Environment.TickCount64` 基準）。状態はプロセス全体で 1 つ＝**IP ごとではない**。
-  **トークンは書かない**（activity.log は利用者が貼り付けて共有する種類のファイル）。
+  **トークンもパスワードも書かない**（activity.log は利用者が貼り付けて共有する種類のファイル）。
+  記録するのは 401 の枝だけで、403（ヘッダー不足・役割不足）は記録しない
+  ── どちらも名乗りは通っているので、混ぜると「資格を当てにきている」行が薄まる。
 - 要求本文は 64KB で頭打ち（`ApiResponse.MaxRequestBodyBytes`。超過は Kestrel の 413 で、
   JSON 本文は付かない）。`Content-Type` は検査しない。
 
@@ -1767,27 +1807,33 @@ UI スレッドで走る。`TryEnqueue` が false なら `RemoteApiException(12,
 同じ番号）。`filename` は**終了コード 16 / 17 のときだけ**付く（`ErrorDto.Filename` は
 `WhenWritingNull` なので、他ではキーごと消える）。
 
+「認証」列は**要る役割**（`Viewer` はゲスト読み取りが ON なら未認証でも通る）。
+「書き込み」印（**W**）が付いた行は `X-PRApp-Client: 1` も要る。
+
 | メソッド | 経路 | 認証 | 内容 |
 |---|---|---|---|
 | GET | `/` | 不要 | `?token=` があればセッションを発行して 302、無ければ `index.html` |
 | GET | `/{name}` | 不要 | 埋め込みの Web 資産（1 セグメントのみ）。`no-cache` ＋ 強い ETag、`If-None-Match` で 304 |
-| GET | `/api/recorders` | 不要 | 全レコーダーの状態（`RecordersSnapshot` ＝ `status` の 8 列 ＋ `canStartAll` / `canStopAll` / `isIdleAll`） |
-| GET | `/api/recorders/{id}` | 不要 | 1 レコーダー。無ければ終了コード 13 → 404 |
-| POST | `/api/recorders/start-all` | **要** | 全台の録画を開始 |
-| POST | `/api/recorders/stop-all` | **要** | 全台の録画を終了（結果は `RecordingStopRules.Stronger` で畳む） |
-| POST | `/api/recorders/{id}/start` | **要** | 1 台の録画を開始 |
-| POST | `/api/recorders/{id}/stop` | **要** | 1 台の録画を終了（確定まで待つ） |
-| GET | `/api/recorders/{id}/settings` | 不要 | 現在値（**キーは settings.json と同じ PascalCase**）＋ 項目の説明（`type` / **解決済みの** `category`・`description` / `choices` / `min` / `max` / `requiresReinitialize`） |
-| PATCH | `/api/recorders/{id}/settings` | **要** | 変更したいキーだけ。応答は `applied` / `clamped` / `requiresReinitialize`。拒否キー（`SrcPipeline`・`EncodingProperties`・`ContinuousEncodingProperties`・`FilenameTemplate`・`ContinuousFilenameTemplate`）は 400 |
-| GET | `/api/settings` | 不要 | アプリ設定（`RemoteControlAccessToken` を除く） |
-| PATCH | `/api/settings` | **要** | `RemoteApiRules.RemoteEditableAppSettings` の 9 キーだけ |
-| GET | `/api/variables` | 不要 | ファイル名テンプレートの変数の一覧 |
-| PUT | `/api/variables/{key}` | **要** | `{value, persist}`（`--set` / `--persist` / `--no-persist` と同義）。両方 null は 400 |
-| POST | `/api/ping` | **要** | 認証の疎通確認（`{"ok":true}`） |
-| GET | `/api/events` | 不要 | SSE。`state` と `ping` |
-| GET | `/api/recordings` | 不要 | 録画ファイルの一覧（`root` ＋ `files[]`） |
-| GET | `/api/recordings/{*path}` | 不要 | 1 ファイルの配信（Range 対応。`?download=1` で添付） |
-| GET | `/api/recorders/{id}/preview.mp4` | 不要 | ライブプレビュー（chunked fMP4） |
+| POST | `/api/login` | 不要（**W**） | `{user, password}` → 成功で `Set-Cookie` ＋ `{name, role}`、失敗は 401 `invalid credentials` |
+| POST | `/api/logout` | `Viewer`（**W**） | セッションを失効させて Cookie を削除。`{"ok":true}` |
+| GET | `/api/me` | `Viewer` | `{name, role, guest}`。`role` は `Viewer` / `Operator` / `Admin` の文字列 |
+| GET | `/api/recorders` | `Viewer` | 全レコーダーの状態（`RecordersSnapshot` ＝ `status` の 8 列 ＋ `canStartAll` / `canStopAll` / `isIdleAll`） |
+| GET | `/api/recorders/{id}` | `Viewer` | 1 レコーダー。無ければ終了コード 13 → 404 |
+| POST | `/api/recorders/start-all` | `Operator`（**W**） | 全台の録画を開始 |
+| POST | `/api/recorders/stop-all` | `Operator`（**W**） | 全台の録画を終了（結果は `RecordingStopRules.Stronger` で畳む） |
+| POST | `/api/recorders/{id}/start` | `Operator`（**W**） | 1 台の録画を開始 |
+| POST | `/api/recorders/{id}/stop` | `Operator`（**W**） | 1 台の録画を終了（確定まで待つ） |
+| GET | `/api/recorders/{id}/settings` | `Viewer` | 現在値（**キーは settings.json と同じ PascalCase**）＋ 項目の説明（`type` / **解決済みの** `category`・`description` / `choices` / `min` / `max` / `requiresReinitialize`） |
+| PATCH | `/api/recorders/{id}/settings` | `Admin`（**W**） | 変更したいキーだけ。応答は `applied` / `clamped` / `requiresReinitialize`。拒否キー（`SrcPipeline`・`EncodingProperties`・`ContinuousEncodingProperties`・`FilenameTemplate`・`ContinuousFilenameTemplate`）は 400 |
+| GET | `/api/settings` | `Viewer` | アプリ設定（`RemoteControlAccessToken`・`RemoteUsers`・`RemoteUserList` を除く） |
+| PATCH | `/api/settings` | `Admin`（**W**） | `RemoteApiRules.RemoteEditableAppSettings` の 9 キーだけ |
+| GET | `/api/variables` | `Viewer` | ファイル名テンプレートの変数の一覧 |
+| PUT | `/api/variables/{key}` | `Operator`（**W**） | `{value, persist}`（`--set` / `--persist` / `--no-persist` と同義）。両方 null は 400 |
+| POST | `/api/ping` | `Viewer`（**W**） | 認証の疎通確認（`{"ok":true}`）。**書き込み扱い**なのでヘッダーの有無まで切り分けられる |
+| GET | `/api/events` | `Viewer` | SSE。`state` と `ping`。**Cookie だけで通る**（`EventSource` はヘッダーを付けられない） |
+| GET | `/api/recordings` | `Viewer` | 録画ファイルの一覧（`root` ＋ `files[]`） |
+| GET | `/api/recordings/{*path}` | `Viewer` | 1 ファイルの配信（Range 対応。`?download=1` で添付） |
+| GET | `/api/recorders/{id}/preview.mp4` | `Viewer` | ライブプレビュー（chunked fMP4） |
 
 **`HEAD` / `DELETE` / `OPTIONS` のハンドラは無い**（`MapGet` などしか呼んでいない）。CORS
 ミドルウェアも入れていない。未知の経路は `MapFallback` が 404 ＋ 終了コード 4 で返す。
@@ -1965,6 +2011,13 @@ HTTP 側（`PreviewEndpoints`）は `video/mp4` ＋ `Cache-Control: no-store` �
 突き合わせ、`wwwroot` にサブディレクトリが無いこと・csproj の埋め込み指定・`app.js` が
 `<script src="http` と `import ` を持たないこと・`index.html` の参照先がすべてマニフェスト内の
 名前であることを縛る。
+
+ログインフォームは `index.html` に**最初から入っていて隠してある**（資産は増やさない）。
+`app.js` は fetch の集約点（`getJson` / `send`）で `401` を受けた時点でフォームへ切り替え、
+`EventSource` とプレビューを閉じる。ログイン成功後は `GET /api/me` を引き直し、
+`applyPermissions()` **1 か所**で `data-need="operator|admin"` の付いたコントロールを
+出し分ける（ボタンは非表示・入力欄は無効）。**この画面側の挙動は無検査**である
+（[docs/coverage-gaps.md](../docs/coverage-gaps.md)）。
 
 開発中は環境変数 `PROCESSRECORDERAPP_WEBROOT` にディレクトリを指すと、**マニフェストに在る名前
 だけ**をそこから読む（要求ごとに評価し、読めなければ黙って埋め込みへ戻る）。配信する集合を
@@ -2259,7 +2312,9 @@ GPU テクスチャになるため**アクセシブルテキストが 1 つも�
 | `remote.start` | INFO | `RemoteControlService.ReloadAsync` | リモート操作の HTTP サーバーを起動した（`bind=<ip>:<実ポート>`）。**ポートは実際に割り当てられた値**で、設定が `0`（空きポートを OS に選ばせる）のときはここが唯一の観測点になる |
 | `remote.stop` | INFO | 同上 ／ `RemoteControlService.Dispose` | サーバーを止めた（設定変更による作り直しの前と、アプリの終了時）。**作り直しは必ず `remote.stop` → `remote.start` の順に出る** |
 | `remote.error` | ERROR / WARN | 同上／`RemoteControlHost`（未処理例外の受け口） | 起動できなかった（アドレスが不正・ポートが使用中・トークンが空 `detail=access token is empty`）／要求の処理で予期しない例外が出た。**サーバーが立たなくても録画は止めない**ので、ここが唯一の観測点になる。トークンは書かない |
-| `remote.auth fail` | WARN | `RemoteAuth.ReportFailure` | 書き込み要求の認証に失敗した（`remote=<ip>`）。**1 分に 1 行へ間引く** ── 失敗のたびに書くと総当たりが activity.log を数分で使い切り、他の記録を押し流せてしまう。**トークンは書かない**（activity.log は利用者が貼り付けて共有する種類のファイル） |
+| `remote.auth fail` | WARN | `RemoteAuth.ReportFailure` | 名乗りに失敗した（`remote=<ip>`）── 誤ったトークン・合わないパスワード・資格の無い書き込み。**1 分に 1 行へ間引く** ── 失敗のたびに書くと総当たりが activity.log を数分で使い切り、他の記録を押し流せてしまう。**トークンも利用者名もパスワードも書かない**（activity.log は利用者が貼り付けて共有する種類のファイル）。403（ヘッダー不足・役割不足）は<b>出さない</b> |
+| `remote.auth login` | INFO | `AuthEndpoints`（`POST /api/login`） | 名乗りに成功した（`user=<名前> role=<Viewer\|Operator\|Admin>`）。**パスワードは書かない**。誰がいつ入ったかはここにしか残らない |
+| `remote.auth logout` | INFO | `AuthEndpoints`（`POST /api/logout`） | セッションを失効させた（`user=<名前>`）。Cookie の削除だけでなく `SessionStore` からも消す ── ブラウザ側で消えるだけでは、値を控えていた相手に対して何も変わらない |
 | `preview.stream-start` | INFO | `LivePreviewStream.StartMux` | ライブプレビューの fMP4 muxer が PLAYING に達した（`recorder='…' subscribers=N fragmentMs=1000`）。**録画そのものとは別のパイプライン**なので、プレビューが出ない原因が muxer なのか配信なのかはここで切り分ける |
 | `preview.stream-stop` | INFO | `LivePreviewStream.Teardown` | muxer を退役させ、購読者を全員 completed にした（`reason=` は `no subscribers｜caps changed｜pts rewind｜splitter fault｜stream error｜close` の 6 種）。**理由がそのままクライアントの再接続の原因**になる |
 | `preview.stream-error` | ERROR | `LivePreviewStream` の `OnEncodedSample` / `OnMuxSample` / `Retire` | 録画スレッドでの押し込みの失敗／`Fmp4SegmentSplitter` の破綻・appsink コールバックの例外（次の押し込みで作り直す）／退役したパイプラインを綺麗に落とせなかった。**録画は止めない**ので、ここが唯一の観測点になる |

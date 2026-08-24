@@ -67,6 +67,10 @@ public sealed class PreviewStreamTests(PublishedApp app, ITestOutputHelper outpu
             RemoteControlBindAddress = "127.0.0.1",
             RemoteControlPort = 0,
             RemoteControlAccessToken = Token,
+            // **このクラスの主題は認証ではない。** 波 3 で読み取りにも役割が要るように
+            // なったので、ゲスト読み取りを明示して従来どおり未認証で読ませる
+            // ── 認証そのものは RemoteControlTests が見る。
+            RemoteControlAllowGuestRead = true,
         };
         settings.AddRecorder("R1").EncodingProperties = SettingsFile.LargeEncodingProperties;
         return settings;
