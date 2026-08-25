@@ -65,6 +65,22 @@ public interface IRemoteControlBackend
     /// </summary>
     Task<Components.PreviewSubscription> SubscribePreviewAsync(string id, CancellationToken ct);
 
+    /// <summary>
+    /// 1 レコーダーの DASH プレビューの「いまの姿」を 1 枚取る。
+    /// <b>呼ぶこと自体が配信エンジンの貸出を延ばす</b>ので、読まなくなれば
+    /// 第 2 パイプラインは自然に畳まれる（明示的な解除は無い）。
+    ///
+    /// <para>
+    /// 失敗は <see cref="RemoteApiException"/>。理由が <c>"recorder not found"</c> なら 13、
+    /// それ以外（まだ始まっていない・エンコーダーが無い・まだ動いていない）は 12 である。
+    /// </para>
+    /// <para>
+    /// <b>{id} は文字列のまま渡す。</b> 数値ならインデックス・それ以外は名前という規則は
+    /// CLI（<c>RecorderCliRules.ResolveTargetIndex</c>）が正本で、実装側がそれを呼ぶ。
+    /// </para>
+    /// </summary>
+    Task<Components.DashPreviewSnapshot> GetDashPreviewSnapshotAsync(string id, CancellationToken ct);
+
     // ---- 書き込み ----
     //
     // **CancellationToken を取らない。** 開始・停止・設定変更は、要求元が切っても

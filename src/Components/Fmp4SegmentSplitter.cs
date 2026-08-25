@@ -1,14 +1,19 @@
-using ProcessRecorderApp.Components;
 using System;
 using System.Collections.Generic;
 
-namespace ProcessRecorderApp.GStreamer;
+namespace ProcessRecorderApp.Components;
 
 /// <summary>切り出した fMP4 セグメント 1 件。</summary>
 /// <param name="Kind">種別。</param>
 /// <param name="Bytes">この呼び出しのために確定させた連続バイト列（内部緩衝は指さない）。</param>
 /// <param name="StartsWithSync">先頭サンプルが同期サンプルか（Init では常に false）。</param>
-public readonly record struct Fmp4Segment(PreviewSegmentKind Kind, byte[] Bytes, bool StartsWithSync);
+/// <param name="DecodeTime">
+/// この fragment の先頭サンプルの復号時刻（<c>moof/traf/tfdt</c> の
+/// <c>baseMediaDecodeTime</c>。単位は <c>mdhd</c> の timescale）。
+/// <c>tfdt</c> が無ければ 0、<see cref="PreviewSegmentKind.Init"/> では常に 0。
+/// </param>
+public readonly record struct Fmp4Segment(
+    PreviewSegmentKind Kind, byte[] Bytes, bool StartsWithSync, ulong DecodeTime = 0);
 
 /// <summary>
 /// <c>mp4mux fragment-mode=dash-or-mss</c> の appsink 出力を、ISO-BMFF の
@@ -213,7 +218,8 @@ public sealed class Fmp4SegmentSplitter
             moof.CopyTo(media, 0);
             _buffer.AsSpan(start, length).CopyTo(media.AsSpan(moof.Length));
 
-            Enqueue(new Fmp4Segment(PreviewSegmentKind.Media, media, StartsWithSync(moof)));
+            Enqueue(new Fmp4Segment(
+                PreviewSegmentKind.Media, media, StartsWithSync(moof), ReadBaseMediaDecodeTime(moof)));
             return;
         }
 
@@ -271,7 +277,7 @@ public sealed class Fmp4SegmentSplitter
     /// ── 判定材料が無いものを同期扱いにすると、MSE が復帰できない先頭を掴む。
     /// </para>
     /// </summary>
-    private bool StartsWithSync(byte[] moof)
+    private bool StartsWithSync(ReadOnlySpan<byte> moof)
     {
         if (!TryBoxContent(moof, out int moofStart, out int moofEnd))
             return false;
@@ -319,7 +325,7 @@ public sealed class Fmp4SegmentSplitter
         return (effective & NonSyncSampleFlag) == 0;
     }
 
-    private static uint? ReadTfhdDefaultSampleFlags(byte[] data, int trafStart, int trafEnd)
+    private static uint? ReadTfhdDefaultSampleFlags(ReadOnlySpan<byte> data, int trafStart, int trafEnd)
     {
         if (!TryFindChild(data, trafStart, trafEnd, "tfhd", out int start, out int end))
             return null;
@@ -345,7 +351,7 @@ public sealed class Fmp4SegmentSplitter
     }
 
     /// <summary><c>moov/mvex/trex</c> の <c>default_sample_flags</c>。無ければ 0。</summary>
-    private static uint ReadTrexDefaultSampleFlags(byte[] data, int moovStart, int moovEnd)
+    private static uint ReadTrexDefaultSampleFlags(ReadOnlySpan<byte> data, int moovStart, int moovEnd)
     {
         if (!TryFindChild(data, moovStart, moovEnd, "mvex", out int mvexStart, out int mvexEnd))
             return 0;
@@ -360,8 +366,77 @@ public sealed class Fmp4SegmentSplitter
         return ReadU32AsUInt(data, trexStart + 20);
     }
 
+    /// <summary>
+    /// この fragment の先頭サンプルの復号時刻（<c>moof/traf/tfdt</c> の
+    /// <c>baseMediaDecodeTime</c>）。<c>tfdt</c> が無い・短いなら 0。
+    ///
+    /// <para>
+    /// version 0 は 32bit、version 1 は 64bit。<b>version を見ずに幅を決め打ちしない</b>
+    /// ── 同梱 mp4mux は version 1 を書くが、それは実装の都合であって規格の要求ではない。
+    /// </para>
+    /// </summary>
+    internal static ulong ReadBaseMediaDecodeTime(ReadOnlySpan<byte> moof)
+    {
+        if (!TryBoxContent(moof, out int moofStart, out int moofEnd))
+            return 0;
+        if (!TryFindChild(moof, moofStart, moofEnd, "traf", out int trafStart, out int trafEnd))
+            return 0;
+        if (!TryFindChild(moof, trafStart, trafEnd, "tfdt", out int start, out int end))
+            return 0;
+
+        // version(1) flags(3) baseMediaDecodeTime(4 or 8)
+        byte version = moof[start];
+        if (version == 0)
+            return start + 8 <= end ? ReadU32AsUInt(moof, start + 4) : 0;
+
+        return start + 12 <= end ? (ulong)ReadU64(moof, start + 4) : 0;
+    }
+
+    /// <summary>
+    /// <paramref name="position"/> にある箱を 1 つ読み進める。
+    /// <see cref="TryFindChild"/> は最初の 1 件しか返さないので、<b>同じ型の兄弟を
+    /// 全部見たい側</b>（<see cref="Fmp4InitInfo"/> の trak 走査）はこちらを使う。
+    /// </summary>
+    /// <returns>読めたら true（<paramref name="position"/> は次の箱へ進む）。</returns>
+    internal static bool TryNextBox(
+        ReadOnlySpan<byte> data, ref int position, int end,
+        out int typeOffset, out int contentStart, out int contentEnd)
+    {
+        typeOffset = 0;
+        contentStart = 0;
+        contentEnd = 0;
+
+        if (position + BoxHeaderSize > end)
+            return false;
+
+        long size = ReadU32(data, position);
+        int header = BoxHeaderSize;
+
+        if (size == 1)
+        {
+            if (position + LargeBoxHeaderSize > end)
+                return false;
+            size = ReadU64(data, position + BoxHeaderSize);
+            header = LargeBoxHeaderSize;
+        }
+        else if (size == 0)
+        {
+            // 「以後この段の終わりまで」。1 段の走査では最後の箱にしかなりえない。
+            size = end - position;
+        }
+
+        if (size < header || position + size > end)
+            return false;
+
+        typeOffset = position + 4;
+        contentStart = position + header;
+        contentEnd = (int)(position + size);
+        position = contentEnd;
+        return true;
+    }
+
     /// <summary>単独の箱として渡された配列の中身の範囲。</summary>
-    private static bool TryBoxContent(byte[] box, out int contentStart, out int contentEnd)
+    internal static bool TryBoxContent(ReadOnlySpan<byte> box, out int contentStart, out int contentEnd)
     {
         contentStart = 0;
         contentEnd = 0;
@@ -378,53 +453,29 @@ public sealed class Fmp4SegmentSplitter
     }
 
     /// <summary><paramref name="start"/> から <paramref name="end"/> の 1 段の箱から最初の 1 件を探す。</summary>
-    private static bool TryFindChild(byte[] data, int start, int end, string type, out int contentStart, out int contentEnd)
+    internal static bool TryFindChild(
+        ReadOnlySpan<byte> data, int start, int end, string type, out int contentStart, out int contentEnd)
     {
-        contentStart = 0;
-        contentEnd = 0;
-
         int position = start;
-        while (position + BoxHeaderSize <= end)
+        while (TryNextBox(data, ref position, end, out int typeOffset, out contentStart, out contentEnd))
         {
-            long size = ReadU32(data, position);
-            int header = BoxHeaderSize;
-
-            if (size == 1)
-            {
-                if (position + LargeBoxHeaderSize > end)
-                    return false;
-                size = ReadU64(data, position + BoxHeaderSize);
-                header = LargeBoxHeaderSize;
-            }
-            else if (size == 0)
-            {
-                size = end - position;
-            }
-
-            if (size < header || position + size > end)
-                return false;
-
-            if (IsType(data, position + 4, type))
-            {
-                contentStart = position + header;
-                contentEnd = (int)(position + size);
+            if (IsType(data, typeOffset, type))
                 return true;
-            }
-
-            position += (int)size;
         }
 
+        contentStart = 0;
+        contentEnd = 0;
         return false;
     }
 
-    private static bool IsType(byte[] data, int offset, string type)
+    internal static bool IsType(ReadOnlySpan<byte> data, int offset, string type)
         => data[offset] == type[0]
         && data[offset + 1] == type[1]
         && data[offset + 2] == type[2]
         && data[offset + 3] == type[3];
 
     /// <summary>失敗メッセージ用。印字できない型は <c>?</c> にする。</summary>
-    private static string TypeName(byte[] data, int offset)
+    internal static string TypeName(ReadOnlySpan<byte> data, int offset)
     {
         Span<char> characters = stackalloc char[4];
         for (int i = 0; i < 4; i++)
@@ -435,18 +486,18 @@ public sealed class Fmp4SegmentSplitter
         return new string(characters);
     }
 
-    private static long ReadU32(byte[] data, int offset)
+    internal static long ReadU32(ReadOnlySpan<byte> data, int offset)
         => ((long)data[offset] << 24) | ((long)data[offset + 1] << 16)
          | ((long)data[offset + 2] << 8) | data[offset + 3];
 
-    private static uint ReadU32AsUInt(byte[] data, int offset)
+    internal static uint ReadU32AsUInt(ReadOnlySpan<byte> data, int offset)
         => ((uint)data[offset] << 24) | ((uint)data[offset + 1] << 16)
          | ((uint)data[offset + 2] << 8) | data[offset + 3];
 
-    private static uint ReadU24(byte[] data, int offset)
+    private static uint ReadU24(ReadOnlySpan<byte> data, int offset)
         => ((uint)data[offset] << 16) | ((uint)data[offset + 1] << 8) | data[offset + 2];
 
-    private static long ReadU64(byte[] data, int offset)
+    internal static long ReadU64(ReadOnlySpan<byte> data, int offset)
     {
         long value = 0;
         for (int i = 0; i < 8; i++)

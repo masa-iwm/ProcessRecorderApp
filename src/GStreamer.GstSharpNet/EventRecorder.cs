@@ -377,6 +377,18 @@ public partial class EventRecorder : ObservableObject, IDisposable
     /// </summary>
     internal LivePreviewStream? LivePreview => Volatile.Read(ref _live);
 
+    /// <summary>
+    /// DASH プレビューの配信エンジン。初期化に成功している間だけ非 null で、
+    /// <b>読み手が 0 人のあいだは何も作らない</b>（第 2 パイプラインは最初の
+    /// <c>TryGetSnapshot</c> で起きる）。
+    /// </summary>
+    private DashPreviewStream? _dash;
+
+    /// <summary>
+    /// DASH プレビューの読み口。<b>読むのは配信側だけ</b>で、初期化前・破棄後は null。
+    /// </summary>
+    internal DashPreviewStream? DashPreview => Volatile.Read(ref _dash);
+
     static int _instanceCount = 0;
     [ObservableProperty]
     public partial string Name { get; set; } = $"Recorder #{Interlocked.Increment(ref _instanceCount)}";
@@ -1653,7 +1665,13 @@ public partial class EventRecorder : ObservableObject, IDisposable
                     while (sink.TryPullSample(ClockTime.Zero) is { } sample)
                     {
                         using (sample)
+                        {
+                            // **DASH の配信エンジンも同じサンプルを同期で消費する。**
+                            // 読み手が 0 人なら volatile の 1 回読みで抜けるので、
+                            // 配信していないレコーダーの費用は変わらない。
+                            _dash?.OnRawSample(sample);
                             OnPreview(sample);
+                        }
                     }
                 }
                 catch (Exception ex)
@@ -1678,6 +1696,10 @@ public partial class EventRecorder : ObservableObject, IDisposable
             // 常時録画と同じ理由で、sink パイプラインが PLAYING に達してからでないと
             // 押し込む相手（枝2 の appsink）が動いていないためである。
             Volatile.Write(ref _live, new LivePreviewStream(new LivePreviewHost(this)));
+
+            // DASH の配信エンジンも同じ段で用意する。**第 2 パイプラインは作らない**
+            // ── 誰も引かなければ何も起きず、録画経路の費用も変わらない。
+            Volatile.Write(ref _dash, new DashPreviewStream(new DashPreviewHost(this)));
 
             // 常時録画は sink パイプラインが PLAYING になってから起こす。
             // ここで投げると呼び出し側（InitializeCore）が枝なしで組み直す。
@@ -1891,6 +1913,23 @@ public partial class EventRecorder : ObservableObject, IDisposable
     }
 
     /// <summary>
+    /// DASH プレビューの配信エンジンから見た宿主。<b>名前と 4 つの設定しか渡さない</b> ──
+    /// 配信は観測値を一切書き換えない（録画の状態表示に影響しない）。
+    /// </summary>
+    private sealed class DashPreviewHost(EventRecorder owner) : IDashPreviewHost
+    {
+        public string Name => owner.Name;
+
+        public int PreviewWidth => owner.PreviewWidth;
+
+        public int PreviewHeight => owner.PreviewHeight;
+
+        public int PreviewFps => owner.PreviewFps;
+
+        public int PreviewBitrateKbps => owner.PreviewBitrateKbps;
+    }
+
+    /// <summary>
     /// 常時録画のセグメント 1 本ぶんのパスを決める。<c>{Segment}</c> は 5 桁 0 詰めの連番として
     /// テンプレート変数に重ねる（<c>FilenameTemplate.Format</c> の書式指定は
     /// <see cref="IFormattable"/> にしか効かないため、桁揃えは呼び出し側で済ませる）。
@@ -2054,6 +2093,14 @@ public partial class EventRecorder : ObservableObject, IDisposable
             var live = _live;
             Volatile.Write(ref _live, null);
             live?.Close();
+
+            // **DASH の配信エンジンも同じ段で畳む。** 触っていたのは枝A のコールバック
+            // （＝いま退去させた相手）なので、ここへ来た時点で誰も第 2 パイプラインを
+            // 触っていない。順序を live より前にしても後にしても安全だが、
+            // 「枝を静止させてから配信を閉じる」という 1 つの規律で読めるように並べてある。
+            var dash = _dash;
+            Volatile.Write(ref _dash, null);
+            dash?.Close();
 
             // **常時録画の確定はイベント側の排出と並行に走らせる。**
             // 直列にすると停止の予算（MaxAdvisedStopFinalizeTimeoutMs + StopFinalizeSlackMs

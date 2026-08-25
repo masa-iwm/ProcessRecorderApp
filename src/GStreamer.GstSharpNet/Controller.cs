@@ -58,6 +58,46 @@ namespace ProcessRecorderApp.GStreamer
         }
 
         /// <summary>
+        /// DASH プレビューの供給元（波 8 の配信エンドポイントが引く）。
+        /// <b>呼ぶのは UI スレッド</b> ── <see cref="Recorders"/> は UI スレッド所有である。
+        /// </summary>
+        public Components.IDashPreviewSource DashPreviews { get; }
+
+        /// <summary>
+        /// <see cref="Controller.DashPreviews"/> の実体。<b>対象の解決規則は CLI と同じ</b>
+        /// （<see cref="RecorderCliRules.ResolveTargetIndex"/>）── <see cref="PreviewStreamSource"/>
+        /// と同じ並びの一覧に対して同じ関数を呼ぶだけにしてある。
+        /// </summary>
+        private sealed class DashPreviewSource(Controller owner) : Components.IDashPreviewSource
+        {
+            public bool TryGetSnapshot(
+                string target,
+                [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out Components.DashPreviewSnapshot? snapshot,
+                [System.Diagnostics.CodeAnalysis.NotNullWhen(false)] out string? reason)
+            {
+                snapshot = null;
+
+                string[] names = [.. owner.Recorders.Select(r => r.Name)];
+                int index = RecorderCliRules.ResolveTargetIndex(names, target);
+                if (index < 0)
+                {
+                    // 呼び出し側（HTTP）はこの文字列で 404 と 503 を分ける。
+                    reason = Components.PreviewStreamReasons.RecorderNotFound;
+                    return false;
+                }
+
+                // 初期化が済んでいなければ配信の器そのものが無い（＝「まだ動いていない」）。
+                if (owner.Recorders[index].DashPreview is not { } dash)
+                {
+                    reason = "recorder is not running";
+                    return false;
+                }
+
+                return dash.TryGetSnapshot(out snapshot, out reason);
+            }
+        }
+
+        /// <summary>
         /// Preview イベントを購読済みのレコーダー。
         /// Reset の通知はコレクションが既に空になった後に来るため、
         /// コレクション自体を走査しても購読解除できない（＝購読が漏れる）。
@@ -90,6 +130,7 @@ namespace ProcessRecorderApp.GStreamer
         public Controller()
         {
             PreviewStreams = new PreviewStreamSource(this);
+            DashPreviews = new DashPreviewSource(this);
 
             Recorders.CollectionChanged += (_, e) =>
             {

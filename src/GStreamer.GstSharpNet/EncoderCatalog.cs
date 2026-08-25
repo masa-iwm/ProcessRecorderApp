@@ -47,9 +47,14 @@ public sealed partial record H264EncoderDef(
     /// <b><see cref="System.Text.RegularExpressions.GeneratedRegexAttribute"/> で生成する。</b>
     /// Native AOT では <c>RegexOptions.Compiled</c> が黙って解釈実行へ落ちる。
     /// </para>
+    /// <para>
+    /// <b><c>internal</c> なのは L1 が引くため。</b> テスト側へパターンを写すと、
+    /// 片方だけを緩めた日に「カタログの不変条件が別のプロパティで満たされている」定義を
+    /// 見逃す ── 規則は 1 か所にしか置かない。
+    /// </para>
     /// </summary>
     [System.Text.RegularExpressions.GeneratedRegex(@"(?<![-\w])bitrate=\d+\b")]
-    private static partial System.Text.RegularExpressions.Regex BitrateTokenRegex();
+    internal static partial System.Text.RegularExpressions.Regex BitrateTokenRegex();
 
     /// <summary>
     /// プロパティを一切付けない、ファクトリ名だけの定義を返す。

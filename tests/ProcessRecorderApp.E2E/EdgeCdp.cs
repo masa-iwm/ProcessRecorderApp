@@ -302,7 +302,13 @@ internal sealed class EdgeCdp : IAsyncDisposable
                 // **受信にも予算を効かせる。** while の条件だけでは受信待ちを縛れない
                 // ── CDP が黙ると `ReceiveAsync` から戻らず、条件は二度と評価されない。
                 using var receiveCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                receiveCts.CancelAfter(CommandBudget - deadline.Elapsed);
+
+                // **負にしない。** while の判定と CancelAfter のあいだに予算を使い切ると
+                // 差が負になり、CancelAfter は ArgumentOutOfRangeException を投げる
+                // ── 予算切れが「別の失敗」に化ける。0 は即時取り消しで、下の
+                // OperationCanceledException の経路がそのまま予算切れとして扱う。
+                var remaining = CommandBudget - deadline.Elapsed;
+                receiveCts.CancelAfter(remaining < TimeSpan.Zero ? TimeSpan.Zero : remaining);
 
                 JsonDocument message;
                 try

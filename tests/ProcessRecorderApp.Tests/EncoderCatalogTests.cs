@@ -823,12 +823,14 @@ public class EncoderBitrateParameterizationTests
             .First(c => string.Equals(c.FactoryName, factoryName, StringComparison.Ordinal));
 
     /// <summary>
-    /// <c>bitrate=&lt;数値&gt;</c> のトークン。<b><c>H264EncoderDef</c> 側の
-    /// <c>BitrateTokenRegex</c> と同一のパターンでなければならない</b> ──
-    /// 緩い <c>\bbitrate=</c> にすると <c>max-bitrate=</c> / <c>target-bitrate=</c> にも
-    /// 一致し、カタログの不変条件が「別のプロパティで満たされている」定義を見逃す。
+    /// <c>bitrate=&lt;数値&gt;</c> のトークン。<b>製品の
+    /// <c>H264EncoderDef.BitrateTokenRegex</c> をそのまま引く</b> ──
+    /// パターンを写すと、緩い <c>bitrate=</c> へ片方だけ直した日に
+    /// <c>max-bitrate=</c> / <c>target-bitrate=</c> にも一致するようになり、
+    /// カタログの不変条件が「別のプロパティで満たされている」定義を見逃す。
     /// </summary>
-    private const string BitrateToken = @"(?<![-\w])bitrate=\d+\b";
+    private static bool HasBitrateToken(string launchString)
+        => H264EncoderDef.BitrateTokenRegex().IsMatch(launchString);
 
     [Fact]
     public void X264_TakesKilobitsPerSecondUnchanged()
@@ -901,7 +903,7 @@ public class EncoderBitrateParameterizationTests
 
         static void AssertAgrees(H264EncoderDef def)
         {
-            bool hasToken = Regex.IsMatch(def.LaunchString, BitrateToken);
+            bool hasToken = HasBitrateToken(def.LaunchString);
             Assert.True(def.BitrateUnitPerKbps is null || hasToken,
                 $"{def.FactoryName}: BitrateUnitPerKbps が非 null なのに 'bitrate=' が無い: {def.LaunchString}");
             Assert.True(!hasToken || def.BitrateUnitPerKbps is not null,

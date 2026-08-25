@@ -535,13 +535,28 @@ L1 は `WebAssetManifestTests` が「資産の一覧が合っているか」を�
 共存の検査はすべて非 fragmented のままである）。fMP4 側の停止の排出や自動復帰との
 組み合わせは無検査なので、`FragmentedOutput` を実運用で使う前に、その構成で一度手で確かめること。
 
-### プレビューの 4 設定は配信に配線されていない
+### プレビューの 4 設定は DASH エンジンだけが読む（HTTP からは到達不能）
 
 `EventRecorderSettings` の `PreviewWidth` / `PreviewHeight` / `PreviewFps` /
-`PreviewBitrateKbps` は、**保存・PATCH・丸めだけが実装されており、どこも読んでいない**
-（消費者は DASH プレビュー）。L1 が丸めを、L2 が PATCH と GET のメタを見るので
-「設定として壊れていない」ことは守られているが、**値を変えても配信物は 1 バイトも変わらない**
-── ブラウザで映像を見ながら値を動かしても何も起きないのが現在の正しい挙動である。
+`PreviewBitrateKbps` を読むのは `DashPreviewStream`（第 2 パイプライン）**だけ**である。
+既存の `preview.mp4`（fMP4 / MSE）は録画済みの H.264 をそのまま包むので、
+**この 4 つを動かしてもそちらの配信物は 1 バイトも変わらない**。
+
+そして **DASH エンジンには HTTP から到達する手段がまだ無い**（`manifest.mpd` /
+`init.mp4` / `seg-*.m4s` のエンドポイントと Web UI は次の波）。したがって現状、
+値を変えたときに実際に何かが変わることを**ブラウザから確かめる方法は無い**。
+
+### DASH プレビュー エンジンは L2 で未検証
+
+`DashPreviewStream` の実行経路は**どの層でも走っていない**。L1 が縛るのは
+パイプライン文字列・配線のソース検査（`DashPreviewPipelineTests`）と、
+純関数（`Fmp4InitInfoTests` / `DashSegmentAssemblerTests` / `DashManifestTests`）だけで、
+**第 2 パイプラインが実際に PLAYING に達すること・lease で畳まれること・
+候補のエンコーダーが順に試されること・`dash.*` のログが出ることは 1 行も走っていない**。
+配信エンドポイントを足す波で `DashPreviewTests`（L2）を書くまで、ここは無検査である。
+
+いま触るなら、手で確かめられるのは同梱ランタイムでの鎖のネゴシエーションだけである
+（`videotestsrc` から `BuildPipeline` の中身を流して `moof` が出ることを見る）。
 
 配線したら、この節を消して「実際にその解像度・フレームレート・帯域で配信されること」を
 見る層を書くこと。
@@ -669,7 +684,7 @@ CLI 側は `/` 入りのキーを受けるので、ここだけ受け付けな�
 ### レコーダー設定 PATCH の非対称（この項目は性格が違う）
 
 **これは退行の穴ではなく、意図してそうした設計判断**である。アプリ設定の PATCH は
-`RemoteEditableAppSettings` の 9 キーだけを通す**許可リスト**であるのに対し、
+`RemoteEditableAppSettings` の 10 キーだけを通す**許可リスト**であるのに対し、
 レコーダー設定の PATCH は `RemoteDeniedRecorderSettings`（`SrcPipeline`・`EncodingProperties`・
 `ContinuousEncodingProperties`・`FilenameTemplate`・`ContinuousFilenameTemplate`）だけを断る
 **拒否リスト**で、**残りのプロパティはトークン所持者が書ける**。拒否しているのは

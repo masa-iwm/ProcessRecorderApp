@@ -9,7 +9,8 @@ using Xunit;
 namespace ProcessRecorderApp.Tests;
 
 /// <summary>
-/// <b>ライブプレビューの mux が使う GStreamer 要素と、同梱ランタイムの内容を突き合わせる。</b>
+/// <b>プレビューの 2 本のパイプライン（fMP4 の mux と DASH の第 2 パイプライン）が使う
+/// GStreamer 要素と、同梱ランタイムの内容を突き合わせる。</b>
 /// <see cref="ContinuousRuntimeDependencyTests"/> と同型で、狙う事故も同じ ──
 /// 開発機も CI もフル構成の GStreamer なので、同梱に無い要素を書いても<b>両方緑になり</b>、
 /// 壊れるのは同梱配布の実行時だけである。
@@ -28,23 +29,53 @@ public sealed class PreviewRuntimeDependencyTests
         ["appsink"] = "libgstapp.dll",
         ["h264parse"] = "libgstvideoparsersbad.dll",
         ["mp4mux"] = "libgstisomp4.dll",
+
+        // DASH の第 2 パイプラインだけが使うもの。
+        ["videorate"] = "libgstvideorate.dll",
+        ["videoscale"] = "libgstvideoconvertscale.dll",
+        ["videoconvert"] = "libgstvideoconvertscale.dll",
+        ["capsfilter"] = "libgstcoreelements.dll",
+        ["mfh264enc"] = "libgstmediafoundation.dll",
     };
 
-    /// <summary><c>!</c> で切った各段の先頭トークン（＝要素の工場名）。</summary>
-    private static string[] Elements()
+    /// <summary>
+    /// DASH の第 2 パイプラインで実際に使う文字列。<b>エンコーダーは <c>mfh264enc</c> で
+    /// 代表させる</b> ── 候補は実機の顔ぶれで変わるが、同梱に在ることを確かめられるのは
+    /// 台帳に載っているものだけである。
+    /// </summary>
+    private static string DashPipeline
+        => DashPreviewStream.BuildPipeline(1280, 720, 15, "mfh264enc bitrate=2000 gop-size=15 low-latency=true");
+
+    /// <summary>
+    /// <c>!</c> で切った各段の要素名。
+    ///
+    /// <para>
+    /// <b>caps だけの段は <c>capsfilter</c> に読み替える。</b> <c>video/x-raw,...</c> の
+    /// 先頭トークンをそのまま取ると <c>video</c> という要素名になり、対応表に無いので
+    /// 「知らない要素がある」と報告されるか、素通りして<b>検査が消える</b>。
+    /// </para>
+    /// </summary>
+    private static string[] Elements(string pipeline)
     {
-        string[] names = [.. LivePreviewStream.PreviewMuxPipeline
+        string[] names = [.. pipeline
             .Split('!', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .Select(stage => Regex.Match(stage, @"^[A-Za-z0-9_]+"))
-            .Where(m => m.Success)
-            .Select(m => m.Value)];
+            .Select(stage => stage.Contains('/', StringComparison.Ordinal)
+                ? "capsfilter"
+                : Regex.Match(stage, @"^[A-Za-z0-9_]+").Value)
+            .Where(name => 0 < name.Length)];
 
         // 空振りで緑にしない（分け方を変えたならこの検査も一緒に直すこと）。
         Assert.True(3 <= names.Length,
-            $"パイプラインから取り出せた要素が {names.Length} 件しかない: "
-            + LivePreviewStream.PreviewMuxPipeline);
+            $"パイプラインから取り出せた要素が {names.Length} 件しかない: " + pipeline);
         return names;
     }
+
+    /// <summary>検査対象の 2 本。</summary>
+    private static string[] Pipelines() => [LivePreviewStream.PreviewMuxPipeline, DashPipeline];
+
+    /// <summary>2 本に現れる要素をまとめたもの。</summary>
+    private static string[] AllElements()
+        => [.. Pipelines().SelectMany(Elements).Distinct(StringComparer.Ordinal).OrderBy(e => e, StringComparer.Ordinal)];
 
     /// <summary>
     /// 同梱ランタイムの台帳（形態ごとに1つ）。<b>MinGW 版と MSVC 版の両方を見る</b>
@@ -91,10 +122,10 @@ public sealed class PreviewRuntimeDependencyTests
     [Fact]
     public void EveryElementInThePreviewPipelineIsMappedToAPlugin()
     {
-        string[] unknown = [.. Elements().Where(e => !PluginOf.ContainsKey(e)).Distinct(StringComparer.Ordinal)];
+        string[] unknown = [.. AllElements().Where(e => !PluginOf.ContainsKey(e))];
 
         Assert.True(unknown.Length == 0,
-            $"プレビューの mux に対応表の無い要素がある: {string.Join(" / ", unknown)}。"
+            $"プレビューのパイプラインに対応表の無い要素がある: {string.Join(" / ", unknown)}。"
             + "PluginOf へ足し、同梱の台帳（licenses/third-party/COMPONENTS*.tsv）に"
             + "そのプラグインが在ることを確かめること。");
     }
@@ -108,7 +139,7 @@ public sealed class PreviewRuntimeDependencyTests
     {
         var violations = new List<string>();
 
-        foreach (string element in Elements().Distinct(StringComparer.Ordinal).OrderBy(e => e, StringComparer.Ordinal))
+        foreach (string element in AllElements())
         {
             if (!PluginOf.TryGetValue(element, out string? plugin))
                 continue;   // 対応表の欠落は上のテストが報告する
@@ -119,7 +150,7 @@ public sealed class PreviewRuntimeDependencyTests
         }
 
         Assert.True(violations.Count == 0,
-            "ライブプレビューの mux が同梱配布で動かなくなる:" + Environment.NewLine
+            "プレビューのパイプラインが同梱配布で動かなくなる:" + Environment.NewLine
             + string.Join(Environment.NewLine, violations));
     }
 }

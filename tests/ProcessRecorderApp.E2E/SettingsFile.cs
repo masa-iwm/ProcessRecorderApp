@@ -227,7 +227,9 @@ public sealed class SettingsFile
     /// <b>書き込み中のファイルにも中身がある</b>。
     ///
     /// <para>
-    /// <b>これは <c>AppSettings</c> の 5 箇所目の手書きミラーで、テストは縛っていない。</b>
+    /// <b>これは <c>AppSettings</c> をこのリポジトリで手書きに写した唯一の場所で、
+    /// テストは縛っていない。</b><c>RecorderSettingsMirrorTests</c> が縛る 4 つのミラーは
+    /// <c>EventRecorderSettings</c> のもので、この <c>AppSettings</c> 側は無検査である。
     /// </para>
     /// </summary>
     public bool? FragmentedOutput { get; set; }
@@ -236,7 +238,9 @@ public sealed class SettingsFile
     /// リモート操作（HTTP サーバー）の設定。null なら書かない（＝製品の既定＝無効）。
     ///
     /// <para>
-    /// <b>これは <c>AppSettings</c> の 5 箇所目の手書きミラーで、テストは縛っていない。</b>
+    /// <b>これは <c>AppSettings</c> をこのリポジトリで手書きに写した唯一の場所で、
+    /// テストは縛っていない。</b><c>RecorderSettingsMirrorTests</c> が縛る 4 つのミラーは
+    /// <c>EventRecorderSettings</c> のもので、この <c>AppSettings</c> 側は無検査である。
     /// 製品側にプロパティを増やしたらここへも手で足すこと ── 忘れると E2E が
     /// 古い形の settings.json を書き、その設定が「効いていない」ように見える。
     /// </para>

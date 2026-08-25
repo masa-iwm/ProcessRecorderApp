@@ -62,6 +62,9 @@ namespace ProcessRecorderApp.ViewModels
         /// </summary>
         public Components.IPreviewStreamSource PreviewStreams => Model.PreviewStreams;
 
+        /// <summary>DASH プレビューの供給元（<see cref="Controller.DashPreviews"/> の素通し）。</summary>
+        public Components.IDashPreviewSource DashPreviews => Model.DashPreviews;
+
         /// <summary>Settings_Recorders_CollectionChanged の遅延実行用（Initialize を呼んだ UI スレッドのキュー）。</summary>
         private readonly DispatcherQueue _dispatcherQueue;
 

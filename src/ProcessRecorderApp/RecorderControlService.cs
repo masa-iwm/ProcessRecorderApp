@@ -640,8 +640,11 @@ internal static class RecorderControlService
         return ApplyPatch(
             Settings.AppSettings.Default, patch, Settings.AppSettings.SettingsTypeInfo,
             typeof(Settings.AppSettings).GetProperties(BindingFlags.Instance | BindingFlags.Public),
-            // アプリ設定に「初期化をやり直すまで効かない」項目は無い
-            // （そういうものは拒否リスト側にある）。
+            // **アプリ設定にも「初期化をやり直すまで効かない」項目はある**
+            // （`FragmentedOutput` と `PreferredH264Encoder`。どちらも
+            // レコーダーのパイプラインを組む段でしか読まれない）。ここを空にしてあるのは、
+            // 助言（`requiresReinitialize`）を返す口をアプリ設定の PATCH に足していないため
+            // ── 反映されないことは応答からは分からない。
             []);
     }
 

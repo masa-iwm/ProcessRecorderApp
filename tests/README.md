@@ -44,7 +44,12 @@ dotnet test  tests/ProcessRecorderApp.E2E   -c Release       # L2 + L3（発行�
 > 録画系 E2E の大半」。
 
 L2 は発行物を外から叩くので、**先に publish が要る**（発行物が無ければフィクスチャが
-その旨を出して即座に失敗する）。AOT 発行物に対して流すときは
+その旨を出して即座に失敗する）。**製品コード・`wwwroot`・`AppSettings`・リモート API を
+触ったら、L2 の前に必ず
+`dotnet publish src/ProcessRecorderApp/ProcessRecorderApp.csproj -p:PublishProfile=win-x64-selfcontained`
+を回すこと** ── `PublishedApp` は**既存の発行物を読むだけで再発行しない**ので、
+忘れると**古いバイナリに対して緑になる**（変更を入れたのにテストが通った、という
+最も気付きにくい形になる）。AOT 発行物に対して流すときは
 `PROCESSRECORDERAPP_E2E_PUBLISH_DIR` で発行ディレクトリを差し替える。
 デバッグ時は `PROCESSRECORDERAPP_E2E_KEEP=1` で一時ディレクトリを残せる。
 

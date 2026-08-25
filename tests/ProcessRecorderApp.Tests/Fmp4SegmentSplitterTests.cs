@@ -70,6 +70,13 @@ public sealed class Fmp4SegmentSplitterTests
         return bytes;
     }
 
+    private static byte[] U64(ulong value)
+    {
+        var bytes = new byte[8];
+        WriteU64(bytes, 0, value);
+        return bytes;
+    }
+
     private static void WriteU32(byte[] target, int offset, uint value)
     {
         target[offset] = (byte)(value >> 24);
@@ -118,6 +125,16 @@ public sealed class Fmp4SegmentSplitterTests
 
     private static byte[] Tfdt(uint baseMediaDecodeTime)
         => Box("tfdt", U32(0), U32(baseMediaDecodeTime));
+
+    /// <summary>version 1（64bit）の <c>tfdt</c>。version(1)=0x01 ＋ flags(3)=0。</summary>
+    private static byte[] Tfdt64(ulong baseMediaDecodeTime)
+        => Box("tfdt", U32(0x01000000), U64(baseMediaDecodeTime));
+
+    /// <summary><c>tfdt</c> を差し替えた（null なら省いた）<c>moof</c>。</summary>
+    private static byte[] MoofWithTfdt(byte[]? tfdt)
+        => tfdt is null
+            ? Box("moof", Box("mfhd", U32(0), U32(1)), Box("traf", Tfhd(null), Trun()))
+            : Box("moof", Box("mfhd", U32(0), U32(1)), Box("traf", Tfhd(null), tfdt, Trun()));
 
     /// <summary>
     /// <c>trun</c>。<paramref name="firstSampleFlags"/> か <paramref name="sampleZeroFlags"/> の
@@ -511,5 +528,46 @@ public sealed class Fmp4SegmentSplitterTests
         Assert.True(splitter.IsFaulted);
         Assert.NotNull(splitter.Fault);
         Assert.Empty(Drain(splitter));
+    }
+
+    /// <summary>
+    /// <c>tfdt</c> version 0（32bit）の <c>baseMediaDecodeTime</c> が
+    /// <c>DecodeTime</c> に出ること。<b>Init は常に 0</b>。
+    /// </summary>
+    [Fact]
+    public void AVersion0TfdtGivesTheDecodeTime()
+    {
+        var segments = Split(Concat(Ftyp(), Moov(), MoofWithTfdt(Tfdt(90_000)), Mdat()));
+
+        Assert.Equal(0UL, segments.Single(s => s.Kind == PreviewSegmentKind.Init).DecodeTime);
+        Assert.Equal(90_000UL, segments.Single(s => s.Kind == PreviewSegmentKind.Media).DecodeTime);
+    }
+
+    /// <summary>
+    /// <c>tfdt</c> version 1（64bit）。<b>32bit に収まらない値</b>で試す ──
+    /// version を見ずに 32bit で読むと、ここで黙って下位 32bit だけを拾う。
+    /// </summary>
+    [Fact]
+    public void AVersion1TfdtGivesTheFull64BitDecodeTime()
+    {
+        const ulong DecodeTime = 0x0000_0001_0000_0007UL;
+
+        var segments = Split(Concat(Ftyp(), Moov(), MoofWithTfdt(Tfdt64(DecodeTime)), Mdat()));
+
+        Assert.Equal(DecodeTime, segments.Single(s => s.Kind == PreviewSegmentKind.Media).DecodeTime);
+    }
+
+    /// <summary>
+    /// <c>tfdt</c> が無ければ 0。<b>切り出しそのものは成功させる</b>
+    /// ── 時刻が無いことは壊れた入力ではない（DASH の集約側が判断する）。
+    /// </summary>
+    [Fact]
+    public void AMissingTfdtLeavesTheDecodeTimeAtZero()
+    {
+        var segments = Split(Concat(Ftyp(), Moov(), MoofWithTfdt(null), Mdat()));
+
+        var media = segments.Single(s => s.Kind == PreviewSegmentKind.Media);
+        Assert.Equal(0UL, media.DecodeTime);
+        Assert.NotEmpty(media.Bytes);
     }
 }

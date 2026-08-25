@@ -601,6 +601,30 @@ internal sealed partial class RemoteControlBackend(DispatcherQueue dispatcherQue
         });
 
     /// <inheritdoc/>
+    public Task<DashPreviewSnapshot> GetDashPreviewSnapshotAsync(string id, CancellationToken ct)
+        => RunOnUiAsync(() =>
+        {
+            if (GstControllerViewModel.Current is not { } controller)
+                throw new RemoteApiException(NotAvailableExitCode, "the recording engine is not ready yet");
+
+            // **UI スレッドで行うのは取り出しだけ。** 返す姿は不変なので、
+            // 呼び出し側はそのまま自分のスレッドで書き出せる。
+            if (!controller.DashPreviews.TryGetSnapshot(id, out var snapshot, out string? reason))
+            {
+                // 「対象が無い」だけが 13（404）で、残り（まだ始まっていない・
+                // エンコーダーが無い・まだ動いていない）は 12。
+                // 文字列の正本は Components.PreviewStreamReasons（供給側と共有）。
+                throw new RemoteApiException(
+                    reason == PreviewStreamReasons.RecorderNotFound
+                        ? ActivationCommands.ExitCode_RecorderNotFound
+                        : NotAvailableExitCode,
+                    reason);
+            }
+
+            return Task.FromResult(snapshot);
+        });
+
+    /// <inheritdoc/>
     public IDisposable SubscribeState(Action<RecordersSnapshot> onChange)
     {
         var subscription = new StateSubscription(_dispatcherQueue, onChange);

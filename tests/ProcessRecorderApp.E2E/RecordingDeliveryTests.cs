@@ -385,8 +385,19 @@ public sealed class RecordingDeliveryTests(PublishedApp app, ITestOutputHelper o
 
                 string path = file.GetProperty("path").GetString()!;
                 using var live = await client.GetAsync("api/recordings/" + Uri.EscapeDataString(path), Ct);
-                Assert.Equal(HttpStatusCode.OK, live.StatusCode);
-                Assert.Equal("true", Assert.Single(live.Headers.GetValues("X-In-Progress")));
+
+                // **一覧と GET のあいだでセグメントが切り替わりうる。** 常時録画は
+                // 数秒ごとに次のファイルへ移るので、一覧では「書き込み中」だったものが
+                // GET の時点では確定済み（404 や X-In-Progress 無し）になっていることがある。
+                // それはこのテストが見ている性質の反証ではないので、次の周回へ進める
+                // ── ここを Assert にすると、切り替わりの瞬間に当たっただけで赤くなる。
+                if (live.StatusCode != HttpStatusCode.OK)
+                    continue;
+                if (!live.Headers.TryGetValues("X-In-Progress", out var inProgressHeader)
+                    || !string.Equals(inProgressHeader.FirstOrDefault(), "true", StringComparison.Ordinal))
+                {
+                    continue;
+                }
 
                 long length = Assert.IsType<long>(live.Content.Headers.ContentLength);
                 byte[] body = await live.Content.ReadAsByteArrayAsync(Ct);
