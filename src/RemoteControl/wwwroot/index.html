@@ -51,6 +51,14 @@
     <tbody id="recordersBody"></tbody>
   </table>
   <p class="actions">
+    <!-- Which stream the row's "Preview" button opens. The default is the recording
+         quality: it reuses the H.264 that is already being encoded, so it costs nothing
+         extra. "dash" re-encodes at the recorder's preview settings instead. -->
+    <label for="previewMode">Preview mode</label>
+    <select id="previewMode">
+      <option value="recording" selected>Recording quality (low latency)</option>
+      <option value="dash">Preview settings (DASH)</option>
+    </select>
     <button type="button" id="stopPreview">Stop preview</button>
     <span id="previewStatus" class="status"></span>
   </p>

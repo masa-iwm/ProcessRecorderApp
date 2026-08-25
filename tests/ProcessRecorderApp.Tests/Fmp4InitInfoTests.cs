@@ -195,4 +195,26 @@ public sealed class Fmp4InitInfoTests
     {
         Assert.False(Fmp4InitInfo.TryParse(Ftyp(), out _));
     }
+
+    /// <summary>
+    /// <b>中身が空の <c>mdhd</c> でも読みにいかないこと。</b> full box の version は
+    /// 箱の中身の 1 バイト目なので、境界を見ずに読むと<b>隣の箱の先頭</b>を version として
+    /// 解釈する ── そこから 12 / 20 バイト先を timescale として拾うので、
+    /// 落ちるとは限らず「もっともらしい別の値」が出る。
+    /// </summary>
+    [Fact]
+    public void ATruncatedMdhdIsRejectedInsteadOfReadPastItsEnd()
+    {
+        byte[] init = Concat(
+            Ftyp(),
+            Box("moov",
+                Box("trak",
+                    Box("mdia",
+                        Box("mdhd"),                 // version/flags すら入っていない
+                        Hdlr("vide"),
+                        Box("minf", Box("stbl", Box("stsd", U32(0), U32(1), Avc1(AvcC(0x64, 0x00, 0x1F)))))))));
+
+        Assert.False(Fmp4InitInfo.TryParse(init, out var info));
+        Assert.Equal(0u, info.Timescale);
+    }
 }

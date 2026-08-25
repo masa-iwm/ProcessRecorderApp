@@ -384,6 +384,11 @@ public sealed class Fmp4SegmentSplitter
         if (!TryFindChild(moof, trafStart, trafEnd, "tfdt", out int start, out int end))
             return 0;
 
+        // **version を読む前に境界を見る**（<c>Fmp4InitInfo</c> の <c>mdhd</c> と同じ理由）
+        // ── 切り詰められた <c>tfdt</c> では中身が空になりうる。
+        if (start >= end)
+            return 0;
+
         // version(1) flags(3) baseMediaDecodeTime(4 or 8)
         byte version = moof[start];
         if (version == 0)

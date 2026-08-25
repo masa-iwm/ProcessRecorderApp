@@ -58,7 +58,7 @@ namespace ProcessRecorderApp.GStreamer
         }
 
         /// <summary>
-        /// DASH プレビューの供給元（波 8 の配信エンドポイントが引く）。
+        /// DASH プレビューの供給元（<c>DashEndpoints</c> が要求ごとに引く）。
         /// <b>呼ぶのは UI スレッド</b> ── <see cref="Recorders"/> は UI スレッド所有である。
         /// </summary>
         public Components.IDashPreviewSource DashPreviews { get; }

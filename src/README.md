@@ -1881,6 +1881,9 @@ UI スレッドで走る。`TryEnqueue` が false なら `RemoteApiException(12,
 | GET | `/api/recordings` | `Viewer` | 録画ファイルの一覧（`root` ＋ `files[]`。1 件は `path` / `length` / `lastWriteTimeUtc` / `inProgress` / `fragmented`） |
 | GET | `/api/recordings/{*path}` | `Viewer` | 1 ファイルの配信（Range 対応。`?download=1` で添付。応答に `X-In-Progress` と `X-Codecs`） |
 | GET | `/api/recorders/{id}/preview.mp4` | `Viewer` | ライブプレビュー（chunked fMP4） |
+| GET | `/api/recorders/{id}/dash/manifest.mpd` | `Viewer` | DASH プレビューの MPD（`application/dash+xml`）。**引くこと自体がリースを延ばす**（引かなくなれば第 2 パイプラインは畳まれる） |
+| GET | `/api/recorders/{id}/dash/init.mp4` | `Viewer` | 同 Init セグメント（`video/mp4`）。同じくリースを延ばす |
+| GET | `/api/recorders/{id}/dash/seg-{time}.m4s` | `Viewer` | 同メディアセグメント（`video/iso.segment`。`{time}` は MPD の `S@t`）。同じくリースを延ばす |
 
 **`HEAD` / `DELETE` / `OPTIONS` のハンドラは無い**（`MapGet` などしか呼んでいない）。CORS
 ミドルウェアも入れていない。未知の経路は `MapFallback` が 404 ＋ 終了コード 4 で返す。
@@ -2138,11 +2141,19 @@ appsrc name=src format=time block=false max-buffers=2 max-bytes=0 leaky-type=dow
 | `lease expired` | 10 秒のあいだ `TryGetSnapshot` が 1 度も呼ばれなかった（＝読み手が居なくなった） |
 | `settings changed` | 幅・高さ・fps・ビットレートのどれかが変わった（次のサンプルで新しい値で組み直す） |
 | `caps changed` | 枝A の caps が変わった（＝ init が変わる。連続体を切り直す） |
-| `encoder failed` | `parse_launch` の失敗・`PLAYING` になれない・バスの ERROR（`not-negotiated` 等）。その候補は不採用にして、次のサンプルで次の候補を試す |
+| `encoder failed` | 動いている第 2 パイプラインのバスに ERROR（`not-negotiated` 等）が出た。その候補は不採用にして、次のサンプルで次の候補を試す |
 | `pts rewind` | fragment の `tfdt` が進んでいない（`SegmentTimeline` が単調でなくなる） |
 | `gop too long` | 1 セグメントへ `MaxPendingFragments = 8` 個の fragment が溜まった（IDR が来ていない安全網） |
 | `init unparsable` | Init から `timescale` / `codecs` を読めなかった |
+| `splitter fault` | `Fmp4SegmentSplitter` が壊れた入力を見つけた（内訳は `dash.stream-error` の `detail=`） |
+| `stream error` | 押し込みか mux スレッドで例外が出た（内訳は `dash.stream-error` の `detail=`） |
 | `close` | レコーダーの停止（`CloseCore`。枝を静止させた後） |
+
+**`reason=` はこの 10 個で全部である**（`DashPreviewStream.StopReasons`）。切り出し器・集約器の
+自由文と例外の `Message` は `reason` に入れず、`dash.stream-error` の `detail=` へ出す ──
+そうしないと「起きうる理由」を運用側が数え上げられなくなる。**`parse_launch` の失敗と
+`PLAYING` になれなかった場合は、この表に現れない** ── まだ mux が無いので停止する対象が無く、
+記録は `dash.stream-error` の 1 行だけになる（次のサンプルで次の候補が試される）。
 
 ロックの規律は **`_muxLock` → `_ringLock` の一方向だけ**。`_muxLock` を取るのは枝A のスレッドと
 `Close` だけで、**取り方は `Monitor.TryEnter` に限る** ── ここは録画と同じストリーミング
@@ -2153,11 +2164,27 @@ appsrc name=src format=time block=false max-buffers=2 max-bytes=0 leaky-type=dow
 有界化し、抜けられなければ `dash.leak` を残して**意図的にリークする**
 （`preview.leak` / `recorder.leak` と同じ規律）。
 
-**HTTP 配信は未接続である。** この波で用意したのはエンジンと契約
-（`Components.IDashPreviewSource` / `DashPreviewSnapshot`、`Controller.DashPreviews`、
-`IRemoteControlBackend.GetDashPreviewSnapshotAsync`）だけで、`manifest.mpd` / `init.mp4` /
-`seg-*.m4s` を配るエンドポイントと Web UI は次の波で足す ── **いまブラウザから到達する
-手段は無い**。
+**HTTP へは `DashEndpoints` が単一ルート `GET /api/recorders/{id}/dash/{file}` で配る。**
+`{file}` の解釈は `Components.DashRoutes.TryParse` の純関数 1 つで、`manifest.mpd` /
+`init.mp4` / `seg-<10進数>.m4s` の 3 つだけを受ける（**名前の正本は `DashManifest` の
+`InitializationTemplate` / `MediaTemplate`** ── `"seg-"` と `".m4s"` を 2 か所に持たない）。
+それ以外は `MapFallback` と同じ形の 404（終了コード 4）で、`DashRoutesTests`（L1）が
+受理と拒否の両側を縛る。
+
+- **まだ始まっていない**（init も 1 セグメントも揃っていない）→ **503 ＋ `Retry-After: 5`**、
+  本文の `error` は `DashPreviewReasons.Starting` の文字列そのもの。**HTTP 層は特別扱いしない**
+  ── 待つかどうかを決めるのはクライアントで、ここで待つと要求 1 本が最大 1 GOP ぶん
+  スレッドを占める。対象のレコーダーが無ければ 404（終了コード 13）。
+- **期限切れのセグメント**（リングから落ちた・まだ来ていない・別の連続体のもの）→ 404
+  `"segment not available"`。3 つを区別しない ── クライアントの対処はどれも「飛ばす」である。
+- 応答はすべて `Cache-Control: no-store` ＋ **`X-Dash-Generation`**（＝ MPD の `Period@id`）。
+  **ETag も Range も使わない** ── リングから落ちたものは二度と戻らないので、
+  条件付き要求に意味のある「同じ表現」が存在しない。
+- **取得がリースを延ばす。** manifest を引き続けることが「見ている」の唯一の表明で、
+  止めれば `LeaseMs` 後に第 2 パイプラインが消える。
+
+遅延の目安は**おおむね 2〜3 秒**（セグメントの長さは次のセグメントが来るまで確定しない
+ぶんが 1 本＝約 1 秒、ポーリングの粒度が 1 秒、そこへ MSE の緩衝が乗る）。
 
 ### Web UI
 
@@ -2172,6 +2199,28 @@ appsrc name=src format=time block=false max-buffers=2 max-bytes=0 leaky-type=dow
 突き合わせ、`wwwroot` にサブディレクトリが無いこと・csproj の埋め込み指定・`app.js` が
 `<script src="http` と `import ` を持たないこと・`index.html` の参照先がすべてマニフェスト内の
 名前であることを縛る。
+
+プレビューには**画質の切替（`#previewMode`）が 1 つ**あり、**既定は録画画質**
+（従来の chunked `preview.mp4`。録画用に符号化済みの H.264 をそのまま包むので追加費用が無い）。
+`dash` を選ぶと、そのレコーダーの `Preview*` 4 設定で再符号化した DASH の方を再生する。
+レコーダー行の「Preview」はこの選択を見てどちらかを開き、**配信中に切り替えたら
+同じレコーダーで開き直す**（2 つのモードは init も時間軸も違うので `MediaSource` を共有できない）。
+後始末は `stopPreview()` **1 か所**で、どちらのモードもポーリングのタイマー・
+`AbortController`・ObjectURL・状態表示という同じ 4 つの handle に state を掛けてある。
+
+DASH 側は**第三者のライブラリを使わない**（資産は 3 ファイルのまま）。単一 Period・単一
+Representation のライブ配信でプレイヤーがやることは、`manifest.mpd` を 1 秒ごとに引き直し、
+`SegmentTimeline` の `S@t` のうち未取得のものを昇順に取って（**同時 1 本**）`SourceBuffer` へ
+append するだけである。`mode` は **`'segments'`**（chunked 側の `'sequence'` とは逆 ──
+セグメントは自分の復号時刻を持ち、MPD がその時刻で索引している）で、
+`timestampOffset = −(presentationTimeOffset ÷ timescale)` を **init を append する前に**設定して
+時間軸を 0 起点にする。MIME は MPD の `AdaptationSet@codecs` から組み立て、
+`MediaSource.isTypeSupported` が偽なら理由を出して止める。503 の本文が
+`dash preview is starting` のあいだは**利用者が止めるまで**再試行し、他の 4xx / 5xx は
+本文の `error` を出して止める。セグメントの 404 は「期限切れ」として取得済み扱いで飛ばす。
+**`Period@id`（generation）が変わったら完全に作り直す** ── 前の init では新しいセグメントを
+復号できず、同じ `SourceBuffer` へ 2 つ目の init を入れるのは MSE が壊れる操作そのものである。
+トリムと追従（ライブ端への寄せ）は chunked 側と**同じ関数**を使う。
 
 録画一覧の「Play」は 2 経路ある。`fragmented` でない行は `<video src>` 直結で、
 **録画中は押せない**（`moov` が未確定）。`fragmented` の行は**録画中でも押せて、MSE 経路**で再生する
@@ -2506,8 +2555,8 @@ GPU テクスチャになるため**アクセシブルテキストが 1 つも�
 | `preview.unsubscribe` | INFO | `LivePreviewStream.Unsubscribe` | `PreviewSubscription.Dispose`（＝ HTTP の切断）で席が戻った（`subscribers=` は残数）。**`preview.subscribe` と対で数える**と、席が漏れているかどうかが分かる |
 | `preview.leak` | WARN | `LivePreviewStream.Close` | `Monitor.TryEnter(_muxLock, 5000)` が抜けず、プレビューの muxer を止めずに手放した（`recorder.leak` と同じ規律 ── クラッシュ回避のための意図的なリーク） |
 | `dash.stream-start` | INFO | `DashPreviewStream.StartMux` | DASH の第 2 パイプラインが PLAYING に達した（`encoder='…' size=WxH fps=N kbps=N generation=N`）。**実際に採用されたエンコーダーはここにしか出ない** |
-| `dash.stream-stop` | INFO | `DashPreviewStream.Teardown` | 第 2 パイプラインを退役させた（`reason=` は `lease expired｜settings changed｜caps changed｜encoder failed｜pts rewind｜gop too long｜init unparsable｜close` の 8 種。上の停止理由の表を参照） |
-| `dash.stream-error` | ERROR | `DashPreviewStream` の `OnRawSample` / `StartMux` / `OnMuxSample` / `OnBusMessage` / `Retire` | 押し込みの失敗／候補のエンコーダーで組めなかった（候補が尽きた場合は**1 回だけ**）／切り出し・集約の破綻／バスの ERROR ／退役したパイプラインを綺麗に落とせなかった。**録画は止めない**ので、ここが唯一の観測点になる |
+| `dash.stream-stop` | INFO | `DashPreviewStream.Teardown` | 第 2 パイプラインを退役させた（`reason=` は `lease expired｜settings changed｜caps changed｜encoder failed｜pts rewind｜gop too long｜init unparsable｜splitter fault｜stream error｜close` の 10 種。上の停止理由の表を参照） |
+| `dash.stream-error` | ERROR | `DashPreviewStream` の `OnRawSample` / `StartMux` / `OnMuxSample` / `OnBusMessage` / `Retire` | 押し込みの失敗／候補のエンコーダーで組めなかった（候補が尽きた場合は**1 回だけ**）／切り出し・集約の破綻（`reason=` ＋ 自由文の `detail=`）／バスの ERROR ／退役したパイプラインを綺麗に落とせなかった。**録画は止めない**ので、ここが唯一の観測点になる |
 | `dash.leak` | WARN | `DashPreviewStream.Close` | `Monitor.TryEnter(_muxLock, 5000)` が抜けず、第 2 パイプラインを止めずに手放した（`preview.leak` と同じ規律） |
 | `variables.duplicate-key` | WARN | `TemplateVariableViewModel.OnKeyChanged` | Variables 画面で既存の行と重複するキーを入力したため、元のキーへ差し戻した（重複を許すと既存の値を空文字で潰し、片方の削除で実体まで消える） |
 | `settings.load` | ERROR | `AppSettings.ReportLoadFailure` | settings.json を読めず既定値へ倒れた（読めなかったファイルは `.bad` へ退避） |

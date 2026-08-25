@@ -25,6 +25,18 @@ namespace ProcessRecorderApp.Components;
 /// </summary>
 public sealed class DashSegmentAssembler
 {
+    /// <summary>
+    /// <see cref="Fault"/> が取る値の 1 つ目（時刻が進んでいない）。
+    /// <b>供給側の停止理由の固定集合に入る</b>ので、文字列の正本はここ 1 つである。
+    /// </summary>
+    public const string PtsRewindFault = "pts rewind";
+
+    /// <summary>
+    /// <see cref="Fault"/> が取る値の 2 つ目（IDR が来ないまま
+    /// <see cref="DashPreviewLimits.MaxPendingFragments"/> 個溜まった）。
+    /// </summary>
+    public const string GopTooLongFault = "gop too long";
+
     private readonly Queue<DashMediaSegment> _ready = new();
     private readonly List<byte[]> _pending = [];
 
@@ -66,7 +78,7 @@ public sealed class DashSegmentAssembler
         // SegmentTimeline が単調でなくなる。
         if (media.DecodeTime <= _pendingTime)
         {
-            SetFault("pts rewind");
+            SetFault(PtsRewindFault);
             return;
         }
 
@@ -79,7 +91,7 @@ public sealed class DashSegmentAssembler
 
         _pending.Add(media.Bytes);
         if (DashPreviewLimits.MaxPendingFragments <= _pending.Count)
-            SetFault("gop too long");
+            SetFault(GopTooLongFault);
     }
 
     /// <summary>確定したセグメントを 1 件取り出す。</summary>

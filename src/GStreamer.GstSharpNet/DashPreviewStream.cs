@@ -41,8 +41,8 @@ internal interface IDashPreviewHost
 /// <b>DASH プレビューの配信エンジン。</b> イベント録画の枝A（プレビュー用 <c>appsink</c>）へ
 /// 届く<b>生フレーム</b>を、<b>レコーダーごとに 1 本</b>の第 2 パイプラインで
 /// 縮小・低レート化して再エンコードし、fMP4 の fragment を DASH のセグメントへ集約して
-/// 保持する。<b>HTTP へは波 8 でつなぐ</b> ── 現在この器を引くのは
-/// <c>Controller.DashPreviews</c> だけである。
+/// 保持する。保持物は <c>Controller.DashPreviews</c> 経由で
+/// <c>GET /api/recorders/{id}/dash/…</c> が引く。
 ///
 /// <para>
 /// <b>読まれなくなれば消える。</b> <see cref="TryGetSnapshot"/> が呼ばれるたびに
@@ -92,6 +92,54 @@ internal sealed partial class DashPreviewStream : IDisposable
     /// <see cref="LivePreviewStream.CallbackExitTimeoutMs"/> と同じ 5 秒。
     /// </summary>
     public const int CallbackExitTimeoutMs = 5000;
+
+    /// <summary>
+    /// <c>dash.stream-stop</c> の <c>reason=</c> が取りうる値の<b>全部</b>。
+    ///
+    /// <para>
+    /// <b>固定集合であることが約束である。</b> 切り出し器・集約器の自由文や
+    /// 例外の <c>Message</c> をここへ流すと、運用側は「起きうる理由」を数え上げられなくなる
+    /// ── それらは <c>dash.stream-error</c> の <c>detail=</c> へ出す
+    /// （<c>src/README.md</c> の停止理由の表と対で保つこと）。
+    /// </para>
+    /// <para>
+    /// <c>parse_launch</c> と <c>PLAYING</c> の失敗はここに現れない ── まだ
+    /// <see cref="_mux"/> が無いので <see cref="Teardown"/> は何もせず、
+    /// 記録は <c>dash.stream-error</c> の 1 行だけになる。
+    /// </para>
+    /// </summary>
+    private static class StopReasons
+    {
+        /// <summary>貸出が切れた（読み手が居なくなった）。</summary>
+        public const string LeaseExpired = "lease expired";
+
+        /// <summary>幅・高さ・fps・ビットレートのどれかが変わった。</summary>
+        public const string SettingsChanged = "settings changed";
+
+        /// <summary>枝A の caps が変わった（init も変わる）。</summary>
+        public const string CapsChanged = "caps changed";
+
+        /// <summary>候補のエンコーダーで組めなかった／バスの ERROR。</summary>
+        public const string EncoderFailed = "encoder failed";
+
+        /// <summary>集約器が見つけた時刻の巻き戻し。</summary>
+        public const string PtsRewind = DashSegmentAssembler.PtsRewindFault;
+
+        /// <summary>集約器の安全網（IDR が来ないまま fragment が溜まった）。</summary>
+        public const string GopTooLong = DashSegmentAssembler.GopTooLongFault;
+
+        /// <summary>Init から timescale / codecs を読めなかった。</summary>
+        public const string InitUnparsable = "init unparsable";
+
+        /// <summary>切り出し器が壊れた入力を見つけた（内訳は <c>detail=</c>）。</summary>
+        public const string SplitterFault = "splitter fault";
+
+        /// <summary>それ以外の破綻（例外・想定外の理由。内訳は <c>detail=</c>）。</summary>
+        public const string StreamError = "stream error";
+
+        /// <summary>レコーダーの停止。</summary>
+        public const string Close = "close";
+    }
 
     /// <summary>
     /// 第 2 パイプラインの文字列。<b>ここだけが形の正本</b>で、L1 がトークンを固定する。
@@ -291,7 +339,7 @@ internal sealed partial class DashPreviewStream : IDisposable
         {
             // **1 枚の失敗で録画を殺さない。** 次のサンプルで組み直しが試みられる。
             Components.ActivityLog.Error("dash.stream-error", $"recorder='{_host.Name}' {ex.Message}");
-            retired ??= Teardown("stream error");
+            retired ??= Teardown(StopReasons.StreamError);
         }
         finally
         {
@@ -317,7 +365,7 @@ internal sealed partial class DashPreviewStream : IDisposable
         if (DashPreviewLimits.LeaseMs < Environment.TickCount64 - Volatile.Read(ref _lastTouchTicks))
         {
             _wantMux = false;
-            return Teardown("lease expired");
+            return Teardown(StopReasons.LeaseExpired);
         }
 
         if (_mux is not { } engine)
@@ -341,14 +389,14 @@ internal sealed partial class DashPreviewStream : IDisposable
         if (_faulted)
         {
             _faulted = false;
-            return Teardown(_faultReason ?? "stream error");
+            return Teardown(_faultReason ?? StopReasons.StreamError);
         }
 
         // バスの ERROR。この候補は使えないので、次のサンプルで次の候補から組み直す。
         if (engine.EncoderFailed)
         {
             _rejectedEncoders.Add(engine.FactoryName);
-            return Teardown("encoder failed");
+            return Teardown(StopReasons.EncoderFailed);
         }
 
         // 4 設定は毎サンプル読み直す（宿主から通知を受けない）。
@@ -357,14 +405,14 @@ internal sealed partial class DashPreviewStream : IDisposable
             || engine.Fps != _host.PreviewFps
             || engine.BitrateKbps != _host.PreviewBitrateKbps)
         {
-            return Teardown("settings changed");
+            return Teardown(StopReasons.SettingsChanged);
         }
 
         // caps が変わったら init も変わる。連続体を切り直す。
         using (var negotiated = sample.GetCaps())
         {
             if (negotiated is null || !string.Equals(negotiated.ToString(), engine.CapsText, StringComparison.Ordinal))
-                return Teardown("caps changed");
+                return Teardown(StopReasons.CapsChanged);
         }
 
         Push(engine, sample);
@@ -454,7 +502,7 @@ internal sealed partial class DashPreviewStream : IDisposable
                 pipeline.Dispose();
             }
 
-            _ = Teardown("encoder failed");
+            _ = Teardown(StopReasons.EncoderFailed);
             return;
         }
 
@@ -637,14 +685,24 @@ internal sealed partial class DashPreviewStream : IDisposable
             while (engine.Splitter.TryDequeue(out var segment))
                 Consume(engine, segment);
 
+            // **理由は固定集合へ畳む。** 切り出し器の自由文と、集約器が返しうる
+            // 想定外の文字列は detail 側へ回す（StopReasons の doc）。
             if (engine.Splitter.IsFaulted)
-                Fault(engine, engine.Splitter.Fault ?? "splitter fault");
+            {
+                Fault(engine, StopReasons.SplitterFault, engine.Splitter.Fault);
+            }
             else if (engine.Assembler.IsFaulted)
-                Fault(engine, engine.Assembler.Fault ?? "assembler fault");
+            {
+                string? fault = engine.Assembler.Fault;
+                if (fault is StopReasons.PtsRewind or StopReasons.GopTooLong)
+                    Fault(engine, fault);
+                else
+                    Fault(engine, StopReasons.StreamError, fault);
+            }
         }
         catch (Exception ex) when (!engine.Retired)
         {
-            Fault(engine, ex.Message);
+            Fault(engine, StopReasons.StreamError, ex.Message);
         }
         catch (Exception ex)
         {
@@ -664,7 +722,7 @@ internal sealed partial class DashPreviewStream : IDisposable
         {
             if (!Fmp4InitInfo.TryParse(segment.Bytes, out var info))
             {
-                Fault(engine, "init unparsable");
+                Fault(engine, StopReasons.InitUnparsable);
                 return;
             }
 
@@ -711,12 +769,15 @@ internal sealed partial class DashPreviewStream : IDisposable
     /// <b>ここから <see cref="_muxLock"/> は取らない</b> ── 取ると、畳んでいる最中の
     /// <c>SetState(Null)</c>（＝このスレッドの退去待ち）と組んで詰む。
     /// </summary>
-    private void Fault(MuxEngine engine, string reason)
+    private void Fault(MuxEngine engine, string reason, string? detail = null)
     {
         if (engine.Retired)
             return;
 
-        Components.ActivityLog.Error("dash.stream-error", $"recorder='{_host.Name}' {reason}");
+        Components.ActivityLog.Error("dash.stream-error",
+            detail is null
+                ? $"recorder='{_host.Name}' reason={reason}"
+                : $"recorder='{_host.Name}' reason={reason} detail={detail}");
         _faultReason = reason;
         _faulted = true;
     }
@@ -812,7 +873,7 @@ internal sealed partial class DashPreviewStream : IDisposable
             Monitor.TryEnter(_muxLock, CallbackExitTimeoutMs, ref entered);
             if (entered)
             {
-                retired = Teardown("close");
+                retired = Teardown(StopReasons.Close);
             }
             else
             {

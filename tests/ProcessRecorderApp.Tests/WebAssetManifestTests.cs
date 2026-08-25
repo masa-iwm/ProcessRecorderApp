@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
+using ProcessRecorderApp.Components;
 using Xunit;
 
 namespace ProcessRecorderApp.Tests;
@@ -88,6 +89,29 @@ public sealed class WebAssetManifestTests
 
         Assert.DoesNotContain("<script src=\"http", script, StringComparison.Ordinal);
         Assert.DoesNotContain("import ", script, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// <b>「まだ始まっていない」の綴りが 2 か所にある。</b> DASH の配信は 503 の本文の
+    /// <c>error</c> をそのまま返し（HTTP 層は特別扱いしない）、<c>app.js</c> は
+    /// その文字列と<b>完全一致</b>で「待てば直る」を判定する ── 正本は
+    /// <see cref="DashPreviewReasons.Starting"/> なので、そこを書き換えたら
+    /// ブラウザは黙って「待つ」のをやめ、開始直後の 503 で停止するようになる。
+    ///
+    /// <para>
+    /// <b>参照を共有できないからテキストで縛る</b>（<c>EncoderCatalogTests</c> と
+    /// <c>tools/</c> のスクリプトの関係と同じ）── JavaScript から C# の定数は引けない。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void TheScriptSpellsTheStartingReasonExactlyAsTheServerDoes()
+    {
+        string script = File.ReadAllText(Path.Combine(WebRootDirectory, "app.js"));
+
+        Assert.Contains(
+            "'" + DashPreviewReasons.Starting + "'",
+            script,
+            StringComparison.Ordinal);
     }
 
     [Fact]

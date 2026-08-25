@@ -137,7 +137,7 @@
       var preview = document.createElement('button');
       preview.type = 'button';
       preview.textContent = 'Preview';
-      preview.addEventListener('click', function () { startPreview(recorder.name); });
+      preview.addEventListener('click', function () { startSelectedPreview(recorder.name); });
       actions.appendChild(preview);
 
       row.appendChild(actions);
@@ -1109,6 +1109,10 @@
   var previewTimer = null;
   var previewUrl = null;
 
+  // The recorder the running preview belongs to, so that switching the mode selector
+  // can reopen the same one. Cleared by stopPreview, set by whichever mode started.
+  var previewTarget = null;
+
   // The active pump's failure hook. The <video> element outlives every connection,
   // so its `error` listener is attached once and routed through here.
   var previewOnFailure = null;
@@ -1124,8 +1128,12 @@
     }
   }
 
+  // Both modes are torn down here, because both hang their state on the same four
+  // handles: the generation counter, the fetch controller, the pending timer (the
+  // chunked reconnect or the DASH manifest poll) and the object URL.
   function stopPreview(message) {
     previewGeneration++;
+    previewTarget = null;
     previewOnFailure = null;
     if (previewTimer !== null) {
       clearTimeout(previewTimer);
@@ -1144,12 +1152,20 @@
     status($('previewStatus'), message === undefined ? '' : message, false);
   }
 
+  // The row's "Preview" button opens whichever stream the selector names. The two
+  // modes cannot share a MediaSource (different init, different timeline), so
+  // switching modes is expressed as "stop, then start the same recorder again".
+  function startSelectedPreview(id) {
+    if ($('previewMode').value === 'dash') { startDashPreview(id); } else { startPreview(id); }
+  }
+
   function startPreview(id) {
     stopPreview('');
     if (!previewSupported()) {
       status($('previewStatus'), 'this browser cannot play ' + PREVIEW_MIME, true);
       return;
     }
+    previewTarget = id;
     status($('previewStatus'), 'connecting to ' + id + '...', false);
     connectPreview(id, previewGeneration);
   }
@@ -1303,6 +1319,341 @@
       if (generation !== previewGeneration) { return; }
       connectPreview(id, generation);
     }, PREVIEW_RECONNECT_MS);
+  }
+
+  // ---- DASH preview (the recorder's own preview settings) ----
+
+  // The second mode. The server re-encodes at the recorder's preview resolution,
+  // frame rate and bitrate, and publishes the result as a live DASH presentation:
+  // a manifest that lists the segments it still holds, one init segment, and the
+  // segments themselves. There is no DASH library here -- what a player has to do
+  // for a single-representation, single-period live stream is: read the timeline,
+  // fetch what is new, append it to a SourceBuffer.
+  //
+  // The three things that differ from the chunked mode, and why:
+  //
+  // 1. `mode = 'segments'`, not 'sequence'. The segments carry their own decode
+  //    times and the manifest indexes them by those times, so they must land where
+  //    they say they do. `timestampOffset` moves that timeline to zero, and it is
+  //    set *before* the init is appended -- afterwards it no longer applies to what
+  //    the buffer already holds.
+  // 2. Fetching the manifest is the subscription. The server keeps the encoder alive
+  //    only while somebody is reading, so the poll below is what "watching" means;
+  //    stopping the poll is what releases it (nothing else is sent).
+  // 3. `Period@id` changing means the server rebuilt the continuum (settings changed,
+  //    the lease expired and it came back, the source renegotiated). The old init
+  //    cannot decode the new segments and a second init in the same SourceBuffer is
+  //    exactly what breaks MSE, so that case rebuilds everything from scratch.
+
+  var DASH_POLL_MS = 1000;
+
+  // The server's word for "the encoder is running but nothing is ready yet". It
+  // arrives as the `error` of a 503 and any of the three requests can meet it, so
+  // none of them treats it as an answer (see `failUnlessStarting`); every other
+  // non-OK answer stops the preview.
+  // The C# side owns this string (Components.DashPreviewReasons.Starting) and an L1
+  // test keeps the two copies equal.
+  var DASH_STARTING_ERROR = 'dash preview is starting';
+
+  var DASH_STARTING_STATUS = 'DASH: starting…';
+
+  function dashUrl(id, file) {
+    return '/api/recorders/' + encodeURIComponent(id) + '/dash/' + file;
+  }
+
+  function startDashPreview(id) {
+    stopPreview('');
+    if (!previewSupported()) {
+      status($('previewStatus'), 'this browser cannot play ' + PREVIEW_MIME, true);
+      return;
+    }
+    previewTarget = id;
+    status($('previewStatus'), DASH_STARTING_STATUS, false);
+    openDashPreview(id, previewGeneration);
+  }
+
+  function openDashPreview(id, generation) {
+    var video = $('previewPlayer');
+    var controller = new AbortController();
+    previewAbort = controller;
+
+    var buffer = null;
+    var period = null;
+    var taken = new Set();
+    var wanted = [];
+    var queue = [];
+    var queued = 0;
+    var appended = 0;
+    var fetching = false;
+    var broken = false;
+
+    // The init has to be in the SourceBuffer before any media reaches it, and the
+    // manifest poll runs on its own clock: without this gate the second poll can
+    // append a segment while the init fetch is still in flight, which is the one
+    // mistake MSE answers with a dead SourceBuffer. `initFetching` keeps the retry
+    // (see `take`) from asking for the same init twice.
+    var initReady = false;
+    var initFetching = false;
+
+    // Attributes of the continuum, fixed once the first manifest has been read.
+    var initFile = '';
+    var mediaTemplate = '';
+
+    function alive() { return !broken && generation === previewGeneration; }
+
+    // One place decides that this presentation is unusable. Unlike the chunked mode
+    // there is no reconnect: every way this fails is an answer, not a hiccup.
+    function fail(reason) {
+      if (!alive()) { return; }
+      broken = true;
+      previewOnFailure = null;
+      controller.abort();
+      if (previewTimer !== null) { clearTimeout(previewTimer); previewTimer = null; }
+      status($('previewStatus'), reason, true);
+    }
+
+    previewOnFailure = fail;
+
+    // Every non-OK answer except one is final. The exception is the 503 that carries
+    // `DASH_STARTING_ERROR`: the server empties the ring whenever it rebuilds the
+    // continuum (settings changed, caps changed, the encoder was dropped), so the
+    // manifest, the init and a segment can all answer it. Waiting is the only repair
+    // and it has no deadline here -- the operator decides when to stop looking. The
+    // fetch that ran into it is dropped and the manifest poll carries on: the next
+    // manifest either comes back on the same `Period@id` or on a new one, and a new
+    // one rebuilds the presentation from scratch.
+    function failUnlessStarting(response) {
+      if (response.status === 401) { showLogin('Sign in to continue.'); return undefined; }
+      return response.json().catch(function () { return {}; }).then(function (body) {
+        if (response.status === 503 && body.error === DASH_STARTING_ERROR) {
+          status($('previewStatus'), DASH_STARTING_STATUS, false);
+          return;
+        }
+        fail(describe(body, response.status));
+      });
+    }
+
+    // Peek, append, then drop: shifting first loses the chunk when appendBuffer
+    // throws, and a byte stream with a hole in it never recovers.
+    function flush() {
+      if (!alive() || buffer === null || buffer.updating || queue.length === 0) { return; }
+
+      var chunk = queue[0];
+      try {
+        buffer.appendBuffer(chunk);
+      } catch (error) {
+        fail('append failed: ' + error.message);
+        return;
+      }
+      queue.shift();
+      queued -= chunk.byteLength;
+    }
+
+    function enqueue(bytes) {
+      queue.push(bytes);
+      queued += bytes.byteLength;
+      if (queued > PREVIEW_MAX_QUEUE_BYTES) {
+        fail('the player fell too far behind (' + formatSize(queued) + ' unread)');
+        return;
+      }
+      flush();
+    }
+
+    function schedule() {
+      if (!alive() || previewTimer !== null) { return; }
+      previewTimer = setTimeout(function () {
+        previewTimer = null;
+        poll();
+      }, DASH_POLL_MS);
+    }
+
+    function poll() {
+      if (!alive()) { return; }
+
+      fetch(dashUrl(id, 'manifest.mpd'), {
+        signal: controller.signal,
+        credentials: 'same-origin'
+      }).then(function (response) {
+        if (!alive()) { return undefined; }
+        if (response.ok) {
+          return response.text().then(function (body) {
+            if (alive()) { readManifest(body); }
+          });
+        }
+        return failUnlessStarting(response);
+      }).catch(function (error) {
+        if (!alive() || error.name === 'AbortError') { return; }
+        fail(error.message);
+      }).then(function () {
+        schedule();
+      });
+    }
+
+    function readManifest(body) {
+      var mpd = new DOMParser().parseFromString(body, 'application/xml');
+      if (mpd.getElementsByTagName('parsererror').length !== 0) {
+        fail('the manifest is not well-formed XML');
+        return;
+      }
+
+      var periodNode = mpd.getElementsByTagName('Period')[0];
+      var setNode = mpd.getElementsByTagName('AdaptationSet')[0];
+      var templateNode = mpd.getElementsByTagName('SegmentTemplate')[0];
+      if (!periodNode || !setNode || !templateNode) {
+        fail('the manifest has no Period, AdaptationSet or SegmentTemplate');
+        return;
+      }
+
+      var current = periodNode.getAttribute('id');
+      if (period !== null) {
+        if (current !== period) { rebuild(); return; }
+        take(timelineOf(templateNode));
+        return;
+      }
+
+      var timescale = Number(templateNode.getAttribute('timescale'));
+      var offset = Number(templateNode.getAttribute('presentationTimeOffset'));
+      var codecs = setNode.getAttribute('codecs');
+      initFile = templateNode.getAttribute('initialization');
+      mediaTemplate = templateNode.getAttribute('media');
+
+      if (!(timescale > 0) || !isFinite(offset) || !codecs || !initFile || !mediaTemplate) {
+        fail('the manifest is missing the values needed to play it');
+        return;
+      }
+
+      var mime = 'video/mp4; codecs="' + codecs + '"';
+      if (!MediaSource.isTypeSupported(mime)) {
+        fail('this browser cannot play ' + mime);
+        return;
+      }
+
+      period = current;
+      begin(mime, offset / timescale, timelineOf(templateNode));
+    }
+
+    // The `t` values stay strings: they are what goes into the URL, and a 64-bit
+    // decode time is not always exact as a JavaScript number.
+    function timelineOf(templateNode) {
+      var times = [];
+      var entries = templateNode.getElementsByTagName('S');
+      for (var i = 0; i < entries.length; i++) {
+        var t = entries[i].getAttribute('t');
+        if (t !== null) { times.push(t); }
+      }
+      return times;
+    }
+
+    function begin(mime, offsetSeconds, times) {
+      var source = new MediaSource();
+
+      releasePreviewUrl();
+      previewUrl = URL.createObjectURL(source);
+      video.src = previewUrl;
+
+      source.addEventListener('sourceopen', function () {
+        if (!alive()) { return; }
+
+        try {
+          buffer = source.addSourceBuffer(mime);
+        } catch (error) {
+          fail(error.message);
+          return;
+        }
+
+        buffer.mode = 'segments';
+        buffer.timestampOffset = -offsetSeconds;
+
+        buffer.addEventListener('error', function () { fail('the source buffer failed'); });
+        buffer.addEventListener('updateend', function () {
+          if (!alive()) { return; }
+          trimPreview(video, buffer);
+          followPreview(video);
+          flush();
+        });
+
+        take(times);
+      });
+    }
+
+    function fetchInit() {
+      if (initReady || initFetching) { return; }
+      initFetching = true;
+
+      fetch(dashUrl(id, initFile), {
+        signal: controller.signal,
+        credentials: 'same-origin'
+      }).then(function (response) {
+        if (!alive()) { return undefined; }
+        if (!response.ok) { return failUnlessStarting(response); }
+        return response.arrayBuffer().then(function (bytes) {
+          if (!alive()) { return; }
+          // The queue is first-in-first-out and `flush` only ever appends its head,
+          // so putting the init in first is what makes it reach the SourceBuffer first.
+          initReady = true;
+          enqueue(new Uint8Array(bytes));
+          fetchNext();
+        });
+      }).catch(function (error) {
+        if (alive() && error.name !== 'AbortError') { fail(error.message); }
+      }).then(function () {
+        initFetching = false;
+      });
+    }
+
+    function take(times) {
+      times.forEach(function (t) {
+        if (!taken.has(t)) {
+          taken.add(t);
+          wanted.push(t);
+        }
+      });
+      wanted.sort(function (a, b) { return Number(a) - Number(b); });
+
+      // Nothing may be fetched ahead of the init. A dropped init fetch (a 503 while
+      // the server rebuilds) comes back here on the next manifest, so the poll is
+      // also the retry.
+      if (!initReady) { fetchInit(); return; }
+      fetchNext();
+    }
+
+    // One segment in flight at a time. Segments have to be appended in order, and
+    // asking for the whole window at once only moves the queueing into the network.
+    function fetchNext() {
+      if (!alive() || fetching || !initReady || buffer === null || wanted.length === 0) { return; }
+
+      fetching = true;
+      var time = wanted.shift();
+
+      fetch(dashUrl(id, mediaTemplate.replace('$Time$', time)), {
+        signal: controller.signal,
+        credentials: 'same-origin'
+      }).then(function (response) {
+        if (!alive()) { return undefined; }
+        // 404 means the segment left the ring before we got to it. It is already
+        // marked as taken, so skipping is the whole repair: the picture jumps.
+        if (response.status === 404) { return undefined; }
+        if (!response.ok) { return failUnlessStarting(response); }
+        return response.arrayBuffer().then(function (bytes) {
+          if (!alive()) { return; }
+          enqueue(new Uint8Array(bytes));
+          appended++;
+          status($('previewStatus'), 'DASH: live (' + appended + ')', false);
+        });
+      }).catch(function (error) {
+        if (alive() && error.name !== 'AbortError') { fail(error.message); }
+      }).then(function () {
+        fetching = false;
+        fetchNext();
+      });
+    }
+
+    function rebuild() {
+      stopPreview(DASH_STARTING_STATUS);
+      startDashPreview(id);
+    }
+
+    poll();
   }
 
   // ---- live state ----
@@ -1484,6 +1835,12 @@
   });
 
   $('stopPreview').addEventListener('click', function () { stopPreview('stopped'); });
+  // Changing the mode while a preview runs reopens the same recorder in the new one.
+  // Nothing can be carried over: the two modes differ in codec parameters, in how the
+  // timeline is built and in how the server accounts for the viewer.
+  $('previewMode').addEventListener('change', function () {
+    if (previewTarget !== null) { startSelectedPreview(previewTarget); }
+  });
   // The element outlives every connection, so this is attached once. A decode
   // failure is otherwise silent: the picture stops and the network keeps running.
   $('previewPlayer').addEventListener('error', function () {

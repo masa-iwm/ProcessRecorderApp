@@ -80,3 +80,6 @@ button:disabled, input:disabled, select:disabled { opacity: 0.5; }
 
 #player { display: block; margin: 8px 0; max-height: 360px; width: 100%; background: #000000; }
 #previewPlayer { display: block; margin: 8px 0; max-width: 100%; max-height: 360px; background: #000000; }
+/* Sits in the same .actions row as "Stop preview" (the row's gap does the spacing);
+   this only keeps its own padding identical to every other select. */
+#previewMode { padding: 2px 8px; }

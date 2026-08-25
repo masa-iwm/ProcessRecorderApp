@@ -101,6 +101,12 @@ public static class ActivityLogFile
         "preview.stream-stop",
         "preview.stream-error",
         "preview.leak",
+        // リモート操作の DASH プレビュー（再エンコードする第 2 パイプライン）。
+        // **`preview.*` とは別物**で、こちらは購読の増減ではなく貸出（lease）で起き落ちする。
+        "dash.stream-start",
+        "dash.stream-stop",
+        "dash.stream-error",
+        "dash.leak",
         // デバイス到着の監視（復帰待ちのあいだだけプロバイダを started に保つ）と、
         // 観測した到着。到着で復帰の待ちを打ち切ったことは recorder.restart の
         // wake=device-arrival に出る。

@@ -570,4 +570,20 @@ public sealed class Fmp4SegmentSplitterTests
         Assert.Equal(0UL, media.DecodeTime);
         Assert.NotEmpty(media.Bytes);
     }
+
+    /// <summary>
+    /// <b>中身が空の <c>tfdt</c> でも読みにいかないこと。</b> full box の version は
+    /// 箱の中身の 1 バイト目なので、境界を見ずに読むと<b>隣の箱（<c>trun</c>）の先頭</b>を
+    /// version として解釈することになる ── 切り出し自体は成功させ、時刻は 0 にする
+    /// （<c>Fmp4InitInfo</c> の <c>mdhd</c> と同じ規律）。
+    /// </summary>
+    [Fact]
+    public void ATruncatedTfdtLeavesTheDecodeTimeAtZero()
+    {
+        var segments = Split(Concat(Ftyp(), Moov(), MoofWithTfdt(Box("tfdt")), Mdat()));
+
+        var media = segments.Single(s => s.Kind == PreviewSegmentKind.Media);
+        Assert.Equal(0UL, media.DecodeTime);
+        Assert.NotEmpty(media.Bytes);
+    }
 }

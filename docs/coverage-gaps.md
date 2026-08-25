@@ -535,31 +535,35 @@ L1 は `WebAssetManifestTests` が「資産の一覧が合っているか」を�
 共存の検査はすべて非 fragmented のままである）。fMP4 側の停止の排出や自動復帰との
 組み合わせは無検査なので、`FragmentedOutput` を実運用で使う前に、その構成で一度手で確かめること。
 
-### プレビューの 4 設定は DASH エンジンだけが読む（HTTP からは到達不能）
+### プレビューの 4 設定は DASH 配信だけが読む
 
 `EventRecorderSettings` の `PreviewWidth` / `PreviewHeight` / `PreviewFps` /
 `PreviewBitrateKbps` を読むのは `DashPreviewStream`（第 2 パイプライン）**だけ**である。
 既存の `preview.mp4`（fMP4 / MSE）は録画済みの H.264 をそのまま包むので、
-**この 4 つを動かしてもそちらの配信物は 1 バイトも変わらない**。
+**この 4 つを動かしてもそちらの配信物は 1 バイトも変わらない**。Web UI の画質切替で
+`dash` を選んだときだけ、この 4 つが効いた配信物が流れる。
 
-そして **DASH エンジンには HTTP から到達する手段がまだ無い**（`manifest.mpd` /
-`init.mp4` / `seg-*.m4s` のエンドポイントと Web UI は次の波）。したがって現状、
-値を変えたときに実際に何かが変わることを**ブラウザから確かめる方法は無い**。
+**4 設定が効くことは L2 が見ている** ── `DashPreviewTests`
+（`ChangingThePreviewSettingsMakesANewGeneration`）が、配信中に幅と高さを PATCH すると
+`Period@id` が増えて `Representation@width` が変わり、`init.mp4` のバイト列も変わることを
+確かめる。
 
-### DASH プレビュー エンジンは L2 で未検証
+### DASH プレビューで残っている穴
 
-`DashPreviewStream` の実行経路は**どの層でも走っていない**。L1 が縛るのは
-パイプライン文字列・配線のソース検査（`DashPreviewPipelineTests`）と、
-純関数（`Fmp4InitInfoTests` / `DashSegmentAssemblerTests` / `DashManifestTests`）だけで、
-**第 2 パイプラインが実際に PLAYING に達すること・lease で畳まれること・
-候補のエンコーダーが順に試されること・`dash.*` のログが出ることは 1 行も走っていない**。
-配信エンドポイントを足す波で `DashPreviewTests`（L2）を書くまで、ここは無検査である。
+`DashPreviewStream` の実行経路そのものは L2 の `DashPreviewTests`（5 件）と
+ブラウザ E2E の `WebUiBrowserTests.TheDashPreviewPlaysInTheBrowser`（1 件）が通す
+── 第 2 パイプラインが PLAYING に達すること・MPD と init と全セグメントが配られること・
+リングが有界でリースが切れれば畳まれること・`dash.stream-stop reason=lease expired` が
+記録されること・配信しても録画のレートが変わらないこと・ブラウザで実際に絵が進むことは、
+そこで守られている。残るのは次の 3 つ:
 
-いま触るなら、手で確かめられるのは同梱ランタイムでの鎖のネゴシエーションだけである
-（`videotestsrc` から `BuildPipeline` の中身を流して `moof` が出ることを見る）。
-
-配線したら、この節を消して「実際にその解像度・フレームレート・帯域で配信されること」を
-見る層を書くこと。
+- **別 PC・実 GPU のエンコーダー候補での DASH は無検査。** 手元と CI が通すのは
+  `EncoderCatalog` の並びのうち、その機械で実際に採用された 1 つだけである
+  （手動項目として `docs/gpu-verification.md` に 1 行ある）。
+- **遅延の実測値が無い。** `src/README.md` の「おおむね 2〜3 秒」は機構からの見積もりで、
+  測った値ではない。
+- **`videorate drop-only=true` が落とすフレームの割合は未計測。** 入力 fps より低い
+  `PreviewFps` を指定したときに、実際に何枚が配信物へ乗ったかを数える層は無い。
 
 ### リモート操作のブラウザ側（役割による出し分けとソースの編集欄）
 

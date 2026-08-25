@@ -247,9 +247,10 @@ and lets you start and stop them one at a time or all at once; edit each recorde
 the application settings; read and write filename-template variables; browse the recordings under
 the output folder and play or download them; and watch a **live preview** of a recorder. The page
 is pushed the new state whenever it changes, so it follows what you do in the GUI as well. The
-preview reuses the H.264 stream that is already being encoded for recording, so it costs no extra
-encoding — the price is latency: **roughly 2 to 3 seconds** (one GOP, 2 seconds by default, plus
-what the transport adds).
+preview comes in **two modes**: **recording quality (low latency)**, the default, reuses the H.264
+stream that is already being encoded for recording, so it costs no extra encoding; **preview
+settings (DASH)** re-encodes at the resolution, frame rate and bitrate you set per recorder.
+Either way the price is latency: **roughly 2 to 3 seconds**.
 
 **Security — read this before turning it on.**
 

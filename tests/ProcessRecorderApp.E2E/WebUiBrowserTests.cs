@@ -79,6 +79,14 @@ public sealed class WebUiBrowserTests(PublishedApp app, ITestOutputHelper output
         return settings;
     }
 
+    /// <summary>DASH プレビューを見るケースの構成（ゲスト読み取り・レコーダー 1 台）。</summary>
+    private static SettingsFile DashSettings()
+    {
+        var settings = RemoteBase(allowGuestRead: true);
+        settings.AddRecorder("R1");
+        return settings;
+    }
+
     private static void UseIsolatedRoot(AppInstance instance)
         => instance.Settings.OutputDirectory = instance.RecordingsDir;
 
@@ -495,5 +503,92 @@ public sealed class WebUiBrowserTests(PublishedApp app, ITestOutputHelper output
         }
 
         Assert.True(backwards <= 1, $"再生位置が {backwards} 回戻りました: {trace}");
+    }
+
+    // ---- (5) DASH プレビュー ----
+
+    /// <summary>画質切替を `dash` にする（選ぶだけ ── 押すのは行の Preview）。</summary>
+    private const string SelectDashMode = """
+        (function () {
+          document.getElementById('previewMode').value = 'dash';
+          return document.getElementById('previewMode').value === 'dash';
+        })()
+        """;
+
+    /// <summary>1 行目の「Preview」を押す（開始/停止は役割で隠れるので、文言で選ぶ）。</summary>
+    private const string ClickFirstPreview = """
+        (function () {
+          var rows = document.querySelectorAll('#recordersBody tr');
+          if (rows.length === 0) { return false; }
+          var buttons = rows[0].getElementsByTagName('button');
+          for (var i = 0; i < buttons.length; i++) {
+            if (buttons[i].textContent === 'Preview') { buttons[i].click(); return true; }
+          }
+          return false;
+        })()
+        """;
+
+    private const string PreviewReadyState = "document.getElementById('previewPlayer').readyState";
+
+    private const string PreviewTime = "document.getElementById('previewPlayer').currentTime";
+
+    /// <summary>
+    /// <b>最小 DASH クライアント（`app.js`）が本物のブラウザで実際に絵を出すこと。</b>
+    ///
+    /// <para>
+    /// L2 の <c>DashPreviewTests</c> が見るのは HTTP の応答の形までで、
+    /// <b>MPD を読んで `SourceBuffer` へ正しい順序・正しい時間軸で積めるか</b>は
+    /// ここでしか走らない ── <c>timestampOffset</c> を 1 つ間違えるだけで、
+    /// 応答はすべて 200 のまま <c>currentTime</c> が 1 秒も進まなくなる。
+    /// </para>
+    /// <para>
+    /// 判定は<b>位置が実際に進むこと</b>で行う。<c>readyState</c> だけでは
+    /// 「最初の 1 枚は出たが続かない」を通してしまう。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task TheDashPreviewPlaysInTheBrowser()
+    {
+        Assert.SkipUnless(EdgeCdp.IsAvailable, EdgeCdp.UnavailableReason);
+
+        using var instance = AppInstance.Create(app, DashSettings(), configure: UseIsolatedRoot);
+        int port = WaitForPort(instance);
+
+        // 枝A のサンプルが出るまでは MPD が 503 のままなので、初期化を待ってから開く。
+        Assert.True(instance.WaitForActivityLogEvent("recorder.init ok", PageBudget),
+            "recorder.init ok が現れませんでした。" + Environment.NewLine + instance.DiagnosticDump());
+
+        await using var browser = await EdgeCdp.LaunchAsync(Ct);
+        await browser.NavigateAsync($"http://127.0.0.1:{port}/", PageBudget, Ct);
+        Assert.True(await browser.WaitUntilAsync($"!{IsHidden("mainSections")}", PageBudget, Ct), "画面が出ませんでした。");
+
+        Assert.True(
+            await browser.WaitUntilAsync("document.querySelectorAll('#recordersBody tr').length > 0", PageBudget, Ct),
+            "レコーダーの一覧が出ませんでした。");
+
+        Assert.True(await browser.EvaluateBoolAsync(SelectDashMode, Ct), "画質切替に dash がありません。");
+        Assert.True(await browser.EvaluateBoolAsync(ClickFirstPreview, Ct), "行に Preview のボタンがありません。");
+
+        Assert.True(
+            await browser.WaitUntilAsync($"2 <= {PreviewReadyState}", PageBudget, Ct),
+            "DASH の再生が始まりませんでした: " + await browser.EvaluateStringAsync(TextOf("previewStatus"), Ct));
+
+        double before = await browser.EvaluateNumberAsync(PreviewTime, Ct);
+        await Task.Delay(TimeSpan.FromSeconds(2), Ct);
+        double after = await browser.EvaluateNumberAsync(PreviewTime, Ct);
+
+        string state = await browser.EvaluateStringAsync(TextOf("previewStatus"), Ct);
+        output.WriteLine($"dash preview: {before:F2}s -> {after:F2}s, status='{state}'");
+
+        Assert.True(1 <= after - before,
+            $"2 秒のあいだに再生位置が {after - before:F2} 秒しか進みませんでした（status='{state}'）。");
+        Assert.StartsWith("DASH: live", state, StringComparison.Ordinal);
+
+        // 「Stop preview」は両モード共通の後始末で、状態表示は `stopped` に置き換わる
+        // （空にはしない ── その文言は chunked のときから変わっていない）。
+        Assert.True(await browser.EvaluateBoolAsync(Click("stopPreview"), Ct), "Stop preview を押せませんでした。");
+        Assert.True(
+            await browser.WaitUntilAsync($"{TextOf("previewStatus")} === 'stopped'", PageBudget, Ct),
+            "Stop preview で配信が畳まれませんでした: " + await browser.EvaluateStringAsync(TextOf("previewStatus"), Ct));
     }
 }

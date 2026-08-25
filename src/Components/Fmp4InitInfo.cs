@@ -95,6 +95,12 @@ public readonly record struct Fmp4InitInfo(uint Timescale, string Codecs)
         if (!Fmp4SegmentSplitter.TryFindChild(data, mdiaStart, mdiaEnd, "mdhd", out int start, out int end))
             return false;
 
+        // **version を読む前に境界を見る。** 切り詰められた箱では中身が空になりうるので、
+        // ここを飛ばすと隣の箱の 1 バイトを version として読む（＝黙って別の位置の
+        // 4 バイトを timescale にする）。
+        if (start >= end)
+            return false;
+
         // version(1) flags(3) creation(4|8) modification(4|8) timescale(4) duration(4|8)
         int offset = data[start] == 0 ? start + 12 : start + 20;
         if (offset + 4 > end)
