@@ -50,8 +50,8 @@ public sealed class RecordingDeliveryTests(PublishedApp app, ITestOutputHelper o
             RemoteControlBindAddress = "127.0.0.1",
             RemoteControlPort = 0,
             RemoteControlAccessToken = Token,
-            // **このクラスの主題は認証ではない。** 波 3 で読み取りにも役割が要るように
-            // なったので、ゲスト読み取りを明示して従来どおり未認証で読ませる
+            // **このクラスの主題は認証ではない。** 読み取りにも役割が要るので、
+            // ゲスト読み取りを明示して未認証で読ませる
             // ── 認証そのものは RemoteControlTests が見る。
             RemoteControlAllowGuestRead = true,
         };

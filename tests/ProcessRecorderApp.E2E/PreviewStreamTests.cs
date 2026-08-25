@@ -17,7 +17,7 @@ namespace ProcessRecorderApp.E2E;
 /// どれも単体テストからは 1 バイトも観測できない。
 /// </para>
 /// <para>
-/// <b>「fragment の先頭は必ず IDR」は成立しない。</b> 波 0 の実測どおり
+/// <b>「fragment の先頭は必ず IDR」は成立しない。</b> 実測のとおり
 /// <c>mp4mux</c> は時間だけで切るので、条件は「最初の 3 個のどれかが同期始まり」まで
 /// 緩めてある（GOP 2 秒・fragment 1 秒が前提）。
 /// </para>
@@ -67,8 +67,8 @@ public sealed class PreviewStreamTests(PublishedApp app, ITestOutputHelper outpu
             RemoteControlBindAddress = "127.0.0.1",
             RemoteControlPort = 0,
             RemoteControlAccessToken = Token,
-            // **このクラスの主題は認証ではない。** 波 3 で読み取りにも役割が要るように
-            // なったので、ゲスト読み取りを明示して従来どおり未認証で読ませる
+            // **このクラスの主題は認証ではない。** 読み取りにも役割が要るので、
+            // ゲスト読み取りを明示して未認証で読ませる
             // ── 認証そのものは RemoteControlTests が見る。
             RemoteControlAllowGuestRead = true,
         };
@@ -291,7 +291,7 @@ public sealed class PreviewStreamTests(PublishedApp app, ITestOutputHelper outpu
             Assert.True(probe.HasMvex, "moov に mvex が無い（fragmented ではない）: " + probe);
             Assert.True(probe.HasAvc1 && probe.HasAvcC, "moov に avc1/avcC が無い: " + probe);
 
-            // **「各 moof が同期始まり」は成立しない**（波 0 の実測）。MSE は最初の
+            // **「各 moof が同期始まり」は成立しない**（実測）。MSE は最初の
             // RAP まで捨てるので、初画に必要なのは「最初の数個のどれかが同期始まり」。
             Assert.Contains(true, probe.MoofStartsWithSync.Take(3));
         }

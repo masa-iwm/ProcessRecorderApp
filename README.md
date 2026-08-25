@@ -245,7 +245,10 @@ the token, the bind address or the port does the same.
 **What you get.** The page lists every recorder with the same state the `status` command reports
 and lets you start and stop them one at a time or all at once; edit each recorder's settings and
 the application settings; read and write filename-template variables; browse the recordings under
-the output folder and play or download them; and watch a **live preview** of a recorder. The page
+the output folder and play or download them; and watch a **live preview** of a recorder. An
+`Admin` can also swap out a recorder's `SrcPipeline` by picking one of the sources the app
+enumerates — a screen, a window, a camera and so on — together with its parameters; a
+hand-written pipeline is not accepted (`PUT /api/recorders/{id}/source`). The page
 is pushed the new state whenever it changes, so it follows what you do in the GUI as well. The
 preview comes in **two modes**: **recording quality (low latency)**, the default, reuses the H.264
 stream that is already being encoded for recording, so it costs no extra encoding; **preview

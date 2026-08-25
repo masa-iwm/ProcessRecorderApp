@@ -1602,6 +1602,16 @@
     }
 
     function take(times) {
+      // `taken` only exists to keep the same `t` from being asked for twice, and the
+      // manifest is the whole truth about what is askable: the ring holds a fixed
+      // number of segments and the times only ever move forward, so a `t` the
+      // manifest no longer lists can never be offered again. Dropping those keeps
+      // this Set the size of the ring instead of the length of the session.
+      var listed = new Set(times);
+      taken.forEach(function (t) {
+        if (!listed.has(t)) { taken.delete(t); }
+      });
+
       times.forEach(function (t) {
         if (!taken.has(t)) {
           taken.add(t);

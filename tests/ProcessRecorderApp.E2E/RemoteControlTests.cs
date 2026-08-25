@@ -9,7 +9,7 @@ using Xunit;
 namespace ProcessRecorderApp.E2E;
 
 /// <summary>
-/// リモート操作の HTTP サーバー（波 3 の読み取り系と認証）。
+/// リモート操作の HTTP サーバー（読み取り系と認証）。
 ///
 /// <para>
 /// <b>発行物を相手に本物の TCP で叩く。</b> ここで検証しているのは「認証が実際に断るか」で、
@@ -79,9 +79,9 @@ public sealed class RemoteControlTests(PublishedApp app, ITestOutputHelper outpu
             RemoteControlBindAddress = "127.0.0.1",
             RemoteControlPort = 0,
             RemoteControlAccessToken = Token,
-            // **既存のケースの前提を保つ。** 波 3 で読み取りにも役割が要るように
-            // なったので、ここでゲスト読み取りを明示して「未認証の GET は 200」を
-            // 従来どおりにする ── 認証そのものを見るケースは RemoteUserSettings()
+            // **既存のケースの前提を保つ。** 読み取りにも役割が要るので、ここで
+            // ゲスト読み取りを明示して「未認証の GET は 200」にする
+            // ── 認証そのものを見るケースは RemoteUserSettings()
             // で自分の settings を組み立てる。
             RemoteControlAllowGuestRead = true,
         };
@@ -885,7 +885,7 @@ public sealed class RemoteControlTests(PublishedApp app, ITestOutputHelper outpu
 
     /// <summary>
     /// レコーダー設定の読み取り。<b>値だけでなく項目の説明も返す</b> ──
-    /// 画面（波 6）は型・選択肢・範囲を知らないと編集欄を組めない。
+    /// 画面は型・選択肢・範囲を知らないと編集欄を組めない。
     /// </summary>
     [Fact]
     public async Task RecorderSettings_ExposeTheValuesAndHowToEditThem()

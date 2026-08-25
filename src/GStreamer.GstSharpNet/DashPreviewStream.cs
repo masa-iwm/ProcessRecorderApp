@@ -108,7 +108,7 @@ internal sealed partial class DashPreviewStream : IDisposable
     /// 記録は <c>dash.stream-error</c> の 1 行だけになる。
     /// </para>
     /// </summary>
-    private static class StopReasons
+    private static class StopReason
     {
         /// <summary>貸出が切れた（読み手が居なくなった）。</summary>
         public const string LeaseExpired = "lease expired";
@@ -140,6 +140,25 @@ internal sealed partial class DashPreviewStream : IDisposable
         /// <summary>レコーダーの停止。</summary>
         public const string Close = "close";
     }
+
+    /// <summary>
+    /// <see cref="StopReason"/> の全要素。<b><c>dash.stream-stop</c> の <c>reason=</c> が
+    /// 取りうる値の正本</b>で、L1 の <c>DashStopReasonTests</c> が
+    /// <c>src/README.md</c> の停止理由の表と過不足なく突き合わせる。
+    /// </summary>
+    internal static readonly string[] StopReasons =
+    [
+        StopReason.LeaseExpired,
+        StopReason.SettingsChanged,
+        StopReason.CapsChanged,
+        StopReason.EncoderFailed,
+        StopReason.PtsRewind,
+        StopReason.GopTooLong,
+        StopReason.InitUnparsable,
+        StopReason.SplitterFault,
+        StopReason.StreamError,
+        StopReason.Close,
+    ];
 
     /// <summary>
     /// 第 2 パイプラインの文字列。<b>ここだけが形の正本</b>で、L1 がトークンを固定する。
@@ -338,8 +357,9 @@ internal sealed partial class DashPreviewStream : IDisposable
         catch (Exception ex)
         {
             // **1 枚の失敗で録画を殺さない。** 次のサンプルで組み直しが試みられる。
-            Components.ActivityLog.Error("dash.stream-error", $"recorder='{_host.Name}' {ex.Message}");
-            retired ??= Teardown(StopReasons.StreamError);
+            Components.ActivityLog.Error("dash.stream-error",
+                $"recorder='{_host.Name}' reason={StopReason.StreamError} detail={ex.Message}");
+            retired ??= Teardown(StopReason.StreamError);
         }
         finally
         {
@@ -365,7 +385,7 @@ internal sealed partial class DashPreviewStream : IDisposable
         if (DashPreviewLimits.LeaseMs < Environment.TickCount64 - Volatile.Read(ref _lastTouchTicks))
         {
             _wantMux = false;
-            return Teardown(StopReasons.LeaseExpired);
+            return Teardown(StopReason.LeaseExpired);
         }
 
         if (_mux is not { } engine)
@@ -389,14 +409,14 @@ internal sealed partial class DashPreviewStream : IDisposable
         if (_faulted)
         {
             _faulted = false;
-            return Teardown(_faultReason ?? StopReasons.StreamError);
+            return Teardown(_faultReason ?? StopReason.StreamError);
         }
 
         // バスの ERROR。この候補は使えないので、次のサンプルで次の候補から組み直す。
         if (engine.EncoderFailed)
         {
             _rejectedEncoders.Add(engine.FactoryName);
-            return Teardown(StopReasons.EncoderFailed);
+            return Teardown(StopReason.EncoderFailed);
         }
 
         // 4 設定は毎サンプル読み直す（宿主から通知を受けない）。
@@ -405,14 +425,14 @@ internal sealed partial class DashPreviewStream : IDisposable
             || engine.Fps != _host.PreviewFps
             || engine.BitrateKbps != _host.PreviewBitrateKbps)
         {
-            return Teardown(StopReasons.SettingsChanged);
+            return Teardown(StopReason.SettingsChanged);
         }
 
         // caps が変わったら init も変わる。連続体を切り直す。
         using (var negotiated = sample.GetCaps())
         {
             if (negotiated is null || !string.Equals(negotiated.ToString(), engine.CapsText, StringComparison.Ordinal))
-                return Teardown(StopReasons.CapsChanged);
+                return Teardown(StopReason.CapsChanged);
         }
 
         Push(engine, sample);
@@ -502,7 +522,7 @@ internal sealed partial class DashPreviewStream : IDisposable
                 pipeline.Dispose();
             }
 
-            _ = Teardown(StopReasons.EncoderFailed);
+            _ = Teardown(StopReason.EncoderFailed);
             return;
         }
 
@@ -686,23 +706,23 @@ internal sealed partial class DashPreviewStream : IDisposable
                 Consume(engine, segment);
 
             // **理由は固定集合へ畳む。** 切り出し器の自由文と、集約器が返しうる
-            // 想定外の文字列は detail 側へ回す（StopReasons の doc）。
+            // 想定外の文字列は detail 側へ回す（StopReason の doc）。
             if (engine.Splitter.IsFaulted)
             {
-                Fault(engine, StopReasons.SplitterFault, engine.Splitter.Fault);
+                Fault(engine, StopReason.SplitterFault, engine.Splitter.Fault);
             }
             else if (engine.Assembler.IsFaulted)
             {
                 string? fault = engine.Assembler.Fault;
-                if (fault is StopReasons.PtsRewind or StopReasons.GopTooLong)
+                if (fault is StopReason.PtsRewind or StopReason.GopTooLong)
                     Fault(engine, fault);
                 else
-                    Fault(engine, StopReasons.StreamError, fault);
+                    Fault(engine, StopReason.StreamError, fault);
             }
         }
         catch (Exception ex) when (!engine.Retired)
         {
-            Fault(engine, StopReasons.StreamError, ex.Message);
+            Fault(engine, StopReason.StreamError, ex.Message);
         }
         catch (Exception ex)
         {
@@ -722,7 +742,7 @@ internal sealed partial class DashPreviewStream : IDisposable
         {
             if (!Fmp4InitInfo.TryParse(segment.Bytes, out var info))
             {
-                Fault(engine, StopReasons.InitUnparsable);
+                Fault(engine, StopReason.InitUnparsable);
                 return;
             }
 
@@ -873,7 +893,7 @@ internal sealed partial class DashPreviewStream : IDisposable
             Monitor.TryEnter(_muxLock, CallbackExitTimeoutMs, ref entered);
             if (entered)
             {
-                retired = Teardown(StopReasons.Close);
+                retired = Teardown(StopReason.Close);
             }
             else
             {

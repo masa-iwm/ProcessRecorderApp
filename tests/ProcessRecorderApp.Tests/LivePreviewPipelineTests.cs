@@ -10,7 +10,7 @@ namespace ProcessRecorderApp.Tests;
 /// ライブプレビューの mux パイプライン文字列と、<c>EventRecorder</c> への配線。
 ///
 /// <para>
-/// <b>文字列は波 0 の実測で凍結したもの。</b> <c>fragment-mode=dash-or-mss</c> を落とすと
+/// <b>文字列は実測で凍結したもの。</b> <c>fragment-mode=dash-or-mss</c> を落とすと
 /// MSE が受け取れない形（1 本の <c>moov</c> で終わる通常の MP4）になり、
 /// <c>faststart</c> を足すと EOS まで 1 バイトも出なくなる ── どちらも
 /// <b>ブラウザを開くまで気付けない</b>ので、ここで固定する。

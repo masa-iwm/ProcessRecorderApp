@@ -65,7 +65,7 @@ internal interface ILivePreviewHost
 internal sealed partial class LivePreviewStream : IDisposable
 {
     /// <summary>
-    /// <b>波 0 で実測した凍結文字列。</b> <c>appsrc</c> は詰まっても録画側を止めない
+    /// <b>実測で凍結した文字列。</b> <c>appsrc</c> は詰まっても録画側を止めない
     /// （<c>block=false</c> ＋ <c>leaky-type=downstream</c>）。<c>appsink</c> は
     /// クロックに同期させない（<c>sync=false async=false</c>）── 1 本の枝の遅延申告で
     /// 配信が待たされる形を作らない。<c>faststart</c> は付けない（ライブでは決着しない）。

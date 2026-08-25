@@ -555,7 +555,7 @@ L1 は `WebAssetManifestTests` が「資産の一覧が合っているか」を�
 ── 第 2 パイプラインが PLAYING に達すること・MPD と init と全セグメントが配られること・
 リングが有界でリースが切れれば畳まれること・`dash.stream-stop reason=lease expired` が
 記録されること・配信しても録画のレートが変わらないこと・ブラウザで実際に絵が進むことは、
-そこで守られている。残るのは次の 3 つ:
+そこで守られている。残るのは次の 4 つ:
 
 - **別 PC・実 GPU のエンコーダー候補での DASH は無検査。** 手元と CI が通すのは
   `EncoderCatalog` の並びのうち、その機械で実際に採用された 1 つだけである
@@ -564,6 +564,38 @@ L1 は `WebAssetManifestTests` が「資産の一覧が合っているか」を�
   測った値ではない。
 - **`videorate drop-only=true` が落とすフレームの割合は未計測。** 入力 fps より低い
   `PreviewFps` を指定したときに、実際に何枚が配信物へ乗ったかを数える層は無い。
+- **`init` / セグメントの取得が 503 `starting` を受ける瞬間（畳みと取得の競合）は
+  E2E で再現していない。** テストが踏むのは manifest が `starting` を返す側だけで、
+  manifest を読めた直後にリングが空になる並びは作れていない ── クライアント側は
+  どの要求で受けても manifest へ戻る形で防いである（`app.js` の `failUnlessStarting`）。
+
+### GPU 実機レポートが流すのは既定ビットレートの起動文字列だけ
+
+**カタログとスクリプトの文字列そのものは機械が縛っている。**
+`EncoderCatalogScriptSyncTests.TheScriptsManualSystemMemoryCandidatesMatchTheCatalog` が
+`tools/Verify-GpuEncoders.ps1` の `$manualCandidates` の `Name` / `Props` を
+`EncoderCatalog.SystemCandidates` の `(FactoryName, LaunchString)` と**順序込みで完全一致**させ、
+`EncoderBitrateParameterizationTests.ApplyingTheDefaultBitrate_ReproducesTheCurrentLaunchStrings`
+が「既定の 2000 kbit/sec を与えた結果 ＝ 現行の `LaunchString`」を固定する。
+`LaunchString` の既定値を動かせば両方が、`BitrateUnitPerKbps` だけを動かしても後者が赤になる。
+スクリプトが GPU 側に作るケース（`$gpuEncoders`）はプロパティ文字列を持たず、
+`PreferredH264Encoder` を渡して製品にカタログの文字列を組ませるので、そこに写し違いは起きない
+── 名前の一覧だけが同期の対象で足りている。
+
+**穴は「既定以外のビットレート」の側にある。** `WithBitrateKbps` を呼ぶのは
+`DashPreviewStream` だけで、`tools/Verify-GpuEncoders.ps1` が回すのは録画経路である
+（DASH プレビューのケースは無い）。**利用者が `PreviewBitrateKbps` を既定以外にしたときに
+実際に流れる起動文字列は、GPU 機のレポートで一度も試されていない。**
+さらに `bitrate=` トークンを持たない候補では `WithBitrateKbps` が素通しするので、
+`PreferredH264Encoder` に GPU 系の名前を書いた機械（`Resolve` がプロパティ無しの定義を
+先頭へ挿す）では `PreviewBitrateKbps` はそもそも効かない
+（`src/README.md` の「DASH プレビュー エンジン」）。**`dash.stream-start` が出す
+`kbps=` は設定から読んだ要求値なので、素通ししていてもログは要求どおりに見える**
+── 効いたかどうかは配信物のビットレートを測る以外に分からない。
+
+`docs/gpu-verification.md` の手動項目にある DASH の確認も、既定のままの 1 通りしか踏まない。
+`PreviewBitrateKbps` の効き方や単位を触ったときは、GPU 機で既定以外の値を 1 度手で流し、
+配信物のビットレートがその値に見合っているかを確かめること。
 
 ### リモート操作のブラウザ側（役割による出し分けとソースの編集欄）
 

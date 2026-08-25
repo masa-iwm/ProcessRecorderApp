@@ -80,27 +80,12 @@ public class DocumentationDriftTests
     private static List<ExitCodeRow> ExitCodeTableRows()
     {
         var rows = new List<ExitCodeRow>();
-        bool inTable = false;
 
-        foreach (string line in File.ReadAllLines(RepositoryFiles.At("src", "README.md")))
+        foreach (string[] cells in MarkdownTable.RowsAfter(
+                     RepositoryFiles.At("src", "README.md"), "### 終了コードの一覧"))
         {
-            if (line.StartsWith("### 終了コードの一覧", StringComparison.Ordinal))
-            {
-                inTable = true;
-                continue;
-            }
-            if (!inTable)
-                continue;
-            if (!line.StartsWith('|'))
-            {
-                if (rows.Count > 0)
-                    break; // 表の終わり
-                continue;
-            }
-
-            string[] cells = line.Split('|', StringSplitOptions.TrimEntries);
             // 先頭と末尾は空（行が | で始まり | で終わるため）: ["", 終了コード, 意味, 定義箇所, ""]
-            if (cells.Length < 5 || cells[1].StartsWith("---", StringComparison.Ordinal) || cells[1] == "終了コード")
+            if (cells.Length < 5 || cells[1] == "終了コード")
                 continue;
 
             var value = Regex.Match(cells[1], @"\d+");
