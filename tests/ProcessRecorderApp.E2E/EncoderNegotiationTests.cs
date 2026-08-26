@@ -35,7 +35,6 @@ public sealed class EncoderNegotiationTests(PublishedApp app, ITestOutputHelper 
     public void ASourceFormatTheEncoderCannotTake_IsConvertedInsteadOfFailingToLink()
     {
         var settings = new SettingsFile();
-        settings.FragmentedOutput = false;
         settings.AddRecorder("R1").SrcPipeline = SettingsFile.UnconvertibleFormatVideoTestSrc;
 
         using var instance = AppInstance.Create(app, settings);

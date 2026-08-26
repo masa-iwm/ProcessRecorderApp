@@ -13,7 +13,6 @@ public sealed partial class RecordingTests(PublishedApp app, ITestOutputHelper o
     public void RecordingAll_ProducesOneValidMp4PerRecorder_AndLogsTheContractEvents()
     {
         var settings = new SettingsFile();
-        settings.FragmentedOutput = false;
         settings.AddRecorder("R1");
         settings.AddRecorder("R2");
 
@@ -60,7 +59,6 @@ public sealed partial class RecordingTests(PublishedApp app, ITestOutputHelper o
     public void ColdStart_RecordsWithoutAPreExistingResidentWorker()
     {
         var settings = new SettingsFile();
-        settings.FragmentedOutput = false;
         settings.AddRecorder("R1");
 
         // 常駐ワーカーを起こさずに作る。最初のコマンドがランチャー経由でワーカーを起動し、
@@ -88,7 +86,6 @@ public sealed partial class RecordingTests(PublishedApp app, ITestOutputHelper o
         const string EnvVarValue = "taipei";
 
         var settings = new SettingsFile();
-        settings.FragmentedOutput = false;
         var recorder = settings.AddRecorder("R1");
 
         using var instance = AppInstance.Create(app, settings, configure: i =>
@@ -130,7 +127,7 @@ public sealed partial class RecordingTests(PublishedApp app, ITestOutputHelper o
     [Fact]
     public void PreferredEncoder_ThatDoesNotExist_FallsThroughAndStillRecords()
     {
-        var settings = new SettingsFile { PreferredH264Encoder = "nosuchh264enc", FragmentedOutput = false };
+        var settings = new SettingsFile { PreferredH264Encoder = "nosuchh264enc" };
         settings.AddRecorder("R1");
 
         using var instance = AppInstance.Create(app, settings);

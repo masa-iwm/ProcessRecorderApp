@@ -226,10 +226,13 @@ public sealed class SettingsFile
     /// null なら書かない（＝製品の既定＝<b>true</b>＝fragmented）。
     ///
     /// <para>
-    /// <b>MP4 の構造を読むテストは <c>false</c> を明示すること。</b>
-    /// <c>Mp4Probe</c> は <c>moov</c> の <c>mvhd</c>／<c>stsz</c> から尺とサンプル数を読むが、
-    /// fragmented MP4 は <c>moov</c> を書き直さないのでどちらも 0 になり、
-    /// <c>RecordedMp4.AssertUsable</c> は成立しない。fMP4 側の構造は <c>Fmp4Probe</c> で見る。
+    /// <b>MP4 の構造を読むだけなら明示は要らない。</b> <c>Mp4Probe</c> は
+    /// <c>mvex</c> で形を見分け、fragmented では <c>moof</c> の <c>trun</c> から
+    /// 尺・サンプル数・同期サンプルを読む ── <c>RecordedMp4.AssertUsable</c> は
+    /// どちらの形でも成立する。
+    /// <b><c>false</c> を明示してよいのは chunked 固有の性質を見るテストだけ</b>
+    /// （<c>faststart</c> の全体書き直し・「録画中は 0 バイト」・確定しないと丸ごと失われる）。
+    /// 配信中の本文の構造は <c>Fmp4Probe</c> で見る。
     /// </para>
     ///
     /// <para>

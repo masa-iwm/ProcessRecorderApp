@@ -332,9 +332,16 @@ public sealed class RecordingDeliveryTests(PublishedApp app, ITestOutputHelper o
         output.WriteLine(asPlainMp4.ToString());
         Assert.True(asPlainMp4.HasFtyp && asPlainMp4.HasMoov && asPlainMp4.HasMdat && asPlainMp4.HasAvcC,
             "完成したファイルが MP4 として最低限の箱を持っていない: " + asPlainMp4);
-        // **尺は 0 のまま**（moov を書き直さないので mvhd の duration が伸びない）。
+        // **mvhd の尺は 0 のまま**（moov を書き直さないので duration が伸びない）。
         // だから `<video src>` 直結では 1 秒に見え、ブラウザ側は完成後も MSE 経路で読む。
-        Assert.True(asPlainMp4.DurationSeconds is null or 0, "fragmented なのに mvhd の尺が入っている: " + asPlainMp4);
+        Assert.True(asPlainMp4.MvhdDurationSeconds is null or 0,
+            "fragmented なのに mvhd の尺が入っている: " + asPlainMp4);
+        // **それでも「録画物として使えるか」は答えられる。** Mp4Probe は fragmented を
+        // 見分けて moof の trun から尺とサンプル数を出す（＝録画系 E2E が既定構成で
+        // 走れる根拠）。ここで 0 を返すと、この形の録画物は全部無検査になる。
+        Assert.True(asPlainMp4.IsFragmented, "fragmented と判定されていない: " + asPlainMp4);
+        Assert.True(asPlainMp4.DurationSeconds is > 0, "fragment から尺が出ていない: " + asPlainMp4);
+        Assert.True(0 < asPlainMp4.SampleCount, "fragment からサンプル数が出ていない: " + asPlainMp4);
     }
 
     /// <summary>常時録画のセグメント長(秒)。製品の下限。</summary>

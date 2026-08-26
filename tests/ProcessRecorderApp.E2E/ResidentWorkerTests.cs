@@ -93,7 +93,6 @@ public sealed class ResidentWorkerTests(PublishedApp app, ITestOutputHelper outp
     public void TheEngineOutlivesIndividualCommands()
     {
         var settings = new SettingsFile();
-        settings.FragmentedOutput = false;
         settings.AddRecorder("R1");
 
         using var instance = AppInstance.Create(app, settings);

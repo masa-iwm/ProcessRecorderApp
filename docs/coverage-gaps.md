@@ -534,32 +534,29 @@ Edge が入っていない、`activity.log` の `gst.runtime` が指す `bin` �
 伸び続けること・途中で手動シークすると先頭へ引き戻されなくなること・完了済みの行が
 最初から最後まで再生できることを目で確かめる。
 
-### 録画系 E2E は `FragmentedOutput=false` を明示するので、既定構成の録画物は無検査
+### 録画系 E2E で chunked（`FragmentedOutput=false`）を明示している所と、その裏で無検査になるもの
 
 `FragmentedOutput` はアプリ全体の設定で、**既定は `true`（fragmented MP4）**。
-にもかかわらず、録画物の中身を読む E2E は settings.json へ `FragmentedOutput = false` を
-**明示して**走る ── `RecordedMp4.AssertUsable` / `Mp4Probe` は `moov` の `mvhd` と `stsz` から
-尺とサンプル数を読むが、fragmented MP4 は `moov` を書き直さないので両方 0 になり、
-「録画物として成立しているか」を判定できないためである。
+録画物の中身を読む E2E は**既定のまま**走る ── `Mp4Probe` は `moov` の `mvex` で形を見分け、
+fragmented では全 `moof` の `trun` から尺・サンプル数・先頭サンプルの同期性を読む
+（読み方そのものは `Mp4ProbeTests` が、合成したバイト列と `gst-launch-1.0` に
+`num-buffers` 指定で書かせたクリップに対して固定している）。
 
-明示して非 fragmented 側を見ているのは `RecordingTests` / `PreBufferTests` /
-`StopSynchronicityTests` / `ShutdownTests` / `ResidentWorkerTests` / `EncoderNegotiationTests` /
-`HighResolutionTests` / `PipelineDialogTests` / `ContinuousRecordingTests` /
-`RemoteControlTests`（`RemoteBase()`）／`RecordingDeliveryTests`（`RemoteSettings()`）／
-`PreviewStreamTests`・`DashPreviewTests` の「配信中でも録画が乱れない」1 件ずつ
-（`StartReady(fragmentedOutput: false)`）。
-fMP4 側を見るのは `RecordingDeliveryTests` と `WebUiBrowserTests` の数件
-（`FragmentedSettings()` 系）で、**見ているのは配信と追いかけ再生**である。
+`false` を明示しているのは、**chunked でなければ表明が成立しない**次の 4 か所だけである。
 
-したがって、**既定構成での事前バッファ・停止の排出・自動復帰・常時録画の分割は無検査**である
-（`ContinuousRecordingTests` の分割・隔離・共存の検査も非 fragmented 側だけ）。
-**強制終了だけは既定構成でも見ている** ── `RecordingDeliveryTests` の kill 系が
-fMP4 で「そこまでの fragment が読める」ことを確かめる。無検査なのは
-**残ったファイルの尺とサンプル数**で、これは `moov` を読む道具（`Mp4Probe`）が
-fragmented では両方 0 を返すためである。
-既定を変えたときや録画の停止経路を触ったときは、`FragmentedOutput` を既定のまま
-（＝ ON）で一度録って、**録画中のファイルが読めること・停止後のファイルがブラウザの
-追いかけ再生で最後まで再生できること**を手で確かめること。
+| 明示している所 | chunked 固有である理由 |
+|---|---|
+| `StopSynchronicityTests` | 排出コストの実体が `faststart=true` の「EOS 後にファイル全体を書き直す」処理。fMP4 では排出が IPC 往復に隠れ、`await` を外す退行を 1 件も検出しない |
+| `ShutdownTests.CtrlClose_WhileRecording_FinalizesEveryFile` | 同上（終了経路の排出をプールへ逃がす退行を、書き直しの重さで捕まえている） |
+| `ContinuousRecordingTests.TheLastSegmentIsFinalizedWhenTheAppExits` | 「確定しないと 1 本が丸ごと失われる」は chunked の性質。fMP4 は `moov` が先頭に在るので確定前でも読める |
+| `RecordingDeliveryTests`（`RemoteSettings()` を使う 6 件） | 「録画中は 0 バイト」「完成後だけ Range で読める」を fMP4 側と**対で**見るクラスなので、土台の側も chunked に固定する |
+
+したがって無検査なのは**chunked 側**の事前バッファ・自動復帰・常時録画の分割・
+エンコーダー交渉である ── そちらで縛れているのは L1 の文字列固定
+（`RecordingSrcPipelineTests` / `ContinuousBranchTests`）が見るパイプラインの形だけ。
+
+`Mp4Probe` はどちらの形でも**完了したファイル**しか見ない。書き込み中の本文の構造は
+`Fmp4Probe`、ブラウザでの追いかけ再生は `WebUiBrowserTests` の担当である。
 
 ### プレビューの 4 設定は DASH 配信だけが読む
 
@@ -699,7 +696,8 @@ L2 の `PreviewStreamTests` が確かめているのは「**最初の 3 つの `
 
 ### E2E の `Mp4File` の同期判定は製品規則の写し
 
-`tests/ProcessRecorderApp.E2E/Mp4File.cs` の `StartsWithSync` は、製品側
+`tests/ProcessRecorderApp.E2E/Mp4File.cs` の `Fmp4File.StartsWithSync` と
+`Mp4File.ReadTrun`（fragmented 側の同期判定）は、どちらも製品側
 `Fmp4SegmentSplitter.StartsWithSync` の規則（`trun.first_sample_flags` →
 `trun.sample_flags[0]` → `tfhd.default_sample_flags` → `trex.default_sample_flags`）を**手で
 写したもの**である。したがって**両方が同じように間違っていれば緑になる**。独立した検査は
@@ -763,4 +761,4 @@ CLI 側は `/` 入りのキーを受けるので、ここだけ受け付けな�
 
 ### Mp4Probe.StartsOnASyncSample
 
-`Mp4Probe.StartsOnASyncSample`（`stss` の先頭項目の検査）は**退行検出器ではなく不変条件の表明**である。これが緑であることを「この性質を壊す変更を検出できる」と読まないこと。
+`Mp4Probe.StartsOnASyncSample`（chunked では `stss` の先頭項目、fragmented では先頭 `moof` の先頭サンプルの `sample_is_non_sync_sample`）は**退行検出器ではなく不変条件の表明**である。これが緑であることを「この性質を壊す変更を検出できる」と読まないこと。読み方そのものが正しいこと（特に fragmented 側で黙って `true` を返さないこと）は `Mp4ProbeTests` が合成したバイト列で固定している。

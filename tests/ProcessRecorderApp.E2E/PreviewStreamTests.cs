@@ -58,16 +58,11 @@ public sealed class PreviewStreamTests(PublishedApp app, ITestOutputHelper outpu
     /// この GOP を前提にしている ── 伸ばすとどちらの下限も割る。
     /// </para>
     /// </summary>
-    /// <param name="fragmentedOutput">
-    /// 録画ファイルを fragmented MP4 で書くか（アプリ全体の設定。製品の既定は <c>true</c>）。
-    /// <b><c>Mp4Probe</c> で録画物を読むケースだけ <c>false</c> を渡すこと</b> ──
-    /// fragmented MP4 は <c>moov</c> を書き直さないので尺もサンプル数も 0 になる。
-    /// </param>
-    private static SettingsFile PreviewSettings(bool fragmentedOutput = true)
+    private static SettingsFile PreviewSettings()
     {
         var settings = new SettingsFile
         {
-            FragmentedOutput = fragmentedOutput,
+            // FragmentedOutput は書かない（＝製品の既定の true で走る）。
             // 127.0.0.1 に固定する（0.0.0.0 だと開発機と CI の LAN から到達できる）。
             RemoteControlEnabled = true,
             RemoteControlBindAddress = "127.0.0.1",
@@ -112,10 +107,9 @@ public sealed class PreviewStreamTests(PublishedApp app, ITestOutputHelper outpu
     /// <b>初期化を待たずに購読すると 503</b>（配信の器はパイプラインが
     /// <c>PLAYING</c> に達してから作られる）。
     /// </summary>
-    /// <param name="fragmentedOutput"><inheritdoc cref="PreviewSettings" path="/param[@name='fragmentedOutput']"/></param>
-    private (AppInstance Instance, int Port) StartReady(bool fragmentedOutput = true)
+    private (AppInstance Instance, int Port) StartReady()
     {
-        var instance = AppInstance.Create(app, PreviewSettings(fragmentedOutput));
+        var instance = AppInstance.Create(app, PreviewSettings());
         int port = WaitForPort(instance);
 
         Assert.True(instance.WaitForActivityLogEvent("recorder.init ok", EventBudget),
@@ -496,8 +490,7 @@ public sealed class PreviewStreamTests(PublishedApp app, ITestOutputHelper outpu
     [Fact]
     public async Task RecordingIsUnaffectedWhileThePreviewIsStreaming()
     {
-        // 録画物を Mp4Probe で読む（尺とサンプル数を比べる）ので非 fragmented にする。
-        var (instance, port) = StartReady(fragmentedOutput: false);
+        var (instance, port) = StartReady();
         using (instance)
         {
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);

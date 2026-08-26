@@ -84,12 +84,10 @@ public sealed class RemoteControlTests(PublishedApp app, ITestOutputHelper outpu
             // ── 認証そのものを見るケースは RemoteUserSettings()
             // で自分の settings を組み立てる。
             RemoteControlAllowGuestRead = true,
-            // **非 fragmented を明示する（製品の既定は true）。** ここのケースは
-            // RecordedMp4.AssertUsable で「録画物が使えること」を見るが、あの表明は
-            // moov の mvhd から尺を読むので fragmented MP4 では成立しない
+            // **FragmentedOutput は書かない（＝製品の既定の true で走る）。**
+            // ここのケースが見るのは RecordedMp4.AssertUsable の
+            // 「録画物が使えること」で、あの表明は形に依らない
             // （fMP4 の配信・追いかけ再生は RecordingDeliveryTests / WebUiBrowserTests が見る）。
-            // 設定そのものを操作するケースも、この明示した false を出発点にする。
-            FragmentedOutput = false,
         };
     }
 
@@ -1471,15 +1469,19 @@ public sealed class RemoteControlTests(PublishedApp app, ITestOutputHelper outpu
     /// <c>PATCH /api/settings</c> で扱う。<c>Viewer</c> は 403。
     /// </para>
     /// <para>
-    /// 出発点の <c>false</c> は <c>RemoteBase()</c> が settings.json へ明示したものである
-    /// （製品の既定は <c>true</c>）。ここで見たいのは役割による可否と PATCH の反映であって、
-    /// 既定値そのものではない。
+    /// <b>出発点の <c>false</c> はこのケースが自分で settings.json へ明示する</b>
+    /// （製品の既定は <c>true</c>）── PATCH が本当に値を動かしたことを見たいので、
+    /// 変更前と変更後が違う値である必要がある。ここで見たいのは役割による可否と
+    /// PATCH の反映であって、既定値そのものではない。
     /// </para>
     /// </summary>
     [Fact]
     public async Task FragmentedOutput_IsAnAppSettingThatOnlyAnAdminCanChange()
     {
-        using var instance = AppInstance.Create(app, RemoteUserSettings(allowGuestRead: false));
+        var settings = RemoteUserSettings(allowGuestRead: false);
+        settings.FragmentedOutput = false;
+
+        using var instance = AppInstance.Create(app, settings);
         int port = WaitForPort(instance);
         using var client = CreateClient(port);
 

@@ -21,6 +21,12 @@ namespace ProcessRecorderApp.E2E;
 /// 判定は<b>共有違反</b>（書き込み側がまだファイルを開いているか）で行う。
 /// <c>moov</c> の有無より早く現れるので最も鋭い。
 /// </para>
+/// <para>
+/// <b><c>FragmentedOutput = false</c> を明示する。</b> 排出コストの実体は
+/// <c>faststart=true</c> の「EOS 後にファイル全体を書き直す」処理で、既定の fMP4 では
+/// それが起きない ── 既定構成で走らせると排出が IPC 往復に隠れ、
+/// <c>await</c> を外す退行を<b>1 件も検出しないテスト</b>になる。
+/// </para>
 /// </summary>
 [Collection(E2ECollection.Name)]
 public sealed class StopSynchronicityTests(PublishedApp app, ITestOutputHelper output)

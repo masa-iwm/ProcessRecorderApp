@@ -100,6 +100,13 @@ public sealed class ShutdownTests(PublishedApp app, ITestOutputHelper output)
     /// 画素数だけを落とす ── つまり<b>検出力は下げずに負荷だけを下げている</b>
     /// （較正の実測値は <see cref="SettingsFile.BulkyCheapVideoTestSrc"/>）。
     /// </para>
+    /// <para>
+    /// <b><c>FragmentedOutput = false</c> を明示する。</b> 検出力の源が
+    /// <c>faststart=true</c> の「EOS 後にファイル全体を書き直す」性質そのものだからで、
+    /// 既定の fMP4 では終了時に足すのは末尾の <c>mfra</c> だけ ── 排出コストが消え、
+    /// 終了経路の排出をプールへ逃がす退行を<b>1 件も検出しなくなる</b>。
+    /// 既定構成（fMP4）の終了と強制終了は <c>RecordingDeliveryTests</c> が見る。
+    /// </para>
     /// </summary>
     [Fact]
     public void CtrlClose_WhileRecording_FinalizesEveryFile()

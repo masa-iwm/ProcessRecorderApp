@@ -11,7 +11,8 @@
 | `PublishedApp` | 発行物の解決（既定は selfcontained の発行先、`PROCESSRECORDERAPP_E2E_PUBLISH_DIR` で上書き）と GStreamer レジストリのウォームアップ |
 | `AppInstance` | 一時データディレクトリ＋固有キー接頭辞での隔離、常駐ワーカーの起動と後始末、CLI の実行 |
 | `SettingsFile` / `RecorderSpec` | テスト用 `settings.json` の組み立て |
-| `Mp4File` | ISO-BMFF を直接読む妥当性検査（`ftyp`/`moov`/`mdat`/`avcC`/`mvhd` の尺）と共有違反の検出 |
+| `Mp4File` | ISO-BMFF を直接読む妥当性検査（`ftyp`/`moov`/`mdat`/`avcC` と、尺・サンプル数・先頭サンプルの同期性。chunked は `mvhd`/`stsz`/`stss`、fragmented は `moof` の `trun` から読む）と共有違反の検出 |
+| `GstLaunchTool` | `gst-launch-1.0` で「答えの分かった入力」を作る（ロードした GStreamer の場所は `activity.log` の `gst.runtime` から辿る） |
 | `ActivityLogFile` | `activity.log` の行を既知イベント名の最長一致で切り出す |
 
 設計上、外せない点が5つある:

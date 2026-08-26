@@ -545,55 +545,6 @@ public sealed class WebUiBrowserTests(PublishedApp app, ITestOutputHelper output
     }
 
     /// <summary>
-    /// <c>activity.log</c> の <c>gst.runtime</c> が書いた <c>dir=</c>（実際にロードした
-    /// GStreamer の <c>bin</c>）から <c>gst-launch-1.0.exe</c> を探す。
-    /// <b>特定のディレクトリを焼き込まない</b>（開発機・CI・同梱で正解が違う）。
-    /// ベアネームで解決した段（<c>dir=(search-path)</c>）には固定の場所が無いので null。
-    /// </summary>
-    private static string? FindGstLaunch(AppInstance instance)
-    {
-        foreach (string line in ActivityLogFile.Events(instance.ReadActivityLog(), "gst.runtime"))
-        {
-            // 値にはディレクトリ（空白を含みうる）が入るので、空白では切れない
-            // ── 次のフィールド名の直前までで切る（RuntimeResolutionTests と同じ規則）。
-            var match = Regex.Match(ActivityLogFile.DetailOf(line), @"\bdir=(.*?)(?=\s+\w[\w:.]*=|$)");
-            if (!match.Success)
-                continue;
-
-            string directory = match.Groups[1].Value.Trim();
-            if (directory == "(search-path)")
-                continue;
-
-            string launcher = Path.Combine(directory, "gst-launch-1.0.exe");
-            if (File.Exists(launcher))
-                return launcher;
-        }
-
-        return null;
-    }
-
-    /// <summary>launcher の隣のプラグイン ディレクトリ（<c>..\lib\gstreamer-1.0</c>）。</summary>
-    private static string PluginDirectoryOf(string launcher)
-        => Path.GetFullPath(Path.Combine(Path.GetDirectoryName(launcher)!, "..", "lib", "gstreamer-1.0"));
-
-    /// <summary>
-    /// <c>x264enc</c> のプラグインが launcher の隣にあるか。
-    ///
-    /// <para>
-    /// <b><c>gst-launch-1.0.exe</c> があることは x264 があることを意味しない。</b>
-    /// 同梱ランタイムが解決に勝つ機械では、launcher は在るのに GPL のプラグインだけが
-    /// 無い ── クリップを書けずに「製品の欠陥」に見える形で落ちる。
-    /// 名前は形態で変わる（MinGW は <c>lib</c> 接頭辞つき、MSVC は無し）。
-    /// </para>
-    /// </summary>
-    private static bool HasX264Plugin(string launcher)
-    {
-        string plugins = PluginDirectoryOf(launcher);
-        return File.Exists(Path.Combine(plugins, "libgstx264.dll"))
-            || File.Exists(Path.Combine(plugins, "gstx264.dll"));
-    }
-
-    /// <summary>
     /// <paramref name="path"/> へ <see cref="LongClipSeconds"/> 秒ぶんの fMP4 を書く。
     ///
     /// <para>
@@ -610,75 +561,38 @@ public sealed class WebUiBrowserTests(PublishedApp app, ITestOutputHelper output
     /// </summary>
     private async Task WriteLongFragmentedClipAsync(string launcher, string path, AppInstance instance)
     {
-        var start = new ProcessStartInfo(launcher)
-        {
-            UseShellExecute = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            WorkingDirectory = Path.GetDirectoryName(launcher)!,
-        };
-
-        foreach (string argument in new[]
-        {
-            "videotestsrc",
-            "pattern=snow",
-            "num-buffers=" + (LongClipSeconds * LongClipFps).ToString(System.Globalization.CultureInfo.InvariantCulture),
-            "!",
-            $"video/x-raw,format=I420,{LongClipResolution},framerate={LongClipFps}/1",
-            "!",
-            "x264enc",
-            "bitrate=" + LongClipBitrateKbps.ToString(System.Globalization.CultureInfo.InvariantCulture),
-            "speed-preset=ultrafast",
-            "key-int-max=" + (LongClipFps * 2).ToString(System.Globalization.CultureInfo.InvariantCulture),
-            "!",
-            "h264parse",
-            "!",
-            "mp4mux",
-            "fragment-duration=1000",
-            "fragment-mode=dash-or-mss",
-            "!",
-            "filesink",
-            // **区切りは '/' にする。** gst-launch はプロパティ値の '\' を
-            // エスケープとして食うので、Windows のパスをそのまま渡すと別のパスになる。
-            "location=" + path.Replace('\\', '/'),
-        })
-        {
-            start.ArgumentList.Add(argument);
-        }
-
-        // 開発機には複数の GStreamer が同居しうる。launcher の隣の lib\gstreamer-1.0 を
-        // 名指しして、レジストリのキャッシュも隔離する（システム側のものを書き換えない）。
-        string pluginDir = PluginDirectoryOf(launcher);
-        if (Directory.Exists(pluginDir))
-        {
-            start.Environment["GST_PLUGIN_PATH"] = pluginDir;
-            start.Environment["GST_PLUGIN_SYSTEM_PATH"] = pluginDir;
-            start.Environment["GST_PLUGIN_PATH_1_0"] = pluginDir;
-            start.Environment["GST_PLUGIN_SYSTEM_PATH_1_0"] = pluginDir;
-        }
-        start.Environment["GST_REGISTRY"] = Path.Combine(instance.DataDir, "gst-registry-longclip.bin");
-
         var writing = Stopwatch.StartNew();
-        using var process = Process.Start(start)!;
 
-        // 両方を同時に汲む（片方だけを待つと、もう片方のパイプが埋まって止まる）。
-        var stdout = process.StandardOutput.ReadToEndAsync(Ct);
-        var stderr = process.StandardError.ReadToEndAsync(Ct);
+        await GstLaunchTool.RunAsync(
+            launcher,
+            [
+                "videotestsrc",
+                "pattern=snow",
+                "num-buffers=" + (LongClipSeconds * LongClipFps).ToString(System.Globalization.CultureInfo.InvariantCulture),
+                "!",
+                $"video/x-raw,format=I420,{LongClipResolution},framerate={LongClipFps}/1",
+                "!",
+                "x264enc",
+                "bitrate=" + LongClipBitrateKbps.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                "speed-preset=ultrafast",
+                "key-int-max=" + (LongClipFps * 2).ToString(System.Globalization.CultureInfo.InvariantCulture),
+                "!",
+                "h264parse",
+                "!",
+                "mp4mux",
+                "fragment-duration=1000",
+                "fragment-mode=dash-or-mss",
+                "!",
+                "filesink",
+                // **区切りは '/' にする。** gst-launch はプロパティ値の '\' を
+                // エスケープとして食うので、Windows のパスをそのまま渡すと別のパスになる。
+                "location=" + path.Replace('\\', '/'),
+            ],
+            instance,
+            "gst-registry-longclip.bin",
+            ClipBudget,
+            Ct);
 
-        using var kill = CancellationTokenSource.CreateLinkedTokenSource(Ct);
-        kill.CancelAfter(ClipBudget);
-        try
-        {
-            await process.WaitForExitAsync(kill.Token);
-        }
-        catch (OperationCanceledException) when (!Ct.IsCancellationRequested)
-        {
-            process.Kill(entireProcessTree: true);
-            Assert.Fail($"gst-launch-1.0 が {ClipBudget.TotalSeconds:F0} 秒で終わりませんでした。");
-        }
-
-        string tail = await stdout + Environment.NewLine + await stderr;
-        Assert.True(process.ExitCode == 0, $"gst-launch-1.0 が {process.ExitCode} で終わりました:{Environment.NewLine}{tail}");
         // **書けた時間も出す。** 文書とここの doc コメントが「実測」として書いている値は
         // これで読み直す（食い違いが残ると、次に読む人が別の速さを前提に組み立てる）。
         output.WriteLine(
@@ -725,12 +639,12 @@ public sealed class WebUiBrowserTests(PublishedApp app, ITestOutputHelper output
         Assert.True(instance.WaitForActivityLogEvent("gst.runtime", StartBudget),
             "gst.runtime が現れませんでした。" + Environment.NewLine + instance.DiagnosticDump());
 
-        string? launcher = FindGstLaunch(instance);
+        string? launcher = GstLaunchTool.FindLauncher(instance);
         Assert.SkipWhen(launcher is null,
             "ロードした GStreamer の bin に gst-launch-1.0.exe がありません"
             + "（gst.runtime の dir= を見て探しています）。");
-        Assert.SkipUnless(HasX264Plugin(launcher!),
-            $"ロードした GStreamer に x264 のプラグインがありません（{PluginDirectoryOf(launcher!)}）。");
+        Assert.SkipUnless(GstLaunchTool.HasX264Plugin(launcher!),
+            $"ロードした GStreamer に x264 のプラグインがありません（{GstLaunchTool.PluginDirectoryOf(launcher!)}）。");
 
         string clip = Path.Combine(instance.RecordingsDir, "long-clip.mp4");
         await WriteLongFragmentedClipAsync(launcher!, clip, instance);

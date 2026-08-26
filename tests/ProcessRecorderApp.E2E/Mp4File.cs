@@ -8,6 +8,22 @@ namespace ProcessRecorderApp.E2E;
 /// あちらが外部プロセスの起動と <c>GST_PLUGIN_PATH</c> 等の環境整備を要求するため
 /// ── ここで答えたいのは「本物の MP4 か・H.264 トラックがあるか・尺は何秒か」だけで、
 /// トップレベルのアトムを直接読めば依存ゼロで足りる。
+///
+/// <para>
+/// <b>chunked（<c>faststart</c>）と fragmented の<b>どちらでも</b>同じ問いに答える。</b>
+/// 形の判別は <c>moov</c> の <c>mvex</c> の有無で、読み先が変わるのは尺・サンプル数・
+/// 同期判定の 3 つだけ（<see cref="IsFragmented"/>）:
+/// <list type="bullet">
+///   <item>chunked ── <c>mvhd</c> の尺・<c>stsz</c> のサンプル数・<c>stss</c> の先頭項目。</item>
+///   <item>fragmented ── 全 <c>moof</c> の <c>trun</c> を合算した尺とサンプル数・
+///     先頭 <c>moof</c> の先頭サンプルの <c>sample_is_non_sync_sample</c>。</item>
+/// </list>
+/// </para>
+/// <para>
+/// <b>書き込み中のファイルには使わない。</b> <c>trun</c> の合算は「そこまでに書けた分」を
+/// 返すので、追いかけ中の伸びと区別できない ── 対象は完了したファイルだけである
+/// （配信中の本文は <see cref="Fmp4Probe"/>）。
+/// </para>
 /// </summary>
 public sealed record Mp4Probe(
     string Path,
@@ -20,10 +36,19 @@ public sealed record Mp4Probe(
     bool StartsOnASyncSample,
     uint SampleCount,
     int FrameWidth,
-    int FrameHeight)
+    int FrameHeight,
+    bool IsFragmented,
+    double? MvhdDurationSeconds,
+    int FragmentCount)
 {
-    /// <summary>再生可能な MP4 として最低限成立しているか。</summary>
-    public bool IsValid => HasFtyp && HasMoov && HasMdat && HasAvcC && DurationSeconds is > 0;
+    /// <summary>
+    /// 再生可能な MP4 として最低限成立しているか。
+    /// fragmented では併せて <c>moof</c>／<c>mdat</c> の対が 1 つ以上あることを要求する
+    /// ── <c>mvex</c> だけあって fragment が 1 つも無いファイルは中身が空である。
+    /// </summary>
+    public bool IsValid
+        => HasFtyp && HasMoov && HasMdat && HasAvcC && DurationSeconds is > 0
+        && (!IsFragmented || 0 < FragmentCount);
 
     /// <summary>
     /// 実効フレームレート（サンプル数 ÷ 尺）。<c>ContinuousFramerate</c> が効いているかを
@@ -36,6 +61,7 @@ public sealed record Mp4Probe(
     public override string ToString() =>
         $"{Path} ({Length:N0} bytes) ftyp={HasFtyp} moov={HasMoov} mdat={HasMdat} avcC={HasAvcC} " +
         $"{FrameWidth}x{FrameHeight} " +
+        $"{(IsFragmented ? $"fragmented moof={FragmentCount} mvhd=" + (MvhdDurationSeconds is { } m ? m.ToString("F3") + "s" : "(none)") : "chunked")} " +
         $"duration={(DurationSeconds is { } d ? d.ToString("F3") + "s" : "(none)")} " +
         $"samples={SampleCount} " +
         $"fps={(EffectiveFramerate is { } f ? f.ToString("F2") : "(none)")} " +
@@ -52,6 +78,16 @@ public static class Mp4File
     public static Mp4Probe Probe(string path)
     {
         using FileStream stream = OpenExclusiveRead(path);
+        return Probe(path, stream);
+    }
+
+    /// <summary>
+    /// メモリ上の MP4 を読む。合成したバイト列（＝尺とサンプル数が既知の入力）に対して
+    /// 読み方そのものを固定するために使う。
+    /// </summary>
+    public static Mp4Probe Probe(string path, byte[] data)
+    {
+        using var stream = new MemoryStream(data, writable: false);
         return Probe(path, stream);
     }
 
@@ -86,13 +122,23 @@ public static class Mp4File
         }
     }
 
-    private static Mp4Probe Probe(string path, FileStream stream)
+    private static Mp4Probe Probe(string path, Stream stream)
     {
         bool hasFtyp = false, hasMoov = false, hasMdat = false, hasAvcC = false;
-        double? duration = null;
-        bool startsOnSyncSample = true;
-        uint sampleCount = 0;
+        double? mvhdDuration = null;
+        bool stssStartsOnSyncSample = true;
+        uint stszSampleCount = 0;
         int frameWidth = 0, frameHeight = 0;
+
+        // fragmented（moov に mvex がある）ときだけ使う。
+        bool fragmented = false;
+        uint mediaTimescale = 0;
+        FragmentDefaults trex = default;
+        ulong fragmentDurationUnits = 0;
+        uint fragmentSampleCount = 0;
+        int fragmentCount = 0;
+        bool? firstFragmentStartsOnSync = null;
+        bool previousWasMoof = false;
 
         Span<byte> header = stackalloc byte[16];
         long position = 0;
@@ -131,35 +177,83 @@ public static class Mp4File
                     break;
                 case "mdat":
                     hasMdat = true;
+                    // moof の直後の mdat だけを対として数える（fragment の個数）。
+                    if (previousWasMoof)
+                        fragmentCount++;
                     break;
                 case "moov":
                 {
                     hasMoov = true;
-                    int payloadSize = (int)Math.Min(size - headerSize, 8 * 1024 * 1024);
-                    byte[] payload = new byte[payloadSize];
-                    stream.Position = position + headerSize;
-                    if (!TryReadExactly(stream, payload))
-                        break;
+                    byte[] payload = ReadPayload(stream, position + headerSize, size - headerSize);
 
                     // avcC（H.264 のデコーダー設定レコード）は avc1 サンプルエントリの中にある。
                     // moov の階層を辿らず直接探すのは、ここで知りたいのが
                     // 「H.264 トラックが1本でも書かれたか」だけだから。
                     hasAvcC = IndexOfFourCc(payload, "avcC") >= 0;
-                    duration = ReadDurationFromMvhd(payload);
-                    startsOnSyncSample = ReadStartsOnSyncSample(payload);
-                    sampleCount = ReadSampleCount(payload);
+                    mvhdDuration = ReadDurationFromMvhd(payload);
+                    stssStartsOnSyncSample = ReadStartsOnSyncSample(payload);
+                    stszSampleCount = ReadSampleCount(payload);
                     (frameWidth, frameHeight) = ReadFrameSize(payload);
+
+                    // mvex があれば fragmented。以後の尺・サンプル数・同期判定は moof から取る。
+                    fragmented = TryFindChild(payload, 0, payload.Length, "mvex", out int mvexStart, out int mvexEnd);
+                    if (fragmented)
+                    {
+                        trex = ReadTrexDefaults(payload, mvexStart, mvexEnd);
+                        mediaTimescale = ReadMediaTimescale(payload);
+                    }
+                    break;
+                }
+                case "moof":
+                {
+                    byte[] payload = ReadPayload(stream, position + headerSize, size - headerSize);
+                    var run = ReadMoof(payload, trex);
+                    fragmentSampleCount += run.SampleCount;
+                    fragmentDurationUnits += run.DurationUnits;
+                    firstFragmentStartsOnSync ??= run.StartsOnSyncSample;
                     break;
                 }
             }
 
+            previousWasMoof = type == "moof";
             position += size;
         }
 
+        double? duration = fragmented
+            ? (0 < mediaTimescale && 0 < fragmentDurationUnits
+                ? Math.Round((double)fragmentDurationUnits / mediaTimescale, 3)
+                : null)
+            : mvhdDuration;
+
         return new Mp4Probe(
-            path, length, hasFtyp, hasMoov, hasMdat, hasAvcC, duration, startsOnSyncSample, sampleCount,
-            frameWidth, frameHeight);
+            path,
+            length,
+            hasFtyp,
+            hasMoov,
+            hasMdat,
+            hasAvcC,
+            duration,
+            // **fragmented で stss を見てはいけない。** stss はそもそも書かれず、
+            // 「stss 無し＝全部同期サンプル」の分岐が黙って true を返す。
+            fragmented ? firstFragmentStartsOnSync ?? false : stssStartsOnSyncSample,
+            fragmented ? fragmentSampleCount : stszSampleCount,
+            frameWidth,
+            frameHeight,
+            fragmented,
+            mvhdDuration,
+            fragmentCount);
     }
+
+    /// <summary>箱の中身を読む（上限まで）。読み切れなければ空を返す。</summary>
+    private static byte[] ReadPayload(Stream stream, long offset, long size)
+    {
+        byte[] payload = new byte[(int)Math.Min(size, MaxPayloadBytes)];
+        stream.Position = offset;
+        return TryReadExactly(stream, payload) ? payload : [];
+    }
+
+    /// <summary>1 つの箱から読み込む上限。</summary>
+    private const int MaxPayloadBytes = 8 * 1024 * 1024;
 
     /// <summary>
     /// 映像の幅・高さを <c>avc1</c> のサンプルエントリから読む。
@@ -227,6 +321,9 @@ public static class Mp4File
     ///
     /// <para>
     /// <c>stss</c> が無い場合は「全サンプルが同期サンプル」の意味なので true。
+    /// <b>この分岐は fragmented では使えない</b> ── fragmented の <c>moov</c> には
+    /// <c>stss</c> がそもそも無く、ここは中身と無関係に true を返す。
+    /// fragmented の判定は <see cref="ReadMoof"/> が <c>trun</c> の flags から行う。
     /// </para>
     /// </summary>
     private static bool ReadStartsOnSyncSample(byte[] moovPayload)
@@ -283,6 +380,251 @@ public static class Mp4File
             return null;
         return Math.Round((double)durationUnits / timescale, 3);
     }
+
+    // ---- fragmented（moov に mvex がある形）の読み手 ----
+
+    /// <summary>
+    /// <c>sample_is_non_sync_sample</c>（ISO/IEC 14496-12, 8.8.3.1 の packed 32bit）。
+    /// <see cref="Fmp4File"/> と同じ規則を読む。
+    /// </summary>
+    private const uint NonSyncSampleFlag = 0x00010000;
+
+    /// <summary><c>trex</c>／<c>tfhd</c> が与える既定値（サンプル長・サンプル flags）。</summary>
+    private readonly record struct FragmentDefaults(uint SampleDuration, uint SampleFlags);
+
+    /// <summary>
+    /// 1 つの <c>moof</c> のサンプル数・尺（メディア timescale の単位）・
+    /// 先頭サンプルが同期サンプルか。
+    ///
+    /// <para>
+    /// <b><c>tfdt</c> の差分では代用しない。</b> <c>tfdt</c> は fragment の先頭時刻しか
+    /// 持たないので、末尾の fragment の長さが分からず、尺の分解能が fragment 長
+    /// （製品は 1 秒）まで落ちる ── 事前バッファの差（数百 ms 単位）を見るには粗すぎる。
+    /// <c>trun</c> のサンプル長を全部足せば、書かれたとおりの尺になる。
+    /// </para>
+    /// <para>
+    /// <c>traf</c> は複数ありうるので全部辿る（このリポジトリの録画物は映像 1 本だけなので
+    /// 合算してよい）。同期判定に使うのは<b>最初に見つかった空でない <c>trun</c></b>。
+    /// </para>
+    /// </summary>
+    private static (uint SampleCount, ulong DurationUnits, bool StartsOnSyncSample) ReadMoof(
+        byte[] moofPayload, FragmentDefaults trex)
+    {
+        uint samples = 0;
+        ulong units = 0;
+        bool? sync = null;
+
+        foreach (var (trafStart, trafEnd) in Children(moofPayload, 0, moofPayload.Length, "traf"))
+        {
+            var defaults = ReadTfhdDefaults(moofPayload, trafStart, trafEnd, trex);
+            foreach (var (trunStart, trunEnd) in Children(moofPayload, trafStart, trafEnd, "trun"))
+            {
+                var run = ReadTrun(moofPayload, trunStart, trunEnd, defaults);
+                samples += run.SampleCount;
+                units += run.DurationUnits;
+                if (sync is null && 0 < run.SampleCount)
+                    sync = run.StartsOnSyncSample;
+            }
+        }
+
+        return (samples, units, sync ?? false);
+    }
+
+    /// <summary>
+    /// <c>trun</c> を読む。4cc の直後から version(1) tr_flags(3) sample_count(4)、
+    /// 続いて data_offset(4, 0x000001) / first_sample_flags(4, 0x000004)、
+    /// そのあとに sample_count 個の項目（duration 0x000100 / size 0x000200 /
+    /// flags 0x000400 / composition offset 0x000800 の順で、立っているものだけ 4 バイト）。
+    ///
+    /// <para>
+    /// サンプル長が項目に無ければ <c>tfhd</c>／<c>trex</c> の既定値 × サンプル数。
+    /// 同期判定の優先順は <c>first_sample_flags</c> → <c>sample_flags[0]</c> → 既定値。
+    /// </para>
+    /// </summary>
+    private static (uint SampleCount, ulong DurationUnits, bool StartsOnSyncSample) ReadTrun(
+        byte[] data, int start, int end, FragmentDefaults defaults)
+    {
+        if (end < start + 8)
+            return (0, 0, false);
+
+        uint trunFlags = ReadU24(data, start + 1);
+        uint count = ReadU32(data, start + 4);
+        if (count == 0)
+            return (0, 0, false);
+
+        int offset = start + 8;
+        uint? firstSampleFlags = null;
+        if ((trunFlags & 0x000001) != 0)
+            offset += 4;                                          // data-offset-present
+        if ((trunFlags & 0x000004) != 0)
+        {
+            if (offset + 4 <= end)
+                firstSampleFlags = ReadU32(data, offset);          // first-sample-flags-present
+            offset += 4;
+        }
+
+        bool hasDuration = (trunFlags & 0x000100) != 0;
+        bool hasSize = (trunFlags & 0x000200) != 0;
+        bool hasFlags = (trunFlags & 0x000400) != 0;
+        bool hasCompositionOffset = (trunFlags & 0x000800) != 0;
+        int entry = (hasDuration ? 4 : 0) + (hasSize ? 4 : 0)
+                  + (hasFlags ? 4 : 0) + (hasCompositionOffset ? 4 : 0);
+
+        ulong units = 0;
+        uint? sampleZeroFlags = null;
+
+        // サンプル長が項目に無いなら、走査するのは flags を取る先頭 1 件だけでよい。
+        uint scan = hasDuration ? count : Math.Min(count, 1u);
+        for (uint i = 0; i < scan && 0 < entry; i++)
+        {
+            long at = offset + (long)i * entry;
+            if (end < at + entry)
+                break;                                            // 途中で切れている
+
+            int field = (int)at;
+            if (hasDuration)
+            {
+                units += ReadU32(data, field);
+                field += 4;
+            }
+            if (hasSize)
+                field += 4;
+            if (hasFlags && i == 0)
+                sampleZeroFlags = ReadU32(data, field);
+        }
+
+        if (!hasDuration)
+            units = (ulong)defaults.SampleDuration * count;
+
+        uint effective = firstSampleFlags ?? sampleZeroFlags ?? defaults.SampleFlags;
+        return (count, units, (effective & NonSyncSampleFlag) == 0);
+    }
+
+    /// <summary>
+    /// <c>tfhd</c> の既定値。立っていない項目は <paramref name="trex"/> の値を引き継ぐ。
+    /// 4cc の直後から version/flags(4) track_ID(4)、続いて base_data_offset(8, 0x000001) /
+    /// sample_description_index(4, 0x000002) / default_sample_duration(4, 0x000008) /
+    /// default_sample_size(4, 0x000010) / default_sample_flags(4, 0x000020)。
+    /// </summary>
+    private static FragmentDefaults ReadTfhdDefaults(byte[] data, int trafStart, int trafEnd, FragmentDefaults trex)
+    {
+        if (!TryFindChild(data, trafStart, trafEnd, "tfhd", out int start, out int end) || end < start + 8)
+            return trex;
+
+        uint flags = ReadU24(data, start + 1);
+        int offset = start + 8;
+        if ((flags & 0x000001) != 0)
+            offset += 8;
+        if ((flags & 0x000002) != 0)
+            offset += 4;
+
+        uint duration = trex.SampleDuration;
+        if ((flags & 0x000008) != 0)
+        {
+            if (offset + 4 <= end)
+                duration = ReadU32(data, offset);
+            offset += 4;
+        }
+        if ((flags & 0x000010) != 0)
+            offset += 4;
+
+        uint sampleFlags = trex.SampleFlags;
+        if ((flags & 0x000020) != 0 && offset + 4 <= end)
+            sampleFlags = ReadU32(data, offset);
+
+        return new FragmentDefaults(duration, sampleFlags);
+    }
+
+    /// <summary>
+    /// <c>trex</c> の既定値。4cc の直後から version/flags(4) track_ID(4)
+    /// default_sample_description_index(4) default_sample_duration(4)
+    /// default_sample_size(4) default_sample_flags(4)。
+    /// </summary>
+    private static FragmentDefaults ReadTrexDefaults(byte[] data, int mvexStart, int mvexEnd)
+    {
+        if (!TryFindChild(data, mvexStart, mvexEnd, "trex", out int start, out int end) || end < start + 24)
+            return default;
+
+        return new FragmentDefaults(ReadU32(data, start + 12), ReadU32(data, start + 20));
+    }
+
+    /// <summary>
+    /// メディアの timescale を <c>moov/trak/mdia/mdhd</c> から読む。
+    /// <b><c>mvhd</c> の timescale ではない</b> ── <c>trun</c> のサンプル長は
+    /// メディアの timescale で書かれており、mp4mux はこの 2 つに別の値を入れる。
+    /// 映像トラックしか無い前提なので、最初の <c>trak</c> だけを読む。
+    /// </summary>
+    private static uint ReadMediaTimescale(byte[] moovPayload)
+    {
+        if (!TryFindChild(moovPayload, 0, moovPayload.Length, "trak", out int trakStart, out int trakEnd))
+            return 0;
+        if (!TryFindChild(moovPayload, trakStart, trakEnd, "mdia", out int mdiaStart, out int mdiaEnd))
+            return 0;
+        if (!TryFindChild(moovPayload, mdiaStart, mdiaEnd, "mdhd", out int start, out int end) || end <= start)
+            return 0;
+
+        // 4cc の直後から version(1) flags(3) creation / modification / timescale …
+        // （version 1 は creation・modification が 8 バイトずつ）
+        int offset = moovPayload[start] == 1 ? start + 20 : start + 12;
+        return offset + 4 <= end ? ReadU32(moovPayload, offset) : 0;
+    }
+
+    /// <summary>指定した範囲の 1 段の箱から、型の一致するものを順に返す。</summary>
+    private static IEnumerable<(int Start, int End)> Children(byte[] data, int start, int end, string type)
+    {
+        int position = start;
+        while (position + 8 <= end)
+        {
+            long size = ReadU32(data, position);
+            int header = 8;
+
+            if (size == 1)
+            {
+                if (end < position + 16)
+                    yield break;
+                size = (long)BinaryPrimitives.ReadUInt64BigEndian(data.AsSpan(position + 8, 8));
+                header = 16;
+            }
+            else if (size == 0)
+            {
+                size = end - position;
+            }
+
+            if (size < header || end < position + size)
+                yield break;
+
+            if (IsType(data, position + 4, type))
+                yield return (position + header, (int)(position + size));
+
+            position += (int)size;
+        }
+    }
+
+    private static bool TryFindChild(byte[] data, int start, int end, string type, out int contentStart, out int contentEnd)
+    {
+        foreach (var (childStart, childEnd) in Children(data, start, end, type))
+        {
+            contentStart = childStart;
+            contentEnd = childEnd;
+            return true;
+        }
+
+        contentStart = 0;
+        contentEnd = 0;
+        return false;
+    }
+
+    private static bool IsType(byte[] data, int offset, string type)
+        => data[offset] == type[0]
+        && data[offset + 1] == type[1]
+        && data[offset + 2] == type[2]
+        && data[offset + 3] == type[3];
+
+    private static uint ReadU32(byte[] data, int offset)
+        => BinaryPrimitives.ReadUInt32BigEndian(data.AsSpan(offset, 4));
+
+    private static uint ReadU24(byte[] data, int offset)
+        => ((uint)data[offset] << 16) | ((uint)data[offset + 1] << 8) | data[offset + 2];
 
     private static int IndexOfFourCc(byte[] buffer, string fourCc)
     {

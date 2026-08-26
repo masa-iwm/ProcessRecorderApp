@@ -76,7 +76,6 @@ public sealed class PreBufferTests(PublishedApp app, ITestOutputHelper output)
     private double RecordAndMeasure(int bufferDurationMs)
     {
         var settings = new SettingsFile();
-        settings.FragmentedOutput = false;
         settings.AddRecorder("R1").BufferDuration = bufferDurationMs;
 
         using var instance = AppInstance.Create(app, settings);

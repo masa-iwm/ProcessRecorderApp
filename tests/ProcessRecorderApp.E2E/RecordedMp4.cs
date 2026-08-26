@@ -14,10 +14,15 @@ namespace ProcessRecorderApp.E2E;
 /// <see cref="Mp4Probe.StartsOnASyncSample"/> を足すまで1件も検出できなかった。
 /// </para>
 /// <para>
-/// <b>これは非 fragmented（<c>faststart</c>）の録画物にしか使えない。</b> 尺は
-/// <c>moov</c> の <c>mvhd</c> から読むが、fragmented MP4（製品の既定）は <c>moov</c> を
-/// 書き直さないので尺 0・<c>stss</c> 無しになり、<see cref="Mp4Probe.IsValid"/> が偽になる。
-/// これを使うテストは settings.json へ <c>FragmentedOutput = false</c> を明示すること。
+/// <b>chunked（<c>faststart</c>）と fragmented のどちらでも使える。</b>
+/// <see cref="Mp4Probe"/> が <c>moov</c> の <c>mvex</c> で形を見分け、fragmented では
+/// <c>moof</c> の <c>trun</c> から尺・サンプル数・先頭サンプルの同期性を読む
+/// ── <b>したがって呼び出し側は <c>FragmentedOutput</c> を明示しなくてよい</b>
+/// （明示するのは chunked 固有の性質を見るテストだけ）。
+/// </para>
+/// <para>
+/// <b>書き込み中のファイルには使わない。</b> 対象は停止・終了で確定したファイルだけで、
+/// 追いかけ中の本文は <c>Fmp4Probe</c> が見る。
 /// </para>
 /// </summary>
 public static class RecordedMp4
