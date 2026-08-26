@@ -223,8 +223,14 @@ public sealed class SettingsFile
 
     /// <summary>
     /// 録画ファイル（イベント録画・常時録画のセグメント）を fragmented MP4 で書くか。
-    /// null なら書かない（＝製品の既定＝false）。true にすると <c>faststart</c> が外れ、
-    /// <b>書き込み中のファイルにも中身がある</b>。
+    /// null なら書かない（＝製品の既定＝<b>true</b>＝fragmented）。
+    ///
+    /// <para>
+    /// <b>MP4 の構造を読むテストは <c>false</c> を明示すること。</b>
+    /// <c>Mp4Probe</c> は <c>moov</c> の <c>mvhd</c>／<c>stsz</c> から尺とサンプル数を読むが、
+    /// fragmented MP4 は <c>moov</c> を書き直さないのでどちらも 0 になり、
+    /// <c>RecordedMp4.AssertUsable</c> は成立しない。fMP4 側の構造は <c>Fmp4Probe</c> で見る。
+    /// </para>
     ///
     /// <para>
     /// <b>これは <c>AppSettings</c> をこのリポジトリで手書きに写した唯一の場所で、

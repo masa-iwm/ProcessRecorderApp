@@ -1,6 +1,7 @@
 using ProcessRecorderApp.GStreamer;
 using System;
 using System.Globalization;
+using System.IO;
 using Xunit;
 
 namespace ProcessRecorderApp.Tests;
@@ -16,17 +17,18 @@ namespace ProcessRecorderApp.Tests;
 /// <b>録って再生してみるまで気付けない</b>ので、ここで固定する。
 /// </para>
 /// <para>
-/// <b>false 側の文字列は 1 文字も動かさない。</b> 既定の録画物のバイト列がこれで決まっている。
+/// <b>false 側の文字列は 1 文字も動かさない。</b> <c>FragmentedOutput</c> を切った録画物の
+/// バイト列がこれで決まっている。
 /// </para>
 /// </summary>
 public sealed class RecordingSrcPipelineTests
 {
-    /// <summary>既定（<c>FragmentedOutput=false</c>）の文字列そのもの。</summary>
+    /// <summary>非 fragmented（<c>FragmentedOutput=false</c>）の文字列そのもの。</summary>
     private const string LegacySrcPipeline =
         "appsrc format=time name=src ! h264parse ! mp4mux faststart=true name=mux ! filesink name=file";
 
     [Fact]
-    public void TheDefaultPipelineIsUnchanged()
+    public void TheNonFragmentedPipelineIsUnchanged()
     {
         Assert.Equal(LegacySrcPipeline, EventRecorder.BuildSrcPipeline(fragmented: false));
     }
@@ -73,14 +75,36 @@ public sealed class RecordingSrcPipelineTests
     }
 
     /// <summary>
-    /// <b>既定は false</b>（既存の録画物と挙動を変えない）。
+    /// <b>既定は true</b>（録画中・強制終了後でも読めるファイルを既定にする）。
     /// アプリ全体の設定 <c>AppSettings.FragmentedOutput</c> の static ミラーで、
-    /// 何も読み込まれていない状態がこの値である。
+    /// 何も読み込まれていない状態がこの値である ──
+    /// <b><c>AppSettings.FragmentedOutput</c> の初期化子と揃っていること</b>。
     /// </summary>
     [Fact]
-    public void TheStaticMirrorDefaultsToOff()
+    public void TheStaticMirrorDefaultsToOn()
     {
-        Assert.False(EventRecorder.FragmentedOutput);
+        Assert.True(EventRecorder.FragmentedOutput);
+    }
+
+    /// <summary>
+    /// アプリ設定側の既定も <c>true</c> であること。
+    ///
+    /// <para>
+    /// <c>AppSettings</c> は WinUI アプリのプロジェクトにあり L1 からは参照できないので、
+    /// <b>ソースをテキストとして</b>突き合わせる。ここが食い違うと、settings.json に
+    /// キーが無い利用者と、何も読み込んでいない状態とで書き方が変わる。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void TheAppSettingDefaultMatchesTheStaticMirror()
+    {
+        string source = File.ReadAllText(
+            RepositoryFiles.At("src", "ProcessRecorderApp", "Settings", "AppSettings.cs"));
+
+        Assert.Contains(
+            "public partial bool FragmentedOutput { get; set; } = true;",
+            source,
+            StringComparison.Ordinal);
     }
 
     /// <summary>

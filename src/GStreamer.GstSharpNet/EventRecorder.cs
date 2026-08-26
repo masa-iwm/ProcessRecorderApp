@@ -875,8 +875,12 @@ public partial class EventRecorder : ObservableObject, IDisposable
     /// <c>GStreamer.GstSharpNet</c> は <c>AppSettings</c> を知らない設計なので、
     /// <see cref="PreferredH264Encoder"/> と同じく static のミラーとして受け取る。
     /// </para>
+    /// <para>
+    /// <b>初期値は <c>true</c></b> ── <c>AppSettings.FragmentedOutput</c> の既定と揃える
+    /// （何も読み込まれていない状態でもアプリの既定と同じ形で書く）。
+    /// </para>
     /// </summary>
-    public static bool FragmentedOutput { get; set; }
+    public static bool FragmentedOutput { get; set; } = true;
 
     /// <summary>
     /// fragmented 出力の fragment の長さ(ms)。<b>1 つの <c>moof</c>＋<c>mdat</c> が覆う時間</b>で、

@@ -520,20 +520,32 @@ L1 は `WebAssetManifestTests` が「資産の一覧が合っているか」を�
   **`appendBuffer` が投げたときの `fail`**。注入する手立てが無い。
 - **タブを複数開いた場合**、および**追いかけ再生とライブプレビューを同時に開いた場合**。
 
-ここを触ったら、`FragmentedOutput`（アプリ設定）を ON にして**実際に Chrome か Edge で開き**、
-映像が出ること・1 分以上放置しても伸び続けること・途中で手動シークすると先頭へ引き戻されなく
-なること・完了済みの行が最初から最後まで再生できることを目で確かめる。
+ここを触ったら**実際に Chrome か Edge で開き**、映像が出ること・1 分以上放置しても
+伸び続けること・途中で手動シークすると先頭へ引き戻されなくなること・完了済みの行が
+最初から最後まで再生できることを目で確かめる。
 
-### `FragmentedOutput` は既定 off なので、E2E の大半は fMP4 経路を踏まない
+### 録画系 E2E は `FragmentedOutput=false` を明示するので、既定構成の録画物は無検査
 
-`FragmentedOutput` はアプリ全体の設定で、既定は `false` ── **既定構成の録画物・
-パイプライン文字列は 1 バイトも変わらない**（そのための既定である）。裏返すと、fMP4 の経路を
-踏むのは `RecordingDeliveryTests` と `WebUiBrowserTests` の数件（設定を明示的に ON にしたもの）
-だけで、事前バッファ・停止の同期性・自動復帰・強制終了といった録画系 E2E は
-**すべて `faststart` 側だけを見ている**（常時録画のセグメントは
-`RecordingDeliveryTests` が fMP4 側も見るが、`ContinuousRecordingTests` の分割・隔離・
-共存の検査はすべて非 fragmented のままである）。fMP4 側の停止の排出や自動復帰との
-組み合わせは無検査なので、`FragmentedOutput` を実運用で使う前に、その構成で一度手で確かめること。
+`FragmentedOutput` はアプリ全体の設定で、**既定は `true`（fragmented MP4）**。
+にもかかわらず、録画物の中身を読む E2E は settings.json へ `FragmentedOutput = false` を
+**明示して**走る ── `RecordedMp4.AssertUsable` / `Mp4Probe` は `moov` の `mvhd` と `stsz` から
+尺とサンプル数を読むが、fragmented MP4 は `moov` を書き直さないので両方 0 になり、
+「録画物として成立しているか」を判定できないためである。
+
+明示して非 fragmented 側を見ているのは `RecordingTests` / `PreBufferTests` /
+`StopSynchronicityTests` / `ShutdownTests` / `ResidentWorkerTests` / `EncoderNegotiationTests` /
+`HighResolutionTests` / `PipelineDialogTests` / `ContinuousRecordingTests` /
+`RemoteControlTests`（`RemoteBase()`）／`RecordingDeliveryTests`（`RemoteSettings()`）／
+`PreviewStreamTests`・`DashPreviewTests` の「配信中でも録画が乱れない」1 件ずつ
+（`StartReady(fragmentedOutput: false)`）。
+fMP4 側を見るのは `RecordingDeliveryTests` と `WebUiBrowserTests` の数件
+（`FragmentedSettings()` 系）で、**見ているのは配信と追いかけ再生**である。
+
+したがって、**既定構成での事前バッファ・停止の排出・自動復帰・強制終了・常時録画の分割は
+無検査**である（`ContinuousRecordingTests` の分割・隔離・共存の検査も非 fragmented 側だけ）。
+既定を変えたときや録画の停止経路を触ったときは、`FragmentedOutput` を既定のまま
+（＝ ON）で一度録って、**録画中のファイルが読めること・停止後のファイルがブラウザの
+追いかけ再生で最後まで再生できること**を手で確かめること。
 
 ### プレビューの 4 設定は DASH 配信だけが読む
 

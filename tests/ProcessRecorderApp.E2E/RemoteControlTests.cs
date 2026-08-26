@@ -84,6 +84,12 @@ public sealed class RemoteControlTests(PublishedApp app, ITestOutputHelper outpu
             // ── 認証そのものを見るケースは RemoteUserSettings()
             // で自分の settings を組み立てる。
             RemoteControlAllowGuestRead = true,
+            // **非 fragmented を明示する（製品の既定は true）。** ここのケースは
+            // RecordedMp4.AssertUsable で「録画物が使えること」を見るが、あの表明は
+            // moov の mvhd から尺を読むので fragmented MP4 では成立しない
+            // （fMP4 の配信・追いかけ再生は RecordingDeliveryTests / WebUiBrowserTests が見る）。
+            // 設定そのものを操作するケースも、この明示した false を出発点にする。
+            FragmentedOutput = false,
         };
     }
 
@@ -1463,6 +1469,11 @@ public sealed class RemoteControlTests(PublishedApp app, ITestOutputHelper outpu
     /// <para>
     /// レコーダーごとの設定ではないので、<c>PATCH /api/recorders/…/settings</c> ではなく
     /// <c>PATCH /api/settings</c> で扱う。<c>Viewer</c> は 403。
+    /// </para>
+    /// <para>
+    /// 出発点の <c>false</c> は <c>RemoteBase()</c> が settings.json へ明示したものである
+    /// （製品の既定は <c>true</c>）。ここで見たいのは役割による可否と PATCH の反映であって、
+    /// 既定値そのものではない。
     /// </para>
     /// </summary>
     [Fact]

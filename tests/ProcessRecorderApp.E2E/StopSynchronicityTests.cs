@@ -38,6 +38,7 @@ public sealed class StopSynchronicityTests(PublishedApp app, ITestOutputHelper o
     public void StopRecording_ReturnsOnlyAfterTheFileIsFinalized()
     {
         var settings = new SettingsFile();
+        settings.FragmentedOutput = false;
         var recorder = settings.AddRecorder("R1").AsLarge();
         // 事前バッファはこのテストの対象ではないので短くする（20Mbit を数秒ぶん抱えないため）。
         recorder.BufferDuration = 1000;

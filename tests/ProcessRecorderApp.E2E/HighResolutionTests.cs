@@ -54,6 +54,7 @@ public sealed class HighResolutionTests(PublishedApp app, ITestOutputHelper outp
     public void AResolutionWhoseFramesFillThePreviewQueue_StillInitializesAndRecords()
     {
         var settings = new SettingsFile();
+        settings.FragmentedOutput = false;
         settings.AddRecorder("R1").AsOversizedFrames();
 
         using var instance = AppInstance.Create(app, settings);

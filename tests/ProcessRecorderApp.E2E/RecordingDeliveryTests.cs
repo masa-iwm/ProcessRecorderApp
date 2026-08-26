@@ -54,6 +54,10 @@ public sealed class RecordingDeliveryTests(PublishedApp app, ITestOutputHelper o
             // ゲスト読み取りを明示して未認証で読ませる
             // ── 認証そのものは RemoteControlTests が見る。
             RemoteControlAllowGuestRead = true,
+            // **非 fragmented を明示する（製品の既定は true）。** このクラスは
+            // 「fragmented だとどう変わるか」を対で見るので、土台の側も明示しておく
+            // ── fMP4 側は FragmentedSettings() / FragmentedContinuousSettings()。
+            FragmentedOutput = false,
         };
         settings.AddRecorder("R1");
         return settings;
@@ -149,8 +153,8 @@ public sealed class RecordingDeliveryTests(PublishedApp app, ITestOutputHelper o
         string relativePath = live.GetProperty("path").GetString()!;
         Assert.DoesNotContain('\\', relativePath);
 
-        // 録画中でも本文が取れること。moov は未確定なので再生はできないが、
-        // 「握られているから読めない」であってはならない。
+        // 録画中でも本文が取れること。ここは非 fragmented（RemoteSettings）なので
+        // moov は未確定で再生はできないが、「握られているから読めない」であってはならない。
         //
         // **長さは 0 でありうる。** `mp4mux faststart=true` は EOS まで自前の一時ファイルへ
         // 溜めるので、`filesink` の出力先は録画が終わるまで 0 バイトのままになる（実測）。
@@ -197,8 +201,8 @@ public sealed class RecordingDeliveryTests(PublishedApp app, ITestOutputHelper o
         => 8 <= body.Length ? Encoding.ASCII.GetString(body, 4, 4) : "(too short)";
 
     /// <summary>
-    /// <b>fragmented なら録画中でも中身が読める。</b> 既定（<c>faststart=true</c>）では
-    /// 録画中のファイルは 0 バイトで、再生できる形が 1 バイトも無い
+    /// <b>fragmented なら録画中でも中身が読める。</b> <c>FragmentedOutput</c> を切った形
+    /// （<c>faststart=true</c>）では録画中のファイルは 0 バイトで、再生できる形が 1 バイトも無い
     /// ── その違いがブラウザの追いかけ再生の土台である。
     ///
     /// <para>
@@ -358,7 +362,7 @@ public sealed class RecordingDeliveryTests(PublishedApp app, ITestOutputHelper o
     /// <c>inProgress=false, fragmented=true</c> のまま単体で読めること。
     /// </para>
     /// <para>
-    /// 既定（<c>FragmentedOutput=false</c>）では書き込み中のセグメントに
+    /// <c>FragmentedOutput=false</c> では書き込み中のセグメントに
     /// <c>moof</c> は 1 つも無く、ここは成立しない。
     /// </para>
     /// </summary>
@@ -488,7 +492,7 @@ public sealed class RecordingDeliveryTests(PublishedApp app, ITestOutputHelper o
     }
 
     /// <summary>
-    /// <b>強制終了しても、そこまでの fragment が読める。</b> 既定の <c>faststart</c> では
+    /// <b>強制終了しても、そこまでの fragment が読める。</b> <c>faststart</c> 側では
     /// kill されたファイルは 0 バイト（＝録画が丸ごと失われる）。
     /// </summary>
     [Fact]

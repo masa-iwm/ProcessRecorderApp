@@ -13,6 +13,12 @@ namespace ProcessRecorderApp.E2E;
 /// 実際、<c>PushRecordBuffer</c> の I フレーム待ちを外す注入は
 /// <see cref="Mp4Probe.StartsOnASyncSample"/> を足すまで1件も検出できなかった。
 /// </para>
+/// <para>
+/// <b>これは非 fragmented（<c>faststart</c>）の録画物にしか使えない。</b> 尺は
+/// <c>moov</c> の <c>mvhd</c> から読むが、fragmented MP4（製品の既定）は <c>moov</c> を
+/// 書き直さないので尺 0・<c>stss</c> 無しになり、<see cref="Mp4Probe.IsValid"/> が偽になる。
+/// これを使うテストは settings.json へ <c>FragmentedOutput = false</c> を明示すること。
+/// </para>
 /// </summary>
 public static class RecordedMp4
 {

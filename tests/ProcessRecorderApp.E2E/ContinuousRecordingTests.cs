@@ -12,6 +12,12 @@ namespace ProcessRecorderApp.E2E;
 /// <b>本当にファイルが分かれて、1 本ずつ再生可能で、イベント録画を邪魔しない</b>ことは
 /// 発行物を動かさないと分からない。
 /// </para>
+/// <para>
+/// <b>どのテストも <c>FragmentedOutput = false</c> を明示する。</b> ここの表明は
+/// <c>moov</c> の <c>mvhd</c>／<c>stsz</c>（尺・サンプル数）を読むので、fragmented MP4
+/// （製品の既定）では尺 0・サンプル数 0 になり、分割やフレームレートの検査が成立しない。
+/// fMP4 側のセグメントは <c>RecordingDeliveryTests</c> が見る。
+/// </para>
 /// </summary>
 [Collection(E2ECollection.Name)]
 public sealed class ContinuousRecordingTests(PublishedApp app, ITestOutputHelper output)
@@ -54,6 +60,7 @@ public sealed class ContinuousRecordingTests(PublishedApp app, ITestOutputHelper
     public void AResolutionOverride_NeverShrinksTheEventRecording()
     {
         var settings = new SettingsFile();
+        settings.FragmentedOutput = false;
         var recorder = settings.AddRecorder("R1").WithContinuous(SegmentSeconds);
         // **幅・高さを書かないソース。** videotestsrc は既定の 320x240 を出すが、
         // 下流が小さい大きさを要求すればそれに合わせてしまう（画面キャプチャと同じ性質）。
@@ -99,6 +106,7 @@ public sealed class ContinuousRecordingTests(PublishedApp app, ITestOutputHelper
     public void OnTheD3d12Path_AResolutionOverride_NeverShrinksTheEventRecording()
     {
         var settings = new SettingsFile();
+        settings.FragmentedOutput = false;
         var recorder = settings.AddRecorder("R1").WithContinuous(SegmentSeconds);
         recorder.Type = EventRecordingType.D3d12;
         recorder.SrcPipeline =
@@ -149,6 +157,7 @@ public sealed class ContinuousRecordingTests(PublishedApp app, ITestOutputHelper
     public void TheContinuousRecordingIsCutIntoUsableFiles()
     {
         var settings = new SettingsFile();
+        settings.FragmentedOutput = false;
         settings.AddRecorder("R1").WithContinuous(SegmentSeconds);
 
         using var instance = AppInstance.Create(app, settings);
@@ -194,6 +203,7 @@ public sealed class ContinuousRecordingTests(PublishedApp app, ITestOutputHelper
     public void TheEventRecordingStillWorksWhileTheContinuousOneRuns()
     {
         var settings = new SettingsFile();
+        settings.FragmentedOutput = false;
         settings.AddRecorder("R1").WithContinuous(SegmentSeconds);
 
         using var instance = AppInstance.Create(app, settings);
@@ -231,6 +241,7 @@ public sealed class ContinuousRecordingTests(PublishedApp app, ITestOutputHelper
     public void ABrokenContinuousSetting_DoesNotTakeDownTheEventRecording()
     {
         var settings = new SettingsFile();
+        settings.FragmentedOutput = false;
         var recorder = settings.AddRecorder("R1").WithContinuous(SegmentSeconds);
         // 存在しない要素。枝つきの ParseLaunch だけが失敗する。
         recorder.ContinuousEncodingProperties = "no-such-encoder-for-e2e";
@@ -273,6 +284,7 @@ public sealed class ContinuousRecordingTests(PublishedApp app, ITestOutputHelper
     public void TheContinuousRecordingCanRunAtItsOwnFramerate()
     {
         var settings = new SettingsFile();
+        settings.FragmentedOutput = false;
         var recorder = settings.AddRecorder("R1").WithContinuous(SegmentSeconds);
         recorder.ContinuousFramerate = "5/1";
         recorder.ContinuousResolution = "320x240";
@@ -308,6 +320,7 @@ public sealed class ContinuousRecordingTests(PublishedApp app, ITestOutputHelper
     public void TheLastSegmentIsFinalizedWhenTheAppExits()
     {
         var settings = new SettingsFile();
+        settings.FragmentedOutput = false;
         settings.AddRecorder("R1").WithContinuous(SegmentSeconds);
 
         using var instance = AppInstance.Create(app, settings);

@@ -373,16 +373,16 @@ public class ContinuousBranchTests
         Assert.Contains("alignment=au", branch);
     }
 
-    /// <summary>既定（<c>FragmentedOutput=false</c>）のセグメントの文字列そのもの。</summary>
+    /// <summary>非 fragmented（<c>FragmentedOutput=false</c>）のセグメントの文字列そのもの。</summary>
     private const string LegacySegmentWriterPipeline =
         "appsrc format=time name=src ! h264parse ! mp4mux name=mux ! filesink name=file";
 
     /// <summary>
     /// <b>非 fragmented 側の文字列は 1 文字も動かさない。</b>
-    /// 既定のセグメントのバイト列がこれで決まっている。
+    /// <c>FragmentedOutput</c> を切ったセグメントのバイト列がこれで決まっている。
     /// </summary>
     [Fact]
-    public void TheDefaultSegmentWriterIsUnchanged()
+    public void TheNonFragmentedSegmentWriterIsUnchanged()
     {
         Assert.Equal(
             LegacySegmentWriterPipeline,
@@ -407,7 +407,7 @@ public class ContinuousBranchTests
 
     /// <summary>
     /// <c>faststart</c> と <c>fragment-mode</c> の排他（<c>RecordingSrcPipelineTests</c> と同じ流儀）。
-    /// 非 fragmented 側に fragment の指定が漏れると、既定の常時録画の書き方が黙って変わる。
+    /// 非 fragmented 側に fragment の指定が漏れると、設定を切ったときの書き方が黙って変わる。
     /// </summary>
     [Fact]
     public void FragmentModeAppearsOnlyInTheFragmentedForm()

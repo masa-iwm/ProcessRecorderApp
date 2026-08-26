@@ -429,11 +429,16 @@ public partial class AppSettings : JsonSettingsBase<AppSettings>
     /// <para>
     /// <b>適用: イベント録画はレコーダーの初期化から、常時録画は次のセグメントから。</b>
     /// </para>
+    /// <para>
+    /// <b>既定は有効。</b> 無効にすると <c>mp4mux faststart=true</c> で書き、
+    /// 尺の入った通常の MP4 になる代わりに<b>録画中のファイルは 0 バイトのまま</b>で、
+    /// 強制終了すると <c>moov</c> の無いファイルが残る。
+    /// </para>
     /// </summary>
     [System.ComponentModel.Category("PropCat_Output")]
     [System.ComponentModel.Description("PropDesc_FragmentedOutput")]
     [ObservableProperty]
-    public partial bool FragmentedOutput { get; set; }
+    public partial bool FragmentedOutput { get; set; } = true;
     partial void OnFragmentedOutputChanged(bool value)
         => GStreamer.EventRecorder.FragmentedOutput = value;
 

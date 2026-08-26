@@ -77,6 +77,7 @@ public sealed class PipelineDialogTests(PublishedApp app)
     public void AnInvalidPipeline_DoesNotCrash_AndTheRecorderRecoversWhenFixed()
     {
         var settings = new SettingsFile();
+        settings.FragmentedOutput = false;
         settings.AddRecorder("R1");
 
         using var instance = AppInstance.Create(app, settings);

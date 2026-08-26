@@ -105,6 +105,7 @@ public sealed class ShutdownTests(PublishedApp app, ITestOutputHelper output)
     public void CtrlClose_WhileRecording_FinalizesEveryFile()
     {
         var settings = new SettingsFile();
+        settings.FragmentedOutput = false;
         settings.AddRecorder("R1").AsBulkyButCheapToEncode();
         settings.AddRecorder("R2");
 

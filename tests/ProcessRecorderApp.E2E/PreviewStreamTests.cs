@@ -58,10 +58,16 @@ public sealed class PreviewStreamTests(PublishedApp app, ITestOutputHelper outpu
     /// この GOP を前提にしている ── 伸ばすとどちらの下限も割る。
     /// </para>
     /// </summary>
-    private static SettingsFile PreviewSettings()
+    /// <param name="fragmentedOutput">
+    /// 録画ファイルを fragmented MP4 で書くか（アプリ全体の設定。製品の既定は <c>true</c>）。
+    /// <b><c>Mp4Probe</c> で録画物を読むケースだけ <c>false</c> を渡すこと</b> ──
+    /// fragmented MP4 は <c>moov</c> を書き直さないので尺もサンプル数も 0 になる。
+    /// </param>
+    private static SettingsFile PreviewSettings(bool fragmentedOutput = true)
     {
         var settings = new SettingsFile
         {
+            FragmentedOutput = fragmentedOutput,
             // 127.0.0.1 に固定する（0.0.0.0 だと開発機と CI の LAN から到達できる）。
             RemoteControlEnabled = true,
             RemoteControlBindAddress = "127.0.0.1",
@@ -106,9 +112,10 @@ public sealed class PreviewStreamTests(PublishedApp app, ITestOutputHelper outpu
     /// <b>初期化を待たずに購読すると 503</b>（配信の器はパイプラインが
     /// <c>PLAYING</c> に達してから作られる）。
     /// </summary>
-    private (AppInstance Instance, int Port) StartReady()
+    /// <param name="fragmentedOutput"><inheritdoc cref="PreviewSettings" path="/param[@name='fragmentedOutput']"/></param>
+    private (AppInstance Instance, int Port) StartReady(bool fragmentedOutput = true)
     {
-        var instance = AppInstance.Create(app, PreviewSettings());
+        var instance = AppInstance.Create(app, PreviewSettings(fragmentedOutput));
         int port = WaitForPort(instance);
 
         Assert.True(instance.WaitForActivityLogEvent("recorder.init ok", EventBudget),
@@ -489,7 +496,8 @@ public sealed class PreviewStreamTests(PublishedApp app, ITestOutputHelper outpu
     [Fact]
     public async Task RecordingIsUnaffectedWhileThePreviewIsStreaming()
     {
-        var (instance, port) = StartReady();
+        // 録画物を Mp4Probe で読む（尺とサンプル数を比べる）ので非 fragmented にする。
+        var (instance, port) = StartReady(fragmentedOutput: false);
         using (instance)
         {
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
