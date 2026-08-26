@@ -93,13 +93,22 @@ public static class ContinuousBranch
     /// 書き出させる ── 書き込み中のセグメントも読め、追いかけ再生の対象になる。
     /// EOS で足すのは末尾の <c>mfra</c> だけである。
     /// </para>
+    /// <para>
+    /// <b>true では <c>filesink</c> の <c>buffer-mode=unbuffered</c> が要る。</b>
+    /// 既定の <c>filesink</c> は受け取ったバッファを自分の中に溜め、
+    /// <c>buffer-size</c>（既定 65536）に届いてから 1 度に書くので、
+    /// <b>他のプロセスから見えるファイル長は 64 KiB 溜まるまで伸びない</b>
+    /// ── 常時録画は低ビットレートで回すことが多く、fragment が 1 秒ごとに出ていても
+    /// 見える伸びは数秒に 1 度になり、追いかけ再生がデータ切れでカタつく。
+    /// 強制終了では溜まっていたぶん（最大 64 KiB）が失われる。
+    /// </para>
     /// </summary>
     /// <param name="fragmented">fragmented MP4 で書くか（<c>EventRecorder.FragmentedOutput</c>）。</param>
     public static string BuildSegmentWriterPipeline(bool fragmented)
         => fragmented
             ? "appsrc format=time name=src ! h264parse ! mp4mux fragment-duration="
               + EventRecorder.FragmentDurationMs.ToString(CultureInfo.InvariantCulture)
-              + " fragment-mode=dash-or-mss name=mux ! filesink name=file"
+              + " fragment-mode=dash-or-mss name=mux ! filesink name=file buffer-mode=unbuffered"
             : "appsrc format=time name=src ! h264parse ! mp4mux name=mux ! filesink name=file";
 
     /// <summary>

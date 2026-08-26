@@ -270,6 +270,40 @@ internal sealed class EdgeCdp : IAsyncDisposable
             : throw new InvalidOperationException($"文字列ではありません: {expression} -> {value}");
     }
 
+    /// <summary>
+    /// ページのセッションへ CDP のコマンドを 1 つ送る（結果は捨てる）。
+    ///
+    /// <para>
+    /// <b>ブラウザのセッションではなくページのセッションへ送る</b> ── <c>Network</c> 系は
+    /// ページに効かせるもので、ブラウザ側へ送っても<b>成功したまま何も起きない</b>。
+    /// </para>
+    /// </summary>
+    public async Task SendAsync(string method, Action<Utf8JsonWriter>? parameters, CancellationToken ct)
+    {
+        using (await CommandAsync(method, parameters, _sessionId, ct)) { }
+    }
+
+    /// <summary>
+    /// このページの取り込み速度を <paramref name="bytesPerSecond"/> に絞る。
+    ///
+    /// <para>
+    /// <c>Network.emulateNetworkConditions</c> は 4 つの引数を<b>すべて</b>要求する
+    /// （欠けると <c>Invalid parameters</c> で失敗する）。<c>Network.enable</c> を
+    /// 先に送っていないと、成功したまま効かない。
+    /// </para>
+    /// </summary>
+    public async Task ThrottleDownloadAsync(double bytesPerSecond, CancellationToken ct)
+    {
+        await SendAsync("Network.enable", parameters: null, ct);
+        await SendAsync("Network.emulateNetworkConditions", w =>
+        {
+            w.WriteBoolean("offline", false);
+            w.WriteNumber("latency", 0);
+            w.WriteNumber("downloadThroughput", bytesPerSecond);
+            w.WriteNumber("uploadThroughput", -1);
+        }, ct);
+    }
+
     /// <summary>述語が真になるまで待つ（真偽値を返す JavaScript 式）。</summary>
     public async Task<bool> WaitUntilAsync(string expression, TimeSpan budget, CancellationToken ct)
     {

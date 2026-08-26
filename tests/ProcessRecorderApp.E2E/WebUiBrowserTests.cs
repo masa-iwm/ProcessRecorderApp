@@ -184,6 +184,32 @@ public sealed class WebUiBrowserTests(PublishedApp app, ITestOutputHelper output
         })()
         """;
 
+    /// <summary>
+    /// バッファの範囲を人が読める形にしたもの（<c>[start, end) …</c>）。
+    /// <b>先頭が 0 でなければトリムが走っている。</b>
+    /// </summary>
+    private const string BufferedRanges = """
+        (function () {
+          var ranges = document.getElementById('player').buffered;
+          var text = 'buffered=';
+          for (var i = 0; i < ranges.length; i++) {
+            text += '[' + ranges.start(i).toFixed(3) + ',' + ranges.end(i).toFixed(3) + ') ';
+          }
+          return text + 'ended=' + document.getElementById('player').ended;
+        })()
+        """;
+
+    /// <summary>
+    /// バッファの先頭。<b>0 より大きければトリムが 1 度は削っている。</b>
+    /// バッファが空なら -1。
+    /// </summary>
+    private const string BufferedStart = """
+        (function () {
+          var ranges = document.getElementById('player').buffered;
+          return ranges.length === 0 ? -1 : ranges.start(0);
+        })()
+        """;
+
     /// <summary>ライブ端からの遅れ（バッファの終端 − 現在位置）。バッファが空なら -1。</summary>
     private const string LiveLag = """
         (function () {
@@ -413,6 +439,344 @@ public sealed class WebUiBrowserTests(PublishedApp app, ITestOutputHelper output
             await browser.WaitUntilAsync($"{resumed.ToString("R", System.Globalization.CultureInfo.InvariantCulture)} + 1 < {PlayerTime}",
                 PlaybackBudget, Ct),
             "開き直した再生が進みませんでした。");
+    }
+
+    // ---- (3b) トリムが再生位置を巻き添えにしないこと ----
+
+    /// <summary>
+    /// <c>app.js</c> の <c>FOLLOW_TRIM_TRIGGER_SECONDS</c> の写し
+    /// （<see cref="TheTrimTriggerHereMatchesTheScript"/> が突き合わせる）。
+    /// クリップがこれを超えていなければ、下の検査はトリムを 1 度も踏まないまま緑になる
+    /// （だから尺そのものも表明する）。
+    /// </summary>
+    private const double TrimTriggerSeconds = 70;
+
+    /// <summary>
+    /// トリムの起動点（<see cref="TrimTriggerSeconds"/>）を確実に超える尺。
+    /// <b>実時間では作らない</b> ── ソースを非ライブで回して実時間より速く書く。
+    /// </summary>
+    private const int LongClipSeconds = 90;
+
+    /// <summary>作るクリップのフレームレート。キーフレームは 2 秒に 1 枚（<c>key-int-max</c>）。</summary>
+    private const int LongClipFps = 15;
+
+    /// <summary>
+    /// クリップのビットレート(kbit/s)。<see cref="LongClipThrottleBytesPerSecond"/> と対で
+    /// 「取り込みに掛かる時間」を決める。
+    ///
+    /// <para>
+    /// ソースを <c>pattern=snow</c> にしているのは、指定したビットレートを実際に使い切らせるため
+    /// ── 既定の SMPTE バーはよく縮むので、指定した値に届かない。
+    /// </para>
+    /// </summary>
+    private const int LongClipBitrateKbps = 6000;
+
+    /// <summary>クリップの大きさ（ビットレートを実際に使い切らせるために要る）。</summary>
+    private const string LongClipResolution = "width=640,height=480";
+
+    /// <summary>
+    /// ブラウザの取り込み速度の上限(bytes/s)。<b>この検査の成立条件そのものである。</b>
+    ///
+    /// <para>
+    /// トリムが再生位置を巻き添えにするのは<b>取り込みの途中で</b>バッファの幅が起動点を
+    /// 超えたときで、そこまでに掛かる時間は「起動点ぶんのバイト数 ÷ 取り込み速度」で決まる。
+    /// 絞らないと取り込みが一瞬で終わり、<c>currentTime</c> がまだ安全域
+    /// （<c>FOLLOW_TRIM_SAFETY_SECONDS</c> = 5 秒）に届かないうちにトリムの機会が過ぎるので、
+    /// <b>直っていても壊れていても緑になる</b>。
+    /// </para>
+    /// <para>
+    /// 6000kbit/s・90 秒（実測 約 63 MB）を 4 MB/s で取り込むと約 15 秒掛かり、その間に
+    /// 「70 秒ぶんが溜まる」（約 12 秒）と「再生位置が安全域の 5 秒を越える」（約 6 秒）の
+    /// 両方が起きる。取り込み全体は <see cref="PlaybackBudget"/> に収まる。
+    /// </para>
+    /// </summary>
+    private const double LongClipThrottleBytesPerSecond = 4 * 1024 * 1024;
+
+    /// <summary>クリップを書き終えるまでの上限（実測は 11 秒前後）。</summary>
+    private static readonly TimeSpan ClipBudget = TimeSpan.FromSeconds(180);
+
+    /// <summary>
+    /// <c>app.js</c> の <c>FOLLOW_TRIM_TRIGGER_SECONDS</c> の宣言。
+    /// <b>行頭に錨を打たない</b> ── 打つと一致位置が必ず行頭になり、
+    /// 下のコメント行の除外が「常に偽」へ倒れて何も守らなくなる。
+    /// </summary>
+    private static readonly Regex TrimTriggerDeclarationRegex = new(
+        @"\bvar\s+FOLLOW_TRIM_TRIGGER_SECONDS\s*=\s*(\d+)\s*;", RegexOptions.Compiled);
+
+    /// <summary>
+    /// <b><see cref="TrimTriggerSeconds"/> は製品側の写しである。</b>
+    /// 製品側だけを動かすと、クリップが起動点を超えなくなって
+    /// <see cref="AFinishedRecordingLongerThanTheTrimTrigger_StillPlaysFromItsBeginning"/> が
+    /// <b>トリムを踏まないまま緑になる</b> ── ここで機械的に突き合わせる。
+    ///
+    /// <para>
+    /// <b>コメント行は除く</b> ── 素の走査は、その定数を説明しているコメント自身に一致しうる。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void TheTrimTriggerHereMatchesTheScript()
+    {
+        string script = File.ReadAllText(
+            Path.Combine(RepositoryLayout.Root, "src", "RemoteControl", "wwwroot", "app.js"));
+
+        var declarations = TrimTriggerDeclarationRegex.Matches(script)
+            .Where(m => !IsCommentLine(script, m.Index))
+            .ToArray();
+
+        Assert.True(declarations.Length == 1,
+            $"app.js の FOLLOW_TRIM_TRIGGER_SECONDS が {declarations.Length} 件見つかりました"
+            + "（走査が壊れているか、宣言の書き方が変わっています）。");
+
+        Assert.Equal(
+            TrimTriggerSeconds,
+            double.Parse(declarations[0].Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture));
+    }
+
+    /// <summary>
+    /// 指定位置を含む行が、行頭からコメントで始まっているか
+    /// （L1 の <c>SourceReferences.IsCommentLine</c> と同じ規則。
+    /// テストプロジェクトが別なので参照は共有できない）。
+    /// </summary>
+    private static bool IsCommentLine(string text, int index)
+    {
+        int lineStart = text.LastIndexOf('\n', Math.Min(index, text.Length - 1)) + 1;
+        var line = text.AsSpan(lineStart, index - lineStart).TrimStart();
+        return line.StartsWith("//") || line.StartsWith("/*") || line.StartsWith("*");
+    }
+
+    /// <summary>
+    /// <c>activity.log</c> の <c>gst.runtime</c> が書いた <c>dir=</c>（実際にロードした
+    /// GStreamer の <c>bin</c>）から <c>gst-launch-1.0.exe</c> を探す。
+    /// <b>特定のディレクトリを焼き込まない</b>（開発機・CI・同梱で正解が違う）。
+    /// ベアネームで解決した段（<c>dir=(search-path)</c>）には固定の場所が無いので null。
+    /// </summary>
+    private static string? FindGstLaunch(AppInstance instance)
+    {
+        foreach (string line in ActivityLogFile.Events(instance.ReadActivityLog(), "gst.runtime"))
+        {
+            // 値にはディレクトリ（空白を含みうる）が入るので、空白では切れない
+            // ── 次のフィールド名の直前までで切る（RuntimeResolutionTests と同じ規則）。
+            var match = Regex.Match(ActivityLogFile.DetailOf(line), @"\bdir=(.*?)(?=\s+\w[\w:.]*=|$)");
+            if (!match.Success)
+                continue;
+
+            string directory = match.Groups[1].Value.Trim();
+            if (directory == "(search-path)")
+                continue;
+
+            string launcher = Path.Combine(directory, "gst-launch-1.0.exe");
+            if (File.Exists(launcher))
+                return launcher;
+        }
+
+        return null;
+    }
+
+    /// <summary>launcher の隣のプラグイン ディレクトリ（<c>..\lib\gstreamer-1.0</c>）。</summary>
+    private static string PluginDirectoryOf(string launcher)
+        => Path.GetFullPath(Path.Combine(Path.GetDirectoryName(launcher)!, "..", "lib", "gstreamer-1.0"));
+
+    /// <summary>
+    /// <c>x264enc</c> のプラグインが launcher の隣にあるか。
+    ///
+    /// <para>
+    /// <b><c>gst-launch-1.0.exe</c> があることは x264 があることを意味しない。</b>
+    /// 同梱ランタイムが解決に勝つ機械では、launcher は在るのに GPL のプラグインだけが
+    /// 無い ── クリップを書けずに「製品の欠陥」に見える形で落ちる。
+    /// 名前は形態で変わる（MinGW は <c>lib</c> 接頭辞つき、MSVC は無し）。
+    /// </para>
+    /// </summary>
+    private static bool HasX264Plugin(string launcher)
+    {
+        string plugins = PluginDirectoryOf(launcher);
+        return File.Exists(Path.Combine(plugins, "libgstx264.dll"))
+            || File.Exists(Path.Combine(plugins, "gstx264.dll"));
+    }
+
+    /// <summary>
+    /// <paramref name="path"/> へ <see cref="LongClipSeconds"/> 秒ぶんの fMP4 を書く。
+    ///
+    /// <para>
+    /// <b>実時間を使わない</b>のが要点 ── <c>videotestsrc</c> を非ライブで
+    /// <c>num-buffers</c> ぶんだけ回すので、<see cref="LongClipSeconds"/> 秒のクリップが
+    /// 実測 11 秒前後（約 63 MB）で出来る。
+    /// 形は製品の書き方に合わせる（<c>fragment-mode=dash-or-mss</c>・<c>fragment-duration=1000</c>）。
+    /// </para>
+    /// <para>
+    /// <b>キーフレームは 2 秒に 1 枚。</b> トリムが再生位置を巻き添えにするのは
+    /// <c>SourceBuffer.remove</c> が「次のランダムアクセス点まで」削るからで、
+    /// キーフレームの間隔が詰まっていると壊れ方が見えない。
+    /// </para>
+    /// </summary>
+    private async Task WriteLongFragmentedClipAsync(string launcher, string path, AppInstance instance)
+    {
+        var start = new ProcessStartInfo(launcher)
+        {
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            WorkingDirectory = Path.GetDirectoryName(launcher)!,
+        };
+
+        foreach (string argument in new[]
+        {
+            "videotestsrc",
+            "pattern=snow",
+            "num-buffers=" + (LongClipSeconds * LongClipFps).ToString(System.Globalization.CultureInfo.InvariantCulture),
+            "!",
+            $"video/x-raw,format=I420,{LongClipResolution},framerate={LongClipFps}/1",
+            "!",
+            "x264enc",
+            "bitrate=" + LongClipBitrateKbps.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            "speed-preset=ultrafast",
+            "key-int-max=" + (LongClipFps * 2).ToString(System.Globalization.CultureInfo.InvariantCulture),
+            "!",
+            "h264parse",
+            "!",
+            "mp4mux",
+            "fragment-duration=1000",
+            "fragment-mode=dash-or-mss",
+            "!",
+            "filesink",
+            // **区切りは '/' にする。** gst-launch はプロパティ値の '\' を
+            // エスケープとして食うので、Windows のパスをそのまま渡すと別のパスになる。
+            "location=" + path.Replace('\\', '/'),
+        })
+        {
+            start.ArgumentList.Add(argument);
+        }
+
+        // 開発機には複数の GStreamer が同居しうる。launcher の隣の lib\gstreamer-1.0 を
+        // 名指しして、レジストリのキャッシュも隔離する（システム側のものを書き換えない）。
+        string pluginDir = PluginDirectoryOf(launcher);
+        if (Directory.Exists(pluginDir))
+        {
+            start.Environment["GST_PLUGIN_PATH"] = pluginDir;
+            start.Environment["GST_PLUGIN_SYSTEM_PATH"] = pluginDir;
+            start.Environment["GST_PLUGIN_PATH_1_0"] = pluginDir;
+            start.Environment["GST_PLUGIN_SYSTEM_PATH_1_0"] = pluginDir;
+        }
+        start.Environment["GST_REGISTRY"] = Path.Combine(instance.DataDir, "gst-registry-longclip.bin");
+
+        var writing = Stopwatch.StartNew();
+        using var process = Process.Start(start)!;
+
+        // 両方を同時に汲む（片方だけを待つと、もう片方のパイプが埋まって止まる）。
+        var stdout = process.StandardOutput.ReadToEndAsync(Ct);
+        var stderr = process.StandardError.ReadToEndAsync(Ct);
+
+        using var kill = CancellationTokenSource.CreateLinkedTokenSource(Ct);
+        kill.CancelAfter(ClipBudget);
+        try
+        {
+            await process.WaitForExitAsync(kill.Token);
+        }
+        catch (OperationCanceledException) when (!Ct.IsCancellationRequested)
+        {
+            process.Kill(entireProcessTree: true);
+            Assert.Fail($"gst-launch-1.0 が {ClipBudget.TotalSeconds:F0} 秒で終わりませんでした。");
+        }
+
+        string tail = await stdout + Environment.NewLine + await stderr;
+        Assert.True(process.ExitCode == 0, $"gst-launch-1.0 が {process.ExitCode} で終わりました:{Environment.NewLine}{tail}");
+        // **書けた時間も出す。** 文書とここの doc コメントが「実測」として書いている値は
+        // これで読み直す（食い違いが残ると、次に読む人が別の速さを前提に組み立てる）。
+        output.WriteLine(
+            $"{Path.GetFileName(path)}: {new FileInfo(path).Length} bytes "
+            + $"in {writing.Elapsed.TotalSeconds:F1}s");
+    }
+
+    /// <summary>
+    /// <b>トリムの起動点を超える長さの完成ファイルでも、開き直した再生が先頭から進む。</b>
+    ///
+    /// <para>
+    /// <see cref="AFinishedRecordingReopensAtItsBeginningInsteadOfItsEnd"/> が見るのは
+    /// 数秒のファイルで、<c>FOLLOW_TRIM_TRIGGER_SECONDS</c>（70 秒）を踏まない
+    /// ── <b>踏ませると別の壊れ方が出る</b>。バッファの幅が起動点を超えるとトリムが走り、
+    /// <c>SourceBuffer.remove</c> は<b>次のランダムアクセス点まで</b>削るので、
+    /// <c>FOLLOW_TRIM_SAFETY_SECONDS</c> の安全域を置かずに再生位置まで削らせると
+    /// 再生中の GOP ごと消える。<c>MediaSource</c> は <c>endOfStream()</c> 済みで
+    /// 待つものが無いため、要素は <c>currentTime = duration</c> へ飛んで動かなくなる
+    /// （<b>安全域を外して実測</b>: 90 秒のクリップで <c>buffered.start</c> が 18.000、
+    /// 位置は 90.00 に固定。安全域つきでは 12.000 と 16.27 で、位置は進み続ける）。
+    /// </para>
+    /// <para>
+    /// <b>取り込みを絞るのがこの検査の成立条件である</b>
+    /// （<see cref="LongClipThrottleBytesPerSecond"/>）── 絞らないと完成ファイルは一瞬で
+    /// 落ちてきて、再生位置が安全域に届く前にトリムの機会が過ぎ、
+    /// <b>直っていても壊れていても緑になる</b>。踏んだことは <c>buffered.start</c> で
+    /// 見届ける（0 のままなら踏んでいない＝この検査は成立していない）。
+    /// </para>
+    /// <para>
+    /// <b>実時間 70 秒は使わない。</b> クリップは <c>gst-launch-1.0</c> に非ライブで書かせる
+    /// （実測 11 秒前後）。<b>ロードした GStreamer に <c>gst-launch-1.0.exe</c> か
+    /// x264 のプラグインが無い場合は Skip する</b>ので、緑だから走ったとは限らない
+    /// ── 実行結果の skip 件数を見ること。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task AFinishedRecordingLongerThanTheTrimTrigger_StillPlaysFromItsBeginning()
+    {
+        Assert.SkipUnless(EdgeCdp.IsAvailable, EdgeCdp.UnavailableReason);
+
+        using var instance = AppInstance.Create(app, FragmentedSettings(), configure: UseIsolatedRoot);
+        int port = WaitForPort(instance);
+
+        Assert.True(instance.WaitForActivityLogEvent("gst.runtime", StartBudget),
+            "gst.runtime が現れませんでした。" + Environment.NewLine + instance.DiagnosticDump());
+
+        string? launcher = FindGstLaunch(instance);
+        Assert.SkipWhen(launcher is null,
+            "ロードした GStreamer の bin に gst-launch-1.0.exe がありません"
+            + "（gst.runtime の dir= を見て探しています）。");
+        Assert.SkipUnless(HasX264Plugin(launcher!),
+            $"ロードした GStreamer に x264 のプラグインがありません（{PluginDirectoryOf(launcher!)}）。");
+
+        string clip = Path.Combine(instance.RecordingsDir, "long-clip.mp4");
+        await WriteLongFragmentedClipAsync(launcher!, clip, instance);
+
+        await using var browser = await EdgeCdp.LaunchAsync(Ct);
+        await browser.NavigateAsync($"http://127.0.0.1:{port}/", PageBudget, Ct);
+        Assert.True(await browser.WaitUntilAsync($"!{IsHidden("mainSections")}", PageBudget, Ct), "画面が出ませんでした。");
+
+        Assert.True(
+            await WaitForFirstRowAsync(browser, RowIsFinishedFragment, PlaybackBudget),
+            "作ったクリップが fragmented として一覧に出ませんでした: " + await browser.EvaluateStringAsync(FirstRowState, Ct));
+
+        // **絞るのは一覧が出てから。** 一覧の JSON まで絞ると、待つ相手が増えるだけで
+        // 何も確かめられない。
+        await browser.ThrottleDownloadAsync(LongClipThrottleBytesPerSecond, Ct);
+
+        Assert.True(await browser.EvaluateBoolAsync(ClickFirstPlay, Ct), "一覧に行がありません。");
+
+        // **`complete` を待ってから位置を読む。** 壊れている実装でも読み込み中の一瞬は
+        // 先頭付近を再生しており、そこで読むと偽の緑になる。
+        Assert.True(
+            await browser.WaitUntilAsync($"{TextOf("playerStatus")}.indexOf('complete') === 0", PlaybackBudget, Ct),
+            "クリップを読み切れませんでした: " + await browser.EvaluateStringAsync(TextOf("playerStatus"), Ct));
+
+        double length = await browser.EvaluateNumberAsync(BufferedEnd, Ct);
+        double position = await browser.EvaluateNumberAsync(PlayerTime, Ct);
+        double bufferedStart = await browser.EvaluateNumberAsync(BufferedStart, Ct);
+        output.WriteLine(
+            $"clip length {length:F2}s, playing at {position:F2}s, "
+            + await browser.EvaluateStringAsync(BufferedRanges, Ct));
+
+        Assert.True(TrimTriggerSeconds < length,
+            $"クリップがトリムの起動点を超えていません（{length:F2} 秒）── この検査は成立しません。");
+        // **トリムの証人。** 取り込みが速すぎるとトリムは 1 度も走らず、
+        // 直っていても壊れていても位置は先頭付近に残る ── その緑を潰す。
+        Assert.True(0 < bufferedStart,
+            $"トリムを踏んでいません（buffered.start が {bufferedStart:F3}）── この検査は成立しません。");
+        Assert.True(
+            position < length / 2,
+            $"トリムを踏んだ再生が末尾へ飛んでいます（{length:F2} 秒のうち {position:F2} 秒）。");
+
+        Assert.True(
+            await browser.WaitUntilAsync(
+                $"{position.ToString("R", System.Globalization.CultureInfo.InvariantCulture)} + 1 < {PlayerTime}",
+                PlaybackBudget, Ct),
+            $"トリムを踏んだ再生が進みません（{position:F2} 秒で止まっています）。");
     }
 
     // ---- (4) カタつきの代理指標（B-2 の釘打ち） ----

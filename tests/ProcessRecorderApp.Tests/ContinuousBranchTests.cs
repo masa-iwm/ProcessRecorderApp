@@ -426,6 +426,26 @@ public class ContinuousBranchTests
     }
 
     /// <summary>
+    /// <b>fragmented 側のセグメントは <c>filesink</c> に溜めさせずに書く</b>
+    /// （<c>RecordingSrcPipelineTests</c> と同じ理由）。既定の <c>buffer-size</c> = 65536 では、
+    /// 見えるファイル長が 64 KiB 単位でしか伸びない ── 常時録画は低ビットレートで回すことが
+    /// 多いので、ここが特に効く。<b>出来上がったセグメントのバイト列には現れない差である。</b>
+    ///
+    /// <para>
+    /// 非 fragmented 側に付かないことは <see cref="TheNonFragmentedSegmentWriterIsUnchanged"/>
+    /// が完全一致で縛っている。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void OnlyTheFragmentedSegmentWriterWritesWithoutTheFilesinkBuffer()
+    {
+        Assert.Contains(
+            "filesink name=file buffer-mode=unbuffered",
+            ContinuousBranch.BuildSegmentWriterPipeline(fragmented: true),
+            StringComparison.Ordinal);
+    }
+
+    /// <summary>
     /// 名前は <c>GetByName</c> で掴む契約そのもの（消すと実行時に NullReference になる）。
     /// 変えてよいのは mux の書き方だけである。
     /// </summary>

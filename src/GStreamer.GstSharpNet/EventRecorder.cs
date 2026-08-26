@@ -907,13 +907,21 @@ public partial class EventRecorder : ObservableObject, IDisposable
     /// その代わり <c>mvhd</c> の尺は 0 のままで、他のプレイヤーでは録画中のファイルを
     /// シークできない。
     /// </para>
+    /// <para>
+    /// <b>true では <c>filesink</c> の <c>buffer-mode=unbuffered</c> が要る。</b>
+    /// 既定の <c>filesink</c> は受け取ったバッファを自分の中に溜め、
+    /// <c>buffer-size</c>（既定 65536）に届いてから 1 度に書くので、mux が 1 秒ごとに
+    /// fragment を出しても<b>他のプロセスから見えるファイル長は 64 KiB 溜まるまで伸びない</b>
+    /// ── 低ビットレートでは数秒に 1 度しか伸びず、ブラウザの追いかけ再生がデータ切れで
+    /// カタつく。強制終了では溜まっていたぶん（最大 64 KiB）が失われる。
+    /// </para>
     /// </summary>
     /// <param name="fragmented">fragmented MP4 で書くか（<c>FragmentedOutput</c>）。</param>
     public static string BuildSrcPipeline(bool fragmented)
         => fragmented
             ? "appsrc format=time name=src ! h264parse ! mp4mux fragment-duration="
               + FragmentDurationMs.ToString(System.Globalization.CultureInfo.InvariantCulture)
-              + " fragment-mode=dash-or-mss name=mux ! filesink name=file"
+              + " fragment-mode=dash-or-mss name=mux ! filesink name=file buffer-mode=unbuffered"
             : "appsrc format=time name=src ! h264parse ! mp4mux faststart=true name=mux ! filesink name=file";
 
     /// <summary>

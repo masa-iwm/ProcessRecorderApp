@@ -114,9 +114,9 @@ GStreamer が使われる」という取り違えもここから起きる（ど�
   `映像ソース → (D3D12変換/オーバーレイ) → tee → [プレビュー用 appsink] / [エンコーダー → h264parse → appsink name=sink]`
   （常時録画が有効なら 3 本目の枝 `appsink name=cont` が加わる。後述「常時録画」）
 - **srcパイプライン**（録画中のみ稼働）:
-  `appsrc name=src ! h264parse ! mp4mux fragment-duration=1000 fragment-mode=dash-or-mss name=mux ! filesink name=file`
+  `appsrc name=src ! h264parse ! mp4mux fragment-duration=1000 fragment-mode=dash-or-mss name=mux ! filesink name=file buffer-mode=unbuffered`
   （アプリ設定の `FragmentedOutput` は既定で ON。OFF にすると
-  `mp4mux faststart=true`。
+  `mp4mux faststart=true` で `buffer-mode` は付かない。
   文字列は `EventRecorder.BuildSrcPipeline` が組み立てる。設定は
   「保存先と自動削除（`AppSettings`）」の表）
 
@@ -133,6 +133,14 @@ GStreamer が使われる」という取り違えもここから起きる（ど�
 書き直して `moov` を先頭へ移すので、**書き込み中の `filesink` の出力先は 0 バイトのまま**である
 （強制終了すれば何も残らない）。
 `faststart` と `fragment-mode` は排他で、L1（`RecordingSrcPipelineTests`）が両方向で縛っている。
+
+fragmented 側の **`buffer-mode=unbuffered`** は追いかけ再生のために要る。既定の `filesink` は
+受け取ったバッファを自分の中に溜め、`buffer-size`（既定 65536）に届いてから 1 度に書くので、
+mux が 1 秒ごとに fragment を出しても
+**他のプロセスから見えるファイル長は 64 KiB 溜まるまで伸びない** ── 低ビットレートでは
+数秒に 1 度しか伸びず、ブラウザの追いかけ再生がデータ切れでカタつく。強制終了では
+溜まっていたぶん（最大 64 KiB）が失われる。**この差は完成したファイルのバイト列には現れない**
+ので、伸びる間隔そのものを測る L2（`RecordingDeliveryTests`）が見ている。
 
 sink パイプラインの `appsink` に取り付けた **`new-sample` コールバック**
 （`SetSimpleCallbacks(onNewSample:)`）がエンコード済み H.264 バッファを取り出し、
@@ -340,8 +348,9 @@ I フレームゲートが次の I まで捨てる ── そのぶんの映像�
 文字列は `ContinuousBranch.BuildSegmentWriterPipeline` が組み立てる。
 
 アプリ設定の **`FragmentedOutput`（既定 ON）が ON のとき、セグメントも fragmented MP4 で書く**
-（`mp4mux fragment-duration=1000 fragment-mode=dash-or-mss`）。書き込み中のセグメントも
-先頭から読めるので、**ブラウザの一覧に `fragmented` かつ `inProgress` として出て、
+（`mp4mux fragment-duration=1000 fragment-mode=dash-or-mss name=mux ! filesink name=file buffer-mode=unbuffered`）。
+`buffer-mode=unbuffered` の理由はイベント録画と同じ（`filesink` が溜めるので、見えるファイル長が
+64 KiB 単位でしか伸びない）。書き込み中のセグメントも先頭から読めるので、**ブラウザの一覧に `fragmented` かつ `inProgress` として出て、
 そのまま追いかけ再生できる**。確定（EOS）で足すのは末尾の `mfra` だけで、
 分割・確定の流れは変わらない。**読むのはセグメントを開くたび**なので、
 走行中に設定を切り替えると 1 つの録画期間の中に fragmented と非 fragmented の

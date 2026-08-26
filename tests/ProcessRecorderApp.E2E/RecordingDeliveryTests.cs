@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
@@ -489,6 +490,219 @@ public sealed class RecordingDeliveryTests(PublishedApp app, ITestOutputHelper o
         Assert.True(complete.HasMvex, complete.ToString());
         Assert.True(0 < complete.MoofCount, complete.ToString());
         Assert.True(complete.MediaSegmentsAlternate(), "moof/mdat の対になっていない: " + complete);
+    }
+
+    // ---- 書き込み中のファイルが「他プロセスから見て」伸びる刻み ----
+
+    /// <summary>伸びを測るあいだセグメントを切り替えさせない長さ(秒)。</summary>
+    private const int LongSegmentSeconds = 60;
+
+    /// <summary>伸びを測る時間。fragment は 1 秒ごとなので、この窓で 20 前後の標本が取れる。</summary>
+    private static readonly TimeSpan GrowthWindow = TimeSpan.FromSeconds(25);
+
+    /// <summary>伸びを見に行く間隔。fragment 長（1 秒）より十分に細かい。</summary>
+    private static readonly TimeSpan GrowthPollInterval = TimeSpan.FromMilliseconds(100);
+
+    /// <summary>
+    /// 許す伸びの間隔の中央値(秒)。<c>fragment-duration</c> は 1 秒で、
+    /// 余裕を見てもこれを超えてはいけない。
+    /// </summary>
+    private const double MaxMedianGrowthGapSeconds = 1.5;
+
+    /// <summary>中央値に意味を持たせるために要る標本の数。</summary>
+    private const int MinGrowthSamples = 10;
+
+    /// <summary><c>filesink</c> が既定で溜める量(bytes)。</summary>
+    private const int FilesinkBufferSize = 65536;
+
+    /// <summary>常時録画の枝のフレームレート。</summary>
+    private const int SlowContinuousFps = 4;
+
+    /// <summary>
+    /// 常時録画の枝のエンコーダー起動文字列。<b>ビットレートを明示するのが要点である。</b>
+    ///
+    /// <para>
+    /// 見えるファイル長が遅れるかどうかは「fragment 1 つが <c>filesink</c> の
+    /// <c>buffer-size</c>（65536）を埋めるか」で決まる。自動選択に任せると
+    /// 2000kbit/s が入り、毎秒あふれるので<b>遅れが起きていても観測できない</b>
+    /// ── 判別力が「静止した画がどこまで縮むか」という測っていない性質に乗ってしまう。
+    /// 150kbit/s なら 1 秒ぶんは約 18KiB で、何を撮っていても埋まらない。
+    /// </para>
+    /// <para>
+    /// <b>GOP は固定する</b>（<c>key-int-max</c> ＝ フレームレート × 2 秒）── 手書きすると
+    /// エンコーダー既定の長い GOP になり、分割がセグメント長どおりに起きない。
+    /// 値は自動選択が入れるもの（<c>EncoderCatalog</c>）と同じで、変えたのは
+    /// <c>bitrate</c> だけである。
+    /// </para>
+    /// </summary>
+    private const string SlowContinuousEncoder =
+        "x264enc tune=zerolatency bitrate=150 speed-preset=ultrafast key-int-max=8";
+
+    /// <summary>低ビットレートで回す常時録画（伸びの刻みを測るための構成）。</summary>
+    private static SettingsFile SlowFragmentedContinuousSettings()
+    {
+        var settings = RemoteSettings();
+        settings.FragmentedOutput = true;
+        var recorder = settings.Recorders[0];
+        recorder.WithContinuous(LongSegmentSeconds);
+        recorder.ContinuousFramerate = SlowContinuousFps.ToString(CultureInfo.InvariantCulture) + "/1";
+        recorder.ContinuousResolution = "320x240";
+        recorder.ContinuousEncodingProperties = SlowContinuousEncoder;
+        return settings;
+    }
+
+    /// <summary>伸びの観測結果。</summary>
+    /// <param name="Gaps">伸びた時刻の間隔(秒)。</param>
+    /// <param name="Grown">窓のあいだに増えた総バイト数。</param>
+    /// <param name="Seconds">実際に測っていた時間(秒)。</param>
+    private readonly record struct GrowthObservation(
+        IReadOnlyList<double> Gaps, long Grown, double Seconds);
+
+    /// <summary>
+    /// 書き込み中のセグメントを共有読み取りで開き、<b>ハンドルから見た長さ</b>が
+    /// 変わった時刻を <paramref name="window"/> のあいだ記録する。
+    ///
+    /// <para>
+    /// <b><c>FileInfo.Length</c> では測れない</b> ── ディレクトリのメタデータは
+    /// 書き込みに遅れて更新されるので、測っているものが <c>filesink</c> の蓄積なのか
+    /// NTFS の遅延なのか区別できなくなる。
+    /// </para>
+    /// </summary>
+    private static GrowthObservation MeasureGrowth(string path, TimeSpan window)
+    {
+        var gaps = new List<double>();
+        long first = -1;
+        long last = -1;
+        double lastChange = 0;
+        var clock = Stopwatch.StartNew();
+
+        while (clock.Elapsed < window)
+        {
+            long length;
+            try
+            {
+                using var stream = new FileStream(
+                    path, FileMode.Open, FileAccess.Read,
+                    FileShare.ReadWrite | FileShare.Delete);
+                length = stream.Length;
+            }
+            catch (IOException)
+            {
+                Thread.Sleep(GrowthPollInterval);
+                continue;
+            }
+
+            if (last < 0)
+            {
+                first = length;
+                last = length;
+                lastChange = clock.Elapsed.TotalSeconds;
+            }
+            else if (last < length)
+            {
+                double now = clock.Elapsed.TotalSeconds;
+                gaps.Add(now - lastChange);
+                lastChange = now;
+                last = length;
+            }
+
+            Thread.Sleep(GrowthPollInterval);
+        }
+
+        return new GrowthObservation(
+            gaps, first < 0 ? 0 : last - first, clock.Elapsed.TotalSeconds);
+    }
+
+    private static double Median(IReadOnlyList<double> values)
+    {
+        double[] sorted = [.. values.Order()];
+        int middle = sorted.Length / 2;
+        return sorted.Length % 2 == 1
+            ? sorted[middle]
+            : (sorted[middle - 1] + sorted[middle]) / 2;
+    }
+
+    /// <summary>
+    /// <b>書き込み中の fMP4 は、他プロセスから見ても fragment ごとに伸びる。</b>
+    ///
+    /// <para>
+    /// 既定の <c>filesink</c> は受け取ったバッファを自分の中に溜め、<c>buffer-size</c>
+    /// （既定 65536）に届いてから 1 度に書くので、mux が 1 秒ごとに fragment を出していても
+    /// <b>他のプロセスから見えるファイル長は 64 KiB 溜まるまで伸びない</b> ──
+    /// 低ビットレートでは数秒に 1 度しか伸びず、ブラウザの追いかけ再生はデータ切れで
+    /// カタつく。強制終了では末尾の 64 KiB が失われる。
+    /// </para>
+    /// <para>
+    /// ここが見ているのは<b>伸びの間隔の中央値</b>である。総量や平均では検出できない
+    /// ── まとめて書かれても総量は同じで、平均も窓の長さで割れば同じになる。
+    /// </para>
+    /// <para>
+    /// <b>成立条件は「実効ビットレートが低いこと」</b>で、そこは
+    /// <see cref="SlowContinuousEncoder"/> が明示している ── それでも撮っている画に
+    /// よらず成り立つとは限らないので、<b>測った実効速度そのものを前提として表明する</b>。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task AFragmentedFileGrows_OnEveryFragment_NotEvery64KiB()
+    {
+        using var instance = AppInstance.Create(app, SlowFragmentedContinuousSettings(), configure: UseIsolatedRoot);
+        int port = WaitForPort(instance);
+        using var client = CreateClient(port);
+
+        // 書き込み中のセグメントが fragment を持って一覧に出るまで待つ
+        // （常時録画はイベント録画の開始を待たない）。
+        string relativePath = "";
+        var appearing = Stopwatch.StartNew();
+        while (appearing.Elapsed < SegmentBudget && relativePath.Length == 0)
+        {
+            var (_, files) = await ListAsync(client);
+            foreach (var file in files)
+            {
+                if (file.GetProperty("inProgress").GetBoolean()
+                    && file.GetProperty("fragmented").GetBoolean())
+                {
+                    relativePath = file.GetProperty("path").GetString()!;
+                    break;
+                }
+            }
+
+            if (relativePath.Length == 0)
+                Thread.Sleep(500);
+        }
+
+        Assert.False(relativePath.Length == 0,
+            "書き込み中のセグメントが fragmented として一覧に出ませんでした。"
+            + Environment.NewLine + instance.DiagnosticDump());
+
+        string full = Path.Combine(instance.RecordingsDir, relativePath);
+        var growth = MeasureGrowth(full, GrowthWindow);
+        var gaps = growth.Gaps;
+
+        double bytesPerSecond = growth.Grown / growth.Seconds;
+        output.WriteLine(
+            $"{relativePath}: {gaps.Count} growths in {growth.Seconds:F1}s, "
+            + $"{growth.Grown} bytes ({bytesPerSecond:F0} bytes/s)");
+        output.WriteLine("gaps: " + string.Join(", ", gaps.Select(g => g.ToString("F2"))));
+
+        // **前提の表明。** 溜める実装と溜めない実装を区別できるのは、fragment 1 つが
+        // buffer-size を埋めないときだけである。実効速度がこれを超えていたら、
+        // 溜める実装でも毎秒あふれて間隔が縮み、この検査は何も言っていない。
+        double maxBytesPerSecond = FilesinkBufferSize / MaxMedianGrowthGapSeconds;
+        Assert.True(bytesPerSecond < maxBytesPerSecond,
+            $"実効ビットレートが高すぎます（{bytesPerSecond:F0} bytes/s ≧ {maxBytesPerSecond:F0} bytes/s）"
+            + " ── この検査は成立しません。");
+
+        Assert.True(MinGrowthSamples <= gaps.Count,
+            $"伸びが {gaps.Count} 回しか観測できませんでした（{growth.Seconds:F1} 秒）。"
+            + Environment.NewLine + instance.DiagnosticDump());
+
+        double median = Median(gaps);
+        output.WriteLine($"median growth gap: {median:F2}s");
+        Assert.True(median <= MaxMedianGrowthGapSeconds,
+            $"見えるファイル長の伸びが fragment ごとになっていません（中央値 {median:F2} 秒）。"
+            + " filesink が溜めていると、64 KiB 溜まるまで伸びません。");
+
+        Assert.Empty(ActivityLogFile.Events(instance.ReadActivityLog(), "continuous.error"));
     }
 
     /// <summary>

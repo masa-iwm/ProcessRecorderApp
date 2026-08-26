@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
 using ProcessRecorderApp.Components;
+using ProcessRecorderApp.GStreamer;
 using Xunit;
 
 namespace ProcessRecorderApp.Tests;
@@ -112,6 +113,50 @@ public sealed class WebAssetManifestTests
             "'" + DashPreviewReasons.Starting + "'",
             script,
             StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// <c>app.js</c> の <c>FOLLOW_TRIM_SAFETY_SECONDS</c> の宣言。
+    /// <b>行頭に錨を打たない</b> ── 打つと一致位置が必ず行頭になり、
+    /// コメント行の除外が「常に偽」へ倒れて何も守らなくなる。
+    /// </summary>
+    private static readonly Regex FollowTrimSafetyRegex =
+        new(@"\bvar\s+FOLLOW_TRIM_SAFETY_SECONDS\s*=\s*(\d+(?:\.\d+)?)\s*;", RegexOptions.Compiled);
+
+    /// <summary>
+    /// <b>追いかけ再生のトリムの安全域は、キーフレーム間隔 2 本ぶんより広い。</b>
+    ///
+    /// <para>
+    /// <c>SourceBuffer.remove(a, b)</c> は <c>b</c> で止まらず、<c>b</c> 以降の最初の
+    /// ランダムアクセス点まで削る ── 再生位置から数えて安全域がキーフレーム間隔
+    /// 1 本ぶんしか無いと、削る要求が<b>再生中の GOP を巻き添えにしうる</b>。
+    /// 録画物のキーフレーム間隔は <see cref="EncoderCatalog.TargetKeyframeIntervalSeconds"/>
+    /// なので、その 2 倍を超えていることを縛る（片方だけ動かすと成立しなくなる）。
+    /// </para>
+    /// <para>
+    /// <b>コメント行は除く</b> ── 素の走査は、その定数を説明しているコメント自身に一致しうる。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void TheFollowTrimKeepsMoreThanTwoKeyframeIntervalsBehindPlayback()
+    {
+        string script = File.ReadAllText(Path.Combine(WebRootDirectory, "app.js"));
+
+        var declarations = FollowTrimSafetyRegex.Matches(script)
+            .Where(m => !SourceReferences.IsCommentLine(script, m.Index))
+            .ToArray();
+
+        Assert.True(declarations.Length == 1,
+            $"app.js の FOLLOW_TRIM_SAFETY_SECONDS が {declarations.Length} 件見つかりました"
+            + "（走査が壊れているか、宣言の書き方が変わっています）。");
+
+        double safety = double.Parse(
+            declarations[0].Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture);
+
+        Assert.True(2 * EncoderCatalog.TargetKeyframeIntervalSeconds < safety,
+            $"トリムの安全域が狭すぎます（{safety} 秒 ≦ キーフレーム間隔 "
+            + $"{EncoderCatalog.TargetKeyframeIntervalSeconds} 秒 × 2）── "
+            + "remove() が再生中の GOP を巻き添えにしえます。");
     }
 
     [Fact]

@@ -510,12 +510,22 @@ L1 は `WebAssetManifestTests` が「資産の一覧が合っているか」を�
 `currentTime` が進むこと、停止後に `complete` で終わること、**完了済みの行を開き直したときに
 先頭付近から始まること**（末尾へ飛ばないこと）はそこで守られている。
 
+**70 秒を超えたら末尾 60 秒へ詰めるトリム**も走らせている
+（`AFinishedRecordingLongerThanTheTrimTrigger_StillPlaysFromItsBeginning`）── 実時間で 70 秒
+録るのではなく、`gst-launch-1.0` に非ライブで 90 秒ぶんの fMP4 を書かせて（実測 11 秒前後・
+約 63 MB）隔離 root へ置き、開いた再生が末尾へ飛ばずに進むことを見る。**このテストは
+3 つの理由で Skip する**（緑だから走ったとは限らない ── 実行結果の skip 件数を見ること）:
+Edge が入っていない、`activity.log` の `gst.runtime` が指す `bin` に
+`gst-launch-1.0.exe` が無い、その隣の `..\lib\gstreamer-1.0` に x264 のプラグインが無い。
+**取り込みは CDP（`Network.emulateNetworkConditions`）で 4 MB/s に絞っている** ──
+絞らないと一瞬で落ちてきて、再生位置が安全域（5 秒）に届く前にトリムの機会が過ぎ、
+壊れていても緑になる。踏んだことは `buffered.start` が 0 でないことで見届けている。
+
 守られていないのは、**再生されている中身**と、そこから外れた経路である:
 
 - **映像そのもの**（正しい画が出ているか・尺が合っているか）。テストが見るのは
   `currentTime` と `playerStatus` の文字列だけで、画素は 1 つも見ない ── 真っ黒でも緑になる。
-- **利用者の操作で追従をやめること**と、**70 秒を超えたら末尾 60 秒へ詰めるトリム**。
-  どちらも観測に 1 分以上かかるので、テストは走らせていない。
+- **利用者の操作で追従をやめること**。
 - **`QuotaExceededError` からの復帰**（`SourceBuffer` が満杯になった経路）と、
   **`appendBuffer` が投げたときの `fail`**。注入する手立てが無い。
 - **タブを複数開いた場合**、および**追いかけ再生とライブプレビューを同時に開いた場合**。
@@ -541,8 +551,12 @@ L1 は `WebAssetManifestTests` が「資産の一覧が合っているか」を�
 fMP4 側を見るのは `RecordingDeliveryTests` と `WebUiBrowserTests` の数件
 （`FragmentedSettings()` 系）で、**見ているのは配信と追いかけ再生**である。
 
-したがって、**既定構成での事前バッファ・停止の排出・自動復帰・強制終了・常時録画の分割は
-無検査**である（`ContinuousRecordingTests` の分割・隔離・共存の検査も非 fragmented 側だけ）。
+したがって、**既定構成での事前バッファ・停止の排出・自動復帰・常時録画の分割は無検査**である
+（`ContinuousRecordingTests` の分割・隔離・共存の検査も非 fragmented 側だけ）。
+**強制終了だけは既定構成でも見ている** ── `RecordingDeliveryTests` の kill 系が
+fMP4 で「そこまでの fragment が読める」ことを確かめる。無検査なのは
+**残ったファイルの尺とサンプル数**で、これは `moov` を読む道具（`Mp4Probe`）が
+fragmented では両方 0 を返すためである。
 既定を変えたときや録画の停止経路を触ったときは、`FragmentedOutput` を既定のまま
 （＝ ON）で一度録って、**録画中のファイルが読めること・停止後のファイルがブラウザの
 追いかけ再生で最後まで再生できること**を手で確かめること。

@@ -654,6 +654,14 @@
   // How long to wait after a 416 before asking again (the file has not grown yet).
   var FOLLOW_POLL_MS = 1000;
 
+  // How many rounds a full SourceBuffer may free nothing before the reason is put
+  // on screen. The retry itself is unbounded on purpose -- a position that starts
+  // moving again resolves it by itself -- but a position that does not move never
+  // will: paused playback, and autoplay the browser refused, both leave
+  // `currentTime` where it is, and without this the player would stay blank and
+  // silent for as long as the tab is open.
+  var FOLLOW_STALLED_TRIM_LIMIT = 10;
+
   // Where following starts: this far behind the buffered end. Right at the end the
   // decoder runs out on every fragment boundary. This is used once, when the first
   // playable moment arrives -- a follow that started at the beginning of what is
@@ -800,6 +808,10 @@
     var receivedBytes = false;
     var started = false;
     var trimmed = false;
+    // Consecutive rounds in which a full SourceBuffer asked for a trim that freed
+    // nothing. Reset by anything that makes progress (a trim that cut, an append
+    // that took).
+    var stalledTrims = 0;
     // Whether the one unconditional jump to the live edge has been made.
     var joined = false;
 
@@ -884,7 +896,17 @@
           // error is fatal, as before.
           if (error.name === 'QuotaExceededError') {
             trimmed = false;
-            if (!trimFollow(buffer, true)) { scheduleFlush(); }
+            if (trimFollow(buffer, true)) {
+              stalledTrims = 0;
+              return;
+            }
+
+            stalledTrims++;
+            if (stalledTrims === FOLLOW_STALLED_TRIM_LIMIT) {
+              status($('playerStatus'),
+                'the buffer is full and nothing can be freed while the position stands still', true);
+            }
+            scheduleFlush();
             return;
           }
           fail('append failed: ' + error.message);
@@ -892,6 +914,7 @@
         }
         queue.shift();
         trimmed = false;
+        stalledTrims = 0;
         if (!started) {
           started = true;
           video.play().catch(function () { /* the browser decides; the controls remain */ });
@@ -1024,10 +1047,23 @@
     });
   }
 
-  // Never cut past where playback is: the user may have seeked back into the part
-  // that would otherwise be dropped. `force` frees everything behind the playback
-  // position no matter how short the buffered span is -- the caller has been told
-  // the SourceBuffer is full, so anything freed is better than nothing.
+  // Stay a whole safety margin behind where playback is. **`remove(a, b)` does not
+  // stop at `b`:** it frees up to the first random access point at or after `b`, so
+  // asking to cut up to the playback position frees the GOP that is playing. What
+  // that looks like depends on the MediaSource: while it is still open the element
+  // re-buffers at the next range, and once it is `ended` there is nothing to wait
+  // for, so the element ends playback and lands on `duration` (measured with the
+  // margin removed, on a finished 90 second file: `buffered.start` 18.000 and the
+  // position pinned at 90; with the margin, 12.000 and a position that keeps going).
+  // The margin is larger than two key frame intervals, which is as far as a
+  // random access point can be. L1 (`WebAssetManifestTests`) reads this
+  // declaration and holds it above `2 * EncoderCatalog.TargetKeyframeIntervalSeconds`,
+  // so lowering it here alone fails.
+  //
+  // `force` still keeps the margin -- the caller has been told the SourceBuffer is
+  // full, but freeing the media that is being decoded does not help it play.
+  var FOLLOW_TRIM_SAFETY_SECONDS = 5;
+
   function trimFollow(buffer, force) {
     var video = $('player');
     var ranges = video.buffered;
@@ -1039,7 +1075,14 @@
     // Compare the span, not the end: `end` passes 70 once and stays past it.
     if (!force && end - start <= FOLLOW_TRIM_TRIGGER_SECONDS) { return false; }
 
-    var cut = force ? video.currentTime : Math.min(end - FOLLOW_WINDOW_SECONDS, video.currentTime);
+    var safe = video.currentTime - FOLLOW_TRIM_SAFETY_SECONDS;
+    var cut = force ? safe : Math.min(end - FOLLOW_WINDOW_SECONDS, safe);
+
+    // Nothing can be freed yet. A file opened from its beginning is here (the
+    // position is a fraction of a second, so `cut` is negative) and so is a
+    // QuotaExceededError raised that early -- the caller waits and tries again
+    // once the position has advanced, which leaves the buffer shallow rather
+    // than stopping playback.
     if (cut <= start) { return false; }
 
     try {

@@ -162,9 +162,13 @@ public sealed class ErrorReportingTests(PublishedApp app, ITestOutputHelper outp
         var settings = new SettingsFile();
         var recorder = settings.AddRecorder("R1");
 
-        // 15fps で約 2 秒後に本物の Error。EOS も伴うので作り直しへ進む。
+        // 15fps で約 6 秒後に本物の Error。EOS も伴うので作り直しへ進む。
+        //
+        // **`start-recording-all` の到着より先に発火させない。** 全件を並べて走らせた
+        // 負荷の下では起動から最初のコマンドまでが数秒に伸びることがあり、短くすると
+        // 1 本目が始まる前に壊れて `recording.stop … result=empty` で落ちる。
         recorder.SrcPipeline =
-            "videotestsrc is-live=true do-timestamp=true ! identity error-after=30 ! videoconvert ! " +
+            "videotestsrc is-live=true do-timestamp=true ! identity error-after=90 ! videoconvert ! " +
             "video/x-raw,format=I420,width=320,height=240,framerate=15/1";
 
         using var instance = AppInstance.Create(app, settings);
@@ -173,8 +177,8 @@ public sealed class ErrorReportingTests(PublishedApp app, ITestOutputHelper outp
         output.WriteLine(start.ToString());
         Assert.Equal(0, start.ExitCode);
 
-        // 障害（約 2 秒）→ 最初の待ち 5 秒 → 作り直し → 録り直し、までを観測する。
-        Thread.Sleep(TimeSpan.FromSeconds(14));
+        // 障害（約 6 秒）→ 最初の待ち 5 秒 → 作り直し → 録り直し、までを観測する。
+        Thread.Sleep(TimeSpan.FromSeconds(18));
 
         var log = instance.ReadActivityLog();
         output.WriteLine(string.Join(Environment.NewLine, log));
