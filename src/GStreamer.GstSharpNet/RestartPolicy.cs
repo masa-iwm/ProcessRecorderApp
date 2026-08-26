@@ -115,6 +115,23 @@ internal static class RestartPolicy
     public const int MaxEarlyWakesPerChain = 2;
 
     /// <summary>
+    /// 要素単位の再開のあと、sink の <c>appsink</c> に実が来ることを待つ上限(ms)。
+    ///
+    /// <para>
+    /// <b>遷移が通った＝復帰した、ではない。</b> flow error のあとの basesrc を
+    /// <c>Ready</c>→<c>Playing</c> し直しても、下流が既に EOS を受けていれば
+    /// 実は 1 枚も出て来ない。それを <c>result=ok</c> と報告すると連鎖はそこで終わり、
+    /// <b>映像が止まったまま誰も作り直さない</b>。実が来なかった回は
+    /// <c>result=no-samples</c> として失敗に数え、連鎖を続ける。
+    /// </para>
+    /// <para>
+    /// <b>本線は EOS の側である。</b> EOS が bus に届けば要素単位の再開はそもそも
+    /// 飛ばされるので、ここが効くのは EOS を取りこぼした回だけの保険にあたる。
+    /// </para>
+    /// </summary>
+    public const int SinkSampleGraceMs = 3_000;
+
+    /// <summary>
     /// これまでに <paramref name="earlyWakesUsed"/> 回 早期に起きた連鎖が、
     /// もう一度早期に起きてよいか。
     /// </summary>

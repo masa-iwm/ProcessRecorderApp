@@ -355,6 +355,30 @@ public partial class EventRecorder : ObservableObject, IDisposable
     /// </para>
     /// </summary>
     private volatile bool _sinkSawEos;
+
+    /// <summary>
+    /// sink の <c>appsink</c> から取り出せたサンプルの通算数（<b>録画中かどうかに依らない</b>）。
+    ///
+    /// <para>
+    /// 用途は「要素単位の再開のあと実が流れているか」の 1 点だけで、値そのものに
+    /// 意味は無い（<see cref="WaitForSinkSamplesAsync"/> が差分だけを見る）。
+    /// 巻き戻さないので、<c>Initialize</c> を跨いでも単調に増える。
+    /// </para>
+    /// </summary>
+    private long _sinkSamplesSeen;
+
+    /// <summary>
+    /// 最後に sink の <c>appsink</c> からサンプルを取り出した時刻
+    /// （<see cref="Environment.TickCount64"/>）。
+    ///
+    /// <para>
+    /// <b>「いま実が流れているか」を待たずに判断するための値。</b>
+    /// <see cref="StartCore"/> は要素単位の再開を掛けてよいかをここで決める ──
+    /// <see cref="RestartSinkSrc"/> は <c>Ready</c> を経由する破壊的な操作なので、
+    /// 自力で戻ったソースに掛けるとデバイスを閉じて開き直すことになる。
+    /// </para>
+    /// </summary>
+    private long _lastSinkSampleAt;
     private Bus? _srcBus;
     private GstApp.AppSrc? _appSrc;
     private Element? _mux;
@@ -2396,6 +2420,13 @@ public partial class EventRecorder : ObservableObject, IDisposable
     /// </summary>
     private void ProcessRecordSample(Sample sample, RecordSampleState state)
     {
+        // **sink 側が生きている証拠はここでだけ取れる。** 復帰の連鎖が
+        // 「要素は Playing に戻ったが実は来ていない」を見分けるのに読む
+        // （WaitForSinkSamplesAsync）。録画中に限らず数えること ── 常時稼働の
+        // sink パイプラインの生死を見るための数であって、録画の計測ではない。
+        System.Threading.Interlocked.Increment(ref _sinkSamplesSeen);
+        System.Threading.Volatile.Write(ref _lastSinkSampleAt, Environment.TickCount64);
+
         // 最初のサンプルで appsrc のキャップスを確定させる。
         // ここで設定するのは「バッファが1つも流れる前」に src パイプラインを
         // 構成しておくため（録画開始時はリングバッファの古いバッファから押し込むが、
@@ -2711,16 +2742,18 @@ public partial class EventRecorder : ObservableObject, IDisposable
                         // 要素単位で戻せない障害は、エスカレーションでパイプラインごと作り直す。
                         if (srcObject is GstBase.BaseSrc erroredSource)
                         {
+                            // **控えるだけで、ここでは状態を触らない。** 戻すのは復帰試行
+                            // （<see cref="RestartSinkSrc"/>）の側で、あちらはプールスレッド。
+                            //
+                            // basesrc は flow error のあと、この post と**同じ**
+                            // ストリーミングスレッドから EOS を押す（Error の post →
+                            // EOS の push の順）。ここで Ready へ落とすと pad が
+                            // deactivate＝flushing になり、後から来る **EOS が捨てられて
+                            // sink バスに届かない** ── <see cref="_sinkSawEos"/> が立たない
+                            // まま要素単位の再開が result=ok を返し、作り直しへ進まなくなる。
+                            // 別スレッドへ逃がしても同じで、遷移が EOS の push より先に
+                            // 走るかどうかが機械の速さ次第になる（2 vCPU の CI で決定的に先行した）。
                             _errorSinkSrc = erroredSource;
-
-                            // **状態遷移はプールスレッドへ逃がす。** ここは post 元＝
-                            // まさにこの要素のストリーミングスレッドなので、インラインで
-                            // Ready へ落とすと自スレッドの復帰を待って固まる。
-                            System.Threading.Tasks.Task.Run(() =>
-                            {
-                                try { erroredSource.SetState(State.Ready); }
-                                catch (Exception ex) { Log(DebugLevel.Error, $"resetting '{elementName}' to Ready failed\n{ex}"); }
-                            });
                         }
                         ScheduleRestart(elementName);
                     }
@@ -3010,6 +3043,11 @@ public partial class EventRecorder : ObservableObject, IDisposable
         {
             int attempt = 0;
             int earlyWakes = 0;
+
+            // 直近の result=no-samples を出した回の基準値（-1 は「まだ無い」）。
+            // 次の試行は、待っているあいだにこの値から進んでいれば
+            // 「自力で戻った」と見て要素に触らない。
+            long noSampleBaseline = -1;
             long seenArrival = DeviceArrivalWatcher.Instance.CurrentGeneration(kind);
             while (!cts.IsCancellationRequested)
             {
@@ -3085,7 +3123,12 @@ public partial class EventRecorder : ObservableObject, IDisposable
                 // 報告されるのに映像だけが崩れたままになる（実機のカメラ抜き差しで観測）。
                 bool mustRebuild = rebuildOnly || _sinkSawEos;
 
-                if (!mustRebuild && RestartSinkSrc())
+                // 失敗の理由。遷移そのものが拒まれたら failed、遷移は通ったのに
+                // 実が来なければ no-samples（下の保険）。
+                string failure = "failed";
+
+                // 要素単位の再開が成功したときの後始末（3 か所から使う）。
+                void ReportElementRecovered()
                 {
                     _restartAttempt = 0;
                     // 戻せたのだから、到着に追いつくための梯子はもう要らない
@@ -3095,14 +3138,61 @@ public partial class EventRecorder : ObservableObject, IDisposable
                     _rebuildFailuresSinceArrival = -1;
                     Components.ActivityLog.Info("recorder.restart",
                         $"recorder='{Name}' element='{elementName}' attempt={attempt} result=ok{wake}{suppressed}");
-                    return;
+                }
+
+                if (!mustRebuild)
+                {
+                    // **基準は再開の前に取る。** 後で取ると、再開と同時に来た 1 枚を
+                    // 数え損ねて「戻ったのに no-samples」になる。
+                    long baseline = Interlocked.Read(ref _sinkSamplesSeen);
+
+                    // **待っているあいだに自力で戻っていたら触らない。** 前の回の
+                    // no-samples から次の試行までは 10〜30 秒あり、その間にソースが
+                    // 自力で流し始めることがある ── そこへ Ready→Playing を掛けるのは
+                    // 動いているデバイスを閉じて開き直す行為で、コマ落ちを作るだけである。
+                    if (0 <= noSampleBaseline && noSampleBaseline != baseline)
+                    {
+                        _errorSinkSrc = null;
+                        ReportElementRecovered();
+                        return;
+                    }
+
+                    if (RestartSinkSrc(out var restarted))
+                    {
+                        // **遷移が通っただけでは戻ったと言えない。** EOS が bus に届いて
+                        // いれば mustRebuild でここへは来ないが、届かなかった回は
+                        // 「Playing だが実は来ない」要素を result=ok と報告してしまい、
+                        // 連鎖がそこで終わって誰も作り直さなくなる。
+                        if (await WaitForSinkSamplesAsync(baseline, cts.Token).ConfigureAwait(false))
+                        {
+                            ReportElementRecovered();
+                            return;
+                        }
+
+                        // 待ちを打ち切ったのが停止（Close）なら、失敗として数えずに降りる。
+                        if (cts.IsCancellationRequested || _disposedValue)
+                            return;
+
+                        failure = $"no-samples waited={RestartPolicy.SinkSampleGraceMs}ms";
+                        noSampleBaseline = baseline;
+
+                        // **控えを戻す。** RestartSinkSrc は遷移が通った時点で控えを落とす
+                        // ので、そのままだと次の試行は「対象なし」の false になり、
+                        // もう一度 Ready→Playing を試す機会が消える
+                        // （エスカレーションの数え方も理由の行も変わってしまう）。
+                        // 戻すのは**実際に再開を試みた要素**（out で受けたもの）── ここで
+                        // _errorSinkSrc を読み直すと、その間に別の要素が控え直されていた
+                        // 場合に古い方で上書きしてしまう。
+                        lock (_sinkSrcRestartLock)
+                            _errorSinkSrc ??= restarted;
+                    }
                 }
 
                 if (!mustRebuild)
                 {
                     _restartAttempt = attempt;
                     Components.ActivityLog.Warn("recorder.restart",
-                        $"recorder='{Name}' element='{elementName}' attempt={attempt} result=failed{wake}{suppressed}");
+                        $"recorder='{Name}' element='{elementName}' attempt={attempt} result={failure}{wake}{suppressed}");
 
                     if (!RestartPolicy.ShouldEscalate(attempt))
                         continue;   // まだ諦めない。次の間隔で再試行する
@@ -3363,26 +3453,134 @@ public partial class EventRecorder : ObservableObject, IDisposable
     }
 
     /// <summary>
-    /// 障害を起こしたソース要素を Playing に戻す。復帰できたら true。
+    /// 障害を起こしたソース要素を <c>Ready</c> を経由して <c>Playing</c> に戻す。
+    /// 遷移が拒否されなければ true。
     ///
     /// <para>
     /// <b>false は「要素単位では戻せない」を意味する</b> ── 対象が無い場合
     /// （ソース以外の要素が壊れた場合）も false を返し、呼び出し側の
     /// エスカレーション（パイプライン再生成）へ進ませる。
     /// </para>
+    /// <para>
+    /// <b>Ready を必ず経由する。</b> flow error のあとの basesrc はストリーミングタスクが
+    /// pause しているだけで、状態は <c>PLAYING</c> のままである ── <c>Playing</c> を
+    /// 指示しても遷移が無く、<c>Success</c> を返して<b>何も再開しない</b>。
+    /// <c>Ready</c> まで落として pad を作り直して初めてタスクが起き直る。
+    /// <c>Async</c> は成功として扱う（非同期に遷移する要素をここで待たない）。
+    /// </para>
+    /// <para>
+    /// <b>呼んでよいのは復帰の連鎖（プールスレッド）と <see cref="StartCore"/> だけ。</b>
+    /// バスのハンドラは壊れた要素自身のストリーミングスレッドなので、そこから呼ぶと
+    /// 自スレッドの復帰を待って固まり、さらに basesrc がこの後に押す EOS が
+    /// flushing で消える。
+    /// </para>
+    /// <para>
+    /// <b>true は「遷移が通った」までしか意味しない。</b> 実が流れ出したかは
+    /// 呼び出し側が <see cref="_sinkSamplesSeen"/> で確かめる
+    /// （<see cref="RestartPolicy.SinkSampleGraceMs"/>）。
+    /// </para>
+    /// <para>
+    /// <b>同時に 2 本走らせない</b>（<see cref="_sinkSrcRestartLock"/>）── 復帰の連鎖と
+    /// <see cref="StartCore"/> は別のスレッドで、同じ要素へ <c>Ready</c> と
+    /// <c>Playing</c> を同時に出しうる。<b>専用のロックであって
+    /// <c>_restartLock</c> ではない</b> ── あちらは <c>ScheduleRestart</c> が
+    /// ストリーミングスレッドから取るので、その下で <c>SetState(Ready)</c>
+    /// （＝当のストリーミングスレッドの停止待ち）を行うと相互待ちになる。
+    /// </para>
     /// </summary>
-    private bool RestartSinkSrc()
+    /// <param name="restarted">
+    /// 実際に再開を試みた要素（対象が無ければ <c>null</c>）。呼び出し側が
+    /// 失敗時に控えを戻すために使う ── ロックの外で <c>_errorSinkSrc</c> を読み直すと、
+    /// その間に別の要素が控え直されていた場合に古い方を復元してしまう。
+    /// </param>
+    private bool RestartSinkSrc(out GstBase.BaseSrc? restarted)
     {
-        var target = _errorSinkSrc;
-        if (target is null)
-            return false;
+        lock (_sinkSrcRestartLock)
+        {
+            var target = _errorSinkSrc;
+            restarted = target;
+            if (target is null)
+                return false;
 
-        if (target.SetState(State.Playing) == StateChangeReturn.Failure)
-            return false;
+            var ready = target.SetState(State.Ready);
+            if (ready == StateChangeReturn.Failure)
+                return false;
 
-        _errorSinkSrc = null;
+            // **Async のまま Playing を出さない。** READY へ着く前に PLAYING を
+            // 指示すると、pad を作り直している最中の要素に対する指示になり、
+            // 遷移が畳まれて「Playing を指示したのに何も再開しない」に戻りうる。
+            if (ready == StateChangeReturn.Async
+                && target.GetState(out _, out _, ClockTime.FromMilliseconds(ReadyStateTimeoutMs))
+                   == StateChangeReturn.Failure)
+            {
+                return false;
+            }
+
+            if (target.SetState(State.Playing) == StateChangeReturn.Failure)
+                return false;
+
+            _errorSinkSrc = null;
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// <see cref="RestartSinkSrc"/> を直列化する専用のロック。
+    /// <c>_restartLock</c> を使ってはいけない理由はあちらの doc を参照。
+    /// </summary>
+    private readonly object _sinkSrcRestartLock = new();
+
+    /// <summary>
+    /// <see cref="RestartSinkSrc"/> が <c>READY</c> の到達を待つ上限(ms)。
+    /// <c>Async</c> を返した要素にだけ効く。
+    /// </summary>
+    private const int ReadyStateTimeoutMs = 2_000;
+
+    /// <summary>
+    /// 要素単位の再開のあと、sink の <c>appsink</c> に実が来ることを
+    /// <see cref="RestartPolicy.SinkSampleGraceMs"/> だけ確かめる。1 枚でも来たら true。
+    ///
+    /// <para>
+    /// <b>これは保険である。</b> 本線は「EOS が bus に届く → <see cref="_sinkSawEos"/> が
+    /// 立つ → 要素単位の再開を飛ばして作り直す」で、ここが要るのは EOS が
+    /// 届かなかった回だけ。遷移が通っただけの再開を <c>result=ok</c> と報告すると、
+    /// 連鎖はそこで終わり、映像が止まったまま誰も作り直さない。
+    /// </para>
+    /// <para>
+    /// 数えるのは録画中かどうかに依らない <see cref="_sinkSamplesSeen"/> ──
+    /// <see cref="_samplesSeenWhileRecording"/> は録画中しか進まないので、
+    /// 常時稼働の sink 側の生死には使えない。
+    /// </para>
+    /// </summary>
+    private async System.Threading.Tasks.Task<bool> WaitForSinkSamplesAsync(
+        long baseline, CancellationToken token)
+    {
+        long deadline = Environment.TickCount64 + RestartPolicy.SinkSampleGraceMs;
+        while (Interlocked.Read(ref _sinkSamplesSeen) == baseline)
+        {
+            if (deadline <= Environment.TickCount64)
+                return false;
+
+            try
+            {
+                await System.Threading.Tasks.Task
+                    .Delay(SinkSamplePollMs, token)
+                    .ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                return false;
+            }
+        }
+
         return true;
     }
+
+    /// <summary>
+    /// <see cref="WaitForSinkSamplesAsync"/> の刻み(ms)。1 枚来た時点で抜けるので、
+    /// 通常の復帰がこの刻みぶん遅れるだけ（映像源は 15fps 以上を前提にしている）。
+    /// </summary>
+    private const int SinkSamplePollMs = 100;
 
     /// <summary>
     /// プレビュー用のサンプルが取れたときに発火する。
@@ -3554,9 +3752,18 @@ public partial class EventRecorder : ObservableObject, IDisposable
             throw new InvalidOperationException("ERROR: pipeline doesn't want to play.");
         }
         Components.ActivityLog.Info("recording.start", $"recorder='{Name}' file='{filename}'");
-        // 障害で Ready へ落とされたままのソースがあれば、この機会に戻す。
-        // 対象が無ければ false が返るだけで、通常の開始では何も起きない。
-        _ = RestartSinkSrc();
+        // 障害を起こしたまま復帰していないソースがあれば、この機会に Ready→Playing で戻す。
+        //
+        // **実が流れているなら触らない。** RestartSinkSrc は Ready を経由する破壊的な
+        // 操作（デバイスを閉じて開き直す）で、控えが残るのは「再開を試したが実が来なかった」
+        // 回もある ── その窓（次の試行まで 10〜30 秒）にソースが自力で戻っていると、
+        // ここで無条件に掛けるのは**動いているデバイスを落とす**ことになり、
+        // 録画の頭がコマ落ちし、事前バッファも途切れる。
+        if (RestartPolicy.SinkSampleGraceMs
+            <= Environment.TickCount64 - System.Threading.Volatile.Read(ref _lastSinkSampleAt))
+        {
+            _ = RestartSinkSrc(out _);
+        }
     }
 
     /// <summary><see cref="Start"/> の時刻（<c>recording.stop</c> の経過時間の算出用）。</summary>

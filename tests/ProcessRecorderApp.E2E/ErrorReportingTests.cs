@@ -155,6 +155,13 @@ public sealed class ErrorReportingTests(PublishedApp app, ITestOutputHelper outp
     /// 復帰が戻した 2 本目である。1 本目のファイルが確定していること
     /// （<c>recording.stop … result=ok</c>）も併せて見る。
     /// </para>
+    /// <para>
+    /// <b>待ちは EOS が bus に届く前提で決めてある</b>（障害 約 6 秒 → 待ち 5 秒 →
+    /// 作り直し → 録り直し）。EOS が届かなかった回は保険経路
+    /// （<c>result=no-samples</c> → 次の試行 10 秒 → …）で作り直しに至るが、
+    /// <b>この待ちでは観測できない</b> ── 保険であって本線ではないので、
+    /// そちらに合わせて待ちを伸ばすことはしない。
+    /// </para>
     /// </summary>
     [Fact]
     public void AfterRecovery_TheRecordingIsResumed()

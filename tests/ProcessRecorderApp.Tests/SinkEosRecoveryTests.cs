@@ -52,6 +52,70 @@ public class SinkEosRecoveryTests
     }
 
     /// <summary>
+    /// <c>case MessageType.Error:</c> から次の <c>case</c> の手前までを切り出す。
+    /// </summary>
+    private static string ErrorBranch()
+    {
+        string body = SourceMethodBody.Extract(EventRecorderSource, HandleBusMessageSignature);
+
+        int error = SourceMethodBody.IndexOfCode(body, "case MessageType.Error:");
+        Assert.True(error >= 0,
+            "HandleBusMessage の Error 分岐が見つからない（switch の形を変えた可能性がある）。"
+            + "変えたなら、この検査も一緒に直すこと。");
+
+        int next = SourceMethodBody.IndexOfCode(body[error..], "case MessageType.Warning:");
+        Assert.True(next >= 0,
+            "Error 分岐の終わり（case MessageType.Warning:）が見つからない。"
+            + "並びを変えたなら、この検査も一緒に直すこと。");
+
+        return body.Substring(error, next);
+    }
+
+    /// <summary>
+    /// <b>sink バスの Error ハンドラが状態遷移を起こさないこと。</b>
+    ///
+    /// <para>
+    /// basesrc は flow error のあと、Error を post したのと<b>同じ</b>ストリーミング
+    /// スレッドから EOS を押す（post → push の順）。ハンドラの中で（別スレッドへ
+    /// 逃がす場合も含めて）その要素を <c>Ready</c> へ落とすと、pad が deactivate＝
+    /// flushing になり <b>EOS が捨てられて bus に届かない</b> ── <c>_sinkSawEos</c> が
+    /// 立たないまま要素単位の再開が <c>result=ok</c> を返し、作り直しへ進まなくなる。
+    /// </para>
+    /// <para>
+    /// <b>速い機械では踏めない。</b> 手元（Error→EOS が 1〜5 ms）では 15/15 再現せず、
+    /// 2 vCPU の CI でだけ決定的に先行した。実行で縛れる形が無いので、ソースで固定する。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void TheSinkErrorHandler_DoesNotChangeTheElementState()
+    {
+        string branch = ErrorBranch();
+
+        Assert.False(SourceMethodBody.ContainsCode(branch, "SetState(State.Ready)"),
+            "sink バスの Error ハンドラが要素を Ready へ落としている。"
+            + Environment.NewLine
+            + "**この後に basesrc が押す EOS が flushing で捨てられる** ──"
+            + Environment.NewLine
+            + "bus に EOS が来ないので _sinkSawEos が立たず、要素単位の再開が"
+            + Environment.NewLine
+            + "result=ok を返して作り直し（reason=eos）へ進まなくなる。"
+            + Environment.NewLine
+            + "戻すのは復帰試行（RestartSinkSrc）の側で、あちらはプールスレッドで走る。");
+
+        Assert.False(SourceMethodBody.ContainsCode(branch, "RestartSinkSrc()"),
+            "sink バスの Error ハンドラが要素単位の再開をその場で呼んでいる。"
+            + Environment.NewLine
+            + "ここは壊れた要素自身のストリーミングスレッドなので、"
+            + Environment.NewLine
+            + "自スレッドの復帰を待って固まるうえ、EOS も flushing で消える。");
+
+        Assert.True(SourceMethodBody.ContainsCode(branch, "_errorSinkSrc = erroredSource;"),
+            "障害要素の控え（_errorSinkSrc）が無くなっている。"
+            + Environment.NewLine
+            + "控えないと復帰試行は対象なしの false になり、要素単位の再開が丸ごと効かない。");
+    }
+
+    /// <summary>
     /// sink バスの EOS が復帰を予約すること。順序も見る ──
     /// 印（<c>_sinkSawEos</c>）は予約より<b>前</b>に立てなければならない。
     /// </summary>

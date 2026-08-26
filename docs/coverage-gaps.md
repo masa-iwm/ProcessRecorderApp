@@ -398,6 +398,24 @@ CI にも物理ディスプレイが無い。さらに `capture-api` は WGC 対
 5. 録画中に抜いた場合は、`will be resumed once the pipeline is rebuilt` →
    `resuming the recording that the rebuild finalized` が出て録画が戻ること。
 
+### sink バスの Error → EOS の順序
+
+basesrc は flow error のあと、Error を post したのと**同じ**ストリーミングスレッドから
+EOS を押す（post → push の順）。この間に当の要素を `Ready` へ落とすと pad が
+deactivate＝flushing になり、**EOS が捨てられて bus に届かない** ── `_sinkSawEos` が
+立たないまま要素単位の再開が `result=ok` を返し、作り直し（`reason=eos`）へ進まなくなる。
+
+**速い機械では踏めない。** 開発機の実測では Error → EOS が 1〜5 ms で、`Ready` を
+プールスレッドへ逃がす旧実装でも 15/15 で EOS が先に届いた。決定的に先行したのは
+2 vCPU の CI（GitHub Actions）だけで、そこでは L2 の `AfterRecovery_TheRecordingIsResumed`
+が連続で赤になった。**遅い機械を用意する以外に実行で縛る手が無い**ので、
+L1 のソース静的検査（`SinkEosRecoveryTests.TheSinkErrorHandler_DoesNotChangeTheElementState`）で
+「Error ハンドラ本体に状態遷移が無い」ことだけを固定している。
+
+取りこぼした回の保険として、要素単位の再開のあと 3 秒
+（`RestartPolicy.SinkSampleGraceMs`）実が来なければ `result=no-samples` で失敗に数えるが、
+**その保険経路そのものを通す自動テストは無い**（EOS を落とす条件を作れないため）。
+
 ### 自動復帰のあとのプレビューの滑らかさ
 
 **カメラを抜き差しして自動復帰したあと、プレビューがカタつくことがある**（実機で 1 度観測）。
@@ -409,9 +427,11 @@ CI にも物理ディスプレイが無い。さらに `capture-api` は WGC 対
 **再開の前後で不連続なタイムスタンプが `appsrc` に入る**ことが疑わしいが、
 確かめられていない（再 `Initialize` で直るのは、そこでプレビュー面ごと組み直すため）。
 
-なお **EOS を見た障害はデバイスの到着で作り直されるようになった**ので、この症状が出る窓自体は
-縮んでいる ── `_sinkSawEos` が立っていれば要素単位の再開を飛ばして
-`Initialize()` へ進み、挿し直しの約 1 秒後にプレビュー面ごと組み直される。
+なお **EOS を見た障害は要素単位の再開を飛ばして作り直される**ので、この症状が出る窓自体は
+狭い ── `_sinkSawEos` が立っていれば `Initialize()` へ直行し、デバイスの到着で待ちを
+打ち切れば挿し直しの約 1 秒後にプレビュー面ごと組み直される。EOS を取りこぼした回も、
+要素単位の再開のあと 3 秒のあいだ `appsink` に実が来なければ `result=no-samples` として
+失敗に数えるので、そこから作り直しへ上がる（`RestartPolicy.SinkSampleGraceMs`）。
 **因果の確認は依然として手動でしかできない。**
 
 同じ時期に、プレビューが**毎フレーム `sample.GetCaps()` の戻り値を破棄していた**欠陥

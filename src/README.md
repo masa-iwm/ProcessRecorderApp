@@ -697,9 +697,16 @@ COM 経路は動かせない（[docs/coverage-gaps.md](../docs/coverage-gaps.md)
 ### エラー時の自動リスタート
 
 sink パイプラインのバスを購読しているハンドラ（`HandleBusMessage`）は `MessageType.Error` を
-検知すると、エラー元の要素（`_errorSinkSrc`）を `State.Ready` にして復帰を予約する
-（`ScheduleRestart`）。**`Ready` への遷移はプールスレッドへ逃がす** ── ハンドラは post 元＝
-当の要素のストリーミングスレッドで走るので、インラインで落とすと自スレッドの復帰を待って固まる。
+検知すると、エラー元の要素を控えて（`_errorSinkSrc`）復帰を予約する（`ScheduleRestart`）。
+**ハンドラは状態を触らない** ── basesrc は flow error のあと、Error を post したのと
+**同じ**ストリーミングスレッドから EOS を押す（post → push の順）ので、ここで `Ready` へ
+落とすと pad が deactivate＝flushing になり **EOS が捨てられて bus に届かない**。
+`_sinkSawEos` が立たないまま要素単位の再開が `result=ok` を返し、作り直しへ進まなくなる
+（別スレッドへ逃がしても、遷移が EOS の push より先に走るかどうかが機械の速さ次第になるだけ）。
+実際に戻すのは復帰試行（`RestartSinkSrc`）で、そちらはプールスレッドで走るので
+`Ready` → `Playing` を同期で行える。**`Ready` を必ず経由する** ── flow error のあとの
+basesrc はタスクが pause しているだけで状態は `PLAYING` のままであり、`Playing` を指示しても
+`Success` を返して何も再開しない。L1 の `SinkEosRecoveryTests` がハンドラの形を固定している。
 復帰は `RestartLoopAsync` が `RestartPolicy` に従って実行し、間隔は **5s → 10s → 30s → 60s
 で頭打ち**、3回連続で失敗したらパイプラインごと `Initialize()` し直す（詳細は「自動復帰」の節）。
 画面キャプチャ対象モニタの切断など、ソース側の一時的な異常からの自動復帰を狙ったもの。
@@ -2536,7 +2543,7 @@ GPU テクスチャになるため**アクセシブルテキストが 1 つも�
 | `recorder.error` | ERROR | `EventRecorder.HandleBusMessage` | **両方のバス**の `Error`（バス名・要素名・メッセージ・debug 情報） |
 | `recorder.warning` | WARN | 同上 | 両方のバスの `Warning`。連続する同一内容は畳んで `repeated=N` を添える |
 | `recorder.eos` | INFO | 同上 | sink 側バスの `Eos`。**これも自動復帰の引き金**（種別の付く映像源のときだけ予約する。「自動復帰」の節）── WGC の画面キャプチャは切断してもエラーを出さず、この行だけを出す |
-| `recorder.restart` | INFO / WARN | 同上／`RestartSinkSrc` | 自動復帰の予約と、その結果（`ok` / `failed`）。監視できる映像源なら `watch=camera｜monitor` が付き、デバイスの到着で待ちを打ち切った回は `wake=device-arrival` が付く。**作り直しだけを試す連鎖は `attempt=` ではなく `round=`**（1 周ごとに新しい連鎖になるので `attempt` は常に 1 になる）で、待ちの案内は 1 周目と約 1 時間ごとにしか出さない（1 分に 1 行では `activity.log` を数日で使い切る）── ただし**間隔が前の周回から変わった回は必ず出す**（到着で仕切り直した後の短い梯子が、作り直しの成否の行は畳まれるので唯一の証拠になる。「頭打ちでない回」を条件にすると、到着のたびに梯子が 1 段目へ戻るぶん上限が無くなる）。録画を畳んで録り直すときは `will be resumed once the pipeline is rebuilt` / `resuming the recording that the rebuild finalized` / `not resuming the recording after the rebuild (…)` の 3 種が出る ── 直後の `recording.start` が利用者の操作か復帰かは、この行があるかどうかで見分ける |
+| `recorder.restart` | INFO / WARN | 同上／`RestartLoopAsync` | 自動復帰の予約と、その結果（`ok` / `failed` / `no-samples`）。**`no-samples waited=3000ms` は「要素は `Playing` に戻ったが `appsink` に 1 枚も来なかった」**で、失敗として数えて連鎖を続ける（`RestartPolicy.SinkSampleGraceMs`）。監視できる映像源なら `watch=camera｜monitor` が付き、デバイスの到着で待ちを打ち切った回は `wake=device-arrival` が付く。**作り直しだけを試す連鎖は `attempt=` ではなく `round=`**（1 周ごとに新しい連鎖になるので `attempt` は常に 1 になる）で、待ちの案内は 1 周目と約 1 時間ごとにしか出さない（1 分に 1 行では `activity.log` を数日で使い切る）── ただし**間隔が前の周回から変わった回は必ず出す**（到着で仕切り直した後の短い梯子が、作り直しの成否の行は畳まれるので唯一の証拠になる。「頭打ちでない回」を条件にすると、到着のたびに梯子が 1 段目へ戻るぶん上限が無くなる）。録画を畳んで録り直すときは `will be resumed once the pipeline is rebuilt` / `resuming the recording that the rebuild finalized` / `not resuming the recording after the rebuild (…)` の 3 種が出る ── 直後の `recording.start` が利用者の操作か復帰かは、この行があるかどうかで見分ける |
 | `device.watch` | INFO / WARN | `DeviceArrivalWatcher` | デバイス到着の監視を張った／止めた（`kind=` と `provider=`）。WARN は**監視できない**構成（プロバイダが無い・`CanMonitor()` が false・起動に失敗）で、タイマーだけの復帰へ縮退したことを意味する |
 | `device.arrive` | INFO | 同上 | デバイスプロバイダが到着（`device-added` / `device-changed`）を報告した。連続する同一内容は畳んで `repeated=N` を添える |
 | `recorder.continuous-init ok` / `recorder.continuous-init fail` | INFO / WARN | `EventRecorder.StartContinuous` ／ `InitializeCore` ／ `InitializeWith` | 常時録画の枝を組めた（エンコーダー・fps・解像度・分割間隔）／組めなかったので**枝だけ落とした**（イベント録画は無事＝隔離契約）。**上書きだけを捨てた場合も同じ名前で出す**（読めないフレームレート・上流が固定されていないのに指定された解像度）── どちらも「設定が黙って効いていない」という同じ事故だからである |
@@ -2732,9 +2739,27 @@ EOS を送ったあと `TaskCompletionSource` を**待つだけ**で、自分で
   件数は実行時に `suppressedErrors=N` として報告する（拒否ログ自体が洪水になるため）。
 - 間隔は **5s → 10s → 30s → 60s で頭打ち**。最初を短くするのは、一瞬の切断
   （ケーブルの接触・モード切替）で30秒待たせないため。
+  **要素単位の再開を試した回は、この待ちの外側に猶予（3 秒）が足される**
+  ── 実が来るのを確かめる時間で、来た時点で抜けるので通常は 1 刻み（100ms）で済む。
 - **試行回数は無制限。** 監視対象のモニタが1時間抜けていても、戻ってきたら復帰すべき。
 - **3回続けて失敗したら `Initialize()` でパイプラインごと作り直す。**
   デバイスが別のキャップスで戻ってきた場合、要素単位の再 Playing では復帰できない。
+- **要素単位の再開は「実が来た」まで確かめる。** `RestartSinkSrc` の `true` は
+  状態遷移が拒まれなかったことしか意味しない ── 下流が既に EOS を受けていれば、
+  `Ready` → `Playing` を通しても `appsink` に 1 枚も来ない。`RestartPolicy.SinkSampleGraceMs`
+  （3 秒）のあいだ sink の `appsink` を見て、1 枚も来なければ `result=no-samples` として
+  **その試行を失敗に数え**、連鎖を続ける（次の試行 → 3 回でパイプラインの作り直しへ）。
+  数えるのは録画中かどうかに依らない通算のサンプル数（`_sinkSamplesSeen`）で、
+  待ちは連鎖の `CancellationToken` で打ち切れる。
+  **本線は下の EOS の側で、これはその取りこぼしに対する保険にあたる。**
+- **`Ready` を経由する再開は破壊的なので、動いているソースには掛けない。**
+  `no-samples` の次の試行は、待っているあいだにサンプルが進んでいれば要素に触らず
+  `result=ok` で降りる。録画開始（`StartCore`）が控えを拾う経路も同じで、
+  直近 3 秒以内にサンプルが来ていれば何もしない ── 掛けると自力で戻ったデバイスを
+  閉じて開き直すことになり、録画の頭がコマ落ちし事前バッファも途切れる。
+  `RestartSinkSrc` の本体は専用のロックで直列化する（`_restartLock` ではない ──
+  あちらは `ScheduleRestart` がストリーミングスレッドから取るので、その下で
+  `SetState(Ready)` を行うと相互待ちになる）。
 - 障害要素が**ソース以外でも必ず予約する**。ソースに限定すると、エンコーダーが壊れた
   場合に何も起きず毎フレームのエラーを出し続ける。
   要素単位で戻せない障害は、エスカレーションでパイプラインごと作り直すのが唯一の手段。

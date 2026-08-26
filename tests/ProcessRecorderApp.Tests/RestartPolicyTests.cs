@@ -179,6 +179,22 @@ public class RestartPolicyTests
             "早期ウェイクの上限がエスカレーションの予算以上になっている。"
             + "連打だけで全再生成へ跳べるようになる。");
 
+    /// <summary>
+    /// <b>実を待つ猶予は、次の試行までの間隔より必ず短いこと。</b>
+    ///
+    /// <para>
+    /// 猶予（<see cref="RestartPolicy.SinkSampleGraceMs"/>）は待ちの<b>外側</b>に
+    /// 足される ── 試行の間隔が 5s なら、実が来なかった回は 5s + 3s で次へ進む。
+    /// ここが間隔以上になると、猶予だけで梯子が一段ぶん潰れ、エスカレーションまでの
+    /// 時間が仕様（5s + 10s + 30s）から読めなくなる。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void TheSinkSampleGrace_IsShorterThanTheFirstRetryDelay()
+        => Assert.True(RestartPolicy.SinkSampleGraceMs < RestartPolicy.DelayForAttempt(1),
+            "実を待つ猶予が最初の試行間隔以上になっている。"
+            + "猶予は待ちの外側に足されるので、梯子の 1 段目が猶予に飲まれる。");
+
     [Fact]
     public void EarlyWakes_AreAllowedUntilTheCap()
     {
