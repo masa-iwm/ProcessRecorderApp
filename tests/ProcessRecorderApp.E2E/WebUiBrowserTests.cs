@@ -496,7 +496,7 @@ public sealed class WebUiBrowserTests(PublishedApp app, ITestOutputHelper output
     private static readonly TimeSpan ClipBudget = TimeSpan.FromSeconds(180);
 
     /// <summary>
-    /// <c>app.js</c> の <c>FOLLOW_TRIM_TRIGGER_SECONDS</c> の宣言。
+    /// <c>wwwroot</c> の JavaScript にある <c>FOLLOW_TRIM_TRIGGER_SECONDS</c> の宣言。
     /// <b>行頭に錨を打たない</b> ── 打つと一致位置が必ず行頭になり、
     /// 下のコメント行の除外が「常に偽」へ倒れて何も守らなくなる。
     /// </summary>
@@ -516,15 +516,19 @@ public sealed class WebUiBrowserTests(PublishedApp app, ITestOutputHelper output
     [Fact]
     public void TheTrimTriggerHereMatchesTheScript()
     {
-        string script = File.ReadAllText(
-            Path.Combine(RepositoryLayout.Root, "src", "RemoteControl", "wwwroot", "app.js"));
+        // wwwroot の JavaScript を全部つなぐ。1 本だけを読むと、定数が別のファイルへ
+        // 移った日に「違反 0 件」ではなく検査そのものが消える。
+        string script = string.Join('\n', Directory
+            .EnumerateFiles(Path.Combine(RepositoryLayout.Root, "src", "RemoteControl", "wwwroot"), "*.js")
+            .OrderBy(p => p, StringComparer.Ordinal)
+            .Select(File.ReadAllText));
 
         var declarations = TrimTriggerDeclarationRegex.Matches(script)
             .Where(m => !IsCommentLine(script, m.Index))
             .ToArray();
 
         Assert.True(declarations.Length == 1,
-            $"app.js の FOLLOW_TRIM_TRIGGER_SECONDS が {declarations.Length} 件見つかりました"
+            $"wwwroot の JavaScript に FOLLOW_TRIM_TRIGGER_SECONDS が {declarations.Length} 件見つかりました"
             + "（走査が壊れているか、宣言の書き方が変わっています）。");
 
         Assert.Equal(

@@ -7,7 +7,7 @@ using System.Security.Cryptography;
 namespace ProcessRecorderApp.RemoteControl;
 
 /// <summary>
-/// 埋め込みの Web UI（<c>wwwroot/</c> の 3 ファイル）。
+/// 埋め込みの Web UI（<c>wwwroot/</c> の 7 ファイル）。
 ///
 /// <para>
 /// <b>提供するのは <see cref="Manifest"/> に載っている名前だけである。</b> ディレクトリを
@@ -33,9 +33,13 @@ internal static class WebAssets
     /// <summary>提供するファイルの全列挙（名前 → Content-Type）。ここに無い名前は 404。</summary>
     public static readonly IReadOnlyDictionary<string, string> Manifest = new Dictionary<string, string>(StringComparer.Ordinal)
     {
-        ["index.html"] = "text/html; charset=utf-8",
-        ["app.js"] = "text/javascript; charset=utf-8",
+        ["app-core.js"] = "text/javascript; charset=utf-8",
+        ["app-player.js"] = "text/javascript; charset=utf-8",
+        ["app-recordings.js"] = "text/javascript; charset=utf-8",
+        ["app-settings.js"] = "text/javascript; charset=utf-8",
         ["app.css"] = "text/css; charset=utf-8",
+        ["app.js"] = "text/javascript; charset=utf-8",
+        ["index.html"] = "text/html; charset=utf-8",
     };
 
     /// <summary>埋め込みリソースの論理名の接頭辞（<c>RemoteControl.csproj</c> の <c>LogicalName</c> と対）。</summary>

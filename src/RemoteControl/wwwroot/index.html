@@ -5,27 +5,110 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ProcessRecorderApp</title>
 <link rel="stylesheet" href="app.css">
+<!-- The stored scheme is applied here, before the stylesheet paints anything: doing
+     it from app-core.js draws the page in one scheme and repaints it in the other.
+     app-core.js reads the same key for its own state and sets nothing on top. -->
+<script>(function () {
+  try { var stored = localStorage.getItem('prapp.theme');
+        if (stored === 'light' || stored === 'dark') { document.documentElement.setAttribute('data-theme', stored); } }
+  catch (error) { /* storage can be refused outright; the OS setting still decides */ }
+})();</script>
 </head>
 <body>
+
+<!-- Icon sprite. Drawn here rather than fetched: the assets are the manifest and
+     nothing may be loaded from outside. Every symbol is a stroke drawing in
+     `currentColor`, so an icon takes the colour of the text around it. -->
+<svg xmlns="http://www.w3.org/2000/svg" style="display:none">
+  <symbol id="i-live" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="12" cy="12" r="2.5"/>
+    <path d="M7.8 16.2a6 6 0 0 1 0-8.4"/><path d="M16.2 7.8a6 6 0 0 1 0 8.4"/>
+    <path d="M4.6 19.4a10.5 10.5 0 0 1 0-14.8"/><path d="M19.4 4.6a10.5 10.5 0 0 1 0 14.8"/>
+  </symbol>
+  <symbol id="i-recordings" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="3" y="4" width="18" height="16" rx="2"/>
+    <path d="M7 4v16"/><path d="M17 4v16"/>
+    <path d="M3 9h4"/><path d="M3 15h4"/><path d="M17 9h4"/><path d="M17 15h4"/>
+  </symbol>
+  <symbol id="i-settings" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="12" cy="12" r="3.2"/>
+    <path d="M12 2.5v2.6"/><path d="M12 18.9v2.6"/><path d="M21.5 12h-2.6"/><path d="M5.1 12H2.5"/>
+    <path d="M18.7 5.3L16.9 7.1"/><path d="M7.1 16.9L5.3 18.7"/><path d="M18.7 18.7L16.9 16.9"/><path d="M7.1 7.1L5.3 5.3"/>
+  </symbol>
+  <symbol id="i-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="12" cy="12" r="4"/>
+    <path d="M12 2v2.5"/><path d="M12 19.5V22"/><path d="M22 12h-2.5"/><path d="M4.5 12H2"/>
+    <path d="M19.1 4.9L17.3 6.7"/><path d="M6.7 17.3L4.9 19.1"/><path d="M19.1 19.1L17.3 17.3"/><path d="M6.7 6.7L4.9 4.9"/>
+  </symbol>
+  <symbol id="i-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M20.5 14.3A8.6 8.6 0 0 1 9.7 3.5a8.6 8.6 0 1 0 10.8 10.8z"/>
+  </symbol>
+  <symbol id="i-play" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M7.5 4.8L18.5 12L7.5 19.2z"/>
+  </symbol>
+  <symbol id="i-pause" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M9 4.5v15"/><path d="M15 4.5v15"/>
+  </symbol>
+  <symbol id="i-stop" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="5" y="5" width="14" height="14" rx="2"/>
+  </symbol>
+  <symbol id="i-skip-back" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M19 5.5L9 12l10 6.5z"/><path d="M5 5v14"/>
+  </symbol>
+  <symbol id="i-skip-forward" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M5 5.5L15 12L5 18.5z"/><path d="M19 5v14"/>
+  </symbol>
+  <symbol id="i-fullscreen" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M3.5 9V3.5H9"/><path d="M15 3.5h5.5V9"/><path d="M20.5 15v5.5H15"/><path d="M9 20.5H3.5V15"/>
+  </symbol>
+  <symbol id="i-fullscreen-exit" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M9 3.5V9H3.5"/><path d="M20.5 9H15V3.5"/><path d="M15 20.5V15h5.5"/><path d="M3.5 15H9v5.5"/>
+  </symbol>
+  <symbol id="i-volume" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M11 5L6.5 9H3v6h3.5L11 19z"/>
+    <path d="M15 9.2a4 4 0 0 1 0 5.6"/><path d="M17.8 6.4a8 8 0 0 1 0 11.2"/>
+  </symbol>
+  <symbol id="i-volume-mute" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M11 5L6.5 9H3v6h3.5L11 19z"/>
+    <path d="M16 10l5 4"/><path d="M21 10l-5 4"/>
+  </symbol>
+  <symbol id="i-quality" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M6 20v-7"/><path d="M6 9V4"/><path d="M12 20v-9"/><path d="M12 7V4"/><path d="M18 20v-5"/><path d="M18 11V4"/>
+    <path d="M3.5 11h5"/><path d="M9.5 9h5"/><path d="M15.5 13h5"/>
+  </symbol>
+</svg>
+
 <header class="topbar">
-  <h1>ProcessRecorderApp</h1>
-  <p id="identity" class="identity hidden">
-    <span id="identityName" class="status"></span>
-    <button type="button" id="loginButton" hidden>Log in</button>
-    <button type="button" id="logoutButton" hidden>Log out</button>
-  </p>
+  <h1 class="brand">ProcessRecorderApp</h1>
+  <nav class="nav" id="nav" aria-label="Sections">
+    <a href="#/live" id="navLive"><svg class="icon" aria-hidden="true"><use href="#i-live"/></svg>Live</a>
+    <a href="#/recordings" id="navRecordings"><svg class="icon" aria-hidden="true"><use href="#i-recordings"/></svg>Recordings</a>
+    <a href="#/settings" id="navSettings"><svg class="icon" aria-hidden="true"><use href="#i-settings"/></svg>Settings</a>
+  </nav>
+  <div class="topbar-end">
+    <button type="button" id="themeToggle" class="icon-button" aria-label="Toggle theme">
+      <svg class="icon" aria-hidden="true"><use id="themeIcon" href="#i-moon"/></svg>
+    </button>
+    <p id="identity" class="identity hidden">
+      <span id="identityName" class="status"></span>
+      <button type="button" id="loginButton" hidden>Log in</button>
+      <button type="button" id="logoutButton" hidden>Log out</button>
+    </p>
+  </div>
 </header>
+
+<main>
 
 <!-- Sign-in. Present in the document from the start and only unhidden when the
      server answers 401: the page has no other way back once a session is gone. -->
-<section id="loginSection" class="hidden">
+<section id="loginSection" class="card hidden">
   <h2>Sign in</h2>
   <p class="actions">
     <label for="loginUser">user</label>
     <input type="text" id="loginUser" autocomplete="username">
     <label for="loginPassword">password</label>
     <input type="password" id="loginPassword" autocomplete="current-password">
-    <button type="button" id="loginSubmit">Log in</button>
+    <button type="button" id="loginSubmit" class="btn-primary">Log in</button>
     <!-- Only shown while guest reading is allowed: it is the only case where there
          is a screen to go back to. -->
     <button type="button" id="loginCancel" hidden>Cancel</button>
@@ -35,21 +118,29 @@
 
 <div id="mainSections" class="hidden">
 
-<section id="recordersSection">
+<!-- The three pages are wrappers only. The sections inside them stay in the
+     document for the whole session: the router hides a page, it never builds one,
+     so a preview or a playback started on one page keeps running while another is
+     on screen. -->
+<div class="page" id="pageLive">
+
+<section id="recordersSection" class="card">
   <h2>Recorders</h2>
   <p class="actions">
-    <button type="button" id="startAll">Start all</button>
-    <button type="button" id="stopAll">Stop all</button>
+    <button type="button" id="startAll" class="btn-primary">Start all</button>
+    <button type="button" id="stopAll" class="btn-danger">Stop all</button>
     <span id="recordersStatus" class="status"></span>
   </p>
-  <table id="recordersTable">
-    <thead>
-      <tr>
-        <th>name</th><th>state</th><th>isRecording</th><th>lastFilename</th><th>health</th><th></th>
-      </tr>
-    </thead>
-    <tbody id="recordersBody"></tbody>
-  </table>
+  <div class="table-wrap">
+    <table id="recordersTable">
+      <thead>
+        <tr>
+          <th>name</th><th>state</th><th>isRecording</th><th>lastFilename</th><th>health</th><th></th>
+        </tr>
+      </thead>
+      <tbody id="recordersBody"></tbody>
+    </table>
+  </div>
   <p class="actions">
     <!-- Which stream the row's "Preview" button opens. The default is the recording
          quality: it reuses the H.264 that is already being encoded, so it costs nothing
@@ -59,19 +150,49 @@
       <option value="recording" selected>Recording quality (low latency)</option>
       <option value="dash">Preview settings (DASH)</option>
     </select>
-    <button type="button" id="stopPreview">Stop preview</button>
+    <button type="button" id="stopPreview" class="btn-danger">Stop preview</button>
     <span id="previewStatus" class="status"></span>
   </p>
   <video id="previewPlayer" autoplay muted playsinline></video>
 </section>
 
-<section id="recorderSettingsSection">
+</div>
+
+<div class="page page-grid" id="pageRecordings">
+
+<section id="recordingsSection" class="card">
+  <h2>Recordings</h2>
+  <p class="actions">
+    <button type="button" id="loadRecordings">Refresh</button>
+    <span id="recordingsRoot" class="status"></span>
+  </p>
+  <p class="actions">
+    <button type="button" id="stopPlayer" class="btn-danger">Stop</button>
+    <span id="playerStatus" class="status"></span>
+  </p>
+  <!-- No preload="none": the follow-along player builds its MediaSource before the
+       first append, and an element told not to preload never reaches `sourceopen`
+       (nothing is appended, so play() is never called, so the load never starts). -->
+  <video id="player" controls></video>
+  <div class="table-wrap">
+    <table id="recordingsTable">
+      <thead><tr><th>path</th><th>size</th><th>lastWrite</th><th>state</th><th></th></tr></thead>
+      <tbody id="recordingsBody"></tbody>
+    </table>
+  </div>
+</section>
+
+</div>
+
+<div class="page" id="pageSettings">
+
+<section id="recorderSettingsSection" class="card">
   <h2>Recorder settings</h2>
   <p class="actions">
     <label for="recorderSelect">Recorder</label>
     <select id="recorderSelect"></select>
     <button type="button" id="loadRecorderSettings">Load</button>
-    <button type="button" id="applyRecorderSettings">Apply changes</button>
+    <button type="button" id="applyRecorderSettings" class="btn-primary">Apply changes</button>
     <span id="recorderSettingsStatus" class="status"></span>
   </p>
   <div id="recorderSettingsForm"></div>
@@ -79,7 +200,7 @@
 
 <!-- Admin only: this is the one way a browser may write SrcPipeline, and only as a
      template the server assembles. Hidden entirely for the other roles. -->
-<section id="sourceSection" hidden>
+<section id="sourceSection" class="card" hidden>
   <h2>Source</h2>
   <p class="actions">
     <span id="sourceCurrent" class="status"></span>
@@ -87,13 +208,13 @@
   <p class="actions">
     <label for="sourceSelect">Element</label>
     <select id="sourceSelect"></select>
-    <button type="button" id="applySource">Apply</button>
+    <button type="button" id="applySource" class="btn-primary">Apply</button>
     <span id="sourceStatus" class="status"></span>
   </p>
   <div id="sourceForm"></div>
 </section>
 
-<section id="appSettingsSection">
+<section id="appSettingsSection" class="card">
   <h2>App settings</h2>
   <p class="actions">
     <button type="button" id="loadAppSettings">Reload</button>
@@ -102,7 +223,7 @@
   <div id="appSettingsForm"></div>
 </section>
 
-<section id="variablesSection">
+<section id="variablesSection" class="card">
   <h2>Variables</h2>
   <p class="actions">
     <label for="variableKey">key</label>
@@ -111,38 +232,28 @@
     <input type="text" id="variableValue">
     <label for="variablePersist">persist</label>
     <input type="checkbox" id="variablePersist">
-    <button type="button" id="putVariable">Put</button>
+    <button type="button" id="putVariable" class="btn-primary">Put</button>
     <button type="button" id="loadVariables">Reload</button>
     <span id="variablesStatus" class="status"></span>
   </p>
-  <table id="variablesTable">
-    <thead><tr><th>key</th><th>value</th><th>persistent</th></tr></thead>
-    <tbody id="variablesBody"></tbody>
-  </table>
-</section>
-
-<section id="recordingsSection">
-  <h2>Recordings</h2>
-  <p class="actions">
-    <button type="button" id="loadRecordings">Refresh</button>
-    <span id="recordingsRoot" class="status"></span>
-  </p>
-  <p class="actions">
-    <button type="button" id="stopPlayer">Stop</button>
-    <span id="playerStatus" class="status"></span>
-  </p>
-  <!-- No preload="none": the follow-along player builds its MediaSource before the
-       first append, and an element told not to preload never reaches `sourceopen`
-       (nothing is appended, so play() is never called, so the load never starts). -->
-  <video id="player" controls></video>
-  <table id="recordingsTable">
-    <thead><tr><th>path</th><th>size</th><th>lastWrite</th><th>state</th><th></th></tr></thead>
-    <tbody id="recordingsBody"></tbody>
-  </table>
+  <div class="table-wrap">
+    <table id="variablesTable">
+      <thead><tr><th>key</th><th>value</th><th>persistent</th></tr></thead>
+      <tbody id="variablesBody"></tbody>
+    </table>
+  </div>
 </section>
 
 </div>
 
+</div>
+
+</main>
+
+<script src="app-core.js"></script>
+<script src="app-player.js"></script>
+<script src="app-recordings.js"></script>
+<script src="app-settings.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

@@ -257,6 +257,12 @@ stream that is already being encoded for recording, so it costs no extra encodin
 settings (DASH)** re-encodes at the resolution, frame rate and bitrate you set per recorder.
 Either way the price is latency: **roughly 2 to 3 seconds**.
 
+**Pages and appearance.** The page is split into three: **Live** (`#/live`), **Recordings**
+(`#/recordings`) and **Settings** (`#/settings`), reached from the links in the top bar; switching
+between them does not stop a preview or a playback that is running. The button next to them
+switches the colour scheme between light and dark and remembers the choice in that browser;
+without a choice it follows the operating system.
+
 **Security — read this before turning it on.**
 
 - **Reading is not free unless you say so.** With `RemoteControlAllowGuestRead` on, the recorder
@@ -264,7 +270,7 @@ Either way the price is latency: **roughly 2 to 3 seconds**.
   GStreamer pipeline, and `FilenameTemplate`, which may be an absolute path), the list of
   recordings, the recording files themselves and the live preview become readable by **anyone who
   can reach the port** — whatever is on the captured screen is on the LAN. The web page itself
-  (`/`, `app.js`, `app.css`) is always served without a sign-in, because that is where the sign-in
+  (`/` and the scripts and style sheet it names) is always served without a sign-in, because that is where the sign-in
   form comes from. The access token and the stored password hashes are **never** part of any
   response.
 - **Writing needs a session, and an `Admin` session is as good as sitting at the machine.**

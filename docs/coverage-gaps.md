@@ -509,7 +509,7 @@ QuickEdit 選択中など、コンソール書き込みが無期限にブロッ�
 
 ### リモート操作のブラウザ側（MSE の JavaScript）
 
-`src/RemoteControl/wwwroot/app.js` の**プレビュー再生そのものは、どの層も 1 行も実行しない**。
+`src/RemoteControl/wwwroot/app-player.js` の**プレビュー再生そのものは、どの層も 1 行も実行しない**。
 L1 は `WebAssetManifestTests` が「資産の一覧が合っているか」を見るだけ、L2 は HTTP の応答
 （fMP4 のバイト列）までしか見ず、L3（UIA）はブラウザを起動しない。**ブラウザを起こす
 `WebUiBrowserTests` も「Preview」は 1 度も押さない**（見ているのは録画の追いかけ再生の方）。
@@ -525,7 +525,7 @@ L1 は `WebAssetManifestTests` が「資産の一覧が合っているか」を�
 
 ### リモート操作のブラウザ側（録画の追いかけ再生）のうち、テストが見ないもの
 
-`src/RemoteControl/wwwroot/app.js` の**追いかけ再生（`startFollow` 以下）は L2 の
+`src/RemoteControl/wwwroot/app-player.js` の**追いかけ再生（`startFollow` 以下）は L2 の
 `WebUiBrowserTests` がヘッドレスの Edge で実際に走らせる** ── 録画中の再生が始まって
 `currentTime` が進むこと、停止後に `complete` で終わること、**完了済みの行を開き直したときに
 先頭付近から始まること**（末尾へ飛ばないこと）はそこで守られている。
@@ -610,7 +610,7 @@ fragmented では全 `moof` の `trun` から尺・サンプル数・先頭サ�
 - **`init` / セグメントの取得が 503 `starting` を受ける瞬間（畳みと取得の競合）は
   E2E で再現していない。** テストが踏むのは manifest が `starting` を返す側だけで、
   manifest を読めた直後にリングが空になる並びは作れていない ── クライアント側は
-  どの要求で受けても manifest へ戻る形で防いである（`app.js` の `failUnlessStarting`）。
+  どの要求で受けても manifest へ戻る形で防いである（`app-player.js` の `failUnlessStarting`）。
 
 ### GPU 実機レポートが流すのは既定ビットレートの起動文字列だけ
 
@@ -726,7 +726,7 @@ qtdemux（GStreamer 側のパーサ）が読めることだけで、そちらは
 
 ### `WebAssetManifestTests` が捕まえないもの
 
-`app.js` については `<script src="http` と `import ` の 2 つの文字列しか見ていない。
+`wwwroot/*.js` については `<script src="http` と `import ` の 2 つの文字列しか見ていない。
 したがって **動的 `import(...)` と CSS の `@import`** は素通りする ── どちらも
 「第三者のスクリプトはゼロ」「外部への参照はゼロ」という前提を壊すのに、
 `THIRD-PARTY-NOTICES.md` の更新を促す仕組みは何も動かない。`wwwroot` に何かを足すときは、

@@ -51,6 +51,20 @@ public sealed class WebAssetManifestTests
                 .Select(Path.GetFileName)
                 .OrderBy(n => n, StringComparer.Ordinal)!];
 
+    /// <summary>
+    /// <c>wwwroot</c> の JavaScript を<b>全部</b>つないだテキスト。
+    ///
+    /// <para>
+    /// 資産は 5 本に分かれているので、1 本だけを読む検査は「他の 4 本は無検査」になる
+    /// ── 定数や文字列が別のファイルへ移った日に、違反ではなく<b>検査の消失</b>が起こる。
+    /// 行の構造は保つ（コメント行の除外が行単位で効く）。
+    /// </para>
+    /// </summary>
+    private static string AllScripts()
+        => string.Join('\n', Directory.EnumerateFiles(WebRootDirectory, "*.js")
+                .OrderBy(p => p, StringComparer.Ordinal)
+                .Select(File.ReadAllText));
+
     [Fact]
     public void TheManifestAndTheFilesOnDiskAgree()
     {
@@ -58,8 +72,9 @@ public sealed class WebAssetManifestTests
 
         // 空振りで緑にしない ── 正規表現が合わなくなったら、
         // 「違反 0 件」ではなく「検査が消えた」ことに気付けるようにする。
-        Assert.True(3 <= manifest.Length,
-            $"WebAssets.cs から取り出せた名前が {manifest.Length} 件しかない。"
+        Assert.True(7 <= manifest.Length,
+            $"WebAssets.cs から取り出せた名前が {manifest.Length} 件しかない"
+            + "（index.html + app.css + JavaScript 5 本）。"
             + "台帳の書き方を変えたなら ManifestEntryRegex も一緒に直すこと。");
 
         Assert.Equal(DiskNames(), manifest);
@@ -86,15 +101,24 @@ public sealed class WebAssetManifestTests
     [Fact]
     public void TheScriptHasNoThirdPartyDependency()
     {
-        string script = File.ReadAllText(Path.Combine(WebRootDirectory, "app.js"));
+        string[] files = [.. Directory.EnumerateFiles(WebRootDirectory, "*.js")];
 
-        Assert.DoesNotContain("<script src=\"http", script, StringComparison.Ordinal);
-        Assert.DoesNotContain("import ", script, StringComparison.Ordinal);
+        // 空振りで緑にしない ── 走査が 0 件になっても foreach は静かに終わるので、
+        // 「第三者 JS なし」ではなく「検査が消えた」ことに気付けるようにする。
+        Assert.Equal(5, files.Length);
+
+        foreach (string path in files)
+        {
+            string script = File.ReadAllText(path);
+
+            Assert.DoesNotContain("<script src=\"http", script, StringComparison.Ordinal);
+            Assert.DoesNotContain("import ", script, StringComparison.Ordinal);
+        }
     }
 
     /// <summary>
     /// <b>「まだ始まっていない」の綴りが 2 か所にある。</b> DASH の配信は 503 の本文の
-    /// <c>error</c> をそのまま返し（HTTP 層は特別扱いしない）、<c>app.js</c> は
+    /// <c>error</c> をそのまま返し（HTTP 層は特別扱いしない）、<c>app-player.js</c> は
     /// その文字列と<b>完全一致</b>で「待てば直る」を判定する ── 正本は
     /// <see cref="DashPreviewReasons.Starting"/> なので、そこを書き換えたら
     /// ブラウザは黙って「待つ」のをやめ、開始直後の 503 で停止するようになる。
@@ -107,7 +131,7 @@ public sealed class WebAssetManifestTests
     [Fact]
     public void TheScriptSpellsTheStartingReasonExactlyAsTheServerDoes()
     {
-        string script = File.ReadAllText(Path.Combine(WebRootDirectory, "app.js"));
+        string script = AllScripts();
 
         Assert.Contains(
             "'" + DashPreviewReasons.Starting + "'",
@@ -116,7 +140,7 @@ public sealed class WebAssetManifestTests
     }
 
     /// <summary>
-    /// <c>app.js</c> の <c>FOLLOW_TRIM_SAFETY_SECONDS</c> の宣言。
+    /// <c>wwwroot</c> の JavaScript にある <c>FOLLOW_TRIM_SAFETY_SECONDS</c> の宣言。
     /// <b>行頭に錨を打たない</b> ── 打つと一致位置が必ず行頭になり、
     /// コメント行の除外が「常に偽」へ倒れて何も守らなくなる。
     /// </summary>
@@ -140,14 +164,14 @@ public sealed class WebAssetManifestTests
     [Fact]
     public void TheFollowTrimKeepsMoreThanTwoKeyframeIntervalsBehindPlayback()
     {
-        string script = File.ReadAllText(Path.Combine(WebRootDirectory, "app.js"));
+        string script = AllScripts();
 
         var declarations = FollowTrimSafetyRegex.Matches(script)
             .Where(m => !SourceReferences.IsCommentLine(script, m.Index))
             .ToArray();
 
         Assert.True(declarations.Length == 1,
-            $"app.js の FOLLOW_TRIM_SAFETY_SECONDS が {declarations.Length} 件見つかりました"
+            $"wwwroot の JavaScript に FOLLOW_TRIM_SAFETY_SECONDS が {declarations.Length} 件見つかりました"
             + "（走査が壊れているか、宣言の書き方が変わっています）。");
 
         double safety = double.Parse(

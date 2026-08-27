@@ -2114,7 +2114,7 @@ HTTP 側（`PreviewEndpoints`）は `video/mp4` ＋ `Cache-Control: no-store` �
 
 ブラウザ側は **MSE**（`fetch` → `ReadableStream` → `SourceBuffer` へ append）。
 `SourceBuffer.mode = 'sequence'` にして、途中参加でもタイムラインを 0 起点にする。
-**MIME は `video/mp4; codecs="avc1.4d401f"` の固定文字列**（`app.js` の `PREVIEW_MIME`）で、
+**MIME は `video/mp4; codecs="avc1.4d401f"` の固定文字列**（`app-player.js` の `PREVIEW_MIME`）で、
 `avcC` から導いてはいない ── High profile の構成では `isTypeSupported` が false になりうる。
 バッファは 35 秒を超えたら末尾 30 秒へ詰める。3 秒以上遅れたら末尾へ寄せ、未読が 16MB を超えたら
 諦めて張り直す。再接続は**固定 1 秒**（指数バックオフも試行上限も無い）だが、**HTTP の応答が
@@ -2205,15 +2205,43 @@ appsrc name=src format=time block=false max-buffers=2 max-bytes=0 leaky-type=dow
 
 ### Web UI
 
-`src/RemoteControl/wwwroot/` の **3 ファイルだけ**（`index.html` / `app.js` / `app.css`）を
+`src/RemoteControl/wwwroot/` の **7 ファイルだけ**を
 `EmbeddedResource`（`LogicalName="wwwroot/…"`）でアセンブリに埋める。**フレームワーク無しの
 プレーン JS で、第三者のスクリプトはゼロ** ── NOTICES の変更が要らず、4 プロファイル全部で
 同じに動き、パストラバーサルの余地が構造的に無い（`WebAssets.Manifest` に載っている名前しか
 読まない）。資産の欠落は**要求時ではなく静的初期化で**例外になる。ETag は SHA-256 の先頭
-16 バイトの小文字 16 進。
+16 バイトの小文字 16 進。**サブディレクトリは作らない**（論理名が `wwwroot/` 直下を前提にしている）。
+
+| ファイル | 中身 |
+|---|---|
+| `index.html` | 構造・SVG シンボル（アイコンは自前の線画）・`link` と `script` の参照 |
+| `app.css` | `:root` のトークン（色・角丸・影・余白・書体）と全スタイル |
+| `app-core.js` | fetch の集約点（`getJson` / `send` / `describe`）、役割と権限、DOM ユーティリティ、ハッシュルーター、テーマ |
+| `app-player.js` | ライブプレビュー（chunked と DASH）と録画の追いかけ再生 |
+| `app-recordings.js` | 録画一覧の描画 |
+| `app-settings.js` | レコーダー設定・ソース・アプリ設定・変数の 4 つのフォーム |
+| `app.js` | 起動、イベント配線、SSE の購読とレコーダー表の描画、ログイン／ログアウト |
+
+読み込みは `index.html` の記述順（`app-core.js` → `app-player.js` → `app-recordings.js` →
+`app-settings.js` → `app.js`。`<body>` 末尾・`defer` 無し）で、**後のファイルだけが前のものを
+参照する**。グローバルは `PRA` の 1 つだけ（`PRA.core` / `PRA.player` / `PRA.recordings` /
+`PRA.settings`）で、ファイルをまたぐ状態は `PRA.core.state` に集める。`app-core.js` は他の
+ファイルを参照しない ── ログインフォームへの切り替えだけが例外で、実体は `app.js` に在り、
+`PRA.core.state.showLogin` を通して遅延で結んである。
+
+画面は**ライブ（`#/live`）・録画（`#/recordings`）・設定（`#/settings`）の 3 ページ**で、
+`location.hash` を読むルーター（`PRA.core.router`）がページのラッパに `hidden` を付け外しする。
+不明・空のハッシュは `#/live` へ `replaceState` する。**section は作り直さず常駐する** ──
+ページを移してもプレビューと再生は止まらない。ログインフォームの表示中もハッシュは保つので、
+入り直すと同じページへ戻る。`sourceSection` の Admin 限定の `hidden` はページの `hidden` とは
+独立である。
+
+配色はトップバーの `#themeToggle` で light ⇄ dark を切り替え、`<html data-theme>` へ反映して
+`localStorage['prapp.theme']` に保存する。**保存が無ければ属性を付けない** ── その場合は
+`prefers-color-scheme` が決める。適用は `app-core.js` の先頭で行う。
 
 `WebAssetManifestTests`（L1）が `WebAssets.Manifest` ⇔ ディスクの `wwwroot` を双方向で
-突き合わせ、`wwwroot` にサブディレクトリが無いこと・csproj の埋め込み指定・`app.js` が
+突き合わせ、`wwwroot` にサブディレクトリが無いこと・csproj の埋め込み指定・`wwwroot/*.js` が
 `<script src="http` と `import ` を持たないこと・`index.html` の参照先がすべてマニフェスト内の
 名前であることを縛る。
 
@@ -2225,7 +2253,7 @@ appsrc name=src format=time block=false max-buffers=2 max-bytes=0 leaky-type=dow
 後始末は `stopPreview()` **1 か所**で、どちらのモードもポーリングのタイマー・
 `AbortController`・ObjectURL・状態表示という同じ 4 つの handle に state を掛けてある。
 
-DASH 側は**第三者のライブラリを使わない**（資産は 3 ファイルのまま）。単一 Period・単一
+DASH 側は**第三者のライブラリを使わない**（資産は増やさない）。単一 Period・単一
 Representation のライブ配信でプレイヤーがやることは、`manifest.mpd` を 1 秒ごとに引き直し、
 `SegmentTimeline` の `S@t` のうち未取得のものを昇順に取って（**同時 1 本**）`SourceBuffer` へ
 append するだけである。`mode` は **`'segments'`**（chunked 側の `'sequence'` とは逆 ──
@@ -2260,7 +2288,7 @@ codecs はサーバーの `X-Codecs`、無ければ `avc1.4d401f`。続きは `R
 バッファは 70 秒を超えたら末尾 60 秒へ詰める（**再生位置より後ろは切らない**）。
 
 ログインフォームは `index.html` に**最初から入っていて隠してある**（資産は増やさない）。
-`app.js` は fetch の集約点（`getJson` / `send`）で `401` を受けた時点でフォームへ切り替え、
+`app-core.js` は fetch の集約点（`getJson` / `send`）で `401` を受けた時点でフォームへ切り替え、
 `EventSource` とプレビューを閉じる。ログイン成功後は `GET /api/me` を引き直し、
 `applyPermissions()` **1 か所**で `data-need="operator|admin"` の付いたコントロールを
 出し分ける（ボタンは非表示・入力欄は無効）。
@@ -2911,7 +2939,7 @@ API は `StopAsync()`（完了を表す `Task` を返す）/ `Stop()`（fire-and
 | `PROCESSRECORDERAPP_LANG` | 表示言語を BCP-47 タグで強制する（**`Microsoft.Windows.Globalization`**`.ApplicationLanguages.PrimaryLanguageOverride`）。`Program.Main` の先頭、リソース解決より前に適用する。不正なタグは警告を出して無視する | OS の表示言語を切り替えないと ja-JP / en-US / フォールバック（例: de-DE）の各経路を検証できない。GitHub ランナーは en-US 固定なので ja-JP が永久に未検証になる |
 | `PROCESSRECORDERAPP_MIRROR_STDERR` | `1`/`true` で、捕捉した標準出力・標準エラーを差し替え前の標準エラーへも複写する（`StandardStreamRedirector`） | 標準ストリームを捕捉へ差し替えた後は、外からプロセスを起動した側が出力を1行も受け取れず、E2E ハーネスが診断を失う |
 | `PROCESSRECORDERAPP_TEST_DEVICE_ARRIVAL` | `1`/`true` で、名前付きイベント `{キー接頭辞}-DeviceArrival` のシグナルを**デバイスの到着として扱う**（`DeviceArrivalWatcher`）。実際のデバイスプロバイダには一切触れない | 開発機にも CI にも**カメラが無く、モニタの抜き差しもできない**ので、「到着で復帰の待ちを打ち切る」経路がどのテスト層でも1行も実行されない |
-| `PROCESSRECORDERAPP_WEBROOT` | リモート操作の Web UI（`index.html` / `app.js` / `app.css`）を、埋め込みリソースではなく指定したディレクトリから読む。**マニフェストに在る名前だけ**が対象で、配信する集合は広げられない。読めなければ黙って埋め込みへ戻る | 資産を1文字直すたびに再ビルドが要る。**この1つだけ性格が違う** ── 解決規則は `AppEnvironment` ではなく `RemoteControl/WebAssets.cs` にあり、**要求ごとに**評価される（プロセス起動時の1回ではない）。E2E の `RecordingDeliveryTests` が「持っているファイルだけを差し替える」ことを検査する |
+| `PROCESSRECORDERAPP_WEBROOT` | リモート操作の Web UI（`wwwroot` の 7 ファイル）を、埋め込みリソースではなく指定したディレクトリから読む。**マニフェストに在る名前だけ**が対象で、配信する集合は広げられない。読めなければ黙って埋め込みへ戻る | 資産を1文字直すたびに再ビルドが要る。**この1つだけ性格が違う** ── 解決規則は `AppEnvironment` ではなく `RemoteControl/WebAssets.cs` にあり、**要求ごとに**評価される（プロセス起動時の1回ではない）。E2E の `RecordingDeliveryTests` が「持っているファイルだけを差し替える」ことを検査する |
 
 > **`Windows.Globalization` ではなく `Microsoft.Windows.Globalization` を使うこと。**
 > 前者（OS 側の WinRT API）は**パッケージ ID を要求する**ため、アンパッケージ配布の
