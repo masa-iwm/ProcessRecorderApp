@@ -1904,6 +1904,7 @@ UI スレッドで走る。`TryEnqueue` が false なら `RemoteApiException(12,
 | GET | `/api/recording-days` | `Viewer` | 日付ごとの件数（`days[]`。1 件は `date`（`yyyy-MM-dd`）/ `count`）。`?from=&to=&recorder=&tz=` |
 | GET | `/api/recordings/{*path}` | `Viewer` | 1 ファイルの配信（Range 対応。`?download=1` で添付。応答に `X-In-Progress` と `X-Codecs`） |
 | GET | `/api/recording-fragments/{*path}` | `Viewer` | 1 ファイルの fragment 索引（`?from=<バイト位置>` で差分だけ）。`timescale` / `codecs` / `inProgress` / `initSize` / `nextOffset` / `totalDuration` ＋ `fragments[]`（1 件は `offset` / `size` / `time` / `duration` / `sync`）。fragmented でなければ 404 `not fragmented` |
+| GET | `/api/recording-thumbnails/{*path}` | `Viewer` | 1 ファイルのサムネイル（`image/png`）。**載せるのは本体 mp4 のパス**で `.png` はサーバーが足す。無ければ 404 `not found`。`ETag` と 304、`Cache-Control: no-cache`、Range は無し |
 | GET | `/api/recorders/{id}/preview.mp4` | `Viewer` | ライブプレビュー（chunked fMP4） |
 | GET | `/api/recorders/{id}/dash/manifest.mpd` | `Viewer` | DASH プレビューの MPD（`application/dash+xml`）。**引くこと自体がリースを延ばす**（引かなくなれば第 2 パイプラインは畳まれる） |
 | GET | `/api/recorders/{id}/dash/init.mp4` | `Viewer` | 同 Init セグメント（`video/mp4`）。同じくリースを延ばす |
@@ -2102,6 +2103,45 @@ flush する。応答ヘッダーは `text/event-stream; charset=utf-8` ＋ `Cac
 同じ値を導くので、**無くても一覧は成立する**（`width` / `height` だけは出ない ──
 一覧に `fps` は元から無い）。
 
+#### サムネイル（`<録画ファイル名>.mp4.png`）
+
+sidecar の隣に PNG を 1 枚置く。一覧の `hasThumbnail` はこのファイルの有無で、
+配信は `GET /api/recording-thumbnails/{*path}`。
+
+**撮るのは「録画ファイル名が決まった直後、プレビュー枝に届いた次のフレーム」1 枚である。**
+単発は `StartCore` が `LastFilename` を確定した時点、常時録画は `OnContinuousStatus` で
+セグメントのファイル名が変わった時点で要求を積み（`EventRecorder._thumbnailRequests`）、
+プレビュー枝の appsink のドレインが 1 枚で全部の要求を満たす。事前バッファを持つ構成では
+本編の先頭は要求を積む時点で既にリングの中にあるので、**サムネイルは本編の先頭ではなく
+トリガ時点付近の絵**になる。
+
+- **完了を待たない。** 録画中の一覧にもサムネイルが出る。本体が `error` / `timeout` で
+  終わっても PNG は残す（本体が消えれば `RecordingCleanup` の孤児処理が期限で消す）。
+  既に PNG が在れば上書きしない
+- **`.mp4` と `.mp4.json` と同じ連動で消える** ── `RecordingCleanup` は本体を消すときに
+  `.mp4.png` も消し、本体の無い `.mp4.png` は孤児として期限で消す
+- **best-effort。** 変換も書き込みも例外はログだけで、録画パイプラインへは返さない
+  （`thumbnail.capture failed` / `thumbnail.unsupported` / `thumbnail.write failed`）。
+  PNG が無いことは異常ではなく、配信は 404 を返す
+- **配信の経路の規則は本体と共有する**（`RecordingFiles.TryOpenCompanion` ── 解決に掛けるのは
+  本体の `.mp4` のパスで、`.png` を足すのはその後。root の外・拡張子違い・**root と PNG の間や
+  PNG 自身のリパースポイント**は 400、無い・開けないは 404）
+
+生成は**純マネージド**（`Components/ThumbnailImage.cs` と `Components/PngWriter.cs`。
+追加パッケージもネイティブ要素も無く、パイプラインの記述には触らない）。
+
+- 幅は**最大 320px**。ソースがそれ以下なら等倍で、高さは縦横比を保って四捨五入（最小 1）。
+  **`pixel-aspect-ratio` は見ない**ので、非正方画素のソースでは横に伸び縮みして見える
+- 縮小は出力画素ごとのボックス平均。YUV は Y / U / V を別々に平均してから RGB にする
+- **YUV → RGB は BT.709 limited range 固定**（caps の `colorimetry` は読まない）。
+  BT.601 のソースでは色がわずかにずれる
+- 対応する画素形式は `BGRA BGRx RGBA RGBx ARGB xRGB ABGR xBGR` / `RGB BGR` /
+  `YUY2 UYVY` / `NV12 NV21` / `I420 YV12`。それ以外は 1 行ログを残して撮らない
+- **stride は仮定している。** GstSharp.Net は `VideoInfo` の `Stride` / `Offset` を公開して
+  いないので、`gst_video_info_set_format` の既定レイアウト（4 バイト系は `width*4`、
+  それ以外は 4 バイト境界へ切り上げ、平面は Y の直後に UV）を仮定して読む。
+  buffer が別の stride で来ると絵が斜めにずれる ── 長さが足りない場合だけは検出して撮らない
+
 #### 一覧の源はメモリの索引（`Components/RecordingIndex.cs`）
 
 `GET /api/recordings` と `GET /api/recording-days` は要求ごとに走査しない。索引は
@@ -2113,6 +2153,14 @@ flush する。応答ヘッダーは `text/event-stream; charset=utf-8` ＋ `Cac
   **500ms デバウンスで全再構築**。差分更新にすると watcher のバッファ溢れが恒久的なずれになる。
   読んだ結果は `(パス, 長さ, 更新時刻)` をキーに覚えて読み直さない。`Error`（溢れ）は
   ログして 30 秒後に作り直す。
+  **録画中の項目だけは覚えず、作り直しのたびに開いて読み直す** ── 書き込みで握られている
+  間、ディレクトリ エントリ（`FileInfo` の長さ・更新時刻）は更新されずキーが固まるので、
+  覚えると `fragmented` と `length` が録画の終わりまで最初の走査の値のままになる。
+  この 2 つは開いたハンドルから読む（費用は録画中の本数ぶんの `open` 2 回 ──
+  `TryProbeInProgress`（書き込みを拒む共有で開けるかの検査）と、この読み直し）。
+  **録画中の項目は、長さと更新時刻の変化だけでは `recording` イベントを出さない**
+  ── 毎回伸びるので、出すと録画のあいだじゅう 500ms 間隔で通知が流れ続ける
+  （一覧を引けば伸びた長さは見える）。
   **デバウンスは「通知が止むまで待つ」形ではなく「最大 500ms の畳み込み」である**
   ── 録画中の `filesink` は `buffer-mode=unbuffered` で毎バッファ書き、数十 ms ごとに
   `Size` / `LastWrite` の通知が来続けるので、待つ形にすると録画が終わるまで一覧に出ない。

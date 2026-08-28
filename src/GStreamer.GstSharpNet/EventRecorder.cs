@@ -1707,6 +1707,11 @@ public partial class EventRecorder : ObservableObject, IDisposable
                             // 配信していないレコーダーの費用は変わらない。
                             _dash?.OnRawSample(sample);
                             OnPreview(sample);
+
+                            // **サムネイルは要求が積まれている 1 枚だけ。** 要求が無い
+                            // 間の費用はキューの空判定 1 回で、録画には触らない。
+                            if (!_thumbnailRequests.IsEmpty)
+                                CaptureThumbnail(sample);
                         }
                     }
                 }
@@ -1938,6 +1943,11 @@ public partial class EventRecorder : ObservableObject, IDisposable
                 && !string.Equals(owner.ContinuousLastFilename, currentFile, StringComparison.Ordinal))
             {
                 owner._continuousSegmentStarts[currentFile] = DateTimeOffset.UtcNow;
+
+                // **新しいセグメントごとに 1 回だけ**サムネイルを要求する
+                // （比較しているのは上書き前の旧値なので、同じ名前で 2 回積まない）。
+                if (running)
+                    owner._thumbnailRequests.Enqueue(currentFile);
             }
 
             // 停止の通知は最後のセグメントの確定を待ってから来る（ContinuousRecorder.Close）。
@@ -2150,6 +2160,10 @@ public partial class EventRecorder : ObservableObject, IDisposable
             bool quiesced = quiescing is null
                 || System.Threading.Tasks.Task.Run(() => quiescing.SetState(State.Null))
                     .Wait(SinkQuiesceTimeoutMs);
+
+            // 撮れずに残った要求は捨てる。取り出す相手（プレビュー枝）はいま退去したので、
+            // ここから先に来るフレームは無い。
+            _thumbnailRequests.Clear();
 
             // **ライブプレビューは quiesce の直後・同期で畳む。** 触っていたのは
             // 枝2 のコールバック（＝いま退去させた相手）なので、ここへ来た時点で
@@ -3751,6 +3765,7 @@ public partial class EventRecorder : ObservableObject, IDisposable
             if (!Path.IsPathRooted(filename))
                 filename = Path.Combine(OutputDirectory, filename);
             LastFilename = filename;
+
             var dirname = Path.GetDirectoryName(filename);
             if (dirname is not null && !Directory.Exists(dirname))
                 Directory.CreateDirectory(dirname);
@@ -3796,6 +3811,13 @@ public partial class EventRecorder : ObservableObject, IDisposable
             Components.ActivityLog.Error("recording.start fail", $"recorder='{Name}' file='{filename}' src pipeline refused to play");
             throw new InvalidOperationException("ERROR: pipeline doesn't want to play.");
         }
+
+        // サムネイルは 1 回だけ要求する。撮るのはプレビュー枝で、完了は待たない
+        // （録画中の一覧にもサムネイルが出る）。**録画が始まったと決まってから積む**
+        // ── 手前の失敗経路（名前・保存先・SetState）で投げた場合に、
+        // 生まれない録画への要求が残らない。
+        _thumbnailRequests.Enqueue(filename);
+
         Components.ActivityLog.Info("recording.start", $"recorder='{Name}' file='{filename}'");
         // 障害を起こしたまま復帰していないソースがあれば、この機会に Ready→Playing で戻す。
         //
@@ -3826,6 +3848,18 @@ public partial class EventRecorder : ObservableObject, IDisposable
     /// </summary>
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTimeOffset>
         _continuousSegmentStarts = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// サムネイルを撮ってほしい録画ファイルのフルパス。
+    ///
+    /// <para>
+    /// 積むのは録画ファイル名が決まった瞬間（<see cref="StartCore"/> と
+    /// 常時録画のセグメント開始）で、取り出すのは<b>プレビュー枝のストリーミングスレッド</b>
+    /// ── 別スレッドどうしなので並行キューにする。撮れるのは「要求の次に届いたフレーム」
+    /// なので、事前バッファのぶん本編の先頭より後ろ（トリガ時点付近）になる。
+    /// </para>
+    /// </summary>
+    private readonly ConcurrentQueue<string> _thumbnailRequests = new();
 
     /// <summary>
     /// 確定した appsrc の caps から採った映像の幅・高さ・フレームレート（分数）。
@@ -4265,6 +4299,107 @@ public partial class EventRecorder : ObservableObject, IDisposable
                 Log(DebugLevel.Warning, $"failed to write the recording sidecar for '{path}': {ex.Message}");
             }
         });
+    }
+
+    /// <summary>サムネイルの出力幅の上限（一覧の 1 枚として要る大きさ）。</summary>
+    private const int ThumbnailMaxWidth = 320;
+
+    /// <summary>
+    /// 溜まっているサムネイルの要求を、いま届いたプレビュー枝のフレーム 1 枚で満たす。
+    ///
+    /// <para>
+    /// <b>ストリーミングスレッドで走る。</b> 変換と縮小は map の中で終える
+    /// （生バイト列を持ち出して複製しない）。書き込みだけをスレッドプールへ逃がす。
+    /// </para>
+    /// <para>
+    /// <b>best-effort。</b> caps が読めない・対応しない画素形式は要求を捨てて
+    /// ログ 1 行で終わる（リトライしない ── 次のフレームでも結果は同じ）。
+    /// 例外はすべてここで握る（録画へ波及させない）。
+    /// </para>
+    /// </summary>
+    private void CaptureThumbnail(Sample sample)
+    {
+        try
+        {
+            string? format;
+            int width;
+            int height;
+
+            // Caps は MiniObject、GetStructure(0) は Boxed の所有コピー ── どちらも解放する。
+            using (var caps = sample.GetCaps())
+            {
+                using var structure = caps?.GetStructure(0);
+                format = structure?.GetString("format");
+
+                if (structure is null
+                    || format is null
+                    || !structure.GetInt("width", out width)
+                    || !structure.GetInt("height", out height))
+                {
+                    DropThumbnailRequests();
+                    Log(DebugLevel.Warning, "thumbnail.capture no caps");
+                    return;
+                }
+            }
+
+            Components.ThumbnailImage? image;
+            using (var buffer = sample.GetBuffer())
+            {
+                if (buffer is null)
+                {
+                    DropThumbnailRequests();
+                    Log(DebugLevel.Warning, "thumbnail.capture no buffer");
+                    return;
+                }
+
+                using var map = buffer.Map(MapFlags.Read);
+                if (!Components.ThumbnailImage.TryCreate(
+                        map.Span, format, width, height, ThumbnailMaxWidth, out image)
+                    || image is null)
+                {
+                    DropThumbnailRequests();
+                    Log(DebugLevel.Warning, $"thumbnail.unsupported format={format} {width}x{height}");
+                    return;
+                }
+            }
+
+            // 1 枚を全員で共有する（不変な record なので複製は要らない）。
+            Components.ThumbnailImage picture = image;
+
+            while (_thumbnailRequests.TryDequeue(out string? path))
+            {
+                // **反復ごとに束縛し直す。** out 変数はループの外側の 1 つなので、
+                // そのまま捕まえると全部の書き込みが最後のパスを見る。
+                string target = path;
+                ThreadPool.QueueUserWorkItem(_ =>
+                {
+                    try
+                    {
+                        Components.RecordingSidecar.WriteThumbnail(target, picture);
+                        Log(DebugLevel.Debug, $"thumbnail.written path={target}");
+                    }
+                    catch (Exception ex)
+                    {
+                        Log(DebugLevel.Warning, $"thumbnail.write failed: {ex.Message}");
+                    }
+                });
+            }
+        }
+        catch (Exception ex)
+        {
+            // **例外経路でも要求は捨てる。** 残すと、投げる原因（map できない buffer 等）が
+            // 続く限りフレームごとに再試行とログが出る。撮れなかった 1 回で諦める。
+            DropThumbnailRequests();
+            Log(DebugLevel.Warning, $"thumbnail.capture failed: {ex.Message}");
+        }
+    }
+
+    /// <summary>撮れないと分かった要求を捨てる（次のフレームで撮り直さない）。</summary>
+    private void DropThumbnailRequests()
+    {
+        while (_thumbnailRequests.TryDequeue(out _))
+        {
+        }
     }
 
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]

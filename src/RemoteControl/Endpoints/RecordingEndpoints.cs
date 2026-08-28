@@ -36,6 +36,9 @@ internal static class RecordingEndpoints
     /// <summary>配信する MIME 型。録画は必ず MP4（<c>RecordingCleanup.Extension</c> で絞ってある）。</summary>
     private const string VideoContentType = "video/mp4";
 
+    /// <summary>サムネイルの MIME 型。書くのは <c>Components.PngWriter</c> ひとつだけ。</summary>
+    private const string ThumbnailContentType = "image/png";
+
     /// <summary>
     /// 開いたファイルについて、同じ 1 回の読み取りから採った値。
     /// </summary>
@@ -227,6 +230,40 @@ internal static class RecordingEndpoints
                     ctx, 200, dto, RemoteApiJsonContext.Default.RecordingFragmentsDto);
             }
         });
+
+        // 1 ファイルのサムネイル。**要求に載るのは本体 mp4 の相対パス**で、
+        // `.png` はサーバー側で足す（クライアントに sidecar の命名規則を持たせない）。
+        app.MapGet("/api/recording-thumbnails/{*path}", async (HttpContext ctx) =>
+        {
+            if (!await AuthGate.AllowAsync(ctx, auth, RemoteRole.Viewer, write: false))
+                return;
+
+            string root = await backend.GetRecordingsRootAsync(ctx.RequestAborted);
+            FileStream? stream = await OpenThumbnailAsync(ctx, root);
+            if (stream is null)
+                return;
+
+            using (stream)
+            {
+                // PNG は書かれたきり伸びないので、長さと更新時刻は 1 回読めば足りる。
+                long length = stream.Length;
+                DateTime lastWrite = File.GetLastWriteTimeUtc(stream.SafeFileHandle);
+
+                // **本体と同じ no-cache。** 再検証（If-None-Match → 304）で済ませられる。
+                ctx.Response.Headers.CacheControl = "no-cache";
+
+                // `X-In-Progress` / `X-Codecs` は付けない ── どちらも動画の本文の性質で、
+                // 静止画には意味が無い。Range も断る（一度に返る大きさしかない）。
+                var result = TypedResults.Stream(
+                    stream,
+                    ThumbnailContentType,
+                    lastModified: lastWrite,
+                    entityTag: new EntityTagHeaderValue(RemoteApiRules.RecordingETag(length, lastWrite)),
+                    enableRangeProcessing: false);
+
+                await result.ExecuteAsync(ctx);
+            }
+        });
     }
 
     /// <summary>
@@ -393,6 +430,43 @@ internal static class RecordingEndpoints
 
         if (RecordingFiles.TryOpen(
                 root, RemoteApiRules.FromUrlPath(urlPath), out FileStream? stream, out string? reason))
+        {
+            return stream;
+        }
+
+        int status = reason is "not found" or "unavailable" ? 404 : 400;
+        await ApiResponse.WriteErrorAsync(ctx, status, ApiResponse.HttpLayerExitCode, reason);
+        return null;
+    }
+
+    /// <summary>
+    /// 要求された経路の録画に対応するサムネイル（<c>&lt;録画ファイル名&gt;.png</c>）を開く。
+    /// 開けなければ<b>応答を書き終えて</b> <see langword="null"/> を返す。
+    ///
+    /// <para>
+    /// <b>要求に載るのは本体の <c>.mp4</c> の相対パスで、解決の規則も本体と同じ</b>
+    /// （<see cref="RemoteApiRules.TryResolveUnderRoot"/> ── 拡張子 <c>.mp4</c> まで含めて
+    /// 同じ規則を通す）。<c>.png</c> を足すのは解決の後である。
+    /// </para>
+    /// <para>
+    /// <b>本体が在ることは要求しない。</b> サムネイルは録画ファイル名が決まった直後に
+    /// 書かれるもので、本体が失敗して残らなくても PNG だけが残りうる
+    /// （本体が消えれば <c>RecordingCleanup</c> の孤児処理が PNG も消す）。
+    /// </para>
+    /// <para>
+    /// 断り方は本体と同じ区分 ── 規則で断ったものが 400、無い・開けないものが 404。
+    /// <b>リパースポイントの検査も本体と共有する</b>
+    /// （<see cref="RecordingFiles.TryOpenCompanion"/> ── 書く側は一時ファイルを
+    /// 置き換える形なので、共有指定も本体と同じでなければならない）。
+    /// </para>
+    /// </summary>
+    private static async Task<FileStream?> OpenThumbnailAsync(HttpContext ctx, string root)
+    {
+        string urlPath = ctx.Request.RouteValues["path"]?.ToString() ?? string.Empty;
+
+        if (RecordingFiles.TryOpenCompanion(
+                root, RemoteApiRules.FromUrlPath(urlPath), RecordingSidecar.ThumbnailExtension,
+                out FileStream? stream, out string? reason))
         {
             return stream;
         }

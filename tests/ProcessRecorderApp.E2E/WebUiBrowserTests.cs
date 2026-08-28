@@ -393,7 +393,9 @@ public sealed class WebUiBrowserTests(PublishedApp app, ITestOutputHelper output
 
         Assert.True(
             await WaitForFirstRowAsync(browser, RowIsRecordingFragment, PlaybackBudget),
-            "録画中のファイルが fragmented として一覧に出ませんでした。");
+            "録画中のファイルが fragmented として一覧に出ませんでした: "
+                + await browser.EvaluateStringAsync(FirstRowState, Ct)
+                + Environment.NewLine + instance.DiagnosticDump());
 
         Assert.True(await browser.EvaluateBoolAsync(ClickFirstPlay, Ct), "一覧に行がありません。");
         Assert.True(
@@ -735,7 +737,9 @@ public sealed class WebUiBrowserTests(PublishedApp app, ITestOutputHelper output
 
         Assert.True(
             await WaitForFirstRowAsync(browser, RowIsRecordingFragment, PlaybackBudget),
-            "録画中のファイルが fragmented として一覧に出ませんでした。");
+            "録画中のファイルが fragmented として一覧に出ませんでした: "
+                + await browser.EvaluateStringAsync(FirstRowState, Ct)
+                + Environment.NewLine + instance.DiagnosticDump());
 
         Assert.True(await browser.EvaluateBoolAsync(ClickFirstPlay, Ct), "一覧に行がありません。");
         Assert.True(
@@ -1188,7 +1192,9 @@ public sealed class WebUiBrowserTests(PublishedApp app, ITestOutputHelper output
 
         Assert.True(
             await WaitForFirstRowAsync(browser, RowIsRecordingFragment, PlaybackBudget),
-            "録画中のファイルが fragmented として一覧に出ませんでした。");
+            "録画中のファイルが fragmented として一覧に出ませんでした: "
+                + await browser.EvaluateStringAsync(FirstRowState, Ct)
+                + Environment.NewLine + instance.DiagnosticDump());
 
         Assert.True(await browser.EvaluateBoolAsync(ClickFirstPlay, Ct), "一覧に行がありません。");
         Assert.True(

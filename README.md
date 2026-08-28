@@ -147,9 +147,10 @@ goes away.
   `OutputDirectory` is resolved against that same folder, and a template that is already an
   absolute path ignores the setting entirely.
 - A finished recording gets a small **sidecar file** beside it — `<name>.mp4.json`, holding the
-  recorder name, the start and end time, the duration and the video size (a `<name>.mp4.png`
-  thumbnail will join it later). It is written on a best-effort basis: if it cannot be written the
-  recording is unaffected, and the listing still shows the same recording without it.
+  recorder name, the start and end time, the duration and the video size — together with a
+  `<name>.mp4.png` thumbnail taken near the trigger moment. Both are written on a best-effort
+  basis: if they cannot be written the recording is unaffected, and the listing still shows the
+  same recording without them.
 - Old recordings can be **deleted automatically**. Set `RecordingRetentionDays` to the number of
   days to keep (`0`, the default, deletes nothing) and `RecordingCleanupIntervalHours` to how
   often the sweep runs. It also runs once right after startup. Sub-folders of the output folder

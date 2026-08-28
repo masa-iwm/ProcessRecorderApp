@@ -100,6 +100,30 @@ public sealed class RecordingIndexTests : IDisposable
     private static RecordingEntry Single(RecordingIndex index)
         => Assert.Single(index.Snapshot());
 
+    /// <summary>
+    /// 追記のために開く。<b>共有違反だけは待って開き直す</b> ── 索引の走査は
+    /// <c>RecordingFiles.TryProbeInProgress</c>（<see cref="FileShare.Read"/> で開けるかの検査）で
+    /// 一瞬だけ書き込みを拒む形で握るので、その窓に当たると追記が弾かれる
+    /// （テスト側の都合で、検査したい振る舞いとは関係のない赤になる）。
+    /// </summary>
+    private static FileStream OpenForAppend(string path)
+    {
+        const int SharingViolation = unchecked((int)0x80070020);
+        const int MaxAttempts = 20;
+
+        for (int attempt = 1; ; attempt++)
+        {
+            try
+            {
+                return new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.Read);
+            }
+            catch (IOException ex) when (ex.HResult == SharingViolation && attempt < MaxAttempts)
+            {
+                Thread.Sleep(50);
+            }
+        }
+    }
+
     // ---- 合成 -----------------------------------------------------------
 
     [Fact]
@@ -367,8 +391,7 @@ public sealed class RecordingIndexTests : IDisposable
     [Fact]
     public void ACompletedRecordingIsReportedAsCompleted()
     {
-        // 差分の規則そのものを固定する（録画中のファイルは L1 では作れない ──
-        // filesink が握っている状態を再現できるのは E2E だけ）。
+        // 差分の規則そのものを固定する（走査を挟まずに、前後の一覧だけで決まること）。
         var recording = new RecordingEntry(
             "a.mp4", 100, DateTime.UnixEpoch, true, false, DateTime.UnixEpoch, "cam1", null, null, null, false);
         var completed = recording with { InProgress = false, Length = 200 };
@@ -379,14 +402,228 @@ public sealed class RecordingIndexTests : IDisposable
     }
 
     [Fact]
-    public void AGrowingRecordingIsReportedAsAnUpdate()
+    public void AGrowingSettledRecordingIsReportedAsAnUpdate()
     {
-        var recording = new RecordingEntry(
-            "a.mp4", 100, DateTime.UnixEpoch, true, false, DateTime.UnixEpoch, "cam1", null, null, null, false);
+        var settled = new RecordingEntry(
+            "a.mp4", 100, DateTime.UnixEpoch, false, false, DateTime.UnixEpoch, "cam1", null, null, null, false);
 
-        var changes = RecordingIndex.Diff(new[] { recording }, new[] { recording with { Length = 200 } });
+        var changes = RecordingIndex.Diff(new[] { settled }, new[] { settled with { Length = 200 } });
 
         Assert.Equal(RecordingIndexChangeKind.Updated, Assert.Single(changes).Kind);
+    }
+
+    [Fact]
+    public void AGrowingInProgressRecordingIsNotReported()
+    {
+        // 録画中は作り直しのたびに長さが伸びる。ここで Updated を出すと、録画のあいだじゅう
+        // デバウンスの間隔で通知が流れ続ける（購読側は合図として一覧を引き直す）。
+        var recording = new RecordingEntry(
+            "a.mp4", 100, DateTime.UnixEpoch, true, false, DateTime.UnixEpoch, "cam1", null, null, null, false);
+        var grown = recording with { Length = 200, LastWriteTimeUtc = DateTime.UnixEpoch.AddSeconds(1) };
+
+        Assert.Empty(RecordingIndex.Diff(new[] { recording }, new[] { grown }));
+
+        // 長さ以外が動いたぶんは録画中でも出す。
+        Assert.Equal(
+            RecordingIndexChangeKind.Updated,
+            Assert.Single(RecordingIndex.Diff(new[] { recording }, new[] { grown with { Fragmented = true } })).Kind);
+    }
+
+    [Fact]
+    public void ARecordingThatIsStillOpenIsReadAgainOnEveryRebuild()
+    {
+        // **索引を先に作る。** 置いてから作ると 1 回目の走査で拾ってしまい、
+        // 「作り直しで読み直す」ことを検査できない。
+        using var index = new RecordingIndex(_root);
+
+        const string name = "20260828_101500_cam1.mp4";
+
+        // 録画中の filesink と同じ握り方（書き込みで握ったまま・共有は読み取りと削除）。
+        using var stream = new FileStream(
+            Path.Combine(_root, name), FileMode.CreateNew, FileAccess.Write,
+            FileShare.Read | FileShare.Delete);
+
+        index.Rebuild();
+
+        // mp4mux が moov を書く前の状態。ここで読んだ値が持ち越されてはいけない。
+        var empty = Single(index);
+        Assert.True(empty.InProgress);
+        Assert.False(empty.Fragmented);
+        Assert.Equal(0, empty.Length);
+
+        // **flushToDisk は使わない。** メタデータまで書かせるとディレクトリ エントリが
+        // 更新されうる ── 「書き込み中は古いまま」という前提そのものが消える。
+        byte[] header = FragmentedMp4();
+        stream.Write(header);
+        stream.Flush();
+
+        index.Rebuild();
+
+        // 握られたままなので FileInfo の長さ・更新時刻は据え置かれる。開いたハンドルから
+        // 読み直していなければ、fragmented も長さも 1 回目のまま止まる。
+        var grown = Single(index);
+        Assert.True(grown.InProgress);
+        Assert.True(grown.Fragmented);
+        Assert.Equal(header.Length, grown.Length);
+    }
+
+    [Fact]
+    public void ARecordingThatOnlyGrowsDoesNotProduceAChange()
+    {
+        using var index = new RecordingIndex(_root);
+
+        const string name = "20260828_101500_cam1.mp4";
+        using var stream = new FileStream(
+            Path.Combine(_root, name), FileMode.CreateNew, FileAccess.Write,
+            FileShare.Read | FileShare.Delete);
+
+        // ヘッダーは 1 回目の作り直しより前に書く ── 間に挟むと fragmented が
+        // false → true へ動いてしまい、「長さだけが伸びた」ことにならない。
+        byte[] header = FragmentedMp4();
+        stream.Write(header);
+        stream.Flush();
+
+        index.Rebuild();
+        Assert.Equal(header.Length, Single(index).Length);
+
+        // 1 回目の Added を数えないよう、購読はここから。
+        var changes = new ConcurrentQueue<RecordingIndexChange>();
+        index.Changed += changes.Enqueue;
+
+        stream.Write(new byte[4096]);
+        stream.Flush();
+
+        index.Rebuild();
+
+        // 索引の長さは伸びている（＝読み直してはいる）が、通知は出ない。
+        Assert.Equal(header.Length + 4096, Single(index).Length);
+        Assert.Empty(changes);
+    }
+
+    [Fact]
+    public void AnInProgressRecordingWithAnUnparsableNameKeepsItsStartTime()
+    {
+        using var index = new RecordingIndex(_root);
+
+        // **テンプレートに合わない名前。** 録画中なので sidecar も尺も無く、
+        // ファイル名からも読めない ── 開始時刻はフォールバックだけが決める。
+        // ここに更新時刻を使うと、作り直しのたびに動いて Updated が流れ続ける。
+        using var stream = new FileStream(
+            Path.Combine(_root, "whatever.mp4"), FileMode.CreateNew, FileAccess.Write,
+            FileShare.Read | FileShare.Delete);
+
+        // ヘッダーは 1 回目の作り直しより前に書く（fragmented が動くと
+        // 「長さだけ伸びた」ことにならない）。
+        byte[] header = FragmentedMp4();
+        stream.Write(header);
+        stream.Flush();
+
+        index.Rebuild();
+        var first = Single(index);
+        Assert.True(first.InProgress);
+
+        var changes = new ConcurrentQueue<RecordingIndexChange>();
+        index.Changed += changes.Enqueue;
+
+        // ハンドル由来の更新時刻が確実に動くだけ待つ（NTFS の粒度は約 15.6ms）。
+        Thread.Sleep(50);
+        stream.Write(new byte[4096]);
+        stream.Flush();
+
+        index.Rebuild();
+
+        var grown = Single(index);
+        Assert.Equal(header.Length + 4096, grown.Length);   // 読み直してはいる
+        Assert.Equal(first.StartTimeUtc, grown.StartTimeUtc);
+        Assert.Empty(changes);
+    }
+
+    [Fact]
+    public void ARecordingThatBecomesFragmentedWhileOpenIsReportedAsAnUpdate()
+    {
+        using var index = new RecordingIndex(_root);
+
+        const string name = "20260828_101500_cam1.mp4";
+        using var stream = new FileStream(
+            Path.Combine(_root, name), FileMode.CreateNew, FileAccess.Write,
+            FileShare.Read | FileShare.Delete);
+
+        index.Rebuild();
+        Assert.False(Single(index).Fragmented);
+
+        var changes = new ConcurrentQueue<RecordingIndexChange>();
+        index.Changed += changes.Enqueue;
+
+        // mp4mux が moov（mvex 入り）を書いた。長さ以外が動いたので通知は出る。
+        stream.Write(FragmentedMp4());
+        stream.Flush();
+
+        index.Rebuild();
+
+        var entry = Single(index);
+        Assert.True(entry.InProgress);
+        Assert.True(entry.Fragmented);
+        Assert.Equal(RecordingIndexChangeKind.Updated, Assert.Single(changes).Kind);
+    }
+
+    [Fact]
+    public void AThumbnailThatAppearsWhileRecordingIsReportedAsAnUpdate()
+    {
+        using var index = new RecordingIndex(_root);
+
+        const string name = "20260828_101500_cam1.mp4";
+        string path = Path.Combine(_root, name);
+        using var stream = new FileStream(
+            path, FileMode.CreateNew, FileAccess.Write, FileShare.Read | FileShare.Delete);
+
+        stream.Write(FragmentedMp4());
+        stream.Flush();
+
+        index.Rebuild();
+        Assert.False(Single(index).HasThumbnail);
+
+        var changes = new ConcurrentQueue<RecordingIndexChange>();
+        index.Changed += changes.Enqueue;
+
+        File.WriteAllBytes(RecordingSidecar.ThumbnailPathFor(path), [1, 2, 3, 4]);
+
+        index.Rebuild();
+
+        var entry = Single(index);
+        Assert.True(entry.InProgress);
+        Assert.True(entry.HasThumbnail);
+        Assert.Equal(RecordingIndexChangeKind.Updated, Assert.Single(changes).Kind);
+    }
+
+    [Fact]
+    public void ASettledRecordingWithASidecarIsNotOpenedAgain()
+    {
+        string path = WriteRecording("20260828_101500_cam1.mp4", FragmentedMp4());
+        WriteSidecar(path, new RecordingSidecar(
+            RecordingSidecar.CurrentVersion, "cam1",
+            new DateTimeOffset(2026, 8, 28, 1, 15, 0, TimeSpan.Zero),
+            new DateTimeOffset(2026, 8, 28, 1, 16, 0, TimeSpan.Zero),
+            60_000, null, 1280, 720, 30));
+
+        using var index = new RecordingIndex(_root);
+        var changes = new ConcurrentQueue<RecordingIndexChange>();
+        index.Changed += changes.Enqueue;
+
+        Assert.True(Single(index).Fragmented);
+
+        // **誰にも開かせない。** 確定済み（sidecar 在り）を開き直す実装なら、録画中の判定で
+        // 弾かれて InProgress=true になるか、ヘッダーを読めずに Fragmented=false へ倒れる。
+        using (var exclusive = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            index.Rebuild();
+
+            var entry = Single(index);
+            Assert.False(entry.InProgress);
+            Assert.True(entry.Fragmented);
+            Assert.Equal(60_000, entry.DurationMs);
+        }
+
+        Assert.Empty(changes);
     }
 
     // ---- watcher --------------------------------------------------------
@@ -426,7 +663,7 @@ public sealed class RecordingIndexTests : IDisposable
 
         for (int i = 0; i < 10; i++)
         {
-            using (var stream = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.Read))
+            using (var stream = OpenForAppend(path))
                 stream.WriteByte((byte)i);
             Thread.Sleep(20);
         }

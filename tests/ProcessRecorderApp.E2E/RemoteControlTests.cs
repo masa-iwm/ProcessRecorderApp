@@ -1376,7 +1376,13 @@ public sealed class RemoteControlTests(PublishedApp app, ITestOutputHelper outpu
         int port = WaitForPort(instance);
         using var client = CreateClient(port);
 
-        foreach (string path in new[] { "api/recorders", "api/settings", "api/variables", "api/recordings" })
+        // **派生 API も同じ扱い。** 断りは経路の解決より先で、無いファイルでも
+        // 404 ではなく 401 が返る（在るかどうかを名乗る前に知らせない）。
+        foreach (string path in new[]
+                 {
+                     "api/recorders", "api/settings", "api/variables", "api/recordings",
+                     "api/recording-thumbnails/x.mp4",
+                 })
         {
             using var response = await client.GetAsync(path, Ct);
             using var body = await ExpectAsync(response, HttpStatusCode.Unauthorized);

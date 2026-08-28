@@ -373,4 +373,87 @@ public sealed class RecordingFilesTests : IDisposable
 
         Assert.Equal("inside.mp4", Assert.Single(RecordingFiles.Enumerate(linkedRoot)).RelativePath);
     }
+
+    /// <summary>
+    /// 派生ファイル（サムネイル等）は<b>本体の相対パス</b>で要求され、拡張子は解決の後で足される。
+    /// 本体が無くても派生だけは配る（本体が失敗して残らない場合がある）。
+    /// </summary>
+    [Fact]
+    public void ACompanionIsOpenedByTheRecordingPathEvenWithoutTheRecording()
+    {
+        CreateFile("2026/07/a.mp4.png", length: 11);
+
+        Assert.True(RecordingFiles.TryOpenCompanion(
+            _root, "2026/07/a.mp4", ".png", out var stream, out string? reason));
+        Assert.Null(reason);
+        using (stream)
+            Assert.Equal(11, stream!.Length);
+
+        // 本体の相対パス以外は解決の時点で断る（.mp4 でなければ通らない）。
+        Assert.False(RecordingFiles.TryOpenCompanion(_root, "2026/07/a.mp4.png", ".png", out _, out reason));
+        Assert.Equal("path rejected", reason);
+
+        // 派生が無ければ「無い」（本体の有無ではない）。
+        CreateFile("b.mp4");
+        Assert.False(RecordingFiles.TryOpenCompanion(_root, "b.mp4", ".png", out _, out reason));
+        Assert.Equal("not found", reason);
+    }
+
+    /// <summary>
+    /// <b>派生ファイル自身がリンクなら配らない。</b> 実体は root の外でありうる
+    /// ── 本体の検査だけを通しても、配るのは派生の実体である。
+    /// </summary>
+    [Fact]
+    public void ACompanionThatIsItselfALinkIsNotServed()
+    {
+        CreateFile("real.mp4");
+        CreateFile("real.png", length: 7);
+
+        string link = Path.Combine(_root, "linked.mp4.png");
+        try
+        {
+            // ファイルのシンボリックリンクは管理者か開発者モードが要る。
+            File.CreateSymbolicLink(link, Path.Combine(_root, "real.png"));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or PlatformNotSupportedException)
+        {
+            Assert.Skip("no file symbolic link could be created here (" + ex.GetType().Name + ")");
+            return;
+        }
+
+        Assert.False(RecordingFiles.TryOpenCompanion(
+            _root, "linked.mp4", ".png", out var stream, out string? reason));
+        Assert.Null(stream);
+        Assert.Equal("reparse point", reason);
+    }
+
+    /// <summary>
+    /// root と派生の間にリパースポイントがあれば配らない ── 本体の配信と同じ範囲。
+    /// </summary>
+    [Fact]
+    public void ACompanionBehindAReparsePointIsNotServed()
+    {
+        string target = Path.Combine(_root, "real");
+        Directory.CreateDirectory(target);
+        CreateFile("real/inside.mp4");
+        CreateFile("real/inside.mp4.png", length: 7);
+
+        string link = Path.Combine(_root, "link");
+        if (!TryCreateReparsePoint(link, target, out string skipReason))
+        {
+            Assert.Skip("no reparse point could be created here (" + skipReason + ")");
+            return;
+        }
+
+        // 直接の経路では配れる（リンク越しだけを断っていることの対照）。
+        Assert.True(RecordingFiles.TryOpenCompanion(
+            _root, "real/inside.mp4", ".png", out var direct, out string? reason));
+        direct!.Dispose();
+        Assert.Null(reason);
+
+        Assert.False(RecordingFiles.TryOpenCompanion(
+            _root, "link/inside.mp4", ".png", out var stream, out reason));
+        Assert.Null(stream);
+        Assert.Equal("reparse point", reason);
+    }
 }

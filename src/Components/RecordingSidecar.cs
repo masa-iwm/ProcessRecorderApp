@@ -48,7 +48,7 @@ public sealed record RecordingSidecar(
     /// <summary>sidecar のファイル名に足す拡張子。</summary>
     public const string Extension = ".json";
 
-    /// <summary>サムネイル（波 5）のファイル名に足す拡張子。</summary>
+    /// <summary>サムネイルのファイル名に足す拡張子。</summary>
     public const string ThumbnailExtension = ".png";
 
     /// <summary>読み込む上限。壊れた・別物の巨大なファイルを丸ごとメモリへ載せない。</summary>
@@ -102,6 +102,48 @@ public sealed record RecordingSidecar(
         {
             using (var stream = new FileStream(temporary, FileMode.Create, FileAccess.Write, FileShare.None))
                 JsonSerializer.Serialize(stream, sidecar, RecordingSidecarJsonContext.Default.RecordingSidecar);
+
+            File.Move(temporary, path, overwrite: true);
+        }
+        catch
+        {
+            try { File.Delete(temporary); } catch { /* 後始末の失敗で元の例外を隠さない */ }
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// 録画に付くサムネイル（<c>&lt;録画ファイル名&gt;.png</c>）を書く。
+    ///
+    /// <para>
+    /// <b>既に在れば何もしない。</b> サムネイルは録画ファイル名が決まった直後の
+    /// 1 枚を写したもので、後から撮り直して意味が変わるものではない
+    /// （<see cref="Write"/> と同じ規律）。存在確認と <c>Move</c> の間の競合は許容する
+    /// ── 撮る側は 1 本の録画につき 1 回しか要求しない。
+    /// </para>
+    /// <para>
+    /// <b>一時ファイルへ書いてから置き換える。</b> 読む側（索引・配信）は録画中の
+    /// フォルダーを走査しているので、途中まで書けた PNG を見せない。
+    /// 例外は呼び出し側で握り潰す（録画そのものを止めない）。
+    /// </para>
+    /// </summary>
+    public static void WriteThumbnail(string recordingPath, ThumbnailImage image)
+    {
+        ArgumentNullException.ThrowIfNull(recordingPath);
+        ArgumentNullException.ThrowIfNull(image);
+
+        string path = ThumbnailPathFor(recordingPath);
+        if (File.Exists(path))
+            return;
+
+        // 一時ファイルは同じフォルダーに置く（Move を同一ボリューム内の置換にするため）。
+        // 名前は毎回一意にする ── 索引が拾わない拡張子なので、残っても Cleanup の
+        // 対象外のまま害が無い。
+        string temporary = path + ".tmp-" + Guid.NewGuid().ToString("N");
+        try
+        {
+            using (var stream = new FileStream(temporary, FileMode.Create, FileAccess.Write, FileShare.None))
+                PngWriter.Write(stream, image.Width, image.Height, image.Rgb24);
 
             File.Move(temporary, path, overwrite: true);
         }

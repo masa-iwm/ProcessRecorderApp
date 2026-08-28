@@ -51,7 +51,10 @@ public enum RecordingIndexChangeKind
     /// <summary>ファイルが消えた。</summary>
     Removed,
 
-    /// <summary>長さ・更新時刻・sidecar・サムネイルのいずれかが変わった。</summary>
+    /// <summary>
+    /// 長さ・更新時刻・sidecar・サムネイルのいずれかが変わった。
+    /// <b>録画中どうしのときは長さ・更新時刻の変化では出ない</b>（<see cref="RecordingIndex.Diff"/>）。
+    /// </summary>
     Updated,
 }
 
@@ -78,6 +81,8 @@ public sealed record RecordingDayCount(string Date, int Count);
 /// <b>作り直しは全再構築で、読んだ結果は <c>(パス, 長さ, 更新時刻)</c> で覚えておく。</b>
 /// 差分更新にすると通知の取りこぼし（<see cref="FileSystemWatcher"/> のバッファ溢れ）が
 /// そのまま恒久的なずれになる。全再構築なら次の通知で必ず追いつく。
+/// <b>録画中のものは覚えず、作り直しのたびに開いて読み直す</b>
+/// ── 書き込みで握られている間はディレクトリ エントリが更新されず、キーが固まるため。
 /// </para>
 /// <para>
 /// <b><see cref="Snapshot"/> と <see cref="Rebind"/> はどのスレッドからでも呼べる。</b>
@@ -290,7 +295,18 @@ public sealed partial class RecordingIndex : IDisposable
             changed(change);
     }
 
-    /// <summary>前後の一覧を突き合わせて差分を作る。どちらも相対パスで整列している必要は無い。</summary>
+    /// <summary>
+    /// 前後の一覧を突き合わせて差分を作る。どちらも相対パスで整列している必要は無い。
+    ///
+    /// <para>
+    /// <b>旧・新ともに録画中の項目は、長さと更新時刻の変化だけでは
+    /// <see cref="RecordingIndexChangeKind.Updated"/> を出さない。</b> 録画中は作り直しの
+    /// たびに開いて読み直すので長さが毎回伸び、そのままだと録画のあいだじゅう
+    /// <see cref="DebounceMilliseconds"/> 間隔で通知が出続ける（購読側は合図として一覧を
+    /// 引き直すので、そのぶん無駄な要求になる）。<see cref="Snapshot"/> の
+    /// <see cref="RecordingEntry.Length"/> は最新のままなので、一覧を引けば伸びた長さは見える。
+    /// </para>
+    /// </summary>
     internal static IReadOnlyList<RecordingIndexChange> Diff(
         IReadOnlyList<RecordingEntry> previous, IReadOnlyList<RecordingEntry> current)
     {
@@ -309,9 +325,15 @@ public sealed partial class RecordingIndex : IDisposable
             }
 
             if (old.InProgress && !entry.InProgress)
+            {
                 changes.Add(new RecordingIndexChange(RecordingIndexChangeKind.Completed, entry.RelativePath));
-            else if (old != entry)
+            }
+            else if (old.InProgress && entry.InProgress
+                ? WithoutGrowth(old) != WithoutGrowth(entry)
+                : old != entry)
+            {
                 changes.Add(new RecordingIndexChange(RecordingIndexChangeKind.Updated, entry.RelativePath));
+            }
         }
 
         foreach (string path in before.Keys)
@@ -319,6 +341,14 @@ public sealed partial class RecordingIndex : IDisposable
 
         return changes;
     }
+
+    /// <summary>
+    /// 「書き足されただけ」を無視して比べるための形。<b>比較の中だけで使う</b>
+    /// ── <see cref="RecordingEntry"/> の形は変えず、<see cref="Snapshot"/> には
+    /// 最新の長さ・更新時刻を載せたままにする。
+    /// </summary>
+    private static RecordingEntry WithoutGrowth(RecordingEntry entry)
+        => entry with { Length = 0, LastWriteTimeUtc = default };
 
     public void Dispose()
     {
@@ -388,20 +418,43 @@ public sealed partial class RecordingIndex : IDisposable
                 continue;
             }
 
-            string key = MakeKey(file.FullName, file.Length, file.LastWriteTimeUtc, sidecarFile);
-            if (carried is null || !carried.TryGetValue(key, out FileFacts? cached))
+            long length = file.Length;
+            DateTime lastWriteTimeUtc = file.LastWriteTimeUtc;
+            FileFacts? cached;
+
+            if (inProgress)
             {
-                // 落としたものは facts に入らないので、次の走査でも必ず読み直される。
-                if (!TryReadFacts(file, hasSidecar ? sidecarPath : null, inProgress, out cached))
+                // **録画中は覚えない（キーが一致しても持ち越さない）。** 書き込みで握られている
+                // 間、ディレクトリ エントリ（FileInfo の長さ・更新時刻）は更新されないので
+                // キーが固まる ── 覚えると、最初の走査で読んだ値（mp4mux が moov を書く前なら
+                // fragmented=false・長さ 0）が録画の終わりまで反転しない。読み直す費用は
+                // 録画中の本数（通常 1〜数件）× 作り直しごとに 1 回開くぶん。
+                if (!TryReadFacts(file, null, inProgress: true, ref length, ref lastWriteTimeUtc, out cached))
                     continue;
             }
+            else
+            {
+                // 確定済み（sidecar 在り、または閉じている）。長さ・更新時刻は
+                // ディレクトリ エントリの値で正しいので、そのままキーにして読み直さない。
+                string key = MakeKey(file.FullName, length, lastWriteTimeUtc, sidecarFile);
+                if (carried is null || !carried.TryGetValue(key, out cached))
+                {
+                    // 落としたものは facts に入らないので、次の走査でも必ず読み直される。
+                    if (!TryReadFacts(
+                            file, hasSidecar ? sidecarPath : null, inProgress: false,
+                            ref length, ref lastWriteTimeUtc, out cached))
+                    {
+                        continue;
+                    }
+                }
 
-            facts[key] = cached;
+                facts[key] = cached;
+            }
 
             entries.Add(new RecordingEntry(
                 candidate.RelativePath,
-                file.Length,
-                file.LastWriteTimeUtc,
+                length,
+                lastWriteTimeUtc,
                 inProgress,
                 cached.Fragmented,
                 cached.StartTimeUtc,
@@ -423,17 +476,29 @@ public sealed partial class RecordingIndex : IDisposable
 
     /// <summary>
     /// ファイルを読んで決まるぶん（sidecar・fragmented・尺・開始時刻）を作る。
-    /// sidecar が無いときのフォールバックはファイル名 → <c>mvhd</c> の尺 → 更新時刻の順。
+    /// sidecar が無いときのフォールバックはファイル名 → <c>mvhd</c> の尺 → 更新時刻の順で、
+    /// <b>録画中だけは最後を作成時刻にする</b>（更新時刻は伸びるたびに動くため）。
     /// 消えていた・権限が無いものは <see langword="false"/>（一覧から落とす）。
+    ///
+    /// <para>
+    /// <paramref name="length"/> と <paramref name="lastWriteTimeUtc"/> は
+    /// <b>録画中のときだけ</b>、開いたハンドルから読んだ値で置き換える。確定済みでも
+    /// 置き換えると、キャッシュ経路（<see cref="FileInfo"/> の値）と読み直し経路で
+    /// 同じファイルの値が揺れて、幻の <see cref="RecordingIndexChangeKind.Updated"/> が出る。
+    /// </para>
     /// </summary>
     private static bool TryReadFacts(
-        FileInfo file, string? sidecarPath, bool inProgress, [NotNullWhen(true)] out FileFacts? facts)
+        FileInfo file, string? sidecarPath, bool inProgress,
+        ref long length, ref DateTime lastWriteTimeUtc, [NotNullWhen(true)] out FileFacts? facts)
     {
         facts = null;
         RecordingSidecar? sidecar = sidecarPath is null ? null : RecordingSidecar.TryRead(sidecarPath);
 
         bool fragmented = false;
         long? durationMs = sidecar?.DurationMs;
+
+        // 録画中の開始時刻のフォールバック。開けなかった回は null のまま（更新時刻へ倒す）。
+        DateTime? creationTimeUtc = null;
 
         if (!inProgress)
         {
@@ -462,7 +527,31 @@ public sealed partial class RecordingIndex : IDisposable
         }
         else
         {
-            fragmented = RecordingFiles.ProbeFragmented(file.FullName);
+            // 録画中。**1 回開くだけで fragmented と実サイズをまとめて取る**
+            // ── ディレクトリ エントリと違い、ハンドル経由の長さ（GetFileSizeEx）は
+            // 書き込み中でも今の値を返す。共有は TryProbeInProgress より緩くする
+            // （filesink が握ったままのファイルを読むため）。
+            try
+            {
+                using var stream = new FileStream(
+                    file.FullName, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+
+                fragmented = Fmp4Probe.IsFragmented(RecordingFiles.ReadHeader(stream));
+                length = stream.Length;
+                lastWriteTimeUtc = File.GetLastWriteTimeUtc(stream.SafeFileHandle);
+                creationTimeUtc = File.GetCreationTimeUtc(stream.SafeFileHandle);
+            }
+            catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException
+                                          or UnauthorizedAccessException)
+            {
+                // IOException より先に受けること（消えたものは IOException の派生）。
+                return false;
+            }
+            catch (IOException)
+            {
+                // 開けはするが読めない・排他で握られている。「fragmented ではない」に畳み、
+                // 長さと更新時刻はディレクトリ エントリの値のままにする。
+            }
         }
 
         var match = FilenamePattern().Match(file.Name);
@@ -474,9 +563,14 @@ public sealed partial class RecordingIndex : IDisposable
         else if (match.Success && TryParseFilenameTime(match, out DateTime fromName))
             startTimeUtc = fromName;
         else if (durationMs is long known)
-            startTimeUtc = file.LastWriteTimeUtc.AddMilliseconds(-known);
+            startTimeUtc = lastWriteTimeUtc.AddMilliseconds(-known);
+        else if (creationTimeUtc is DateTime created)
+            // 録画中はここに来る（尺は sidecar からしか来ず、その sidecar が無い経路）。
+            // **更新時刻は使えない。** 開いたハンドルから読む値は書き込みのたびに動くので、
+            // 作り直しごとに開始時刻がずれて Updated が流れ続ける。作成時刻は動かない。
+            startTimeUtc = created;
         else
-            startTimeUtc = file.LastWriteTimeUtc;
+            startTimeUtc = lastWriteTimeUtc;
 
         facts = new FileFacts(fragmented, durationMs, startTimeUtc, recorder, sidecar?.Width, sidecar?.Height);
         return true;

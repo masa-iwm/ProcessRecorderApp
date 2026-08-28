@@ -1,3 +1,5 @@
+using System.Diagnostics;
+using System.Drawing;
 using Xunit;
 
 namespace ProcessRecorderApp.E2E;
@@ -64,5 +66,46 @@ public sealed class EncoderNegotiationTests(PublishedApp app, ITestOutputHelper 
 
         string file = Assert.Single(instance.ListRecordings());
         RecordedMp4.AssertUsable(file, instance, output);
+
+        // **BGRA からもサムネイルが撮れること。** 撮るのはプレビュー枝で、そこには
+        // エンコーダーの手前の変換を通らない BGRA がそのまま届く
+        // ── 自動で通る 4 バイト系の経路はここだけである（他の E2E は I420）。
+        string thumbnail = file + ".png";
+        var waiting = Stopwatch.StartNew();
+        while (waiting.Elapsed < ThumbnailBudget && !File.Exists(thumbnail))
+            Thread.Sleep(250);
+
+        Assert.True(File.Exists(thumbnail), "BGRA のフレームからサムネイルが書かれていない: " + thumbnail);
+        output.WriteLine($"{thumbnail}: {new FileInfo(thumbnail).Length} bytes");
+
+        // **ファイルが在ることは「撮れた」ことではない。** 4 バイト系の並びやオフセットを
+        // 取り違えても PNG は書けてしまうので、独立した復号器（System.Drawing）で読み返し、
+        // 大きさと「1 色ではないこと」まで見る（PNG は File.Move で現れるので途中の姿は無い）。
+        using (var stream = new MemoryStream(File.ReadAllBytes(thumbnail)))
+        using (var bitmap = new Bitmap(stream))
+        {
+            output.WriteLine($"{bitmap.Width}x{bitmap.Height} {bitmap.PixelFormat}");
+            Assert.InRange(bitmap.Width, 1, 320);
+            Assert.True(0 < bitmap.Height);
+
+            var first = bitmap.GetPixel(0, 0);
+            bool uniform = true;
+            for (int y = 0; y < bitmap.Height && uniform; y++)
+            {
+                for (int x = 0; x < bitmap.Width; x++)
+                {
+                    if (bitmap.GetPixel(x, y) != first)
+                    {
+                        uniform = false;
+                        break;
+                    }
+                }
+            }
+
+            Assert.False(uniform, $"BGRA のサムネイルが一様な 1 色（{first}）になっている。");
+        }
     }
+
+    /// <summary>サムネイルが書かれるまでの上限（撮るのも書くのも録画の外側）。</summary>
+    private static readonly TimeSpan ThumbnailBudget = TimeSpan.FromSeconds(20);
 }

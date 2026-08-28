@@ -146,4 +146,60 @@ public sealed class RecordingSidecarTests : IDisposable
         Assert.Equal(@"C:\out\a.mp4.json", RecordingSidecar.PathFor(@"C:\out\a.mp4"));
         Assert.Equal(@"C:\out\a.mp4.png", RecordingSidecar.ThumbnailPathFor(@"C:\out\a.mp4"));
     }
+
+    /// <summary>サムネイル 1 枚（縮小済みの RGB）。</summary>
+    private static ThumbnailImage Thumbnail(byte tint = 200)
+    {
+        var rgb = new byte[4 * 3 * 3];
+        for (int i = 0; i < rgb.Length; i++)
+            rgb[i] = (byte)((i * 7) ^ tint);
+
+        return new ThumbnailImage(4, 3, rgb);
+    }
+
+    [Fact]
+    public void TheThumbnailIsWrittenNextToTheRecordingAsPng()
+    {
+        string recording = PathFor("t.mp4");
+        var image = Thumbnail();
+
+        RecordingSidecar.WriteThumbnail(recording, image);
+
+        using var expected = new MemoryStream();
+        PngWriter.Write(expected, image.Width, image.Height, image.Rgb24);
+
+        Assert.Equal(expected.ToArray(), File.ReadAllBytes(recording + ".png"));
+    }
+
+    /// <summary>
+    /// <b>一度書いたら撮り直さない。</b> サムネイルは録画ファイル名が決まった直後の
+    /// 1 枚で、後から別のフレームで置き換えると意味が変わる。
+    /// </summary>
+    [Fact]
+    public void AnExistingThumbnailIsNotOverwritten()
+    {
+        string recording = PathFor("u.mp4");
+        byte[] sentinel = Encoding.ASCII.GetBytes("not really a png");
+        File.WriteAllBytes(recording + ".png", sentinel);
+
+        RecordingSidecar.WriteThumbnail(recording, Thumbnail());
+
+        Assert.Equal(sentinel, File.ReadAllBytes(recording + ".png"));
+    }
+
+    /// <summary>
+    /// 途中まで書けた PNG を索引に見せないため一時ファイルを経由する。
+    /// <b>その一時ファイルを残さない</b>（残ると録画フォルダーに溜まる）。
+    /// </summary>
+    [Fact]
+    public void WritingTheThumbnailLeavesNoTemporaryFile()
+    {
+        string recording = PathFor("v.mp4");
+
+        RecordingSidecar.WriteThumbnail(recording, Thumbnail());
+
+        Assert.Equal(
+            new[] { "v.mp4.png" },
+            Directory.GetFiles(_root, "v.mp4*").Select(Path.GetFileName).Order().ToArray());
+    }
 }

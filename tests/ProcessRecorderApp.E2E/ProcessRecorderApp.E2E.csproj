@@ -49,6 +49,11 @@
       アンパッケージ配布の WinUI3 アプリでも動く。
     -->
     <PackageReference Include="FlaUI.UIA3" />
+    <!--
+      サムネイルの検査に使う独立した PNG 復号器。製品の PngWriter で読み返すと
+      「自分の符号化器で自分を検算する」ことになり、形式を取り違えていても緑になる。
+    -->
+    <PackageReference Include="System.Drawing.Common" />
   </ItemGroup>
 
   <!--

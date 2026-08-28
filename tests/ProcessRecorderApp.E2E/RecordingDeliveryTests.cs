@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Drawing;
 using System.Globalization;
 using System.Net;
 using System.Net.Http;
@@ -295,11 +296,19 @@ public sealed class RecordingDeliveryTests(PublishedApp app, ITestOutputHelper o
             Assert.Equal("R1", file.GetProperty("recorder").GetString());
             Assert.True(0 < file.GetProperty("durationMs").GetInt64(),
                 "sidecar の尺が一覧に載っていない: " + file);
-            Assert.False(file.GetProperty("hasThumbnail").GetBoolean());
         }
+
+        // **サムネイルは sidecar とは別の道で来る。** 撮るのはファイル名が決まった直後の
+        // プレビュー枝で、書くのはスレッドプール ── sidecar（排出の完了時）より早いことも
+        // 遅いこともあるので、尺が載ったことをもって PNG も在るとは言えない。
+        files = await WaitForListingAsync(
+            client,
+            fs => fs.Length == 2 && fs.All(f => f.GetProperty("hasThumbnail").GetBoolean()),
+            SidecarBudget);
 
         // ディスクにも並んでいること（サムネイル `<録画ファイル名>.png` はこの隣に置かれる）。
         Assert.Equal(2, Directory.GetFiles(instance.RecordingsDir, "*.mp4.json").Length);
+        Assert.Equal(2, Directory.GetFiles(instance.RecordingsDir, "*.mp4.png").Length);
 
         // 並びは開始時刻の降順。
         DateTime newest = files[0].GetProperty("startTimeUtc").GetDateTime();
@@ -370,6 +379,129 @@ public sealed class RecordingDeliveryTests(PublishedApp app, ITestOutputHelper o
         await AssertBadRequestAsync(client, "api/recordings?from=" + Uri.EscapeDataString("10:00"));
         await AssertBadRequestAsync(client, "api/recording-days?tz=" + Uri.EscapeDataString("Not/AZone"));
         await AssertBadRequestAsync(client, "api/recording-days?tz=" + Uri.EscapeDataString("+99:00"));
+    }
+
+    // ---- サムネイル（GET /api/recording-thumbnails/{*path}） ----
+
+    /// <summary>PNG の署名（先頭 8 バイト）。<c>Content-Type</c> だけでは中身を見ていない。</summary>
+    private static readonly byte[] PngSignature = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+
+    /// <summary>サムネイルが一覧に載るまでの上限（撮るのも書くのも録画の外側）。</summary>
+    private static async Task<JsonElement> WaitForThumbnailAsync(HttpClient client)
+    {
+        var files = await WaitForListingAsync(
+            client,
+            fs => fs.Length == 1 && fs[0].GetProperty("hasThumbnail").GetBoolean(),
+            SidecarBudget);
+        return files[0];
+    }
+
+    /// <summary>
+    /// <b>録画の隣に PNG が書かれ、<c>/api/recording-thumbnails/</c> から配られること。</b>
+    ///
+    /// <para>
+    /// <b>ここは発行物でしか見られない。</b> 撮るのは録画エンジンのプレビュー枝
+    /// （GStreamer のストリーミングスレッド）、書くのはスレッドプール、
+    /// 一覧に出すのはリモート操作側の索引 ── 3 つが揃って初めて成立する。
+    /// </para>
+    /// <para>
+    /// <b>復号は <c>System.Drawing</c> で行う</b>（製品の <c>PngWriter</c> では読み返さない）。
+    /// 自前の符号化器で検算すると、形式を取り違えていても緑になる。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task AThumbnail_IsWrittenBesideTheRecordingAndServedAsPng()
+    {
+        using var instance = AppInstance.Create(app, RemoteSettings(), configure: UseIsolatedRoot);
+        int port = WaitForPort(instance);
+        using var client = CreateClient(port);
+
+        string relativePath = RecordOnce(instance);
+        output.WriteLine((await WaitForThumbnailAsync(client)).ToString());
+
+        // ディスクにも本体の隣に並ぶ（一覧の hasThumbnail はこのファイルの有無である）。
+        Assert.True(File.Exists(Path.Combine(instance.RecordingsDir, relativePath + ".png")));
+
+        string url = "api/recording-thumbnails/" + Uri.EscapeDataString(relativePath);
+
+        string etag;
+        byte[] png;
+        using (var response = await client.GetAsync(url, Ct))
+        {
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            Assert.Equal("image/png", response.Content.Headers.ContentType?.MediaType);
+            Assert.Equal("no-cache", response.Headers.CacheControl?.ToString());
+
+            etag = Assert.IsType<EntityTagHeaderValue>(response.Headers.ETag).ToString();
+            png = await response.Content.ReadAsByteArrayAsync(Ct);
+        }
+
+        output.WriteLine($"{png.Length} bytes, ETag {etag}");
+        Assert.True(PngSignature.Length < png.Length, "本文が短すぎる: " + png.Length);
+        Assert.Equal(PngSignature, png[..PngSignature.Length]);
+
+        using (var stream = new MemoryStream(png))
+        using (var bitmap = new Bitmap(stream))
+        {
+            output.WriteLine($"{bitmap.Width}x{bitmap.Height} {bitmap.PixelFormat}");
+            Assert.InRange(bitmap.Width, 1, 320);
+            Assert.True(0 < bitmap.Height);
+
+            // **一様な 1 色は「撮れた」ことにならない。** ソースは videotestsrc の
+            // SMPTE バーなので、色が 1 種類しかなければ変換のどこかが壊れている
+            // （全部黒・全部緑は、平面の取り違えで実際に起きる形である）。
+            var first = bitmap.GetPixel(0, 0);
+            bool uniform = true;
+            for (int y = 0; y < bitmap.Height && uniform; y++)
+            {
+                for (int x = 0; x < bitmap.Width; x++)
+                {
+                    if (bitmap.GetPixel(x, y) != first)
+                    {
+                        uniform = false;
+                        break;
+                    }
+                }
+            }
+
+            Assert.False(uniform, $"サムネイルが一様な 1 色（{first}）になっている。");
+        }
+
+        // 同じ ETag を返せば 304（本文は付かない）。判定はフレームワークに委ねてある。
+        using (var request = new HttpRequestMessage(HttpMethod.Get, url))
+        {
+            request.Headers.TryAddWithoutValidation("If-None-Match", etag);
+            using var cached = await client.SendAsync(request, Ct);
+            Assert.Equal(HttpStatusCode.NotModified, cached.StatusCode);
+        }
+
+        // 無いものは 404。**本体が在ってもサムネイルが無ければ 404 である**
+        // （ここでは本体ごと無いものを突く）。
+        using (var missing = await client.GetAsync("api/recording-thumbnails/no-such-file.mp4", Ct))
+        {
+            Assert.Equal(HttpStatusCode.NotFound, missing.StatusCode);
+            using var body = await ReadJsonAsync(missing);
+            Assert.Equal("not found", body.RootElement.GetProperty("error").GetString());
+        }
+
+        // 規則で断るもの（拡張子違い）は 400 ── 載せるのは**本体 mp4 のパス**であり、
+        // `.png` を自分で足した要求は通らない。
+        using (var rejected = await client.GetAsync("api/recording-thumbnails/notes.txt", Ct))
+            Assert.Equal(HttpStatusCode.BadRequest, rejected.StatusCode);
+
+        using (var doubled = await client.GetAsync(url + ".png", Ct))
+            Assert.Equal(HttpStatusCode.BadRequest, doubled.StatusCode);
+
+        // 親への遡り。**規則を実際に踏むのは `..%5C` のほう**（本体の配信と同じ
+        // ── `%2e%2e%2f` はサーバー側の正規化で畳まれて 404 になる）。
+        using (var request = new HttpRequestMessage(
+                   HttpMethod.Get, new Uri(client.BaseAddress!, "api/recording-thumbnails/..%5Coutside.mp4")))
+        using (var traversal = await client.SendAsync(request, Ct))
+        {
+            Assert.Equal(HttpStatusCode.BadRequest, traversal.StatusCode);
+            using var body = await ReadJsonAsync(traversal);
+            Assert.Equal("path rejected", body.RootElement.GetProperty("error").GetString());
+        }
     }
 
     // ---- fragmented 出力（録画中の追いかけ再生） ----
@@ -577,9 +709,20 @@ public sealed class RecordingDeliveryTests(PublishedApp app, ITestOutputHelper o
         string? indexETag = null;
         var deadline = Stopwatch.StartNew();
 
+        // **待ちが空振りしたときに読めるものを持って出る。** 最後に見た一覧が
+        // 「0 件」なのか「在るが fragmented でない」なのかで、疑う先が索引か mux かに分かれる。
+        string lastListing = "(一覧を一度も取れていない)";
+
         while (deadline.Elapsed < FragmentBudget)
         {
             var (_, files) = await ListAsync(client);
+            lastListing = files.Length == 0
+                ? "0 件"
+                : string.Join(" / ", files.Select(f =>
+                    $"{f.GetProperty("path").GetString()} fragmented={f.GetProperty("fragmented").GetBoolean()}"
+                    + $" inProgress={f.GetProperty("inProgress").GetBoolean()}"
+                    + $" length={f.GetProperty("length").GetInt64()}"));
+
             if (files.Length == 1 && files[0].GetProperty("fragmented").GetBoolean())
             {
                 relativePath = files[0].GetProperty("path").GetString()!;
@@ -591,8 +734,15 @@ public sealed class RecordingDeliveryTests(PublishedApp app, ITestOutputHelper o
             Thread.Sleep(500);
         }
 
-        Assert.False(relativePath.Length == 0, "録画中のファイルが fragmented として一覧に出ませんでした。");
-        Assert.True(0 < FragmentCount(first), "録画中のファイルの索引が空のままでした: " + first);
+        Assert.False(
+            relativePath.Length == 0,
+            $"録画中のファイルが fragmented として一覧に出ませんでした（{FragmentBudget.TotalSeconds:F0} 秒）。"
+                + Environment.NewLine + "最後の一覧: " + lastListing
+                + Environment.NewLine + instance.DiagnosticDump());
+        Assert.True(
+            0 < FragmentCount(first),
+            "録画中のファイルの索引が空のままでした: " + first
+                + Environment.NewLine + instance.DiagnosticDump());
         output.WriteLine($"first: {FragmentCount(first)} fragments, next={NextOffsetOf(first)}");
 
         Assert.True(first.GetProperty("inProgress").GetBoolean(), "録画中なのに inProgress が false: " + first);
@@ -844,6 +994,21 @@ public sealed class RecordingDeliveryTests(PublishedApp app, ITestOutputHelper o
 
         var (_, after) = await ListAsync(client);
         Assert.True(1 < after.Length, $"セグメントが切り替わっていない（{after.Length} 本）。");
+
+        // **セグメントにもサムネイルが付くこと。** 常時録画は `StartCore` を通らないので、
+        // ここが緑にならなければセグメント開始の側（`OnContinuousStatus`）で要求が
+        // 積まれていない。**見るのは確定したセグメントだけ** ── 書き込み中のものは
+        // 要求を出した直後でありうる。
+        var withThumbnails = await WaitForListingAsync(
+            client,
+            fs =>
+            {
+                var settled = fs.Where(f => !f.GetProperty("inProgress").GetBoolean()).ToArray();
+                return 1 < settled.Length
+                    && settled.All(f => f.GetProperty("hasThumbnail").GetBoolean());
+            },
+            SegmentBudget);
+        output.WriteLine(string.Join(Environment.NewLine, withThumbnails.Select(f => f.ToString())));
 
         // 確定したセグメントは単体で読める（moov(mvex) ＋ moof/mdat の対）。
         var complete = Fmp4File.Probe(Path.Combine(instance.RecordingsDir, relativePath));

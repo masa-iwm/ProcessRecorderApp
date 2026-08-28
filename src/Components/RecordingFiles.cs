@@ -267,6 +267,55 @@ public static class RecordingFiles
             return false;
         }
 
+        return OpenResolved(root, fullPath, out stream, out reason);
+    }
+
+    /// <summary>
+    /// 録画の隣に置かれた派生ファイル（<c>&lt;録画ファイル名&gt;.png</c> 等）を
+    /// <see cref="TryOpen"/> と<b>同じ検査で</b>開く。
+    ///
+    /// <para>
+    /// <b>解決に掛けるのは本体の <c>.mp4</c> の相対パスである</b>
+    /// （<see cref="RemoteApiRules.TryResolveUnderRoot"/> は拡張子まで見る）。
+    /// <paramref name="extension"/> を足すのは解決の後で、
+    /// リパースポイントの検査は足した後のパスに対して行う ──
+    /// <b>本体だけを見て派生を配ると、派生がリンクでも読めてしまう。</b>
+    /// </para>
+    /// <para>
+    /// <b>本体が在ることは要求しない。</b> 派生だけが残っている状態は正常でありうる。
+    /// </para>
+    /// </summary>
+    /// <param name="relativeRecordingPath">本体録画の相対パス（<c>.mp4</c> のまま）。</param>
+    /// <param name="extension">本体のパスの後ろに足す拡張子（<c>.png</c> 等）。</param>
+    /// <param name="reason">失敗理由。区分は <see cref="TryOpen"/> と同じ。</param>
+    public static bool TryOpenCompanion(
+        string root, string relativeRecordingPath, string extension,
+        [NotNullWhen(true)] out FileStream? stream,
+        [NotNullWhen(false)] out string? reason)
+    {
+        stream = null;
+
+        if (!RemoteApiRules.TryResolveUnderRoot(root, relativeRecordingPath, out string? recordingPath))
+        {
+            reason = "path rejected";
+            return false;
+        }
+
+        return OpenResolved(root, recordingPath + extension, out stream, out reason);
+    }
+
+    /// <summary>
+    /// 解決済みのフルパスを、途中ディレクトリと対象自身のリパースポイントを断ってから開く。
+    /// <see cref="TryOpen"/> と <see cref="TryOpenCompanion"/> はこの 1 つの検査を共有する
+    /// ── 本体と派生で範囲がずれると、片方からしか届かない実体が生まれる。
+    /// </summary>
+    private static bool OpenResolved(
+        string root, string fullPath,
+        [NotNullWhen(true)] out FileStream? stream,
+        [NotNullWhen(false)] out string? reason)
+    {
+        stream = null;
+
         string fullRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(root));
 
         // root と対象の親の間にリパースポイントがあれば、そのファイルは

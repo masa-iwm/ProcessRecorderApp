@@ -795,3 +795,25 @@ CLI 側は `/` 入りのキーを受けるので、ここだけ受け付けな�
 走査し直すのは、root が変わった回と、同じ root でまだ watcher が無くフォルダーが現れていた
 回だけである ── watcher が張れてしまえば、以後は通知が来るまで何もしない）。
 L1 は `Rebuild()` を直接呼ぶ経路と、ローカルでのデバウンス越しの通知の 2 つを見ている。
+
+### サムネイルの画素形式とレイアウト
+
+`Components/ThumbnailImage.cs` が受ける画素形式のうち、**自動で通るのは `I420` と `BGRA`
+（＋ `BGRA` と同じ分岐の `BGRx`）だけ**である（どちらも `videotestsrc` の E2E ── 既定のソースが
+`I420`、`SettingsFile.UnconvertibleFormatVideoTestSrc` が `BGRA`）。残りは手動確認になる。
+
+- `NV12` ── D3D12 経路（`d3d12download` の後）とカメラの多くがこれを流す
+- `YUY2` / `UYVY` / `NV21` / `YV12` / `RGB` / `BGR` と、4 バイト系のうち `BGRA` と `BGRx` を除いたもの
+  （`BGRx` は `BGRA` と同じ分岐を通るので、`BGRA` の E2E で一緒に通っている）
+- **stride にパディングのある buffer。** GstSharp.Net は `VideoInfo` の `Stride` / `Offset` を
+  公開していないので、`gst_video_info_set_format` の既定レイアウトを仮定して読んでいる。
+  ソースがそれと違う stride で来ると、長さが足りる限り**絵が斜めにずれたまま撮れてしまう**
+  （撮れない側には倒れないので、ログにも一覧にも異常は出ない）
+
+手動確認: そのソースで 1 本録り、`<録画ファイル名>.mp4.png` を画像として開いて、
+色と形が録画の中身と一致していることを目で見る。撮れていない場合は activity.log の
+`thumbnail.unsupported` / `thumbnail.capture failed` / `thumbnail.write failed` を見る。
+
+色は **BT.709 limited range 固定**で、`pixel-aspect-ratio` は見ない ── BT.601 のソースでの
+わずかな色ずれと、非正方画素のソースでの縦横比の狂いは、どちらも仕様どおりであって
+退行ではない。

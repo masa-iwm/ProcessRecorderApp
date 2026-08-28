@@ -119,6 +119,27 @@ public sealed class DashPreviewPipelineTests
     }
 
     /// <summary>
+    /// <b>サムネイルの取り出しは同じドレインの、<c>OnPreview</c> の後ろ。</b>
+    ///
+    /// <para>
+    /// 前に置くと配信と画面表示が縮小の時間だけ待たされる。ドレインの外へ出すと
+    /// <c>using</c> を抜けた <c>Sample</c>（解放済み）を触ることになる。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void ThePreviewBranchCapturesTheThumbnailAfterTheUiPreview()
+    {
+        string body = SourceMethodBody.Extract(RecorderSource, "private void InitializeWith");
+
+        int preview = SourceMethodBody.IndexOfCode(body, "OnPreview(sample);");
+        int thumbnail = SourceMethodBody.IndexOfCode(body, "CaptureThumbnail(sample);");
+
+        Assert.True(0 <= thumbnail, "枝A のドレインに CaptureThumbnail( が見つからない。");
+        Assert.True(preview < thumbnail, "サムネイルの取り出しが OnPreview より前にある。");
+        Assert.Equal(1, CountCode(body, "CaptureThumbnail(sample);"));
+    }
+
+    /// <summary>
     /// <b>停止経路が、枝を静止させてから配信エンジンを閉じること。</b>
     ///
     /// <para>
