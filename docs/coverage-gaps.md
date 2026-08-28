@@ -782,3 +782,16 @@ CLI 側は `/` 入りのキーを受けるので、ここだけ受け付けな�
 ### Mp4Probe.StartsOnASyncSample
 
 `Mp4Probe.StartsOnASyncSample`（chunked では `stss` の先頭項目、fragmented では先頭 `moof` の先頭サンプルの `sample_is_non_sync_sample`）は**退行検出器ではなく不変条件の表明**である。これが緑であることを「この性質を壊す変更を検出できる」と読まないこと。読み方そのものが正しいこと（特に fragmented 側で黙って `true` を返さないこと）は `Mp4ProbeTests` が合成したバイト列で固定している。
+
+### 録画一覧の索引の `FileSystemWatcher`（ローカル以外のボリューム）
+
+`RecordingIndex` の更新は `FileSystemWatcher`（`IncludeSubdirectories=true`）の通知に依っており、
+**検査しているのはローカルの一時フォルダーだけ**である。ネットワークドライブ・SMB 共有・
+ジャンクション越しの保存先での通知の届き方（届かない・遅れる・`Error` で溢れる）は
+自動では守られていない。
+
+溢れ（`Error`）は 30 秒後の作り直しで、取りこぼしは次の通知での全再構築で追いつく設計だが、
+**「通知が 1 度も来ない」保存先では一覧が更新されない**（要求のたびに呼ばれる `Rebind` が
+走査し直すのは、root が変わった回と、同じ root でまだ watcher が無くフォルダーが現れていた
+回だけである ── watcher が張れてしまえば、以後は通知が来るまで何もしない）。
+L1 は `Rebuild()` を直接呼ぶ経路と、ローカルでのデバウンス越しの通知の 2 つを見ている。

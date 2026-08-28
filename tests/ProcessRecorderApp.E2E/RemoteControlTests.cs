@@ -422,6 +422,64 @@ public sealed class RemoteControlTests(PublishedApp app, ITestOutputHelper outpu
         output.WriteLine(stopped);
     }
 
+    /// <summary>
+    /// <c>GET /api/events</c> が録画一覧の変化（<c>event: recording</c>）も配ること。
+    ///
+    /// <para>
+    /// <b>一覧を一度も読まずに購読する。</b> 索引の監視先は要求のたびに解決されるが、
+    /// SSE だけを張るクライアント（一覧画面は開いた直後がまさにそれ）が居ると、
+    /// 購読の側で解決していなければ通知は永久に出ない ── その配線をここで固定する。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task TheEventStream_PushesRecordingChanges()
+    {
+        // **配信 root を録画の書き先へ揃える。** このクラスの既定は `OutputDirectory` を
+        // 書かない（＝発行ディレクトリ）が、ファイル名テンプレートは隔離フォルダーの
+        // 絶対パスである ── 揃えないと索引は録画の在るフォルダーを見張らない。
+        using var instance = AppInstance.Create(
+            app, RemoteSettings(), configure: static i => i.Settings.OutputDirectory = i.RecordingsDir);
+        int port = WaitForPort(instance);
+        using var client = CreateClient(port);
+
+        using var response = await client.GetAsync("api/events", HttpCompletionOption.ResponseHeadersRead, Ct);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        using var stream = await response.Content.ReadAsStreamAsync(Ct);
+        using var reader = new StreamReader(stream);
+
+        _ = await ReadEventAsync(reader, "state", TimeSpan.FromSeconds(5));
+
+        instance.RunExpecting(0, "start-recording-all");
+        Thread.Sleep(TimeSpan.FromSeconds(2));
+        instance.RunExpecting(0, "stop-recording-all");
+
+        // **`kind` は `added` と `completed` のどちらでもありうる。** 索引の作り直しは
+        // 500ms のデバウンスで畳まれるので、「現れた」と「録り終えた」が 1 件になる回がある。
+        // `updated`（長さ・sidecar の変化）は読み飛ばす。
+        var budget = TimeSpan.FromSeconds(30);
+        var deadline = Stopwatch.StartNew();
+        while (deadline.Elapsed < budget)
+        {
+            string data = await ReadEventAsync(reader, "recording", budget - deadline.Elapsed);
+            output.WriteLine(data);
+
+            using var document = JsonDocument.Parse(data);
+            string kind = document.RootElement.GetProperty("kind").GetString()!;
+            string path = document.RootElement.GetProperty("path").GetString()!;
+
+            Assert.EndsWith(".mp4", path, StringComparison.Ordinal);
+            Assert.DoesNotContain('\\', path);
+
+            if (kind is "added" or "completed")
+                return;
+
+            Assert.Equal("updated", kind);
+        }
+
+        Assert.Fail($"SSE の recording（added / completed）が {budget.TotalSeconds:F0} 秒以内に届きませんでした。");
+    }
+
     private static bool IsRecordingAny(string stateJson)
     {
         using var document = JsonDocument.Parse(stateJson);

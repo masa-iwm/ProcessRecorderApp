@@ -33,6 +33,12 @@ public sealed record RecordingCleanupResult(
 /// ここでログを書くと、L1 から呼んだだけで実ユーザーの activity.log が汚れる。
 /// </para>
 /// <para>
+/// <b>mp4 に付く sidecar（<c>.mp4.json</c> / <c>.mp4.png</c>）も一緒に消す。</b>
+/// 本体の無い sidecar は誰も読めず一覧にも出ないので、本体と同じ期限で孤児も消す。
+/// 件数とサイズ（<see cref="RecordingCleanupResult.DeletedFiles"/> /
+/// <see cref="RecordingCleanupResult.FreedBytes"/>）は mp4 のぶんだけを数える。
+/// </para>
+/// <para>
 /// <b>空フォルダーの削除は「実際にファイルを消したフォルダーとその祖先」に限る。</b>
 /// 既定の保存先は実行ファイルのあるディレクトリなので、無条件に空フォルダーを掃除すると
 /// インストール先の空フォルダーまで巻き込む。root 自体は決して消さない。
@@ -42,6 +48,13 @@ public static class RecordingCleanup
 {
     /// <summary>対象の拡張子。</summary>
     public const string Extension = ".mp4";
+
+    /// <summary>
+    /// 録画に付く sidecar の、<see cref="Extension"/> の後ろに足す拡張子。
+    /// 本体が消えたら一緒に消す ── 残しても誰も読めず、一覧にも出ない。
+    /// </summary>
+    private static readonly string[] SidecarExtensions =
+        [RecordingSidecar.Extension, RecordingSidecar.ThumbnailExtension];
 
     /// <summary>ログ1行に載せる失敗理由の上限。</summary>
     public const int MaxReportedFailures = 5;
@@ -81,7 +94,7 @@ public static class RecordingCleanup
     /// <c>MatchType.Win32</c> を明示すると現在の .NET でも再現する）。
     /// <b>ただし .NET (Core) の既定は <c>MatchType.Simple</c> で、この緩さは無い</b>
     /// ── <c>GetFiles("*.mp4")</c> へ差し替える退行は
-    /// <c>RecordingCleanupTests.OnlyMp4IsTouched</c> では検出できない（緑のまま通る）。
+    /// <c>RecordingCleanupTests.OnlyMp4AndItsSidecarsAreTouched</c> では検出できない（緑のまま通る）。
     /// それでも自分で比較しているのは、削除する側のコードで
     /// 列挙 API の既定に依存したくないから ── ここは間違えると利用者のファイルを消す。
     /// </para>
@@ -104,10 +117,22 @@ public static class RecordingCleanup
             return;
         }
 
+        // 走査した時点の mp4。同じ回で消す mp4 の sidecar は本体と一緒に消すので、
+        // ここに残るのは「最初から本体が無かった」孤児だけになる。
+        var recordings = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var file in files)
+        {
+            if (string.Equals(file.Extension, Extension, StringComparison.OrdinalIgnoreCase))
+                recordings.Add(file.FullName);
+        }
+
         foreach (var file in files)
         {
             if (!string.Equals(file.Extension, Extension, StringComparison.OrdinalIgnoreCase))
+            {
+                DeleteOrphanSidecar(file, recordings, threshold, failures, touchedDirectories);
                 continue;
+            }
 
             try
             {
@@ -124,7 +149,12 @@ public static class RecordingCleanup
             {
                 // 録画中のファイルはロックされている。1件の失敗で掃除全体を止めない。
                 AddFailure(failures, $"{file.FullName}: {ex.Message}");
+                continue;
             }
+
+            // 本体が消えた後の sidecar は誰も読めない。件数とサイズには数えない
+            // （DeletedFiles / FreedBytes は mp4 の数と大きさである）。
+            DeleteSidecars(file.FullName, directory, failures, touchedDirectories);
         }
 
         foreach (var subdirectory in subdirectories)
@@ -198,6 +228,68 @@ public static class RecordingCleanup
            && candidate.StartsWith(root, StringComparison.OrdinalIgnoreCase)
            && (candidate[root.Length] == Path.DirectorySeparatorChar
                || candidate[root.Length] == Path.AltDirectorySeparatorChar);
+
+    /// <summary>
+    /// 消した mp4 に付いていた sidecar（<c>.mp4.json</c> / <c>.mp4.png</c>）を消す。
+    /// 失敗は記録するだけ ── 本体は既に消えているので、掃除全体を止める理由が無い。
+    /// </summary>
+    private static void DeleteSidecars(
+        string recordingPath, string directory, List<string> failures, HashSet<string> touchedDirectories)
+    {
+        foreach (string extension in SidecarExtensions)
+        {
+            string path = recordingPath + extension;
+            try
+            {
+                if (!File.Exists(path))
+                    continue;
+
+                File.Delete(path);
+                touchedDirectories.Add(directory);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                AddFailure(failures, $"{path}: {ex.Message}");
+            }
+        }
+    }
+
+    /// <summary>
+    /// 本体の mp4 が無い sidecar を消す。<b>本体と同じ期限を掛ける</b>
+    /// ── 本体が別の道具に消された直後の sidecar を、期限より前に消さないため。
+    /// mp4 でも sidecar でもないファイルには触らない。
+    /// </summary>
+    private static void DeleteOrphanSidecar(
+        FileInfo file, HashSet<string> recordings, DateTime threshold,
+        List<string> failures, HashSet<string> touchedDirectories)
+    {
+        foreach (string extension in SidecarExtensions)
+        {
+            if (!file.Name.EndsWith(Extension + extension, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            string owner = file.FullName[..^extension.Length];
+            if (recordings.Contains(owner))
+                return;
+
+            try
+            {
+                if (file.LastWriteTime >= threshold)
+                    return;
+
+                string? parent = file.DirectoryName;
+                file.Delete();
+                if (parent is not null)
+                    touchedDirectories.Add(parent);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                AddFailure(failures, $"{file.FullName}: {ex.Message}");
+            }
+
+            return;
+        }
+    }
 
     private static void AddFailure(List<string> failures, string message)
     {

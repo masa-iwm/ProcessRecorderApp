@@ -1931,9 +1931,38 @@ public partial class EventRecorder : ObservableObject, IDisposable
 
         public void OnContinuousStatus(bool running, string? currentFile, int segmentCount)
         {
+            // 開始時刻だけ覚えておく。**sidecar はここでは書かない**
+            // ── 前のセグメントの確定（moov の書き込み）は非同期で、この通知の時点では
+            // まだ終わっていない。書けたかどうかは OnContinuousSegmentFinalized が報せる。
+            if (currentFile is not null
+                && !string.Equals(owner.ContinuousLastFilename, currentFile, StringComparison.Ordinal))
+            {
+                owner._continuousSegmentStarts[currentFile] = DateTimeOffset.UtcNow;
+            }
+
+            // 停止の通知は最後のセグメントの確定を待ってから来る（ContinuousRecorder.Close）。
+            // 残っているのは確定を諦めたセグメントなので、ここで捨てる。
+            if (!running)
+                owner._continuousSegmentStarts.Clear();
+
             owner.IsContinuousRecording = running;
             owner.ContinuousLastFilename = currentFile;
             owner.ContinuousSegmentCount = segmentCount;
+        }
+
+        public void OnContinuousSegmentFinalized(string path, bool ok)
+        {
+            // 開始時刻は「そのファイルを初めて見た時刻」。取り出しと同時に消す。
+            // **覚えが無ければ sidecar は書かない** ── 今の時刻で埋めると尺 0 の
+            // sidecar になり、ファイル名から開始時刻を採る索引のフォールバックより悪い。
+            if (!owner._continuousSegmentStarts.TryRemove(path, out DateTimeOffset started))
+                return;
+
+            // **確定できた本だけに sidecar を置く。** sidecar が在ることは索引にとって
+            // 「排出が終わっている＝開いて確かめなくてよい」の印なので、moov を書けなかった
+            // ファイルに置くと録画中のものと区別が付かなくなる。
+            if (ok)
+                owner.WriteSidecarInBackground(path, started, DateTimeOffset.UtcNow, ContinuousTrigger);
         }
 
         public void OnContinuousError(string message) => owner.ContinuousLastError = message;
@@ -2446,6 +2475,21 @@ public partial class EventRecorder : ObservableObject, IDisposable
                 // ログには従来どおり構造体名だけを出す
                 // （実際のキャップス全体は GST_DEBUG のネゴシエーションログに出る）。
                 using var structure = negotiated.GetStructure(0);
+
+                // sidecar に載せるぶんを控える。ここが caps の確定する唯一の場所で、
+                // 以後は再ネゴシエーションしない（解像度もフレームレートも変わらない）。
+                if (structure.GetInt("width", out int capsWidth)
+                    && structure.GetInt("height", out int capsHeight))
+                {
+                    _capsWidth = capsWidth;
+                    _capsHeight = capsHeight;
+                }
+                if (structure.GetFraction("framerate", out int capsNumerator, out int capsDenominator))
+                {
+                    _capsFramerateNumerator = capsNumerator;
+                    _capsFramerateDenominator = capsDenominator;
+                }
+
                 Log(DebugLevel.Info,
                     $"appsrc caps set from the negotiated sink caps ({structure.GetName()})");
             }
@@ -3743,6 +3787,7 @@ public partial class EventRecorder : ObservableObject, IDisposable
 
         IsRecording = _IsRecording = true;
         _recordingStartedAt = Environment.TickCount64;
+        _recordingStartedAtUtc = DateTimeOffset.UtcNow;
         if (_srcPipeline!.SetState(State.Playing) == StateChangeReturn.Failure)
         {
             // 成功と失敗でイベント名を分ける（`recorder.init ok` / `recorder.init fail` と同じ規則）。
@@ -3768,6 +3813,35 @@ public partial class EventRecorder : ObservableObject, IDisposable
 
     /// <summary><see cref="Start"/> の時刻（<c>recording.stop</c> の経過時間の算出用）。</summary>
     private long _recordingStartedAt;
+
+    /// <summary><see cref="Start"/> の時刻（sidecar の <c>startTime</c>）。</summary>
+    private DateTimeOffset _recordingStartedAtUtc;
+
+    /// <summary>
+    /// 常時録画のセグメントを最初に見た時刻（sidecar の <c>startTime</c>）。
+    /// 開始の通知（ストリーミングスレッド）と確定の報告（プールスレッド）が
+    /// 別々に触るので並行辞書にする。<b>宿主のロックは取らない</b>
+    /// ── 確定は <c>CloseCore</c> が <c>_stateLock</c> を持ったまま待つので、
+    /// ここで <c>_stateLock</c> を取ると停止が固まる。
+    /// </summary>
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTimeOffset>
+        _continuousSegmentStarts = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// 確定した appsrc の caps から採った映像の幅・高さ・フレームレート（分数）。
+    /// <b>ストリーミングスレッドが書き、sidecar を書くスレッドが読む</b>ので volatile。
+    /// 0 は「まだ確定していない」。
+    /// </summary>
+    private volatile int _capsWidth;
+
+    /// <summary>確定した caps の高さ（<see cref="_capsWidth"/> と同じ規律）。</summary>
+    private volatile int _capsHeight;
+
+    /// <summary>確定した caps の <c>framerate</c> の分子（同上）。</summary>
+    private volatile int _capsFramerateNumerator;
+
+    /// <summary>確定した caps の <c>framerate</c> の分母（同上）。</summary>
+    private volatile int _capsFramerateDenominator;
 
     /// <summary>
     /// この録画中に <c>appsink</c> から取り出せたサンプル数（<see cref="StartCore"/> で 0 に戻す）。
@@ -4057,6 +4131,13 @@ public partial class EventRecorder : ObservableObject, IDisposable
             // 「空」で「未確定」を潰さない優先順位もそちらにある。
             (result, var outcome) = StopDrainRules.Classify(signal, pushed);
             LastStopOutcome = outcome;
+
+            // **確定できた本だけに sidecar を置く。** 排出が時間切れ・エラーで終わった本は
+            // moov が書かれていない可能性があり、そこへ sidecar を置くと索引が
+            // 「開いて確かめなくてよい」と読んで録画中のものと区別できなくなる
+            // （常時録画の OnContinuousSegmentFinalized と同じ規律）。
+            if (result == "ok")
+                WriteSidecarInBackground(LastFilename, _recordingStartedAtUtc, DateTimeOffset.UtcNow, trigger: null);
         }
         catch
         {
@@ -4067,6 +4148,9 @@ public partial class EventRecorder : ObservableObject, IDisposable
             // 保証はどこにも無い ── ここを忘れると「例外が出たのに終了コード 0」になる。
             result = "error";
             LastStopOutcome = RecordingStopOutcome.NotFinalized;
+
+            // sidecar は書かない ── 未確定（NotFinalized）と決めた本に置くと、
+            // 索引が「排出済み」と読む。
             throw;
         }
         finally
@@ -4115,6 +4199,72 @@ public partial class EventRecorder : ObservableObject, IDisposable
         {
             return "unknown";
         }
+    }
+
+    /// <summary>常時録画のセグメントに付ける <c>trigger</c>。</summary>
+    private const string ContinuousTrigger = "continuous";
+
+    /// <summary>
+    /// 録画 1 本の sidecar（<c>&lt;録画ファイル名&gt;.json</c>）を<b>スレッドプールで</b>書く。
+    ///
+    /// <para>
+    /// <b>録画パイプラインには影響させない。</b> 呼ぶのは排出が終わった後で、
+    /// 書き込みそのものは別スレッド、失敗はログだけ ── sidecar は
+    /// 「無くても動く」補助情報である（読む側はファイル名と <c>moov</c> から推定できる）。
+    /// </para>
+    /// <para>
+    /// <b>既に在るものは上書きしない。</b> 録画の完了時に一度だけ書く形。
+    /// </para>
+    /// <para>
+    /// <b>不変条件: sidecar 在り＝確定済み（moov 書込済み）。</b> 呼び出し側は排出が
+    /// <c>ok</c> で終わったときだけ呼ぶこと ── 索引（<c>RecordingIndex</c>）は
+    /// sidecar の有無で「開いて録画中か確かめる」を省く。
+    /// </para>
+    /// </summary>
+    private void WriteSidecarInBackground(
+        string? recordingPath, DateTimeOffset startTime, DateTimeOffset endTime, string? trigger)
+    {
+        if (string.IsNullOrEmpty(recordingPath))
+            return;
+
+        string path = recordingPath;
+        string recorder = Name;
+        int width = _capsWidth;
+        int height = _capsHeight;
+        int framerateNumerator = _capsFramerateNumerator;
+        int framerateDenominator = _capsFramerateDenominator;
+
+        ThreadPool.QueueUserWorkItem(_ =>
+        {
+            try
+            {
+                if (!File.Exists(path))
+                    return;
+
+                string sidecarPath = Components.RecordingSidecar.PathFor(path);
+                if (File.Exists(sidecarPath))
+                    return;
+
+                long durationMs = (long)(endTime - startTime).TotalMilliseconds;
+
+                Components.RecordingSidecar.Write(sidecarPath, new Components.RecordingSidecar(
+                    Components.RecordingSidecar.CurrentVersion,
+                    recorder,
+                    startTime,
+                    endTime,
+                    durationMs < 0 ? null : durationMs,
+                    trigger,
+                    0 < width ? width : null,
+                    0 < height ? height : null,
+                    0 < framerateNumerator && 0 < framerateDenominator
+                        ? framerateNumerator / (double)framerateDenominator
+                        : null));
+            }
+            catch (Exception ex)
+            {
+                Log(DebugLevel.Warning, $"failed to write the recording sidecar for '{path}': {ex.Message}");
+            }
+        });
     }
 
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]

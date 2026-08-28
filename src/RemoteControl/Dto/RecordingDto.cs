@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using ProcessRecorderApp.Components;
 
 namespace ProcessRecorderApp.RemoteControl;
 
@@ -21,8 +22,27 @@ namespace ProcessRecorderApp.RemoteControl;
 /// ── ただし <c>&lt;video src&gt;</c> 直結ではなく MSE で食わせる必要がある
 /// （<c>moov</c> は書き直されないので尺が 0 のまま）。
 /// </param>
+/// <param name="StartTimeUtc">
+/// 録画の開始時刻（UTC）。sidecar があればその値、無ければファイル名
+/// （<c>yyyyMMdd_HHmmss_&lt;name&gt;</c>）をローカル時刻として読んだ値。
+/// <b>並びの基準はこれ</b>（<see cref="LastWriteTimeUtc"/> ではない ── 長い録画は
+/// 始まった順と書き終わった順が食い違う）。
+/// </param>
+/// <param name="Recorder">
+/// 録画したレコーダーの名前（ファイル名テンプレートの <c>{Name}</c> と同じ値）。
+/// 推定できなければ空文字。
+/// </param>
+/// <param name="DurationMs">
+/// 尺（ミリ秒）。<b><see langword="null"/> でありうる</b> ── 録画中・fragmented・
+/// <c>moov</c> が読めないものでは出ない（fragmented の総尺は
+/// <c>/api/recording-fragments/</c> が持つ）。
+/// </param>
+/// <param name="Width">映像の幅。sidecar にあるときだけ。</param>
+/// <param name="Height">映像の高さ。同上。</param>
+/// <param name="HasThumbnail"><c>&lt;録画ファイル名&gt;.png</c> が並んでいる。</param>
 public sealed record RecordingFileDto(
-    string Path, long Length, DateTime LastWriteTimeUtc, bool InProgress, bool Fragmented);
+    string Path, long Length, DateTime LastWriteTimeUtc, bool InProgress, bool Fragmented,
+    DateTime StartTimeUtc, string Recorder, long? DurationMs, int? Width, int? Height, bool HasThumbnail);
 
 /// <summary>
 /// 保存先の一覧。
@@ -31,8 +51,36 @@ public sealed record RecordingFileDto(
 /// 解決済みの配信 root（絶対パス）。<b>読み取りは認証を要さない</b>ので、
 /// これが見える相手には録画の置き場所も見える。
 /// </param>
-/// <param name="Files">更新時刻の降順、同時刻は相対パスの序数昇順。</param>
-public sealed record RecordingsDto(string Root, IReadOnlyList<RecordingFileDto> Files);
+/// <param name="Total">
+/// 絞り込みを適用したあと・ページングの<b>前</b>の件数。
+/// <c>limit</c> を付けても総数が分かるようにするためのもの。
+/// </param>
+/// <param name="HasMore"><c>offset</c> ＋ 返した件数が <paramref name="Total"/> に届いていない。</param>
+/// <param name="Files">
+/// 開始時刻の降順、同時刻は相対パスの序数昇順。
+/// <b>項目名は変えない</b> ── Web UI が読んでいる。
+/// </param>
+public sealed record RecordingsDto(
+    string Root, int Total, bool HasMore, IReadOnlyList<RecordingFileDto> Files);
+
+/// <summary>
+/// 日付ごとの録画件数（カレンダー表示の材料）。
+/// </summary>
+/// <param name="Days">日付の昇順。件数 0 の日は<b>出ない</b>。</param>
+public sealed record RecordingDaysDto(IReadOnlyList<RecordingDayCount> Days);
+
+/// <summary>
+/// 一覧が変わったという合図（SSE の <c>event: recording</c>）。
+///
+/// <para>
+/// <b>これは「一覧を取り直せ」以上の意味を持たない。</b> 配信は best-effort で、
+/// 混雑時は購読者の channel から古い順に落ちる ── 内容に依存した差分適用をすると、
+/// 落ちた 1 件ぶんだけ永久にずれる。
+/// </para>
+/// </summary>
+/// <param name="Kind"><c>added</c> / <c>completed</c> / <c>removed</c> / <c>updated</c>。</param>
+/// <param name="Path">対象の相対パス（区切りは <c>/</c>）。</param>
+public sealed record RecordingChangeDto(string Kind, string Path);
 
 /// <summary>
 /// fragmented 録画のフラグメント 1 件（<c>moof</c> ＋ 直後の <c>mdat</c>）。

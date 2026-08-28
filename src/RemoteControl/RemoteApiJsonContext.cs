@@ -34,6 +34,8 @@ namespace ProcessRecorderApp.RemoteControl;
 [JsonSerializable(typeof(RecordingsDto))]
 [JsonSerializable(typeof(RecordingFragmentDto))]
 [JsonSerializable(typeof(RecordingFragmentsDto))]
+[JsonSerializable(typeof(RecordingDaysDto))]
+[JsonSerializable(typeof(RecordingChangeDto))]
 [JsonSerializable(typeof(LoginRequestDto))]
 [JsonSerializable(typeof(LoginResultDto))]
 [JsonSerializable(typeof(MeDto))]

@@ -25,7 +25,7 @@ namespace ProcessRecorderApp.RemoteControl.Endpoints;
 /// ここで HTTP を書くと配信の遅さがそのままアプリの応答性になる。
 /// </para>
 /// </summary>
-internal static class EventsEndpoint
+internal static partial class EventsEndpoint
 {
     /// <summary>
     /// 無通信のまま切られないようにする心拍の間隔。
@@ -37,14 +37,22 @@ internal static class EventsEndpoint
     /// <summary>購読者ごとに保持する状態の数。</summary>
     public const int ChannelCapacity = 8;
 
-    public static void Map(WebApplication app, IRemoteControlBackend backend, RemoteAuth auth)
+    /// <summary>
+    /// 配るのを待っている 1 イベント。<b>直列化はここへ入れる時点で済ませる</b>
+    /// ── 変換をこのスレッド（状態を持っている側／索引の作り直しスレッド）で
+    /// 終えておかないと、遅い購読者が居るだけで元の持ち主が待たされる。
+    /// </summary>
+    private readonly record struct SseEvent(string Name, string Data);
+
+    public static void Map(
+        WebApplication app, IRemoteControlBackend backend, RemoteAuth auth, RecordingIndex recordings)
     {
         app.MapGet("/api/events", async (HttpContext ctx) =>
         {
             if (!await AuthGate.AllowAsync(ctx, auth, RemoteRole.Viewer, write: false))
                 return;
 
-            var channel = Channel.CreateBounded<RecordersSnapshot>(
+            var channel = Channel.CreateBounded<SseEvent>(
                 new BoundedChannelOptions(ChannelCapacity)
                 {
                     FullMode = BoundedChannelFullMode.DropOldest,
@@ -58,7 +66,17 @@ internal static class EventsEndpoint
             // 取得と購読の間に起きた変化は落ちるが、その窓は要求 1 つぶんの往復より短い。
             var initial = await backend.GetRecordersAsync(ctx.RequestAborted);
 
-            using IDisposable subscription = backend.SubscribeState(s => channel.Writer.TryWrite(s));
+            // **ここでも配信 root を解決して索引へ渡す。** 一覧を一度も読んでいない
+            // クライアント（SSE だけ張るもの）が居ると、索引は空の root を見たままで
+            // <c>recording</c> が永久に出ない。
+            string root = await backend.GetRecordingsRootAsync(ctx.RequestAborted);
+            await Task.Run(() => recordings.Rebind(root), ctx.RequestAborted);
+
+            using IDisposable subscription = backend.SubscribeState(
+                s => channel.Writer.TryWrite(new SseEvent("state", SerializeState(s))));
+
+            using IDisposable recordingSubscription = SubscribeRecordings(
+                recordings, c => channel.Writer.TryWrite(new SseEvent("recording", SerializeChange(c))));
 
             // 応答ヘッダーはここで初めて確定する。ここより前で失敗すれば、
             // 例外の受け口が 500 / 503 を返せる（HasStarted が false のうち）。
@@ -71,11 +89,11 @@ internal static class EventsEndpoint
             var ct = ctx.RequestAborted;
             try
             {
-                await WriteStateAsync(ctx, initial);
+                await WriteEventAsync(ctx, "state", SerializeState(initial));
 
                 while (!ct.IsCancellationRequested)
                 {
-                    RecordersSnapshot? next = null;
+                    SseEvent? next = null;
                     using (var wait = CancellationTokenSource.CreateLinkedTokenSource(ct))
                     {
                         wait.CancelAfter(PingInterval);
@@ -92,10 +110,10 @@ internal static class EventsEndpoint
                     if (ct.IsCancellationRequested)
                         break;
 
-                    if (next is null)
-                        await WriteEventAsync(ctx, "ping", "{}");
+                    if (next is SseEvent value)
+                        await WriteEventAsync(ctx, value.Name, value.Data);
                     else
-                        await WriteStateAsync(ctx, next);
+                        await WriteEventAsync(ctx, "ping", "{}");
                 }
             }
             catch (OperationCanceledException)
@@ -105,9 +123,60 @@ internal static class EventsEndpoint
         });
     }
 
-    private static Task WriteStateAsync(HttpContext ctx, RecordersSnapshot snapshot)
-        => WriteEventAsync(ctx, "state",
-            JsonSerializer.Serialize(snapshot, RemoteApiJsonContext.Default.RecordersSnapshot));
+    /// <summary>
+    /// 索引の差分の購読。<see cref="RecordingIndex.Changed"/> は event なので、
+    /// 他の購読と同じ <c>using</c> の形にするためにここで包む。
+    /// </summary>
+    private static IDisposable SubscribeRecordings(
+        RecordingIndex recordings, Action<RecordingIndexChange> handler)
+    {
+        recordings.Changed += handler;
+        return new Unsubscriber(() => recordings.Changed -= handler);
+    }
+
+    /// <summary>
+    /// <b><c>partial</c> は外せない。</b> <see cref="IDisposable"/> は WinRT の
+    /// <c>IClosable</c> に写るので、外すと <c>CsWinRT1028</c>（trimming / AOT）で落ちる。
+    /// </summary>
+    private sealed partial class Unsubscriber(Action release) : IDisposable
+    {
+        private Action? _release = release;
+
+        public void Dispose() => Interlocked.Exchange(ref _release, null)?.Invoke();
+    }
+
+    private static string SerializeState(RecordersSnapshot snapshot)
+        => JsonSerializer.Serialize(snapshot, RemoteApiJsonContext.Default.RecordersSnapshot);
+
+    private static string SerializeChange(RecordingIndexChange change)
+        => JsonSerializer.Serialize(
+            new RecordingChangeDto(KindName(change.Kind), RemoteApiRules.ToUrlPath(change.RelativePath)),
+            RemoteApiJsonContext.Default.RecordingChangeDto);
+
+    /// <summary>
+    /// 種別の綴り。<b>列挙の名前をそのまま小文字にしない</b>
+    /// ── 型の名前を変えただけで配線上の値が変わるのは、API の約束の壊し方として一番静かである。
+    ///
+    /// <para>
+    /// <b>既定の腕は投げる。</b> 名前の無い値（<c>(RecordingIndexChangeKind)4</c> の
+    /// ようなキャスト）まで網羅しろという <c>CS8524</c> は、既定の腕を置く以外に
+    /// 消す手が無い ── ただし既定を <c>"updated"</c> のような綴りにすると、
+    /// 新しい種別が黙って別物と名乗って配られる。
+    /// </para>
+    /// <para>
+    /// <b>種別が増えたことに気付く仕掛けはコンパイラではなく L1 にある</b>
+    /// （<c>RecordingChangeKindDriftTests</c>：列挙の全値がここの腕に在ることを
+    /// ソーステキストで照合する）。値の出どころは <c>RecordingIndex</c> 1 つだけである。
+    /// </para>
+    /// </summary>
+    private static string KindName(RecordingIndexChangeKind kind) => kind switch
+    {
+        RecordingIndexChangeKind.Added => "added",
+        RecordingIndexChangeKind.Completed => "completed",
+        RecordingIndexChangeKind.Removed => "removed",
+        RecordingIndexChangeKind.Updated => "updated",
+        _ => throw new InvalidOperationException($"unknown recording index change kind: {(int)kind}"),
+    };
 
     /// <summary>
     /// SSE の 1 イベント。<b>書いたら必ず flush する</b> ── 溜められると

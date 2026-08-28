@@ -25,6 +25,14 @@ internal interface IContinuousRecorderHost
     /// <summary>稼働状態・現在のファイル・書いたセグメント数を報告する。</summary>
     void OnContinuousStatus(bool running, string? currentFile, int segmentCount);
 
+    /// <summary>
+    /// セグメント 1 本の確定（<c>EOS</c> → 排出待ち → <c>Null</c>）が終わったことを報告する。
+    /// <b>成功・失敗のどちらでも呼ぶ</b>ので、<paramref name="ok"/> が false のファイルは
+    /// <c>moov</c> が書かれていない（＝再生できない）ことがある。
+    /// 呼ぶのはスレッドプールのスレッドで、宿主のロックは何も持っていない。
+    /// </summary>
+    void OnContinuousSegmentFinalized(string path, bool ok);
+
     /// <summary>常時録画側だけで起きた障害を報告する（イベント録画の状態には触らない）。</summary>
     void OnContinuousError(string message);
 }
@@ -636,6 +644,19 @@ internal sealed partial class ContinuousRecorder : IDisposable
             writer.Pipeline.Dispose();
             Components.ActivityLog.Info("continuous.finalize",
                 $"recorder='{_host.Name}' file='{path}' result={result}");
+
+            // **ファイルが落ち着いてから報告する。** 宿主はこの合図で sidecar を書くので、
+            // moov を書き終える前に報告すると「完了済み」の印だけが先に置かれる。
+            // 例外はここで握る ── プールスレッドへ漏らすとプロセスごと落ちる。
+            try
+            {
+                _host.OnContinuousSegmentFinalized(path, result == "ok");
+            }
+            catch (Exception ex)
+            {
+                Components.ActivityLog.Warn("continuous.finalize report fail",
+                    $"recorder='{_host.Name}' file='{path}' {ex.Message}");
+            }
         }
     }
 

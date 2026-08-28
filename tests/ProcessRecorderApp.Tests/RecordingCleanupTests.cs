@@ -86,14 +86,16 @@ public sealed class RecordingCleanupTests : IDisposable
     }
 
     [Fact]
-    public void OnlyMp4IsTouched()
+    public void OnlyMp4AndItsSidecarsAreTouched()
     {
         // **この1件は退行検出器ではない**。`GetFiles("*.mp4")` へ
         // 差し替える注入は検出できなかった ── Win32 の 8.3 互換で "*.mp4" が
         // .mp4v にも一致するのは MatchType.Win32 の話で、.NET (Core) の既定
         // （MatchType.Simple）にはその緩さが無い。
-        // 「mp4 以外に触らない」という不変条件の表明として置いてある。
+        // 「mp4 とその sidecar 以外に触らない」という不変条件の表明として置いてある。
         string mp4 = CreateFile(ageDays: 30, "recording.mp4");
+        string sidecar = CreateFile(ageDays: 30, "recording.mp4.json");
+        string thumbnail = CreateFile(ageDays: 30, "recording.mp4.png");
         string mp4v = CreateFile(ageDays: 30, "recording.mp4v");
         string log = CreateFile(ageDays: 30, "notes.txt");
         string noExtension = CreateFile(ageDays: 30, "README");
@@ -101,10 +103,65 @@ public sealed class RecordingCleanupTests : IDisposable
         var result = Sweep(1);
 
         Assert.False(File.Exists(mp4));
+        Assert.False(File.Exists(sidecar));
+        Assert.False(File.Exists(thumbnail));
         Assert.True(File.Exists(mp4v));
         Assert.True(File.Exists(log));
         Assert.True(File.Exists(noExtension));
+        // 件数とサイズは mp4 のぶんだけ（sidecar は数えない）。
         Assert.Equal(1, result.DeletedFiles);
+        Assert.Equal(16, result.FreedBytes);
+    }
+
+    [Fact]
+    public void TheSidecarsGoWithTheRecordingEvenWhenTheyAreNew()
+    {
+        // 本体が消えた後の sidecar は誰も読めない。期限は本体の側で決まる。
+        string mp4 = CreateFile(ageDays: 30, "recording.mp4");
+        string sidecar = CreateFile(ageDays: 0, "recording.mp4.json");
+
+        Sweep(1);
+
+        Assert.False(File.Exists(mp4));
+        Assert.False(File.Exists(sidecar));
+    }
+
+    [Fact]
+    public void TheSidecarsOfARetainedRecordingSurvive()
+    {
+        string mp4 = CreateFile(ageDays: 0, "recording.mp4");
+        string sidecar = CreateFile(ageDays: 30, "recording.mp4.json");
+
+        Assert.Equal(0, Sweep(1).DeletedFiles);
+        Assert.True(File.Exists(mp4));
+        Assert.True(File.Exists(sidecar));
+    }
+
+    [Fact]
+    public void AnExpiredOrphanSidecarIsDeleted()
+    {
+        // 本体が別の道具に消された後に残ったもの。期限は本体と同じ。
+        string expired = CreateFile(ageDays: 30, "gone.mp4.json");
+        string fresh = CreateFile(ageDays: 0, "recent.mp4.png");
+
+        var result = Sweep(1);
+
+        Assert.False(File.Exists(expired));
+        Assert.True(File.Exists(fresh));
+        // 孤児は mp4 ではないので件数には入らない。
+        Assert.Equal(0, result.DeletedFiles);
+        Assert.Equal(0, result.FreedBytes);
+    }
+
+    [Fact]
+    public void ASubfolderLeftEmptyByAnOrphanSidecarIsRemoved()
+    {
+        CreateFile(ageDays: 30, "2026", "07", "gone.mp4.json");
+
+        var result = Sweep(1);
+
+        Assert.False(Directory.Exists(Path.Combine(_root, "2026")));
+        Assert.Equal(2, result.RemovedDirectories);
     }
 
     [Fact]

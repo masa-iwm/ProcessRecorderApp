@@ -114,6 +114,44 @@ public sealed class RecordingDeliveryTests(PublishedApp app, ITestOutputHelper o
                 [.. body.RootElement.GetProperty("files").EnumerateArray().Select(e => e.Clone())]);
     }
 
+    /// <summary>索引が新しい状態へ追いつくまでの上限。</summary>
+    private static readonly TimeSpan IndexBudget = TimeSpan.FromSeconds(20);
+
+    /// <summary>
+    /// <paramref name="accept"/> を満たす一覧が返るまで引き直す。
+    ///
+    /// <para>
+    /// <b>一覧はメモリの索引（<c>RecordingIndex</c>）から返る</b>ので、要求のたびの走査では
+    /// なくなった ── 停止の応答が返った直後はまだ「録画中」のままでありうる
+    /// （watcher の通知 → 500ms デバウンス → 作り直し）。ここで待たずに断じると、
+    /// 機械の速さで通ったり落ちたりする検査になる。
+    /// </para>
+    /// </summary>
+    private static async Task<JsonElement[]> WaitForListingAsync(
+        HttpClient client, Func<JsonElement[], bool> accept, TimeSpan budget)
+    {
+        var deadline = Stopwatch.StartNew();
+        JsonElement[] files = [];
+
+        while (deadline.Elapsed < budget)
+        {
+            (_, files) = await ListAsync(client);
+            if (accept(files))
+                return files;
+
+            Thread.Sleep(250);
+        }
+
+        Assert.Fail(
+            $"一覧が {budget.TotalSeconds:F0} 秒以内に期待した状態になりませんでした: "
+            + string.Join(", ", files.Select(f => f.ToString())));
+        return files;
+    }
+
+    /// <summary>録画が 1 本だけ在って、それが確定していること。</summary>
+    private static bool IsSingleFinished(JsonElement[] files)
+        => files.Length == 1 && !files[0].GetProperty("inProgress").GetBoolean();
+
     /// <summary>録画を 1 本作って、その相対パスを返す。</summary>
     private string RecordOnce(AppInstance instance)
     {
@@ -169,9 +207,8 @@ public sealed class RecordingDeliveryTests(PublishedApp app, ITestOutputHelper o
 
         Assert.Equal(0, instance.Run("stop-recording-all").ExitCode);
 
-        var (_, finished) = await ListAsync(client);
+        var finished = await WaitForListingAsync(client, IsSingleFinished, IndexBudget);
         var done = Assert.Single(finished);
-        Assert.False(done.GetProperty("inProgress").GetBoolean());
         Assert.Equal(relativePath, done.GetProperty("path").GetString());
 
         string full = Assert.Single(instance.ListRecordings());
@@ -182,6 +219,157 @@ public sealed class RecordingDeliveryTests(PublishedApp app, ITestOutputHelper o
             File.GetLastWriteTimeUtc(full),
             done.GetProperty("lastWriteTimeUtc").GetDateTime(),
             TimeSpan.FromSeconds(2));
+    }
+
+    // ---- sidecar・絞り込み・ページング・日集計 ----
+
+    /// <summary>
+    /// sidecar が書かれて一覧に載るまでの上限。排出のあとにスレッドプールで書かれ、
+    /// 索引はさらに 500ms のデバウンス越しに作り直される。
+    /// </summary>
+    private static readonly TimeSpan SidecarBudget = TimeSpan.FromSeconds(20);
+
+    /// <summary>200 と <c>no-store</c> を確かめて本文の JSON を返す（破棄は呼び出し側）。</summary>
+    private static async Task<JsonDocument> GetJsonAsync(HttpClient client, string url)
+    {
+        using var response = await client.GetAsync(url, Ct);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("no-store", response.Headers.CacheControl?.ToString());
+        return await ReadJsonAsync(response);
+    }
+
+    private static async Task AssertBadRequestAsync(HttpClient client, string url)
+    {
+        using var response = await client.GetAsync(url, Ct);
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    /// <summary>
+    /// 録画が終わると <c>&lt;name&gt;.mp4.json</c> が書かれ、一覧の項目に
+    /// <c>startTimeUtc</c> / <c>recorder</c> / <c>durationMs</c> が載ること。
+    /// 併せて <c>from</c> / <c>to</c> / <c>recorder</c> / <c>limit</c> / <c>offset</c> と
+    /// <c>/api/recording-days</c>、断り方（400）を固定する。
+    ///
+    /// <para>
+    /// <b>ここは発行物でしか見られない。</b> sidecar を書くのは録画エンジン（排出の完了時）、
+    /// 読むのはリモート操作側の索引で、間に <see cref="System.IO.FileSystemWatcher"/> が
+    /// 挟まる ── 3 つが揃って初めて「一覧に尺が出る」になる。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task TheListing_CarriesTheSidecarFactsAndPages()
+    {
+        using var instance = AppInstance.Create(app, RemoteSettings(), configure: UseIsolatedRoot);
+        int port = WaitForPort(instance);
+        using var client = CreateClient(port);
+
+        // 2 本録る（ページングは 1 本では「次が在る」を見られない）。
+        for (int take = 0; take < 2; take++)
+        {
+            Assert.Equal(0, instance.Run("start-recording-all").ExitCode);
+            Thread.Sleep(RecordingWindow);
+            Assert.Equal(0, instance.Run("stop-recording-all").ExitCode);
+        }
+
+        // **sidecar が載るまで待つ。** 停止の応答が返った時点ではまだ書かれていない
+        // （best-effort・スレッドプール）ので、直後を見て断じるとまぐれで通る／落ちる。
+        JsonElement[] files = [];
+        var deadline = Stopwatch.StartNew();
+        while (deadline.Elapsed < SidecarBudget)
+        {
+            (_, files) = await ListAsync(client);
+            if (files.Length == 2
+                && files.All(f => f.GetProperty("durationMs").ValueKind != JsonValueKind.Null))
+            {
+                break;
+            }
+
+            Thread.Sleep(500);
+        }
+
+        Assert.Equal(2, files.Length);
+        foreach (var file in files)
+        {
+            output.WriteLine(file.ToString());
+            Assert.False(file.GetProperty("inProgress").GetBoolean());
+            Assert.Equal("R1", file.GetProperty("recorder").GetString());
+            Assert.True(0 < file.GetProperty("durationMs").GetInt64(),
+                "sidecar の尺が一覧に載っていない: " + file);
+            Assert.False(file.GetProperty("hasThumbnail").GetBoolean());
+        }
+
+        // ディスクにも並んでいること（サムネイル `<録画ファイル名>.png` はこの隣に置かれる）。
+        Assert.Equal(2, Directory.GetFiles(instance.RecordingsDir, "*.mp4.json").Length);
+
+        // 並びは開始時刻の降順。
+        DateTime newest = files[0].GetProperty("startTimeUtc").GetDateTime();
+        DateTime oldest = files[1].GetProperty("startTimeUtc").GetDateTime();
+        Assert.True(oldest < newest, $"開始時刻の降順で並んでいない: {oldest:O} / {newest:O}");
+
+        // ページング。total は絞り込みの後・ページングの前の件数である。
+        using (var page = await GetJsonAsync(client, "api/recordings?limit=1"))
+        {
+            Assert.Equal(2, page.RootElement.GetProperty("total").GetInt32());
+            Assert.True(page.RootElement.GetProperty("hasMore").GetBoolean());
+            var only = Assert.Single(page.RootElement.GetProperty("files").EnumerateArray());
+            Assert.Equal(newest, only.GetProperty("startTimeUtc").GetDateTime());
+        }
+
+        using (var tail = await GetJsonAsync(client, "api/recordings?limit=1&offset=1"))
+        {
+            Assert.Equal(2, tail.RootElement.GetProperty("total").GetInt32());
+            Assert.False(tail.RootElement.GetProperty("hasMore").GetBoolean());
+            var only = Assert.Single(tail.RootElement.GetProperty("files").EnumerateArray());
+            Assert.Equal(oldest, only.GetProperty("startTimeUtc").GetDateTime());
+        }
+
+        // 絞り込み。**`from` は含み、`to` は含まない** ── 同じ値で両端を突いて確かめる。
+        string boundary = Uri.EscapeDataString(oldest.ToString("O", CultureInfo.InvariantCulture));
+        using (var inclusive = await GetJsonAsync(client, "api/recordings?from=" + boundary))
+            Assert.Equal(2, inclusive.RootElement.GetProperty("total").GetInt32());
+
+        using (var exclusive = await GetJsonAsync(client, "api/recordings?to=" + boundary))
+            Assert.Equal(0, exclusive.RootElement.GetProperty("total").GetInt32());
+
+        using (var mine = await GetJsonAsync(client, "api/recordings?recorder=R1"))
+            Assert.Equal(2, mine.RootElement.GetProperty("total").GetInt32());
+
+        using (var none = await GetJsonAsync(client, "api/recordings?recorder=R9"))
+            Assert.Equal(0, none.RootElement.GetProperty("total").GetInt32());
+
+        // 日ごとの件数。**日付は返ってきた開始時刻から導く**（`UtcNow` から作ると
+        // 日付をまたいだ瞬間に落ちる）。
+        string today = newest.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        using (var days = await GetJsonAsync(client, "api/recording-days"))
+        {
+            var rows = days.RootElement.GetProperty("days").EnumerateArray().ToArray();
+            output.WriteLine(days.RootElement.ToString());
+            Assert.Equal(2, rows.Sum(d => d.GetProperty("count").GetInt32()));
+            var row = Assert.Single(rows, d => d.GetProperty("date").GetString() == today);
+            Assert.True(0 < row.GetProperty("count").GetInt32());
+        }
+
+        // tz は固定オフセットと Windows のタイムゾーン ID を受ける（IANA は受けない
+        // ── InvariantGlobalization=true）。数え上げる総数は変わらない。
+        foreach (string tz in new[] { "+09:00", "Tokyo Standard Time" })
+        {
+            using var shifted = await GetJsonAsync(
+                client, "api/recording-days?tz=" + Uri.EscapeDataString(tz));
+            Assert.Equal(
+                2, shifted.RootElement.GetProperty("days").EnumerateArray().Sum(d => d.GetProperty("count").GetInt32()));
+        }
+
+        // 受け付けない問い合わせは丸めずに断る（返る件数を応答を数えるまで知れない、を作らない）。
+        await AssertBadRequestAsync(client, "api/recordings?limit=0");
+        await AssertBadRequestAsync(client, "api/recordings?limit=1001");
+        await AssertBadRequestAsync(client, "api/recordings?offset=-1");
+        await AssertBadRequestAsync(client, "api/recordings?from=yesterday");
+
+        // **時刻だけ・ロケール依存の日付は ISO-8601 ではない。** 緩く読むと `10:00` が
+        // 「今日の 10 時」に、`08/28/2026` が月日の順序込みで通ってしまう。
+        await AssertBadRequestAsync(client, "api/recordings?from=" + Uri.EscapeDataString("10:00"));
+        await AssertBadRequestAsync(client, "api/recording-days?tz=" + Uri.EscapeDataString("Not/AZone"));
+        await AssertBadRequestAsync(client, "api/recording-days?tz=" + Uri.EscapeDataString("+99:00"));
     }
 
     // ---- fragmented 出力（録画中の追いかけ再生） ----
@@ -315,8 +503,7 @@ public sealed class RecordingDeliveryTests(PublishedApp app, ITestOutputHelper o
             Assert.True(grown <= finished.Content.Headers.ContentLength);
         }
 
-        var (_, done) = await ListAsync(client);
-        Assert.False(Assert.Single(done).GetProperty("inProgress").GetBoolean());
+        var done = await WaitForListingAsync(client, IsSingleFinished, IndexBudget);
         Assert.True(done[0].GetProperty("fragmented").GetBoolean());
 
         // 完成したファイルも fragmented のまま（EOS で足すのは末尾の mfra だけで、

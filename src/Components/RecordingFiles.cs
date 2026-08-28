@@ -20,6 +20,11 @@ namespace ProcessRecorderApp.Components;
 public sealed record RecordingFileInfo(
     string RelativePath, long Length, DateTime LastWriteTimeUtc, bool InProgress, bool Fragmented);
 
+/// <summary>走査で見つかった 1 件（<see cref="RecordingFiles.WalkFiles"/> の結果）。</summary>
+/// <param name="File">見つかったファイル。属性・長さ・更新時刻は走査時のもの。</param>
+/// <param name="RelativePath">走査 root からの相対パス（区切りは <c>/</c>）。</param>
+internal readonly record struct RecordingFileCandidate(FileInfo File, string RelativePath);
+
 /// <summary>
 /// 保存先の録画ファイルを<b>安全に</b>列挙・開封する。
 ///
@@ -50,13 +55,23 @@ public static class RecordingFiles
     /// </summary>
     public static IReadOnlyList<RecordingFileInfo> Enumerate(string root)
     {
-        if (string.IsNullOrWhiteSpace(root) || !Directory.Exists(root))
-            return [];
-
-        string fullRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(root));
-
         var found = new List<RecordingFileInfo>();
-        Collect(fullRoot, fullRoot, found);
+
+        foreach (var candidate in WalkFiles(root))
+        {
+            if (!string.Equals(candidate.File.Extension, RecordingCleanup.Extension, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            if (!TryProbeInProgress(candidate.File.FullName, out bool inProgress))
+                continue;
+
+            found.Add(new RecordingFileInfo(
+                candidate.RelativePath,
+                candidate.File.Length,
+                candidate.File.LastWriteTimeUtc,
+                inProgress,
+                ProbeFragmented(candidate.File.FullName)));
+        }
 
         found.Sort(static (a, b) =>
         {
@@ -67,7 +82,25 @@ public static class RecordingFiles
         return found;
     }
 
-    private static void Collect(string directory, string fullRoot, List<RecordingFileInfo> found)
+    /// <summary>
+    /// <paramref name="root"/> 配下の<b>すべての</b>ファイルを、<see cref="Enumerate"/> と
+    /// 同じ範囲（リパースポイントには降りない・ファイル自身がリンクなら出さない）で集める。
+    /// 拡張子では絞らない ── 録画本体と同じ走査で sidecar（<c>.mp4.json</c> /
+    /// <c>.mp4.png</c>）も拾えるようにするため。範囲の規則をここ 1 か所に置く。
+    /// </summary>
+    internal static List<RecordingFileCandidate> WalkFiles(string root)
+    {
+        if (string.IsNullOrWhiteSpace(root) || !Directory.Exists(root))
+            return [];
+
+        string fullRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(root));
+
+        var found = new List<RecordingFileCandidate>();
+        Collect(fullRoot, fullRoot, found);
+        return found;
+    }
+
+    private static void Collect(string directory, string fullRoot, List<RecordingFileCandidate> found)
     {
         FileInfo[] files;
         DirectoryInfo[] subdirectories;
@@ -84,23 +117,13 @@ public static class RecordingFiles
 
         foreach (var file in files)
         {
-            if (!string.Equals(file.Extension, RecordingCleanup.Extension, StringComparison.OrdinalIgnoreCase))
-                continue;
-
             // ファイル自身のリンク。実体は root の外でありうるので、開かずに落とす
             // （開いてしまえばリンク先を配ることになる）。
             if ((file.Attributes & FileAttributes.ReparsePoint) != 0)
                 continue;
 
-            if (!TryProbeInProgress(file.FullName, out bool inProgress))
-                continue;
-
-            found.Add(new RecordingFileInfo(
-                Path.GetRelativePath(fullRoot, file.FullName).Replace('\\', '/'),
-                file.Length,
-                file.LastWriteTimeUtc,
-                inProgress,
-                ProbeFragmented(file.FullName)));
+            found.Add(new RecordingFileCandidate(
+                file, Path.GetRelativePath(fullRoot, file.FullName).Replace('\\', '/')));
         }
 
         foreach (var subdirectory in subdirectories)
@@ -168,7 +191,7 @@ public static class RecordingFiles
     /// <see cref="FileShare.ReadWrite"/> | <see cref="FileShare.Delete"/> で開き直す
     /// （<see cref="TryProbeInProgress"/> の共有指定では書き込み中のファイルを読めない）。
     /// </summary>
-    private static bool ProbeFragmented(string path)
+    internal static bool ProbeFragmented(string path)
     {
         try
         {
@@ -186,8 +209,9 @@ public static class RecordingFiles
     /// 録画中かどうかを、共有読み取りで開けるかどうかで判定する。
     /// 開けない（<see cref="IOException"/>）＝ <c>filesink</c> が書き込みで握っている。
     /// 消えていた・権限が無いものは<b>一覧から落とす</b>（false を返す）。
+    /// <see cref="RecordingIndex"/> も同じ除外規則で走査する。
     /// </summary>
-    private static bool TryProbeInProgress(string path, out bool inProgress)
+    internal static bool TryProbeInProgress(string path, out bool inProgress)
     {
         try
         {

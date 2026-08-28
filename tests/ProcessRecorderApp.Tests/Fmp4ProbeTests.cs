@@ -2,6 +2,7 @@ using ProcessRecorderApp.Components;
 using System;
 using System.Buffers.Binary;
 using System.Collections.Generic;
+using System.IO;
 using System.Text;
 using Xunit;
 
@@ -220,5 +221,159 @@ public sealed class Fmp4ProbeTests
         // mdhd が途中で切れている（timescale まで届いていない）。
         byte[] truncated = Concat(Ftyp(), Box("moov", Box("trak", Box("mdia", Mdhd(1000)))));
         Assert.False(Fmp4Probe.TryReadMediaTimescale(truncated[..^8], out _));
+    }
+    private static byte[] U64(ulong value)
+    {
+        byte[] bytes = new byte[8];
+        BinaryPrimitives.WriteUInt64BigEndian(bytes, value);
+        return bytes;
+    }
+
+    /// <summary>
+    /// <c>mvhd</c>。version 0 は creation / modification / duration が 32bit、
+    /// version 1 は 64bit で <c>timescale</c> と <c>duration</c> の位置が動く。
+    /// </summary>
+    private static byte[] Mvhd(uint timescale, ulong duration, byte version = 0)
+        => version == 0
+            ? Box("mvhd", [0, 0, 0, 0], new byte[8], U32(timescale), U32((uint)duration))
+            : Box("mvhd", [1, 0, 0, 0], new byte[16], U32(timescale), U64(duration));
+
+    /// <summary>size(4) が 1 で、実長が largesize(8) に入る箱。</summary>
+    private static byte[] LargeBox(string type, int payloadBytes)
+    {
+        byte[] box = new byte[16 + payloadBytes];
+        BinaryPrimitives.WriteUInt32BigEndian(box, 1);
+        Encoding.ASCII.GetBytes(type).CopyTo(box, 4);
+        BinaryPrimitives.WriteUInt64BigEndian(box.AsSpan(8), (ulong)box.Length);
+        return box;
+    }
+
+    private static bool TryReadDuration(byte[] file, out long durationMs)
+    {
+        using var stream = new MemoryStream(file, writable: false);
+        return Fmp4Probe.TryReadMovieDuration(stream, out durationMs);
+    }
+
+    [Fact]
+    public void TheDurationIsReadFromAMoovAtTheFront()
+    {
+        // 単発録画は faststart=true で moov が ftyp の直後に来る。
+        byte[] file = Concat(Ftyp(), Box("moov", Mvhd(1000, 2500)), Box("mdat", new byte[64]));
+
+        Assert.True(TryReadDuration(file, out long durationMs));
+        Assert.Equal(2500, durationMs);
+    }
+
+    [Fact]
+    public void TheDurationIsReadFromAMoovAtTheEnd()
+    {
+        // 常時録画のセグメントは faststart 無しで moov が末尾に来る。
+        // mdat は跳ぶだけで読まない。
+        byte[] file = Concat(Ftyp(), Box("mdat", new byte[4096]), Box("moov", Mvhd(90_000, 315_000)));
+
+        Assert.True(TryReadDuration(file, out long durationMs));
+        Assert.Equal(3500, durationMs);
+    }
+
+    [Fact]
+    public void ALargesizeBoxIsSkipped()
+    {
+        byte[] file = Concat(Ftyp(), LargeBox("mdat", 128), Box("moov", Mvhd(1000, 1234)));
+
+        Assert.True(TryReadDuration(file, out long durationMs));
+        Assert.Equal(1234, durationMs);
+    }
+
+    [Fact]
+    public void TheVersion1MovieHeaderIsRead()
+    {
+        byte[] file = Concat(Ftyp(), Box("moov", Mvhd(1000, 7000, version: 1)));
+
+        Assert.True(TryReadDuration(file, out long durationMs));
+        Assert.Equal(7000, durationMs);
+    }
+
+    [Fact]
+    public void AMvhdAfterOtherChildrenIsFound()
+    {
+        // mvhd は moov の最初の子であるのが普通だが、位置には依存しない。
+        byte[] file = Concat(Ftyp(), Box("moov", Box("udta", new byte[16]), Mvhd(1000, 500)));
+
+        Assert.True(TryReadDuration(file, out long durationMs));
+        Assert.Equal(500, durationMs);
+    }
+
+    [Fact]
+    public void AFragmentedMovieHasNoDuration()
+    {
+        // fragmented は mvhd の duration が 0 で、実際の尺は moof の側にある。
+        byte[] file = Concat(
+            Ftyp(),
+            Box("moov", Mvhd(1000, 0), Box("mvex", Box("trex", new byte[8]))),
+            Box("moof", new byte[4]));
+
+        Assert.False(TryReadDuration(file, out long durationMs));
+        Assert.Equal(0, durationMs);
+    }
+
+    [Fact]
+    public void ATimescaleOfZeroIsRejected()
+    {
+        byte[] file = Concat(Ftyp(), Box("moov", Mvhd(0, 2500)));
+
+        Assert.False(TryReadDuration(file, out _));
+    }
+
+    [Fact]
+    public void AnUnknownDurationIsRejected()
+    {
+        // version 0 の 0xFFFFFFFF は「不明」の表明。
+        byte[] file = Concat(Ftyp(), Box("moov", Mvhd(1000, uint.MaxValue)));
+
+        Assert.False(TryReadDuration(file, out _));
+    }
+
+    [Fact]
+    public void AVersion1DurationThatOverflowsInMillisecondsIsRejected()
+    {
+        // version 1 の duration は 64bit。ミリ秒へ直す掛け算は ulong で巻くので、
+        // 巻いた結果（18446744073709552 * 1000 → 384）は long.MaxValue の検査を
+        // すり抜ける ── 掛ける前に弾けていないと 384ms として通ってしまう。
+        byte[] file = Concat(Ftyp(), Box("moov", Mvhd(1, 18_446_744_073_709_552, version: 1)));
+
+        Assert.False(TryReadDuration(file, out _));
+    }
+
+    [Fact]
+    public void ATruncatedMoovHasNoDuration()
+    {
+        byte[] whole = Concat(Ftyp(), Box("moov", Mvhd(1000, 2500)));
+
+        Assert.False(TryReadDuration(whole[..(whole.Length - 8)], out _));
+    }
+
+    [Fact]
+    public void AZeroSizedBoxEndsTheScan()
+    {
+        // size=0 は「以後ファイル末尾まで」なので、その後ろに兄弟は無い。
+        byte[] mdat = new byte[8 + 32];
+        Encoding.ASCII.GetBytes("mdat").CopyTo(mdat, 4);
+
+        Assert.False(TryReadDuration(Concat(Ftyp(), mdat, Box("moov", Mvhd(1000, 2500))), out _));
+    }
+
+    [Fact]
+    public void SomethingThatIsNotAnMp4HasNoDuration()
+    {
+        Assert.False(TryReadDuration(Encoding.ASCII.GetBytes("not an mp4 at all"), out _));
+        Assert.False(TryReadDuration([], out _));
+    }
+
+    [Fact]
+    public void AMoovWithoutAMvhdHasNoDuration()
+    {
+        byte[] file = Concat(Ftyp(), Box("moov", Box("trak", new byte[16])));
+
+        Assert.False(TryReadDuration(file, out _));
     }
 }

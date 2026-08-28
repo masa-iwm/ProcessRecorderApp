@@ -56,12 +56,20 @@ public sealed class RemoteControlHost : IAsyncDisposable
 {
     private readonly WebApplication _app;
 
+    /// <summary>
+    /// 録画一覧の索引。<b>ホストと寿命を同じにする</b> ── 中身は
+    /// <see cref="System.IO.FileSystemWatcher"/> と 2 本のタイマーであり、
+    /// 作り直しのたびに置き去りにすると監視だけが積み上がる。
+    /// </summary>
+    private readonly RecordingIndex _recordings;
+
     /// <summary>畳めなかった起動を打ち切るまでの時間（要求は 1 つも通していない）。</summary>
     private static readonly TimeSpan FailedStartStopTimeout = TimeSpan.FromSeconds(1);
 
-    private RemoteControlHost(WebApplication app, IPEndPoint boundEndpoint)
+    private RemoteControlHost(WebApplication app, RecordingIndex recordings, IPEndPoint boundEndpoint)
     {
         _app = app;
+        _recordings = recordings;
         BoundEndpoint = boundEndpoint;
     }
 
@@ -149,27 +157,41 @@ public sealed class RemoteControlHost : IAsyncDisposable
             throw new InvalidOperationException(ex.InnerException.Message, ex);
         }
 
-        RootEndpoint.Map(app, auth);
-        AuthEndpoints.Map(app, auth);
-        PingEndpoint.Map(app, auth);
-        RecorderEndpoints.Map(app, backend, auth);
-        ControlEndpoints.Map(app, backend, auth);
-        VariableEndpoints.Map(app, backend, auth);
-        SettingsEndpoints.Map(app, backend, auth);
-        SourceEndpoints.Map(app, backend, auth);
-        EventsEndpoint.Map(app, backend, auth);
-        RecordingEndpoints.Map(app, backend, auth);
-        PreviewEndpoints.Map(app, backend, auth);
-        DashEndpoints.Map(app, backend, auth);
+        // **索引はホストに 1 つ。** 空の root で作っておき、実際の保存先は最初の要求が
+        // `Rebind` する ── ここで解決しようとすると、UI スレッドがまだ立ち上がっていない
+        // 起動経路で待たされる（backend の解決は UI スレッド越しである）。
+        var recordings = new RecordingIndex(string.Empty);
 
-        app.MapFallback(async (HttpContext ctx) =>
-            await ApiResponse.WriteErrorAsync(
-                ctx, 404, ApiResponse.HttpLayerExitCode, "unknown endpoint"));
+        try
+        {
+            RootEndpoint.Map(app, auth);
+            AuthEndpoints.Map(app, auth);
+            PingEndpoint.Map(app, auth);
+            RecorderEndpoints.Map(app, backend, auth);
+            ControlEndpoints.Map(app, backend, auth);
+            VariableEndpoints.Map(app, backend, auth);
+            SettingsEndpoints.Map(app, backend, auth);
+            SourceEndpoints.Map(app, backend, auth);
+            EventsEndpoint.Map(app, backend, auth, recordings);
+            RecordingEndpoints.Map(app, backend, auth, recordings);
+            PreviewEndpoints.Map(app, backend, auth);
+            DashEndpoints.Map(app, backend, auth);
 
-        await app.StartAsync(ct);
+            app.MapFallback(async (HttpContext ctx) =>
+                await ApiResponse.WriteErrorAsync(
+                    ctx, 404, ApiResponse.HttpLayerExitCode, "unknown endpoint"));
+
+            await app.StartAsync(ct);
+        }
+        catch
+        {
+            // 起動しきらなかった経路でも監視を残さない（ここを通ると host は作られない）。
+            recordings.Dispose();
+            throw;
+        }
 
         int port = TryResolveBoundPort(app, options.Port);
-        var host = new RemoteControlHost(app, new IPEndPoint(address, port));
+        var host = new RemoteControlHost(app, recordings, new IPEndPoint(address, port));
 
         if (port == 0)
         {
@@ -225,6 +247,18 @@ public sealed class RemoteControlHost : IAsyncDisposable
     /// <summary>解放する。停止は済ませてから呼ぶこと（未停止でも投げない）。</summary>
     public async ValueTask DisposeAsync()
     {
+        // **索引は Web ホストより先に畳む。** 監視が生きているあいだは差分の通知が
+        // スレッドプールから飛んでくるので、購読者（SSE）が畳まれた後に外すと
+        // 「もう誰も読まない channel へ書く」が最後まで続く。
+        try
+        {
+            _recordings.Dispose();
+        }
+        catch (Exception ex)
+        {
+            ActivityLog.Warn("remote.error", "dispose index: " + ex.Message);
+        }
+
         try
         {
             await _app.DisposeAsync().ConfigureAwait(false);

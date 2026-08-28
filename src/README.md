@@ -782,6 +782,11 @@ basesrc はタスクが pause しているだけで状態は `PLAYING` のまま
 インストール先まで巻き込む。保存先そのものは決して消さない。
 1件の削除失敗（録画中のファイルはロックされている）で全体を止めず、理由を記録して続行する。
 
+**mp4 に付く sidecar（`.mp4.json` ＝ メタデータ、`.mp4.png` ＝ サムネイル）も一緒に消す。**
+本体の無い sidecar は誰も読めず一覧にも出ないので、**孤児も本体と同じ期限で**消す
+（本体が別の道具に消された直後のものを、期限より前に巻き込まないため）。
+`DeletedFiles` / `FreedBytes` が数えるのは mp4 のぶんだけである。
+
 保存先は Settings 画面の「…」から**フォルダー選択ダイアログ**で選べる
 （`MainPage.PickOutputDirectoryAsync`）。**UWP の `Windows.Storage.Pickers` ではなく
 Windows App SDK 側の `Microsoft.Windows.Storage.Pickers` を使う** ── あちらはアンパッケージ配布だと
@@ -1894,8 +1899,9 @@ UI スレッドで走る。`TryEnqueue` が false なら `RemoteApiException(12,
 | GET | `/api/variables` | `Viewer` | ファイル名テンプレートの変数の一覧 |
 | PUT | `/api/variables/{key}` | `Operator`（**W**） | `{value, persist}`（`--set` / `--persist` / `--no-persist` と同義）。両方 null は 400 |
 | POST | `/api/ping` | `Viewer`（**W**） | 認証の疎通確認（`{"ok":true}`）。**書き込み扱い**なのでヘッダーの有無まで切り分けられる |
-| GET | `/api/events` | `Viewer` | SSE。`state` と `ping`。**Cookie だけで通る**（`EventSource` はヘッダーを付けられない） |
-| GET | `/api/recordings` | `Viewer` | 録画ファイルの一覧（`root` ＋ `files[]`。1 件は `path` / `length` / `lastWriteTimeUtc` / `inProgress` / `fragmented`） |
+| GET | `/api/events` | `Viewer` | SSE。`state` と `recording` と `ping`。**Cookie だけで通る**（`EventSource` はヘッダーを付けられない） |
+| GET | `/api/recordings` | `Viewer` | 録画ファイルの一覧（`root` / `total` / `hasMore` ＋ `files[]`。1 件は `path` / `length` / `lastWriteTimeUtc` / `inProgress` / `fragmented` / `startTimeUtc` / `recorder` / `durationMs` / `width` / `height` / `hasThumbnail`）。`?from=&to=&recorder=&limit=&offset=` |
+| GET | `/api/recording-days` | `Viewer` | 日付ごとの件数（`days[]`。1 件は `date`（`yyyy-MM-dd`）/ `count`）。`?from=&to=&recorder=&tz=` |
 | GET | `/api/recordings/{*path}` | `Viewer` | 1 ファイルの配信（Range 対応。`?download=1` で添付。応答に `X-In-Progress` と `X-Codecs`） |
 | GET | `/api/recording-fragments/{*path}` | `Viewer` | 1 ファイルの fragment 索引（`?from=<バイト位置>` で差分だけ）。`timescale` / `codecs` / `inProgress` / `initSize` / `nextOffset` / `totalDuration` ＋ `fragments[]`（1 件は `offset` / `size` / `time` / `duration` / `sync`）。fragmented でなければ 404 `not fragmented` |
 | GET | `/api/recorders/{id}/preview.mp4` | `Viewer` | ライブプレビュー（chunked fMP4） |
@@ -1994,16 +2000,32 @@ UI スレッドで走る。`TryEnqueue` が false なら `RemoteApiException(12,
 
 ### 状態のプッシュ（SSE）
 
-`GET /api/events`。イベントは `state`（`RecordersSnapshot`）と `ping`（本文 `{}`、
-`EventsEndpoint.PingInterval` ＝ **15 秒**）の 2 つだけ。書式は `event:` 行 ＋ `data:` 行 ＋ 空行
-（改行は LF）で、1 イベントごとに flush する。応答ヘッダーは `text/event-stream; charset=utf-8` ＋
-`Cache-Control: no-store` ＋ `X-Accel-Buffering: no`。
+`GET /api/events`。書式は `event:` 行 ＋ `data:` 行 ＋ 空行（改行は LF）で、1 イベントごとに
+flush する。応答ヘッダーは `text/event-stream; charset=utf-8` ＋ `Cache-Control: no-store` ＋
+`X-Accel-Buffering: no`。種別は 3 つ:
+
+| `event` | `data` | いつ |
+|---|---|---|
+| `state` | `RecordersSnapshot` | 接続直後に 1 件、以後はレコーダーの状態が変わるたび |
+| `recording` | `{kind, path}`（`kind` は `added` / `completed` / `removed` / `updated`） | 録画一覧の索引が作り直されて差分が出たとき |
+| `ping` | `{}` | 無通信が `EventsEndpoint.PingInterval` ＝ **15 秒**続いたとき |
 
 購読者ごとに `Channel`（容量 8・`DropOldest`・`SingleReader`・
-`AllowSynchronousContinuations = false`）を持つ。押し出しは UI スレッドで `PropertyChanged` を
-購読し、**200ms デバウンス**（`RemoteControlBackend.DebounceInterval`）してから不変 DTO にする。
+`AllowSynchronousContinuations = false`）を持ち、`state` と `recording` は同じ 1 本に乗る。
+要素は「イベント名 ＋ 直列化済みの `data`」で、**JSON にするのは channel へ入れる側**
+（状態を持っているスレッド／索引を作り直したスレッド）である ── 変換を配信側に残すと、
+遅い購読者 1 つが元の持ち主を待たせる。
+
+**`recording` は best-effort である。** 混雑すれば `DropOldest` で落ちるので、
+クライアントは「一覧を取り直す合図」としてだけ使い、`data` の中身で差分を当てない
+（1 件落ちたぶんだけ永久にずれる）。
+
+押し出しは UI スレッドで `PropertyChanged` を購読し、**200ms デバウンス**
+（`RemoteControlBackend.DebounceInterval`）してから不変 DTO にする。
 **ヘッダーを書く前に一度 `GetRecordersAsync` を呼ぶ** ── そうしないと、起動直後の失敗を
-500 / 503 の JSON で返せなくなる（ヘッダーを送った後では手遅れ）。
+500 / 503 の JSON で返せなくなる（ヘッダーを送った後では手遅れ）。同じ場所で
+`GetRecordingsRootAsync` も呼んで索引へ `Rebind` する ── 一覧を一度も読まないクライアント
+（開いた直後の一覧画面がまさにそれ）が居ると、索引が空の root を見たままになる。
 
 ### 録画ファイルの配信
 
@@ -2060,6 +2082,76 @@ UI スレッドで走る。`TryEnqueue` が false なら `RemoteApiException(12,
 **`..` の拒否規則を実際に踏むのは `..%5C` のほう**（400 `path rejected`）。`%2e%2e%2f` は
 `Uri` が `%2e` だけ復号し、サーバー側の正規化でドットセグメントが畳まれるため、ハンドラーには
 `x.mp4` として届いて **404** になる。どちらも L2 で固定してある。
+
+#### sidecar（`<録画ファイル名>.mp4.json`）
+
+録画が排出を終えた時点で、録画エンジンが同じフォルダーへ `RecordingSidecar` を書く
+（`Components/RecordingSidecar.cs`。`version` / `recorder` / `startTime` / `endTime` /
+`durationMs` / `trigger` / `width` / `height` / `fps`）。常時録画は次のセグメントへ切り替わった
+通知で**前の**ファイルへ書く（`trigger` は `"continuous"`。単発は開始理由を持つ型が無いので
+`null`）。
+
+**sidecar 在り＝確定済み（`moov` 書込済み）が不変条件である。** 単発は排出が `result=ok` で
+終わった本だけ、常時録画は `OnContinuousSegmentFinalized(ok: true)` の本だけに置く ──
+索引は sidecar の有無で「開いて録画中か確かめる」を省くので、未確定の本に置くと
+録画中のものと区別が付かなくなる。
+
+**書き込みは best-effort である。** スレッドプールで書き、例外はログだけにして録画パイプラインへ
+返さない ── 「メタデータが書けなかったので録画が止まった」を作らない。既に在るものは
+上書きしない。無ければ索引がファイル名（`yyyyMMdd_HHmmss_<name>`）と `moov` の `mvhd` から
+同じ値を導くので、**無くても一覧は成立する**（`width` / `height` だけは出ない ──
+一覧に `fps` は元から無い）。
+
+#### 一覧の源はメモリの索引（`Components/RecordingIndex.cs`）
+
+`GET /api/recordings` と `GET /api/recording-days` は要求ごとに走査しない。索引は
+`RemoteControlHost` が 1 つ持ち（DI 登録はしない ── 現状 0 件のまま増やさない）、
+`Map` の引数で両エンドポイントへ渡し、`RemoteControlHost.DisposeAsync` が
+**Web ホストより先に**畳む（監視が生きているあいだは通知が飛んでくるため）。
+
+- 更新は `FileSystemWatcher`（`IncludeSubdirectories`・`FileName | LastWrite | Size`）→
+  **500ms デバウンスで全再構築**。差分更新にすると watcher のバッファ溢れが恒久的なずれになる。
+  読んだ結果は `(パス, 長さ, 更新時刻)` をキーに覚えて読み直さない。`Error`（溢れ）は
+  ログして 30 秒後に作り直す。
+  **デバウンスは「通知が止むまで待つ」形ではなく「最大 500ms の畳み込み」である**
+  ── 録画中の `filesink` は `buffer-mode=unbuffered` で毎バッファ書き、数十 ms ごとに
+  `Size` / `LastWrite` の通知が来続けるので、待つ形にすると録画が終わるまで一覧に出ない。
+  張ってあるタイマは張り直さず、再構築中に来た通知は畳んで完了後に 1 回だけ張り直す。
+  結果の採用も「自分より後に**完了した**走査が無いこと」で決める（後から**始まった**走査で
+  捨てると、走査時間が通知の間隔より長いあいだ一覧が一度も更新されない）。
+- 配信 root は**要求ごとに**解決して `Rebind` する。同じ root で **watcher が張れている**
+  あいだはロックも取らずに返り、watcher が無いあいだは `Directory.Exists` を 1 回だけ引く。
+  root が変わった回と、**同じ root でも watcher が無く、そのフォルダーが現れていた**回は
+  その場で全走査するので、`Rebind` はスレッドプールへ逃がす（保存先は初回の録画で
+  作られるため、設定した直後は張れない ── 拾い直さないと以後の変化が届かない）。
+  同じ root で張れないまま（存在しない・権限が無い）なら走査もしない。
+- 並びは **`startTimeUtc` の降順**（同時刻は相対パスの序数昇順）── `lastWriteTimeUtc` では、
+  長い録画で「始まった順」と「書き終わった順」が食い違う。
+- `durationMs` は sidecar があればその値、無ければ非 fragmented の `mvhd` から読む。
+  fragmented と録画中は `null`（総尺は `GET /api/recording-fragments/` が持つ）。
+- 差分は `Changed`（`added` / `completed` / `removed` / `updated`）として SSE の
+  `event: recording` へ流す。
+
+**一覧は結果整合である。** 走査をやめた代わりに、録画を停止した直後の一覧は
+まだ `inProgress: true` のことがある（watcher の通知 → **500ms のデバウンス** → 作り直し、のぶん遅れる）。
+**1 ファイルの配信（`GET /api/recordings/{*path}`）と `X-In-Progress` は索引を経由しない**ので、
+そちらは常にその場のディスクの状態を返す ── 食い違うのはこの窓の間だけである。
+E2E も一覧については「その状態になるまで引き直す」形で見る。
+
+`from` / `to` は ISO-8601 で `startTimeUtc` に当て、**`from` は含み `to` は含まない**。
+受ける形は `yyyy-MM-dd` / `yyyy-MM-ddTHH:mm:ss` / `yyyy-MM-ddTHH:mm:ss.FFFFFFF`（小数秒は
+1〜7 桁）と、それぞれの末尾にオフセット（`Z` または `±hh:mm`）を付けたものだけ
+（`DateTimeOffset.TryParseExact`）。
+オフセットが書かれていなければ UTC として読む。**これ以外は 400** ── 緩く読むと
+`10:00` や `08/28/2026` まで通ってしまう。`recorder` は完全一致。`limit` は 1〜1000
+（無指定は全件 ＝ 従来の応答と同じ）、`offset` は 0 以上。`total` は**絞り込みの後・ページングの
+前**の件数で、`hasMore` は `offset ＋ 返した件数 < total`。範囲外や書式不正は**丸めずに 400**
+── 上限へ丸めると、呼び出し側は自分が何件受け取るのかを応答を数えるまで知れない。
+
+`recording-days` の `tz` は空なら UTC、`±hh:mm`（±14:00 まで）なら固定オフセット、それ以外は
+**Windows のタイムゾーン ID**。`Directory.Build.props` が `InvariantGlobalization=true` なので
+**IANA の ID（`Asia/Tokyo` など）は解決できない** ── 解決できなければ 400。源がメモリなので
+`ETag` は付けない（`Cache-Control: no-store` だけ）。
 
 ### ライブプレビュー（fMP4 / MSE）
 
@@ -2645,6 +2737,9 @@ GPU テクスチャになるため**アクセシブルテキストが 1 つも�
 | `remote.auth fail` | WARN | `RemoteAuth.ReportFailure` | 名乗りに失敗した（`remote=<ip>`）── 誤ったトークン・合わないパスワード・資格の無い書き込み。**1 分に 1 行へ間引く** ── 失敗のたびに書くと総当たりが activity.log を数分で使い切り、他の記録を押し流せてしまう。**トークンも利用者名もパスワードも書かない**（activity.log は利用者が貼り付けて共有する種類のファイル）。403（ヘッダー不足・役割不足）は<b>出さない</b> |
 | `remote.auth login` | INFO | `AuthEndpoints`（`POST /api/login`） | 名乗りに成功した（`user=<名前> role=<Viewer\|Operator\|Admin>`）。**パスワードは書かない**。誰がいつ入ったかはここにしか残らない |
 | `remote.auth logout` | INFO | `AuthEndpoints`（`POST /api/logout`） | セッションを失効させた（`user=<名前>`）。Cookie の削除だけでなく `SessionStore` からも消す ── ブラウザ側で消えるだけでは、値を控えていた相手に対して何も変わらない |
+| `recording-index.watch fail` | WARN | `RecordingIndex.CreateWatcher` | 保存先を見張れなかった（`dir='...'` ＋ 理由）。**一覧そのものは作れている**が、以後この保存先の変化は push されず、`GET /api/recordings` も要求のたびには走査し直さない |
+| `recording-index.watch error` | WARN | `RecordingIndex.OnWatcherError` | `FileSystemWatcher` の通知が溢れた（内部バッファ超過）。watcher は止まっているので 30 秒後に作り直す（`RecordingIndex.WatcherRetryMilliseconds`） |
+| `recording-index.rebuild fail` | WARN | `RecordingIndex` の作り直し | 索引を作り直せなかった。**直前に完成した一覧をそのまま返し続ける**ので、ここが唯一の観測点になる |
 | `preview.stream-start` | INFO | `LivePreviewStream.StartMux` | ライブプレビューの fMP4 muxer が PLAYING に達した（`recorder='…' subscribers=N fragmentMs=1000`）。**録画そのものとは別のパイプライン**なので、プレビューが出ない原因が muxer なのか配信なのかはここで切り分ける |
 | `preview.stream-stop` | INFO | `LivePreviewStream.Teardown` | muxer を退役させ、購読者を全員 completed にした（`reason=` は `no subscribers｜caps changed｜pts rewind｜splitter fault｜stream error｜close` の 6 種）。**理由がそのままクライアントの再接続の原因**になる |
 | `preview.stream-error` | ERROR | `LivePreviewStream` の `OnEncodedSample` / `OnMuxSample` / `Retire` | 録画スレッドでの押し込みの失敗／`Fmp4SegmentSplitter` の破綻・appsink コールバックの例外（次の押し込みで作り直す）／退役したパイプラインを綺麗に落とせなかった。**録画は止めない**ので、ここが唯一の観測点になる |

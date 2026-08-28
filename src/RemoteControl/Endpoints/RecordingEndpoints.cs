@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.IO;
 using System.Linq;
@@ -45,7 +46,8 @@ internal static class RecordingEndpoints
     private readonly record struct RecordingSnapshot(
         bool InProgress, long Length, DateTime LastWriteUtc, string ETag);
 
-    public static void Map(WebApplication app, IRemoteControlBackend backend, RemoteAuth auth)
+    public static void Map(
+        WebApplication app, IRemoteControlBackend backend, RemoteAuth auth, RecordingIndex recordings)
     {
         // 索引はプロセスに 1 つ。録画中のファイルは 1 秒ごとに引き直されるので、
         // 覚えておかないと毎回ファイル全体を辿ることになる。
@@ -56,21 +58,58 @@ internal static class RecordingEndpoints
             if (!await AuthGate.AllowAsync(ctx, auth, RemoteRole.Viewer, write: false))
                 return;
 
-            string root = await backend.GetRecordingsRootAsync(ctx.RequestAborted);
+            if (!TryReadWindow(ctx, out DateTimeOffset? from, out DateTimeOffset? to, out string? badWindow))
+            {
+                await ApiResponse.WriteErrorAsync(ctx, 400, ApiResponse.HttpLayerExitCode, badWindow);
+                return;
+            }
 
-            // **列挙はスレッドプールの別スレッドへ逃がす。** 1 件ずつ開いて
-            // 「録画中か」を判定するので、件数に比例した同期 IO になる。
-            var files = await Task.Run(() => RecordingFiles.Enumerate(root), ctx.RequestAborted);
+            if (!TryReadPaging(ctx, out int? limit, out int offset, out string? badPaging))
+            {
+                await ApiResponse.WriteErrorAsync(ctx, 400, ApiResponse.HttpLayerExitCode, badPaging);
+                return;
+            }
 
+            var (root, all) = await SnapshotAsync(ctx, backend, recordings, from, to);
+
+            var page = RecordingQuery.Page(all, limit, offset);
             var dto = new RecordingsDto(
                 root,
-                files.Select(f => new RecordingFileDto(
-                    RemoteApiRules.ToUrlPath(f.RelativePath),
-                    f.Length, f.LastWriteTimeUtc, f.InProgress, f.Fragmented)).ToArray());
+                all.Count,
+                offset + page.Count < all.Count,
+                page.Select(ToDto).ToArray());
 
             // 一覧は毎回作り直す（録画中のファイルは長さが動き続ける）。
             ctx.Response.Headers.CacheControl = "no-store";
             await ApiResponse.WriteJsonAsync(ctx, 200, dto, RemoteApiJsonContext.Default.RecordingsDto);
+        });
+
+        // 日付ごとの件数。**源はメモリの索引なので ETag は付けない**
+        // ── 本文と違って「同じバイト列がまた返る」ことに賭けられる材料が無い。
+        app.MapGet("/api/recording-days", async (HttpContext ctx) =>
+        {
+            if (!await AuthGate.AllowAsync(ctx, auth, RemoteRole.Viewer, write: false))
+                return;
+
+            if (!TryReadWindow(ctx, out DateTimeOffset? from, out DateTimeOffset? to, out string? badWindow))
+            {
+                await ApiResponse.WriteErrorAsync(ctx, 400, ApiResponse.HttpLayerExitCode, badWindow);
+                return;
+            }
+
+            if (!RecordingQuery.TryResolveTimeZone(ctx.Request.Query["tz"], out TimeZoneInfo? zone))
+            {
+                await ApiResponse.WriteErrorAsync(
+                    ctx, 400, ApiResponse.HttpLayerExitCode, "tz is not a UTC offset or a Windows time zone id");
+                return;
+            }
+
+            var (_, all) = await SnapshotAsync(ctx, backend, recordings, from, to);
+
+            ctx.Response.Headers.CacheControl = "no-store";
+            await ApiResponse.WriteJsonAsync(
+                ctx, 200, new RecordingDaysDto(RecordingQuery.CountDays(all, zone!)),
+                RemoteApiJsonContext.Default.RecordingDaysDto);
         });
 
         app.MapGet("/api/recordings/{*path}", async (HttpContext ctx) =>
@@ -188,6 +227,152 @@ internal static class RecordingEndpoints
                     ctx, 200, dto, RemoteApiJsonContext.Default.RecordingFragmentsDto);
             }
         });
+    }
+
+    /// <summary>
+    /// 配信 root を解決し直してから、絞り込み済みの一覧を採る。
+    ///
+    /// <para>
+    /// <b>root の解決は要求ごとに行う。</b> 保存先は設定でいつでも変わり、
+    /// 索引はそれを知る手立てを持たない ── <c>Rebind</c> は<b>同じ root で監視が
+    /// 張れているあいだは</b>ロックも取らずに返るので、毎回呼んで構わない。
+    /// 監視が無いあいだは要求ごとに <c>Directory.Exists</c> を 1 回引く。
+    /// </para>
+    /// <para>
+    /// <b><c>Rebind</c> はスレッドプールへ逃がす。</b> root が変わった回と、
+    /// <b>同じ root でも監視が無く、そのフォルダーが現れていた回</b>は、
+    /// その場で全走査（1 件ずつ開く同期 IO）になる。
+    /// </para>
+    /// </summary>
+    private static async Task<(string Root, IReadOnlyList<RecordingEntry> Entries)> SnapshotAsync(
+        HttpContext ctx, IRemoteControlBackend backend, RecordingIndex recordings,
+        DateTimeOffset? from, DateTimeOffset? to)
+    {
+        // **応答へ載せるのは backend が答えた文字列そのもの**（索引が正規化したものではない）
+        // ── 1 ファイルの配信が root の内側かを判定するのに使うのもこちらである。
+        string root = await backend.GetRecordingsRootAsync(ctx.RequestAborted);
+        await Task.Run(() => recordings.Rebind(root), ctx.RequestAborted);
+
+        return (root, RecordingQuery.Filter(
+            recordings.Snapshot(), from, to, ctx.Request.Query["recorder"].ToString()));
+    }
+
+    /// <summary>索引の 1 件を応答の形へ。相対パスだけが URL 用に組み替わる。</summary>
+    private static RecordingFileDto ToDto(RecordingEntry entry)
+        => new(
+            RemoteApiRules.ToUrlPath(entry.RelativePath),
+            entry.Length, entry.LastWriteTimeUtc, entry.InProgress, entry.Fragmented,
+            entry.StartTimeUtc, entry.Recorder, entry.DurationMs,
+            entry.Width, entry.Height, entry.HasThumbnail);
+
+    /// <summary>
+    /// <c>from</c>（含む）と <c>to</c>（含まない）。どちらも省略できる。
+    ///
+    /// <para>
+    /// <b>オフセットが書かれていなければ UTC として読む。</b> 既定のタイムゾーンは
+    /// <c>tz</c> の側も UTC であり、片方だけ開発機のローカル時刻に倒すと、
+    /// 同じ問い合わせが機械ごとに違う窓を指すことになる。
+    /// </para>
+    /// <para>
+    /// <b>受ける書式は <see cref="InstantFormats"/> に挙げたものだけである。</b>
+    /// 緩く読むと <c>10:00</c>（今日の 10 時）や <c>08/28/2026</c> まで通り、
+    /// 「書式不正は 400」という約束が成立しなくなる。
+    /// </para>
+    /// </summary>
+    private static bool TryReadWindow(
+        HttpContext ctx, out DateTimeOffset? from, out DateTimeOffset? to, [NotNullWhen(false)] out string? error)
+    {
+        to = null;
+        error = null;
+
+        if (!TryParseInstant(ctx.Request.Query["from"], out from))
+        {
+            error = "from is not a valid ISO-8601 timestamp";
+            return false;
+        }
+
+        if (!TryParseInstant(ctx.Request.Query["to"], out to))
+        {
+            error = "to is not a valid ISO-8601 timestamp";
+            return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// <c>from</c> / <c>to</c> が受ける ISO-8601 の形。日付だけ・秒まで・小数秒つきの 3 つと、
+    /// それぞれに末尾のオフセット（<c>Z</c> または <c>±hh:mm</c>）が付いたもの。
+    /// </summary>
+    private static readonly string[] InstantFormats =
+    [
+        "yyyy-MM-dd",
+        "yyyy-MM-ddK",
+        "yyyy-MM-ddTHH:mm:ss",
+        "yyyy-MM-ddTHH:mm:ssK",
+        "yyyy-MM-ddTHH:mm:ss.FFFFFFF",
+        "yyyy-MM-ddTHH:mm:ss.FFFFFFFK",
+    ];
+
+    private static bool TryParseInstant(string? value, out DateTimeOffset? instant)
+    {
+        instant = null;
+        if (string.IsNullOrEmpty(value))
+            return true;
+
+        if (!DateTimeOffset.TryParseExact(
+                value, InstantFormats, CultureInfo.InvariantCulture,
+                DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
+                out DateTimeOffset parsed))
+        {
+            return false;
+        }
+
+        instant = parsed;
+        return true;
+    }
+
+    /// <summary>
+    /// <c>limit</c>（省略で全件 ── 従来の応答と同じ）と <c>offset</c>。
+    ///
+    /// <para>
+    /// <b>範囲外は畳まずに 400 で断る。</b> <c>limit=0</c> を「全件」に、
+    /// <c>limit=100000</c> を上限に丸めると、呼び出し側は自分が何件受け取るのかを
+    /// 応答を数えるまで知れない。
+    /// </para>
+    /// </summary>
+    private static bool TryReadPaging(HttpContext ctx, out int? limit, out int offset, [NotNullWhen(false)] out string? error)
+    {
+        limit = null;
+        offset = 0;
+        error = null;
+
+        string? rawLimit = ctx.Request.Query["limit"];
+        if (!string.IsNullOrEmpty(rawLimit))
+        {
+            if (!int.TryParse(rawLimit, NumberStyles.None, CultureInfo.InvariantCulture, out int value)
+                || value < RecordingQuery.MinLimit || RecordingQuery.MaxLimit < value)
+            {
+                error = string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"limit must be between {RecordingQuery.MinLimit} and {RecordingQuery.MaxLimit}");
+                return false;
+            }
+
+            limit = value;
+        }
+
+        string? rawOffset = ctx.Request.Query["offset"];
+        if (!string.IsNullOrEmpty(rawOffset))
+        {
+            if (!int.TryParse(rawOffset, NumberStyles.None, CultureInfo.InvariantCulture, out offset))
+            {
+                error = "offset must be a non-negative integer";
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /// <summary>

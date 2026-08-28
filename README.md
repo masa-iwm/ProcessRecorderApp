@@ -146,11 +146,15 @@ goes away.
   `OutputDirectory` setting, which defaults to the folder the executable is in. A relative
   `OutputDirectory` is resolved against that same folder, and a template that is already an
   absolute path ignores the setting entirely.
+- A finished recording gets a small **sidecar file** beside it — `<name>.mp4.json`, holding the
+  recorder name, the start and end time, the duration and the video size (a `<name>.mp4.png`
+  thumbnail will join it later). It is written on a best-effort basis: if it cannot be written the
+  recording is unaffected, and the listing still shows the same recording without it.
 - Old recordings can be **deleted automatically**. Set `RecordingRetentionDays` to the number of
   days to keep (`0`, the default, deletes nothing) and `RecordingCleanupIntervalHours` to how
   often the sweep runs. It also runs once right after startup. Sub-folders of the output folder
-  are searched too, only `.mp4` files are deleted, and a sub-folder is removed when deleting left
-  it empty — the output folder itself is never removed.
+  are searched too, only `.mp4` files and their sidecars are deleted, and a sub-folder is removed
+  when deleting left it empty — the output folder itself is never removed.
 - Application settings are stored in `%LOCALAPPDATA%\ProcessRecorderApp\settings.json`.
   A matching **JSON Schema** is written next to it as `settings.schema.json`, and the settings file
   points at it with `$schema` — an editor that understands JSON Schema (VS Code and others) then
