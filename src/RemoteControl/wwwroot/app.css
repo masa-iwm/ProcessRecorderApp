@@ -18,6 +18,7 @@
   --brand: #2563eb;
   --brand-fg: #ffffff;
   --danger: #b91c1c;
+  --danger-fg: #ffffff;
 
   --radius: 10px;
   --radius-sm: 6px;
@@ -42,6 +43,7 @@
   --brand: #60a5fa;
   --brand-fg: #0b1220;
   --danger: #f87171;
+  --danger-fg: #0b1220;
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.40), 0 1px 3px rgba(0, 0, 0, 0.30);
 }
 
@@ -56,6 +58,7 @@
     --brand: #60a5fa;
     --brand-fg: #0b1220;
     --danger: #f87171;
+    --danger-fg: #0b1220;
     --shadow: 0 1px 2px rgba(0, 0, 0, 0.40), 0 1px 3px rgba(0, 0, 0, 0.30);
   }
 }
@@ -200,7 +203,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible
 }
 
 .btn-primary { background: var(--brand); border-color: var(--brand); color: var(--brand-fg); }
-.btn-danger { background: var(--danger); border-color: var(--danger); color: var(--brand-fg); }
+.btn-danger { background: var(--danger); border-color: var(--danger); color: var(--danger-fg); }
 
 .icon-button { padding: 0 var(--space-2); }
 
@@ -233,16 +236,183 @@ td > a { color: var(--brand); }
 
 /* ---- video ---- */
 
-video {
+/* The shell app-player.js builds around each <video>. The element itself is never
+   replaced, only wrapped: the wrapper is what goes full screen, what the bar and the
+   menus are positioned against, and what takes the keyboard focus.
+
+   `aspect-ratio` is what keeps a player with nothing loaded from being a screen-high
+   black band -- the element has no intrinsic size until a stream reaches it. */
+.player {
+  aspect-ratio: 16 / 9;
   background: #000000;
   border-radius: var(--radius);
-  display: block;
   margin: var(--space-3) 0;
   max-height: 70vh;
+  overflow: hidden;
+  position: relative;
+}
+
+.player:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+
+/* `contain`, because the wrapper's ratio is fixed and the picture's is not. */
+.player video {
+  display: block;
+  height: 100%;
+  max-height: 70vh;
+  object-fit: contain;
   width: 100%;
 }
 
+/* Full screen has no ratio to keep: the wrapper is the screen. */
+.player:fullscreen { aspect-ratio: auto; max-height: none; }
+.player:fullscreen video, :fullscreen .player video { height: 100%; max-height: 100vh; }
+
+/* Empty in this wave. Declared here so the stacking order is decided in one place. */
+.player-overlay { inset: 0; pointer-events: none; position: absolute; }
+
+.player-idle {
+  align-items: center;
+  color: var(--fg-muted);
+  display: flex;
+  inset: 0;
+  justify-content: center;
+  margin: 0;
+  position: absolute;
+}
+
+.player-bar {
+  align-items: center;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.75), rgba(0, 0, 0, 0));
+  bottom: 0;
+  color: #ffffff;
+  display: flex;
+  gap: var(--space-2);
+  left: 0;
+  padding: var(--space-2) var(--space-3);
+  position: absolute;
+  right: 0;
+  transition: opacity 0.2s linear;
+}
+
+/* Playing, and the pointer has been still: the bar gets out of the way. It is not
+   `hidden` -- a pointer that comes back has to find it, and so does the focus. */
+.player-bar.is-idle { opacity: 0; }
+
+.player-bar button {
+  background: transparent;
+  border-color: transparent;
+  color: #ffffff;
+  flex: 0 0 auto;
+  height: 36px;
+  min-width: 36px;
+  padding: 0 var(--space-2);
+}
+
+.player-bar button:hover:not(:disabled) { background: rgba(255, 255, 255, 0.18); }
+
+/* Far enough behind the live edge that going back to it is worth pointing at. */
+.player-bar button.is-behind { background: var(--brand); border-color: var(--brand); color: var(--brand-fg); }
+
+.player-time { font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+.player-badge {
+  background: var(--danger);
+  border-radius: var(--radius-sm);
+  color: var(--danger-fg);
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 2px var(--space-1);
+}
+
+/* The slider sits on top of the buffered band, so both have to be in the same box.
+   `min-width: 0` and a basis of zero, because the wrapper clips what does not fit
+   (`overflow: hidden`): a slider that refuses to shrink pushes the controls to its
+   right out of the picture instead of giving up its own width. */
+.player-seek { flex: 1 1 0; height: 36px; min-width: 0; position: relative; }
+
+.player-buffered {
+  background: rgba(255, 255, 255, 0.25);
+  border-radius: 2px;
+  height: 4px;
+  left: 0;
+  position: absolute;
+  right: 0;
+  top: 16px;
+}
+
+.player-buffered span {
+  background: rgba(255, 255, 255, 0.55);
+  border-radius: 2px;
+  bottom: 0;
+  position: absolute;
+  top: 0;
+}
+
+.player-seek input[type="range"] { inset: 0; position: absolute; width: 100%; }
+
+/* The two sliders are the only ranges on the page, and neither wants the box the
+   other controls get. */
+input[type="range"] {
+  accent-color: var(--brand);
+  background: transparent;
+  border: none;
+  height: auto;
+  padding: 0;
+}
+
+.player-volume { flex: 0 0 auto; width: 72px; }
+
+/* The panel is anchored to its own button, not to the bar. */
+.player-menu-holder { display: inline-flex; flex: 0 0 auto; position: relative; }
+
+.player-menu {
+  background: var(--surface-1);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  bottom: calc(100% + var(--space-2));
+  box-shadow: var(--shadow);
+  color: var(--fg);
+  display: flex;
+  flex-direction: column;
+  min-width: 140px;
+  padding: var(--space-1);
+  position: absolute;
+  right: 0;
+  z-index: 2;
+}
+
+.player-bar .player-menu button {
+  color: var(--fg);
+  justify-content: flex-start;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.player-bar .player-menu button:hover:not(:disabled) { background: var(--surface-2); }
+.player-bar .player-menu button[aria-checked="true"] { color: var(--brand); font-weight: 700; }
+
 @media (max-width: 720px) {
+  /* One row does not hold the bar at this width. The buttons, the clock and the
+     slider add up to more than the wrapper, and the wrapper clips rather than
+     scrolls -- everything right of the slider (speed, quality, volume, full screen)
+     would simply be gone. So the slider takes a row of its own and the buttons wrap
+     under it; a bar two rows tall is worth more than one with its right end cut off. */
+  .player-bar { flex-wrap: wrap; gap: var(--space-1); padding: var(--space-1) var(--space-2); }
+  .player-seek { flex: 1 1 100%; order: -1; }
+  .player-bar button { min-width: 32px; padding: 0 var(--space-1); }
+  .player-time { font-size: 0.8rem; }
+
+  /* Drop the numbers and a ±30 button is the ±10 icon drawn a second time, so here
+     those two go entirely -- Shift with the arrows still reaches 30 seconds. The
+     speed keeps its button and loses only its label. */
+  .player-bar [data-action="back-30"],
+  .player-bar [data-action="forward-30"] { display: none; }
+  .player-bar [data-action="speed"] .player-label { display: none; }
+
+  /* The mute button stays -- that is the one that matters here. The slider is width
+     spent on what the device's own volume keys already do. */
+  .player-volume { display: none; }
   .topbar { align-items: flex-start; flex-direction: column; gap: var(--space-2); }
   .topbar-end { margin-left: 0; }
   .nav { width: 100%; }

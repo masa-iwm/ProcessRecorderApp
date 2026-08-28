@@ -2240,26 +2240,48 @@ appsrc name=src format=time block=false max-buffers=2 max-bytes=0 leaky-type=dow
 `localStorage['prapp.theme']` に保存する。**保存が無ければ属性を付けない** ── その場合は
 `prefers-color-scheme` が決める。適用は `app-core.js` の先頭で行う。
 
+`<video>` は 2 つとも `PRA.player.createShell(video, caps)` が**包む**（差し替えない ── E2E が
+`play()` / `currentTime` / `playbackRate` / `buffered` を要素へ直接使う）。ブラウザ標準の
+`controls` は外してあり、代わりに `<div class="player">` の中へ自前のバーを敷く。バーの項目は
+左から**再生／一時停止・−30s・−10s・＋10s・＋30s・時間表示（ライブは `LIVE` バッジと端からの
+遅れ）・シークバー（`buffered` の帯に重ねた `input[type=range]`）**、右側に**ライブ復帰・速度
+（0.5／0.75／1／1.25／1.5／2）・画質・音量・全画面**。キー操作はラッパにフォーカスがあるとき
+だけ効く ── `Space`/`K` 再生切替、`J`/`←` −10 秒、`L`/`→` ＋10 秒、`Shift` 併用で ±30 秒、
+`F` 全画面、`M` ミュート、`,`/`.` 速度。再生中はポインターが 2.5 秒止まるとバーが薄れる。
+
+**任意シークはまだ無い**（`caps.seekable` は両方 `false`）。シークバーは表示だけで、スキップは
+`buffered` の区間内へ丸める ── 区間の外を指した位置は再生できず、そこに置くと止まって見える。
+速度を自分で 1.0 より上げた場合に限り、ライブ端との差が 0.5 秒を切った時点で 1.0 へ戻す
+（**利用者が設定した速度は触らない**）。全画面はラッパに `requestFullscreen()` を掛ける
+（無ければ `video.webkitEnterFullscreen()`）。
+
 `WebAssetManifestTests`（L1）が `WebAssets.Manifest` ⇔ ディスクの `wwwroot` を双方向で
 突き合わせ、`wwwroot` にサブディレクトリが無いこと・csproj の埋め込み指定・`wwwroot/*.js` が
 `<script src="http` と `import ` を持たないこと・`index.html` の参照先がすべてマニフェスト内の
 名前であることを縛る。
 
-プレビューには**画質の切替（`#previewMode`）が 1 つ**あり、**既定は録画画質**
+プレビューには**画質の切替が 2 項目**あり、**既定は録画画質**
 （従来の chunked `preview.mp4`。録画用に符号化済みの H.264 をそのまま包むので追加費用が無い）。
 `dash` を選ぶと、そのレコーダーの `Preview*` 4 設定で再符号化した DASH の方を再生する。
+選択そのものは `<select id="previewMode">` が持ち、**画面からは `hidden` で外してある** ──
+操作はプレビューのバーの画質メニューで、項目の文言は `<option>` のテキストをそのまま読む。
+メニューは `#previewMode.value` を書いて `change` を `dispatchEvent` するので、
+切り替えの経路は従来と 1 本のままである。
 レコーダー行の「Preview」はこの選択を見てどちらかを開き、**配信中に切り替えたら
 同じレコーダーで開き直す**（2 つのモードは init も時間軸も違うので `MediaSource` を共有できない）。
 後始末は `stopPreview()` **1 か所**で、どちらのモードもポーリングのタイマー・
 `AbortController`・ObjectURL・状態表示という同じ 4 つの handle に state を掛けてある。
 
-DASH 側は**第三者のライブラリを使わない**（資産は増やさない）。単一 Period・単一
-Representation のライブ配信でプレイヤーがやることは、`manifest.mpd` を 1 秒ごとに引き直し、
+DASH 側は**第三者のライブラリを使わない**（資産は増やさない）。単一 Period のライブ配信で
+プレイヤーがやることは、`manifest.mpd` を 1 秒ごとに引き直し、
 `SegmentTimeline` の `S@t` のうち未取得のものを昇順に取って（**同時 1 本**）`SourceBuffer` へ
 append するだけである。`mode` は **`'segments'`**（chunked 側の `'sequence'` とは逆 ──
 セグメントは自分の復号時刻を持ち、MPD がその時刻で索引している）で、
 `timestampOffset = −(presentationTimeOffset ÷ timescale)` を **init を append する前に**設定して
-時間軸を 0 起点にする。MIME は MPD の `AdaptationSet@codecs` から組み立て、
+時間軸を 0 起点にする。MPD からは `AdaptationSet` → `Representation` を列挙して
+`{id, codecs, width, height, bandwidth, template}` の配列にし（`SegmentTemplate` と `codecs` は
+Representation 直下を優先し、無ければ `AdaptationSet` のものを継承する）、**先頭を再生する**。
+MIME はその Representation の `codecs` から組み立て、
 `MediaSource.isTypeSupported` が偽なら理由を出して止める。503 の本文が
 `dash preview is starting` のあいだは**利用者が止めるまで**再試行し、他の 4xx / 5xx は
 本文の `error` を出して止める。セグメントの 404 は「期限切れ」として取得済み扱いで飛ばす。

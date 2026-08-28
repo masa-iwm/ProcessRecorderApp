@@ -98,6 +98,11 @@
   var followLive = true;
   var followSeekTarget = null;
 
+  // Whether the file being followed is still being written. Only the player shell
+  // reads it: a recording that has stopped growing has no live edge, so the LIVE
+  // badge and the "go live" button come off the bar for it.
+  var followInProgress = false;
+
   // The active follow's failure hook. The <video> element outlives every playback,
   // so its `error` listener is attached once and routed through here (the same
   // shape as the preview's).
@@ -114,6 +119,7 @@
   // and the object URL keeps the MediaSource alive until both are let go.
   function releaseFollowPlayer() {
     followOnFailure = null;
+    followInProgress = false;
     var video = $('player');
     video.pause();
     video.removeAttribute('src');
@@ -360,6 +366,7 @@
         if (response.status === 401) { showLogin('Sign in to continue.'); return undefined; }
 
         inProgress = response.headers.get('X-In-Progress') !== 'false';
+        followInProgress = inProgress;
 
         // 416 = the file is no longer than what has already been read. The headers
         // still say whether it is going to grow, so this is where a finished
@@ -432,6 +439,7 @@
     }
 
     inProgress = first.headers.get('X-In-Progress') !== 'false';
+    followInProgress = inProgress;
     total = totalOf(first, 0);
     // The first body is read outside `request()`, so it needs the same catch:
     // a connection lost while it is being read otherwise rejects into nothing and
@@ -499,6 +507,23 @@
     }
     var length = parseInt(response.headers.get('Content-Length'), 10);
     return isNaN(length) ? null : from + length;
+  }
+
+  // The way back to the live edge after a seek took the following down. The jump is
+  // the same one `followEdge` makes (`FOLLOW_CATCHUP_LAG_SECONDS` behind the buffered
+  // end, never backwards), and the position asked for is recorded the same way, so
+  // the `seeking` listener does not read this as another seek by the user.
+  function resumeFollow() {
+    followLive = true;
+
+    var video = $('player');
+    var ranges = video.buffered;
+    if (ranges.length === 0) { return; }
+
+    var target = ranges.end(ranges.length - 1) - FOLLOW_CATCHUP_LAG_SECONDS;
+    if (target <= video.currentTime) { return; }
+    followSeekTarget = target;
+    video.currentTime = target;
   }
 
   // ---- live preview (fragmented MP4 over MSE) ----
@@ -586,6 +611,10 @@
     video.removeAttribute('src');
     video.load();
     releasePreviewUrl();
+
+    // Nothing is on offer any more: keeping the last manifest's list would have the
+    // quality menu describe a stream that is not running.
+    dashRepresentations = [];
 
     status($('previewStatus'), message === undefined ? '' : message, false);
   }
@@ -748,6 +777,18 @@
     if (end - video.currentTime > PREVIEW_LAG_SECONDS) { video.currentTime = end - 0.5; }
   }
 
+  // The preview's "go live": the correction `followPreview` makes on its own, without
+  // the lag threshold -- the operator asked for it, so no amount of lag is too small.
+  function resumePreviewLive() {
+    var video = $('previewPlayer');
+    var ranges = video.buffered;
+    if (ranges.length === 0) { return; }
+
+    var target = ranges.end(ranges.length - 1) - 0.5;
+    if (target <= video.currentTime) { return; }
+    video.currentTime = target;
+  }
+
   function reconnectPreview(id, generation, message) {
     if (generation !== previewGeneration || previewTimer !== null) { return; }
     status($('previewStatus'), message, false);
@@ -794,6 +835,52 @@
   var DASH_STARTING_ERROR = 'dash preview is starting';
 
   var DASH_STARTING_STATUS = 'DASH: starting…';
+
+  // What the manifest currently offers, in the order it lists them. The server
+  // publishes one representation today and the first one is always the one played;
+  // the list is kept so that the quality menu can be given more than one entry
+  // without the parser having to change again.
+  var dashRepresentations = [];
+
+  // The direct children of `node` with the given tag name. **Not
+  // `getElementsByTagName`** -- that descends, so asking an AdaptationSet for its
+  // SegmentTemplate would find the ones belonging to its Representations and the
+  // inheritance below would always read the child's value as the parent's.
+  function childrenNamed(node, name) {
+    var found = [];
+    for (var child = node.firstElementChild; child !== null; child = child.nextElementSibling) {
+      if (child.localName === name) { found.push(child); }
+    }
+    return found;
+  }
+
+  // Every Representation of every AdaptationSet, flattened. `SegmentTemplate` and
+  // `codecs` are inherited from the AdaptationSet when the Representation does not
+  // carry its own, which is what DASH says and what this server writes (it puts
+  // `codecs` on the AdaptationSet and the template under the Representation).
+  function representationsOf(periodNode) {
+    var found = [];
+
+    childrenNamed(periodNode, 'AdaptationSet').forEach(function (setNode) {
+      var setTemplate = childrenNamed(setNode, 'SegmentTemplate')[0] || null;
+
+      childrenNamed(setNode, 'Representation').forEach(function (node) {
+        var template = childrenNamed(node, 'SegmentTemplate')[0] || setTemplate;
+        if (template === null) { return; }
+
+        found.push({
+          id: node.getAttribute('id'),
+          codecs: node.getAttribute('codecs') || setNode.getAttribute('codecs'),
+          width: Number(node.getAttribute('width') || setNode.getAttribute('width')),
+          height: Number(node.getAttribute('height') || setNode.getAttribute('height')),
+          bandwidth: Number(node.getAttribute('bandwidth')),
+          template: template
+        });
+      });
+    });
+
+    return found;
+  }
 
   function dashUrl(id, file) {
     return '/api/recorders/' + encodeURIComponent(id) + '/dash/' + file;
@@ -935,12 +1022,16 @@
       }
 
       var periodNode = mpd.getElementsByTagName('Period')[0];
-      var setNode = mpd.getElementsByTagName('AdaptationSet')[0];
-      var templateNode = mpd.getElementsByTagName('SegmentTemplate')[0];
-      if (!periodNode || !setNode || !templateNode) {
+      var offered = periodNode ? representationsOf(periodNode) : [];
+      if (!periodNode || offered.length === 0) {
         fail('the manifest has no Period, AdaptationSet or SegmentTemplate');
         return;
       }
+
+      // The first one is what plays. Re-read on every poll, because the timeline
+      // this reads the new segment times from belongs to the chosen representation.
+      dashRepresentations = offered;
+      var templateNode = offered[0].template;
 
       var current = periodNode.getAttribute('id');
       if (period !== null) {
@@ -951,7 +1042,7 @@
 
       var timescale = Number(templateNode.getAttribute('timescale'));
       var offset = Number(templateNode.getAttribute('presentationTimeOffset'));
-      var codecs = setNode.getAttribute('codecs');
+      var codecs = offered[0].codecs;
       initFile = templateNode.getAttribute('initialization');
       mediaTemplate = templateNode.getAttribute('media');
 
@@ -1104,6 +1195,613 @@
     poll();
   }
 
+  // ---- the player shell (the controls drawn over a <video>) ----
+  //
+  // **The operating side only.** Nothing below feeds a SourceBuffer, asks for a byte
+  // range or polls a manifest: a skip is an assignment to `currentTime`, a quality is
+  // a value written to `#previewMode`. The supply side above is untouched.
+  //
+  // **The <video> element is wrapped, never replaced.** The E2E layer drives both
+  // elements through the JS API (`play()`, `currentTime`, `playbackRate`, `buffered`)
+  // and finds them by id, so the shell has to be something the element sits inside.
+  //
+  // The native `controls` are off (index.html): two sets of controls stacked on each
+  // other is worse than either alone.
+
+  var SHELL_SKIP_SMALL_SECONDS = 10;
+  var SHELL_SKIP_LARGE_SECONDS = 30;
+
+  // How long the bar stays up after the last pointer event, while playing.
+  var SHELL_IDLE_MS = 2500;
+
+  // Past this much lag the "go live" button is emphasised rather than merely present.
+  var SHELL_LIVE_LAG_SECONDS = 3;
+
+  // How close to the live edge a speed **the shell raised itself** is given back.
+  // A rate the operator set (or a test set directly) is never touched.
+  var SHELL_SETTLE_SECONDS = 0.5;
+
+  // The bar is repainted on the element's events, plus on this beat: the buffered end
+  // and therefore the live lag move without any event being raised.
+  var SHELL_TICK_MS = 250;
+
+  var SHELL_SPEEDS = [0.5, 0.75, 1, 1.25, 1.5, 2];
+
+  var SVG_NS = 'http://www.w3.org/2000/svg';
+
+  // Whether the element is at a live edge **right now**. `caps.live` says the player
+  // can be; this says it is. The follow-along player is live only while the file it
+  // reads is still being written -- a LIVE badge over a finished recording is a lie,
+  // and its "go live" button would seek to the last second and end the playback.
+  function liveNow(video) {
+    return video === $('player') ? followInProgress : true;
+  }
+
+  // What the speed control asks before it may restore 1.0 by itself. `#player`
+  // follows the live edge until the user seeks (`followLive`); the preview has no
+  // timeline of its own to leave, so it is always at the edge.
+  function followingLiveEdge(video) {
+    return video === $('player') ? followLive : true;
+  }
+
+  function shellIcon(name) {
+    var svg = document.createElementNS(SVG_NS, 'svg');
+    svg.setAttribute('class', 'icon');
+    svg.setAttribute('aria-hidden', 'true');
+    var use = document.createElementNS(SVG_NS, 'use');
+    use.setAttribute('href', '#' + name);
+    svg.appendChild(use);
+    return { svg: svg, use: use };
+  }
+
+  function pad2(value) { return value < 10 ? '0' + value : String(value); }
+
+  function formatClock(seconds) {
+    if (!isFinite(seconds) || seconds < 0) { return '--:--'; }
+    var whole = Math.floor(seconds);
+    var minutes = Math.floor(whole / 60);
+    if (minutes < 60) { return pad2(minutes) + ':' + pad2(whole % 60); }
+    return Math.floor(minutes / 60) + ':' + pad2(minutes % 60) + ':' + pad2(whole % 60);
+  }
+
+  function bufferedEndOf(video) {
+    var ranges = video.buffered;
+    return ranges.length === 0 ? 0 : ranges.end(ranges.length - 1);
+  }
+
+  // A position that is actually playable. Arbitrary seeking arrives in a later wave;
+  // until then a skip has to land inside something that has been buffered, because
+  // outside it there is nothing for the element to decode and the position would sit
+  // there until the supply side happened to reach it.
+  function clampToBuffered(video, target) {
+    var ranges = video.buffered;
+    if (ranges.length === 0) { return video.currentTime; }
+
+    var nearest = null;
+    for (var i = 0; i < ranges.length; i++) {
+      var start = ranges.start(i);
+      var end = ranges.end(i);
+      if (start <= target && target <= end) { return target; }
+
+      var edge = target < start ? start : end;
+      if (nearest === null || Math.abs(edge - target) < Math.abs(nearest - target)) { nearest = edge; }
+    }
+    return nearest;
+  }
+
+  function createShell(video, caps) {
+    var wrapper = document.createElement('div');
+    wrapper.className = 'player';
+    wrapper.tabIndex = 0;
+    video.parentNode.insertBefore(wrapper, video);
+    wrapper.appendChild(video);
+
+    // Empty in this wave. It is here so that the stacking order (picture, overlay,
+    // bar) is decided once, in one place, rather than when the drawing arrives.
+    var overlay = document.createElement('div');
+    overlay.className = 'player-overlay';
+    wrapper.appendChild(overlay);
+
+    // Without this the wrapper is a large black rectangle whenever nothing is loaded.
+    var idle = document.createElement('p');
+    idle.className = 'player-idle';
+    idle.textContent = video === $('player') ? 'No recording selected' : 'No preview';
+    wrapper.appendChild(idle);
+
+    var bar = document.createElement('div');
+    bar.className = 'player-bar';
+    wrapper.appendChild(bar);
+
+    // Everything that is switched off while the element has no source: an element
+    // with nothing loaded answers every one of these with nothing at all.
+    var controls = [];
+    var openMenu = null;
+
+    // **The attribute, not `currentSrc`.** Both supply sides start by assigning
+    // `video.src` and both end with `removeAttribute('src')` + `load()`, but Chromium
+    // keeps the last blob: URL in `currentSrc` across that. Reading it would leave a
+    // stopped player wearing a LIVE badge, a live clock and an operable bar, with the
+    // idle notice never shown. The bar repaints on `emptied`, so the attribute going
+    // away is seen at once.
+    function hasSource() {
+      return video.getAttribute('src') !== null;
+    }
+
+    // ---- pieces ----
+
+    // `independent` marks a button that still means something with nothing loaded;
+    // it is kept out of the set that goes dead.
+    function iconButton(action, icon, label, independent) {
+      var node = document.createElement('button');
+      node.type = 'button';
+      node.className = 'icon-button';
+      node.dataset.action = action;
+      node.setAttribute('aria-label', label);
+      node.title = label;
+      var drawing = shellIcon(icon);
+      node.appendChild(drawing.svg);
+      if (!independent) { controls.push(node); }
+      return { node: node, use: drawing.use };
+    }
+
+    // The text beside the icon. Returned rather than swallowed: the speed button's
+    // label is the only place the current rate is written.
+    function labelled(button, label) {
+      var span = document.createElement('span');
+      span.className = 'player-label';
+      span.textContent = label;
+      button.node.appendChild(span);
+      return span;
+    }
+
+    function skipButton(action, icon, delta, label) {
+      var button = iconButton(action, icon, label);
+      labelled(button, String(Math.abs(delta)));
+      button.node.addEventListener('click', function () { skip(delta); });
+      bar.appendChild(button.node);
+    }
+
+    // A menu is a button plus a panel anchored above it. Both live in one holder so
+    // that the panel is positioned against its own button and not against the bar.
+    function menuButton(action, icon, label, independent) {
+      var holder = document.createElement('div');
+      holder.className = 'player-menu-holder';
+
+      var button = iconButton(action, icon, label, independent);
+      button.node.setAttribute('aria-haspopup', 'true');
+      button.node.setAttribute('aria-expanded', 'false');
+      holder.appendChild(button.node);
+
+      var menu = document.createElement('div');
+      menu.className = 'player-menu';
+      menu.setAttribute('role', 'menu');
+      menu.hidden = true;
+      holder.appendChild(menu);
+
+      var handle = { holder: holder, button: button, menu: menu, build: null };
+
+      button.node.addEventListener('click', function () {
+        // Reached by Tab and Enter the bar may still be idle, i.e. fully transparent,
+        // and the panel would open inside it unseen.
+        wake();
+        if (openMenu === handle) { closeMenu(); return; }
+        closeMenu();
+        menu.replaceChildren();
+        handle.build(menu);
+        menu.hidden = false;
+        button.node.setAttribute('aria-expanded', 'true');
+        openMenu = handle;
+      });
+
+      return handle;
+    }
+
+    function closeMenu() {
+      if (openMenu === null) { return; }
+      openMenu.menu.hidden = true;
+      openMenu.button.node.setAttribute('aria-expanded', 'false');
+      openMenu = null;
+    }
+
+    function menuItem(menu, label, checked, onPick) {
+      var item = document.createElement('button');
+      item.type = 'button';
+      item.setAttribute('role', 'menuitemradio');
+      item.setAttribute('aria-checked', checked ? 'true' : 'false');
+      item.textContent = label;
+      item.addEventListener('click', function () {
+        closeMenu();
+        onPick();
+        paint();
+      });
+      menu.appendChild(item);
+      return item;
+    }
+
+    // ---- the bar, left to right ----
+
+    var playButton = iconButton('play', 'i-play', 'Play');
+    playButton.node.addEventListener('click', togglePlay);
+    bar.appendChild(playButton.node);
+
+    skipButton('back-30', 'i-skip-back', -SHELL_SKIP_LARGE_SECONDS, 'Back 30 seconds');
+    skipButton('back-10', 'i-skip-back', -SHELL_SKIP_SMALL_SECONDS, 'Back 10 seconds');
+    skipButton('forward-10', 'i-skip-forward', SHELL_SKIP_SMALL_SECONDS, 'Forward 10 seconds');
+    skipButton('forward-30', 'i-skip-forward', SHELL_SKIP_LARGE_SECONDS, 'Forward 30 seconds');
+
+    var badge = document.createElement('span');
+    badge.className = 'player-badge';
+    badge.textContent = 'LIVE';
+    badge.hidden = true;
+    bar.appendChild(badge);
+
+    var clock = document.createElement('span');
+    clock.className = 'player-time';
+    bar.appendChild(clock);
+
+    var seekWrap = document.createElement('div');
+    seekWrap.className = 'player-seek';
+    var band = document.createElement('div');
+    band.className = 'player-buffered';
+    seekWrap.appendChild(band);
+
+    var seek = document.createElement('input');
+    seek.type = 'range';
+    seek.min = '0';
+    seek.max = '1';
+    seek.step = 'any';
+    seek.value = '0';
+    seek.dataset.action = 'seek';
+    seek.setAttribute('aria-label', 'Position');
+    if (caps.seekable) {
+      controls.push(seek);
+      seek.addEventListener('input', function () { video.currentTime = Number(seek.value); });
+    } else {
+      // Shown, not operated: there is nowhere to seek to yet, and a control that
+      // answers a drag by snapping back reads as broken rather than as unavailable.
+      seek.disabled = true;
+      seek.tabIndex = -1;
+    }
+    seekWrap.appendChild(seek);
+    bar.appendChild(seekWrap);
+
+    var goLive = iconButton('live', 'i-live', 'Go to the live edge');
+    goLive.node.addEventListener('click', function () { caps.onGoLive(); paint(); });
+    bar.appendChild(goLive.node);
+
+    var speedMenu = menuButton('speed', 'i-quality', 'Playback speed');
+    var speedLabel = labelled(speedMenu.button, '1x');
+    speedMenu.build = function (menu) {
+      SHELL_SPEEDS.forEach(function (rate) {
+        var item = menuItem(menu, rate + 'x', video.playbackRate === rate, function () { setSpeed(rate); });
+        item.dataset.speed = String(rate);
+      });
+    };
+    bar.appendChild(speedMenu.holder);
+
+    // **Not switched off with the rest.** The `<select>` this writes is hidden, so
+    // this menu is the only way left to say which stream the *next* Preview should
+    // open -- disabling it while nothing is playing would take the DASH mode off the
+    // page entirely.
+    var qualityMenu = menuButton('quality', 'i-quality', 'Quality', true);
+    qualityMenu.build = function (menu) {
+      caps.qualities().forEach(function (quality) {
+        var item = menuItem(menu, quality.label, quality.current, function () { caps.onQuality(quality.id); });
+        item.dataset.quality = quality.id;
+      });
+    };
+    bar.appendChild(qualityMenu.holder);
+
+    var muteButton = iconButton('mute', 'i-volume', 'Mute');
+    muteButton.node.addEventListener('click', function () { video.muted = !video.muted; paint(); });
+    bar.appendChild(muteButton.node);
+
+    var volume = document.createElement('input');
+    volume.type = 'range';
+    volume.className = 'player-volume';
+    volume.min = '0';
+    volume.max = '1';
+    volume.step = '0.01';
+    volume.dataset.action = 'volume';
+    volume.setAttribute('aria-label', 'Volume');
+    volume.addEventListener('input', function () {
+      video.volume = Number(volume.value);
+      video.muted = Number(volume.value) === 0;
+    });
+    controls.push(volume);
+    bar.appendChild(volume);
+
+    var fullscreen = iconButton('fullscreen', 'i-fullscreen', 'Full screen');
+    fullscreen.node.addEventListener('click', toggleFullscreen);
+    bar.appendChild(fullscreen.node);
+
+    // ---- operations ----
+
+    function togglePlay() {
+      if (video.paused) {
+        video.play().catch(function () { /* the browser decides; the bar stays */ });
+      } else {
+        video.pause();
+      }
+    }
+
+    // `currentTime` and nothing else. Where the media comes from is the supply side's
+    // business, and a skip must not be able to disturb it.
+    function skip(delta) {
+      if (!hasSource()) { return; }
+      var target = video.currentTime + delta;
+      if (caps.seekable) {
+        var limit = isFinite(video.duration) ? video.duration : bufferedEndOf(video);
+        video.currentTime = Math.max(0, Math.min(limit, target));
+        return;
+      }
+      video.currentTime = clampToBuffered(video, target);
+    }
+
+    // True while the rate above 1.0 on the element is one this shell put there. Only
+    // that one is taken back: a rate the operator chose -- or that a test wrote
+    // straight onto the element -- is theirs to keep.
+    var raised = false;
+
+    function setSpeed(rate) {
+      video.playbackRate = rate;
+      // `liveNow` as well: a finished recording has a buffered end too, and dropping
+      // back to 1.0 when the playback reaches it is not something anyone asked for.
+      raised = caps.live && rate > 1 && followingLiveEdge(video) && liveNow(video);
+    }
+
+    function settleSpeed() {
+      if (!raised) { return; }
+      if (bufferedEndOf(video) - video.currentTime >= SHELL_SETTLE_SECONDS) { return; }
+      raised = false;
+      video.playbackRate = 1;
+    }
+
+    function toggleFullscreen() {
+      if (document.fullscreenElement === wrapper) {
+        document.exitFullscreen();
+        return;
+      }
+      if (wrapper.requestFullscreen) {
+        // Older implementations return undefined rather than a promise, and there
+        // `.catch` is itself the error.
+        Promise.resolve(wrapper.requestFullscreen())
+          .catch(function () { /* refused; nothing to repair */ });
+        return;
+      }
+      // iOS has no element fullscreen: the <video> is the only thing that can go
+      // full screen there, and it brings its own native controls when it does.
+      if (video.webkitEnterFullscreen) { video.webkitEnterFullscreen(); }
+    }
+
+    // ---- painting ----
+
+    var bands = [];
+
+    function paintBand(max) {
+      var ranges = video.buffered;
+      if (bands.length !== ranges.length) {
+        band.replaceChildren();
+        bands = [];
+        for (var i = 0; i < ranges.length; i++) {
+          var span = document.createElement('span');
+          band.appendChild(span);
+          bands.push(span);
+        }
+      }
+      for (var j = 0; j < bands.length; j++) {
+        bands[j].style.left = (100 * ranges.start(j) / max) + '%';
+        bands[j].style.width = (100 * (ranges.end(j) - ranges.start(j)) / max) + '%';
+      }
+    }
+
+    function paint() {
+      var source = hasSource();
+      for (var i = 0; i < controls.length; i++) { controls[i].disabled = !source; }
+      idle.hidden = source;
+
+      var playing = !video.paused && !video.ended;
+      playButton.use.setAttribute('href', playing ? '#i-pause' : '#i-play');
+      playButton.node.setAttribute('aria-label', playing ? 'Pause' : 'Play');
+
+      var end = bufferedEndOf(video);
+      var total = isFinite(video.duration) && video.duration > 0 ? video.duration : end;
+      var live = caps.live && source && liveNow(video);
+      var lag = Math.max(0, end - video.currentTime);
+
+      badge.hidden = !live;
+      goLive.node.hidden = !live;
+      goLive.node.classList.toggle('is-behind', live && lag > SHELL_LIVE_LAG_SECONDS);
+
+      clock.textContent = live
+        ? formatClock(video.currentTime) + ' / ' + formatClock(total) + ' (-' + lag.toFixed(1) + 's)'
+        : formatClock(video.currentTime) + ' / ' + formatClock(total);
+
+      var max = total > 0 ? total : 1;
+      seek.max = String(max);
+      // Not while it is being dragged: writing the value under the pointer fights it.
+      if (document.activeElement !== seek) { seek.value = String(Math.min(video.currentTime, max)); }
+      paintBand(max);
+
+      var muted = video.muted || video.volume === 0;
+      muteButton.use.setAttribute('href', muted ? '#i-volume-mute' : '#i-volume');
+      muteButton.node.setAttribute('aria-label', muted ? 'Unmute' : 'Mute');
+      if (document.activeElement !== volume) { volume.value = String(muted ? 0 : video.volume); }
+
+      speedLabel.textContent = video.playbackRate + 'x';
+
+      // One quality is not a choice: the menu is only drawn when there is something
+      // to pick between.
+      qualityMenu.holder.hidden = caps.qualities().length < 2;
+
+      fullscreen.use.setAttribute(
+        'href', document.fullscreenElement === wrapper ? '#i-fullscreen-exit' : '#i-fullscreen');
+    }
+
+    // ---- the bar hiding itself ----
+
+    var lastPointer = Date.now();
+
+    function wake() {
+      lastPointer = Date.now();
+      bar.classList.remove('is-idle');
+    }
+
+    // **Hover belongs to the mouse alone.** A touch raises `pointerenter` and
+    // `pointermove` before its own `pointerdown`, so waking here would show the bar
+    // first and let the tap below hide it again: a hidden bar could never be tapped
+    // back up.
+    function wakeFromHover(event) {
+      if (event.pointerType === 'touch') { return; }
+      wake();
+    }
+
+    wrapper.addEventListener('pointermove', wakeFromHover);
+    wrapper.addEventListener('pointerenter', wakeFromHover);
+    wrapper.addEventListener('pointerdown', function (event) {
+      // Touch has no hover, so there is nothing to bring the bar back: tapping the
+      // picture is what shows and hides it.
+      if (event.pointerType === 'touch' && event.target === video) {
+        if (bar.classList.contains('is-idle')) { wake(); } else { bar.classList.add('is-idle'); }
+        return;
+      }
+      wake();
+    });
+
+    // Reached with the keyboard rather than the pointer: a bar that is transparent
+    // cannot be operated by the focus that just landed in it.
+    wrapper.addEventListener('focusin', wake);
+
+    // Paused is when the controls are wanted, and the beat below only ever hides. A
+    // bar that faded out while playing has to come back when the playback stops.
+    video.addEventListener('pause', wake);
+    video.addEventListener('ended', wake);
+
+    // ---- keys ----
+
+    wrapper.addEventListener('keydown', function (event) {
+      var tag = event.target && event.target.tagName;
+      // A control that reads keys of its own keeps them (the sliders and, for Space
+      // and Enter, the bar's own buttons -- otherwise one press both clicks the
+      // button and does whatever this handler makes of it).
+      if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') { return; }
+      if (tag === 'BUTTON' && (event.key === ' ' || event.key === 'Enter')) { return; }
+      if (event.altKey || event.ctrlKey || event.metaKey) { return; }
+
+      var large = event.shiftKey ? SHELL_SKIP_LARGE_SECONDS : SHELL_SKIP_SMALL_SECONDS;
+      var handled = true;
+
+      switch (event.key) {
+        case ' ': case 'k': case 'K': togglePlay(); break;
+        case 'j': case 'J': case 'ArrowLeft': skip(-large); break;
+        case 'l': case 'L': case 'ArrowRight': skip(large); break;
+        case 'f': case 'F': toggleFullscreen(); break;
+        case 'm': case 'M': video.muted = !video.muted; break;
+        case ',': stepSpeed(-1); break;
+        case '.': stepSpeed(1); break;
+        case 'Escape': closeMenu(); break;
+        default: handled = false;
+      }
+
+      if (handled) {
+        event.preventDefault();
+        paint();
+      }
+    });
+
+    function stepSpeed(direction) {
+      var index = SHELL_SPEEDS.indexOf(video.playbackRate);
+      if (index < 0) { index = SHELL_SPEEDS.indexOf(1); }
+      setSpeed(SHELL_SPEEDS[Math.max(0, Math.min(SHELL_SPEEDS.length - 1, index + direction))]);
+    }
+
+    // A click anywhere else closes the open menu. On the document, because "anywhere
+    // else" includes the rest of the page.
+    document.addEventListener('click', function (event) {
+      if (openMenu !== null && !openMenu.holder.contains(event.target)) { closeMenu(); }
+    });
+
+    // ---- what the bar listens to ----
+
+    [
+      'loadstart', 'loadedmetadata', 'durationchange', 'timeupdate', 'progress',
+      'play', 'pause', 'ended', 'error', 'emptied', 'ratechange', 'volumechange',
+      'seeking', 'seeked', 'waiting', 'canplay'
+    ].forEach(function (name) {
+      video.addEventListener(name, paint);
+    });
+
+    // A rate that is no longer above 1.0 cannot be one this shell is holding up.
+    video.addEventListener('ratechange', function () {
+      if (video.playbackRate <= 1) { raised = false; }
+    });
+
+    document.addEventListener('fullscreenchange', paint);
+
+    setInterval(function () {
+      settleSpeed();
+      if (!video.paused && openMenu === null && SHELL_IDLE_MS < Date.now() - lastPointer) {
+        bar.classList.add('is-idle');
+      }
+      paint();
+    }, SHELL_TICK_MS);
+
+    paint();
+    return { wrapper: wrapper, overlay: overlay, bar: bar, paint: paint };
+  }
+
+  // ---- what each of the two players can do ----
+
+  // The live preview's two qualities are the two the (hidden) selector already
+  // offers, read from its <option> elements so that the menu and the selector cannot
+  // drift apart -- the selector stays the one place the mode and its wording live.
+  function previewQualities() {
+    var select = $('previewMode');
+    var offered = [];
+    for (var i = 0; i < select.options.length; i++) {
+      offered.push({
+        id: select.options[i].value,
+        label: select.options[i].textContent,
+        current: select.options[i].value === select.value
+      });
+    }
+    return offered;
+  }
+
+  // Writing the value is not enough: the handler that stops the running preview and
+  // starts the other mode is the selector's `change`, and a value set from script
+  // does not raise it.
+  function choosePreviewQuality(id) {
+    var select = $('previewMode');
+    select.value = id;
+    select.dispatchEvent(new Event('change'));
+  }
+
+  // A recording is served as it was written; there is nothing to pick between, so the
+  // menu is not drawn at all.
+  function recordingQualities() {
+    return [{ id: 'original', label: 'Original', current: true }];
+  }
+
+  // Both elements are shelled here rather than in app.js: the capabilities are this
+  // file's own state (whether the followed file is still growing, what the preview
+  // selector offers, how each of the two rejoins its live edge).
+  createShell($('player'), {
+    live: true,
+    seekable: false,
+    qualities: recordingQualities,
+    onQuality: function () { /* one quality: the menu is never drawn */ },
+    onGoLive: resumeFollow
+  });
+
+  createShell($('previewPlayer'), {
+    live: true,
+    seekable: false,
+    qualities: previewQualities,
+    onQuality: choosePreviewQuality,
+    onGoLive: resumePreviewLive
+  });
+
   // ---- listeners on the two <video> elements ----
   //
   // The elements outlive every playback and every connection, so app.js attaches
@@ -1151,6 +1849,10 @@
   }
 
   PRA.player = {
+    createShell: createShell,
+    // What the manifest last offered. One entry today; the quality menu reads it once
+    // the server publishes more than one.
+    representations: function () { return dashRepresentations; },
     startFollow: startFollow,
     stopFollow: stopFollow,
     startSelectedPreview: startSelectedPreview,

@@ -263,6 +263,10 @@ between them does not stop a preview or a playback that is running. The button n
 switches the colour scheme between light and dark and remembers the choice in that browser;
 without a choice it follows the operating system.
 
+**Player controls.** The preview and the recording playback share one control bar: skip by 10 or
+30 seconds, playback speed (0.5× to 2×), volume and full screen. On a live picture the quality
+(recording quality or preview settings) is switched from there too.
+
 **Security — read this before turning it on.**
 
 - **Reading is not free unless you say so.** With `RemoteControlAllowGuestRead` on, the recorder

@@ -873,4 +873,210 @@ public sealed class WebUiBrowserTests(PublishedApp app, ITestOutputHelper output
             await browser.WaitUntilAsync($"{TextOf("previewStatus")} === 'stopped'", PageBudget, Ct),
             "Stop preview で配信が畳まれませんでした: " + await browser.EvaluateStringAsync(TextOf("previewStatus"), Ct));
     }
+
+    // ---- (6) 自前のコントロールバー ----
+
+    /// <summary>
+    /// バーの部品は id を持たない（<c>&lt;video&gt;</c> 2 つに同じバーが付くので、id は必ず衝突する）。
+    /// <b>要素の親＝シェルのラッパ</b>なので、そこから <c>data-action</c> で引く。
+    /// </summary>
+    private static string ShellControl(string videoId, string action)
+        => ShellPart(videoId, $"[data-action=\"{action}\"]");
+
+    /// <summary>シェルのラッパの中の部品を、CSS の選択子で引く。</summary>
+    private static string ShellPart(string videoId, string selector)
+        => $"document.getElementById('{videoId}').parentNode.querySelector('{selector}')";
+
+    private static string ClickShellControl(string videoId, string action)
+        => $"(function () {{ var node = {ShellControl(videoId, action)}; if (node === null) {{ return false; }} node.click(); return true; }})()";
+
+    /// <summary>開いているメニューの項目を、<c>data-*</c> の値で選ぶ。</summary>
+    private static string ClickMenuItem(string videoId, string attribute, string value)
+        => $$"""
+            (function () {
+              var item = document.getElementById('{{videoId}}').parentNode
+                .querySelector('.player-menu [data-{{attribute}}="{{value}}"]');
+              if (item === null) { return false; }
+              item.click();
+              return true;
+            })()
+            """;
+
+    /// <summary>録画物が 1 本できるまで録る秒数（＋10 秒を踏める尺が要る）。</summary>
+    private static readonly TimeSpan ClipRecordingTime = TimeSpan.FromSeconds(16);
+
+    /// <summary>
+    /// <b>バーの「+10s」が実際に位置を 10 秒進め、速度メニューが <c>playbackRate</c> を変える。</b>
+    ///
+    /// <para>
+    /// 検査は<b>非 fragmented の完成ファイル</b>で行う ── 追いかけ再生（MSE）だと、
+    /// 位置が進んだ理由が「ボタン」なのか「ライブ端への寄せ」なのかを外から区別できない。
+    /// 素の <c>&lt;video src&gt;</c> なら寄せは走らないので、進んだぶんはボタンのものである。
+    /// </para>
+    /// <para>
+    /// <b>閾値ではなく速さで判定する。</b> 3 秒の窓で 9 秒進むことは等速の再生では起こらないので、
+    /// 「押さなくても進む」で緑になる余地が無い。
+    /// </para>
+    /// <para>
+    /// 速度の 1.0 への自動復帰（ライブ端に付いたら戻す）は<b>ここでは見ない</b> ──
+    /// 追いかけ再生の端は毎秒動くので、判定の瞬間に端との差が 0.5 秒未満である保証が作れない。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task TheBarSkipsForwardTenSecondsAndItsMenuSetsTheSpeed()
+    {
+        Assert.SkipUnless(EdgeCdp.IsAvailable, EdgeCdp.UnavailableReason);
+
+        // **fragmented は明示的に切る**（製品の既定は ON）── 追いかけ再生（MSE）だと
+        // 位置が進んだ理由をボタンとライブ端への寄せに分けられない。
+        var settings = RemoteBase(allowGuestRead: true);
+        settings.FragmentedOutput = false;
+        settings.AddRecorder("R1");
+
+        using var instance = AppInstance.Create(app, settings, configure: UseIsolatedRoot);
+        int port = WaitForPort(instance);
+
+        await using var browser = await EdgeCdp.LaunchAsync(Ct);
+        await browser.NavigateAsync($"http://127.0.0.1:{port}/", PageBudget, Ct);
+        Assert.True(await browser.WaitUntilAsync($"!{IsHidden("mainSections")}", PageBudget, Ct), "画面が出ませんでした。");
+
+        Assert.Equal(0, instance.Run("start-recording-all").ExitCode);
+        await Task.Delay(ClipRecordingTime, Ct);
+        Assert.Equal(0, instance.Run("stop-recording-all").ExitCode);
+
+        // **行が在ることも述語に入れる。** 完成した非 fragmented の state 欄は空文字なので、
+        // 「`recording` を含まない」だけだと**行が 1 つも無い状態でも真になる**。
+        Assert.True(
+            await WaitForFirstRowAsync(
+                browser,
+                "s === '' && document.querySelectorAll('#recordingsBody tr').length > 0",
+                PlaybackBudget),
+            "録画の終わったファイルが一覧に出ませんでした: " + await browser.EvaluateStringAsync(FirstRowState, Ct));
+
+        Assert.True(await browser.EvaluateBoolAsync(ClickFirstPlay, Ct), "一覧に行がありません。");
+
+        // **バッファが 12 秒ぶん来てから押す。** 任意シークはまだ入っていない（波 3）ので、
+        // ＋10 秒はバッファの中へ丸められる ── 届いていなければ丸められて動かない。
+        Assert.True(
+            await browser.WaitUntilAsync($"12 < {BufferedEnd}", PlaybackBudget, Ct),
+            "録画物が 12 秒ぶん読み込まれませんでした: " + await browser.EvaluateStringAsync(TextOf("playerStatus"), Ct));
+
+        double before = await browser.EvaluateNumberAsync(PlayerTime, Ct);
+        Assert.True(await browser.EvaluateBoolAsync(ClickShellControl("player", "forward-10"), Ct),
+            "バーに +10s のボタンがありません。");
+
+        string invariant = (before + 9).ToString("R", System.Globalization.CultureInfo.InvariantCulture);
+        Assert.True(
+            await browser.WaitUntilAsync($"{invariant} < {PlayerTime}", TimeSpan.FromSeconds(3), Ct),
+            $"+10s で位置が進みませんでした（{before:F2} 秒のまま）: "
+            + await browser.EvaluateStringAsync(BufferedRanges, Ct));
+
+        // 速度メニュー: ボタンで開き、1.5 の項目を押す。
+        Assert.True(await browser.EvaluateBoolAsync(ClickShellControl("player", "speed"), Ct),
+            "バーに速度メニューのボタンがありません。");
+        Assert.True(await browser.EvaluateBoolAsync(ClickMenuItem("player", "speed", "1.5"), Ct),
+            "速度メニューに 1.5 の項目がありません。");
+
+        Assert.Equal(1.5, await browser.EvaluateNumberAsync("document.getElementById('player').playbackRate", Ct));
+    }
+
+    /// <summary>
+    /// <b>ライブの画質メニューが <c>#previewMode</c> を書き、配信が DASH へ切り替わる。</b>
+    ///
+    /// <para>
+    /// <c>&lt;select&gt;</c> は画面から隠してあり、値を書くのはこのメニューだけになった
+    /// ── ここが切れると、DASH のプレビューへ行く道が UI から消える。
+    /// 切り替わったことは <c>previewStatus</c> が DASH の状態表示になることで見る
+    /// （<see cref="TheDashPreviewPlaysInTheBrowser"/> と同じ流儀）。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task TheLiveQualityMenuSwitchesThePreviewToDash()
+    {
+        Assert.SkipUnless(EdgeCdp.IsAvailable, EdgeCdp.UnavailableReason);
+
+        using var instance = AppInstance.Create(app, DashSettings(), configure: UseIsolatedRoot);
+        int port = WaitForPort(instance);
+
+        Assert.True(instance.WaitForActivityLogEvent("recorder.init ok", PageBudget),
+            "recorder.init ok が現れませんでした。" + Environment.NewLine + instance.DiagnosticDump());
+
+        await using var browser = await EdgeCdp.LaunchAsync(Ct);
+        await browser.NavigateAsync($"http://127.0.0.1:{port}/", PageBudget, Ct);
+        Assert.True(await browser.WaitUntilAsync($"!{IsHidden("mainSections")}", PageBudget, Ct), "画面が出ませんでした。");
+
+        Assert.True(
+            await browser.WaitUntilAsync("document.querySelectorAll('#recordersBody tr').length > 0", PageBudget, Ct),
+            "レコーダーの一覧が出ませんでした。");
+
+        // メニューは走っているプレビューの画質を差し替えるものなので、まず既定（録画画質）で開く。
+        Assert.True(await browser.EvaluateBoolAsync(ClickFirstPreview, Ct), "行に Preview のボタンがありません。");
+        Assert.True(
+            await browser.WaitUntilAsync($"{TextOf("previewStatus")}.indexOf('streaming') === 0", PageBudget, Ct),
+            "録画画質のプレビューが始まりませんでした: " + await browser.EvaluateStringAsync(TextOf("previewStatus"), Ct));
+
+        Assert.True(await browser.EvaluateBoolAsync(ClickShellControl("previewPlayer", "quality"), Ct),
+            "プレビューのバーに画質メニューのボタンがありません。");
+        Assert.True(await browser.EvaluateBoolAsync(ClickMenuItem("previewPlayer", "quality", "dash"), Ct),
+            "画質メニューに DASH の項目がありません。");
+
+        Assert.Equal("dash", await browser.EvaluateStringAsync("document.getElementById('previewMode').value", Ct));
+        Assert.True(
+            await browser.WaitUntilAsync($"{TextOf("previewStatus")}.indexOf('DASH') === 0", PageBudget, Ct),
+            "画質メニューで DASH へ切り替わりませんでした: " + await browser.EvaluateStringAsync(TextOf("previewStatus"), Ct));
+
+        Assert.True(await browser.EvaluateBoolAsync(Click("stopPreview"), Ct), "Stop preview を押せませんでした。");
+
+        // **止めたらバーも止まった見た目に戻る。** `src` を外して `load()` しても
+        // `currentSrc` には直前の blob: URL が残る（Chromium）ので、そこを見て判定すると
+        // 止めたはずのプレイヤーに LIVE バッジと動く時計が居座り、待機中の表示も出ない。
+        // プレビューを一度走らせたあとで見ることに意味がある ── 走らせなければ
+        // `currentSrc` は空のままで、この退化は起きない。
+        Assert.True(
+            await browser.WaitUntilAsync(
+                $"{ShellControl("previewPlayer", "play")}.disabled"
+                + $" && {ShellPart("previewPlayer", ".player-idle")}.hidden === false"
+                + $" && {ShellPart("previewPlayer", ".player-badge")}.hidden === true",
+                PageBudget,
+                Ct),
+            "プレビューを止めてもバーが動いているままです: "
+            + await browser.EvaluateStringAsync(TextOf("previewStatus"), Ct));
+    }
+
+    /// <summary>
+    /// <b>ブラウザ標準のコントロールが出ておらず、自前のバーが両方の要素に付いている。</b>
+    /// 両方が同時に出ると操作が二重になり、片方も出ないと再生を止める手段が画面から消える。
+    /// </summary>
+    [Fact]
+    public async Task NeitherPlayerShowsNativeControlsAndBothCarryTheBar()
+    {
+        Assert.SkipUnless(EdgeCdp.IsAvailable, EdgeCdp.UnavailableReason);
+
+        using var instance = AppInstance.Create(app, DashSettings(), configure: UseIsolatedRoot);
+        int port = WaitForPort(instance);
+
+        await using var browser = await EdgeCdp.LaunchAsync(Ct);
+        await browser.NavigateAsync($"http://127.0.0.1:{port}/", PageBudget, Ct);
+        Assert.True(await browser.WaitUntilAsync($"!{IsHidden("mainSections")}", PageBudget, Ct), "画面が出ませんでした。");
+
+        Assert.False(
+            await browser.EvaluateBoolAsync("document.getElementById('player').hasAttribute('controls')", Ct),
+            "#player に controls が残っています。");
+        Assert.False(
+            await browser.EvaluateBoolAsync("document.getElementById('previewPlayer').hasAttribute('controls')", Ct),
+            "#previewPlayer に controls が残っています。");
+
+        foreach (string id in new[] { "player", "previewPlayer" })
+        {
+            Assert.True(
+                await browser.EvaluateBoolAsync(
+                    $"document.getElementById('{id}').parentNode.querySelector('.player-bar') !== null", Ct),
+                $"#{id} に .player-bar が付いていません。");
+        }
+
+        // 未選択のうちはバーが押せない（押せると、何も読み込んでいない要素に指示が飛ぶ）。
+        Assert.True(
+            await browser.EvaluateBoolAsync($"{ShellControl("player", "forward-10")}.disabled", Ct),
+            "録画を選ぶ前からバーが有効になっています。");
+    }
 }
