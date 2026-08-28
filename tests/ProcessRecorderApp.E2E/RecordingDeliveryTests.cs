@@ -344,6 +344,174 @@ public sealed class RecordingDeliveryTests(PublishedApp app, ITestOutputHelper o
         Assert.True(0 < asPlainMp4.SampleCount, "fragment からサンプル数が出ていない: " + asPlainMp4);
     }
 
+    // ---- fragment の索引（GET /api/recording-fragments/{*path}） ----
+
+    /// <summary>索引を引いて、応答の本体（<c>ETag</c> 込み）を返す。</summary>
+    private static async Task<(JsonElement Body, string? ETag)> IndexAsync(
+        HttpClient client, string relativePath, long from = 0)
+    {
+        using var response = await client.GetAsync(
+            "api/recording-fragments/" + Uri.EscapeDataString(relativePath)
+            + "?from=" + from.ToString(CultureInfo.InvariantCulture), Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("no-store", response.Headers.CacheControl?.ToString());
+
+        using var body = await ReadJsonAsync(response);
+        return (body.RootElement.Clone(), response.Headers.ETag?.Tag);
+    }
+
+    private static int FragmentCount(JsonElement index) => index.GetProperty("fragments").GetArrayLength();
+
+    private static long NextOffsetOf(JsonElement index) => index.GetProperty("nextOffset").GetInt64();
+
+    /// <summary>
+    /// <b>録画中でも索引が引けて、伸びること。</b> ブラウザはこれで「その秒はどのバイトか」を
+    /// 引く ── 索引が止まると、任意の位置へのシークがその時点までに縮む。
+    ///
+    /// <para>
+    /// 併せて、<c>from</c> が差分だけを返すこと（毎秒引き直すので全件を返すと二乗の転送になる）、
+    /// 停止後は <c>inProgress=false</c> で尺がファイルの実尺と一致すること、
+    /// <c>ETag</c> が本体の配信のものと別値であることを固定する。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task TheFragmentIndexGrowsWhileRecordingAndSettlesWhenItStops()
+    {
+        using var instance = AppInstance.Create(app, FragmentedSettings(), configure: UseIsolatedRoot);
+        int port = WaitForPort(instance);
+        using var client = CreateClient(port);
+
+        Assert.Equal(0, instance.Run("start-recording-all").ExitCode);
+
+        // fragment が 1 つ以上書かれ、索引に載るまで待つ（1 秒ごとに 1 つ出る）。
+        string relativePath = "";
+        JsonElement first = default;
+        string? indexETag = null;
+        var deadline = Stopwatch.StartNew();
+
+        while (deadline.Elapsed < FragmentBudget)
+        {
+            var (_, files) = await ListAsync(client);
+            if (files.Length == 1 && files[0].GetProperty("fragmented").GetBoolean())
+            {
+                relativePath = files[0].GetProperty("path").GetString()!;
+                (first, indexETag) = await IndexAsync(client, relativePath);
+                if (0 < FragmentCount(first))
+                    break;
+            }
+
+            Thread.Sleep(500);
+        }
+
+        Assert.False(relativePath.Length == 0, "録画中のファイルが fragmented として一覧に出ませんでした。");
+        Assert.True(0 < FragmentCount(first), "録画中のファイルの索引が空のままでした: " + first);
+        output.WriteLine($"first: {FragmentCount(first)} fragments, next={NextOffsetOf(first)}");
+
+        Assert.True(first.GetProperty("inProgress").GetBoolean(), "録画中なのに inProgress が false: " + first);
+        Assert.True(0 < first.GetProperty("timescale").GetUInt32(), "timescale が 0: " + first);
+        Assert.StartsWith("avc1.", first.GetProperty("codecs").GetString(), StringComparison.Ordinal);
+
+        // init セグメント（ftyp + moov）は最初の moof の手前にある。
+        long initSize = first.GetProperty("initSize").GetInt64();
+        Assert.True(0 < initSize, "initSize が 0: " + first);
+        Assert.Equal(initSize, first.GetProperty("fragments")[0].GetProperty("offset").GetInt64());
+
+        // **同期でないフラグメントが在るのが録画の形である**（fragment 1 秒・GOP 2 秒）。
+        // 先頭だけは必ず同期でなければ、そもそも再生が始まらない。
+        Assert.True(first.GetProperty("fragments")[0].GetProperty("sync").GetBoolean(),
+            "先頭のフラグメントが同期でない: " + first);
+
+        // 本体の配信の ETag と衝突していないこと（同じ経路の別の表現である）。
+        using (var body = await client.GetAsync("api/recordings/" + Uri.EscapeDataString(relativePath), Ct))
+        {
+            Assert.NotNull(indexETag);
+            Assert.NotEqual(body.Headers.ETag?.Tag, indexETag);
+        }
+
+        Thread.Sleep(TimeSpan.FromSeconds(3));
+
+        var (grown, _) = await IndexAsync(client, relativePath);
+        output.WriteLine($"grown: {FragmentCount(grown)} fragments, next={NextOffsetOf(grown)}");
+
+        Assert.True(FragmentCount(first) < FragmentCount(grown),
+            $"索引が伸びていません（{FragmentCount(first)} -> {FragmentCount(grown)}）。");
+        Assert.True(NextOffsetOf(first) < NextOffsetOf(grown),
+            $"nextOffset が進んでいません（{NextOffsetOf(first)} -> {NextOffsetOf(grown)}）。");
+
+        Assert.Equal(0, instance.Run("stop-recording-all").ExitCode);
+
+        var (done, _) = await IndexAsync(client, relativePath);
+        Assert.False(done.GetProperty("inProgress").GetBoolean(), "停止後も inProgress が true: " + done);
+
+        // **差分の件数は止めてから見る。** 録画中は 2 回の取得の間にも伸びるので、
+        // 別々の応答から引き算した数は一致しない ── 確定したファイルなら決まる。
+        long secondOffset = done.GetProperty("fragments")[1].GetProperty("offset").GetInt64();
+        var (delta, _) = await IndexAsync(client, relativePath, secondOffset);
+
+        Assert.Equal(FragmentCount(done) - 1, FragmentCount(delta));
+        Assert.Equal(secondOffset, delta.GetProperty("fragments")[0].GetProperty("offset").GetInt64());
+        foreach (var fragment in delta.GetProperty("fragments").EnumerateArray())
+            Assert.True(secondOffset <= fragment.GetProperty("offset").GetInt64(), "from より手前が返りました。");
+
+        // 全体の尺と init の大きさは from で切っても変わらない（切るのは配列だけ）。
+        Assert.Equal(done.GetProperty("totalDuration").GetUInt64(), delta.GetProperty("totalDuration").GetUInt64());
+        Assert.Equal(done.GetProperty("initSize").GetInt64(), delta.GetProperty("initSize").GetInt64());
+
+        double indexed = done.GetProperty("totalDuration").GetUInt64() / (double)done.GetProperty("timescale").GetUInt32();
+        var probe = Mp4File.Probe(Assert.Single(instance.ListRecordings()));
+        output.WriteLine($"index {indexed:F3}s / file {probe}");
+
+        Assert.True(probe.DurationSeconds is { } length && Math.Abs(length - indexed) <= 1,
+            $"索引の尺 {indexed:F3}s がファイルの尺と 1 秒以上ずれています: {probe}");
+
+        // **件数は独立した数え方と突き合わせる。** 索引が途中で止まっても
+        // 「伸びた・尺が近い」までは通ってしまう ── moof の総数は
+        // <see cref="Mp4File.Probe"/> がこの実装とは別に数えている。
+        Assert.Equal(probe.FragmentCount, FragmentCount(done));
+
+        // **同期の別が本当に読めている証人。** 先頭 1 件が true なのは
+        // 「フラグを 1 つも読めず既定の 0（＝同期）で答えた」ときも同じなので、
+        // それだけでは何も言えない ── フラグメント 1 秒・GOP 2 秒の録画には
+        // 同期でないフラグメントが必ず在り、それが在ることまで見て初めて塞がる。
+        bool[] syncs = [.. done.GetProperty("fragments").EnumerateArray()
+            .Select(fragment => fragment.GetProperty("sync").GetBoolean())];
+        output.WriteLine("sync: " + string.Concat(syncs.Select(s => s ? "K" : ".")));
+
+        Assert.True(syncs[0], "先頭のフラグメントが同期でない: " + done);
+        Assert.Contains(false, syncs);
+    }
+
+    /// <summary>
+    /// <b>fragmented でないファイルには索引が無い。</b> <c>moof</c> が 1 つも無いので
+    /// 「その秒はどのバイトか」に答えようがなく、<b>400 ではなく 404</b> で断る
+    /// ── 要求の書き方ではなく、その資源が在るかどうかの答えである。
+    /// </summary>
+    [Fact]
+    public async Task ANonFragmentedRecording_HasNoFragmentIndex()
+    {
+        using var instance = AppInstance.Create(app, RemoteSettings(), configure: UseIsolatedRoot);
+        int port = WaitForPort(instance);
+        using var client = CreateClient(port);
+
+        string relativePath = RecordOnce(instance);
+
+        using var response = await client.GetAsync(
+            "api/recording-fragments/" + Uri.EscapeDataString(relativePath), Ct);
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+        using var body = await ReadJsonAsync(response);
+        Assert.Equal("not fragmented", body.RootElement.GetProperty("error").GetString());
+
+        // 無いファイルは、本体の配信と同じ断り方（404 / not found）になる。
+        using var missing = await client.GetAsync("api/recording-fragments/no-such-file.mp4", Ct);
+        Assert.Equal(HttpStatusCode.NotFound, missing.StatusCode);
+
+        // 規則で断るもの（拡張子違い）は 400 のまま。
+        using var rejected = await client.GetAsync("api/recording-fragments/notes.txt", Ct);
+        Assert.Equal(HttpStatusCode.BadRequest, rejected.StatusCode);
+    }
+
     /// <summary>常時録画のセグメント長(秒)。製品の下限。</summary>
     private const int ContinuousSegmentSeconds = 5;
 

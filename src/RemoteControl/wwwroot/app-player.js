@@ -98,6 +98,45 @@
   var followLive = true;
   var followSeekTarget = null;
 
+  // ---- the fragment index ----
+  //
+  // The file has no table that maps a moment to a byte: `moov` is never rewritten, so
+  // its duration stays 0, and no `sidx` is written either. The server reads the `moof`
+  // boxes and answers with one, and that answer is the whole of what arbitrary seeking
+  // stands on. **It is optional.** Without it everything behaves as it did before:
+  // following the live edge works and a skip is clamped into what has been buffered.
+
+  // How often the index is asked for what has been written since its last answer. The
+  // same beat as the byte polling -- one fragment a second is what arrives.
+  var FOLLOW_INDEX_POLL_MS = 1000;
+
+  // How many leading bytes are held while the size of the init segment is still
+  // unknown. `ftyp` + `moov` measures a few hundred bytes; past this the index is given
+  // up on rather than the buffer grown.
+  var FOLLOW_INIT_CAPTURE_MAX = 1024 * 1024;
+
+  // `{timescale, initSize, fragments, nextOffset, totalDuration, inProgress}`, or null
+  // while there is none. `fragments` grows as the recording does.
+  var followIndex = null;
+
+  // The init segment, cut out of the leading bytes that were read anyway. A seek has to
+  // append it again: `remove(0, Infinity)` frees the parsed one along with the media.
+  var followInit = null;
+
+  var followIndexUrl = null;
+  var followIndexTimer = null;
+
+  // Set by `followFile`, because the state a seek has to move is that function's.
+  var followSeekTo = null;
+  var followIndexChanged = null;
+
+  // Set once, when `#player`'s shell is built: how the bar is told that the seek
+  // control may be operated, and how far it reaches.
+  var followSetSeekable = null;
+
+  // `seekTo` assigns `currentTime`, which raises the very event that calls it.
+  var followReseeking = false;
+
   // Whether the file being followed is still being written. Only the player shell
   // reads it: a recording that has stopped growing has no live edge, so the LIVE
   // badge and the "go live" button come off the bar for it.
@@ -115,11 +154,27 @@
     }
   }
 
+  // The index and everything cut out of it. The bar is told at the same moment: a seek
+  // control left operable over a player with no index is one that does nothing.
+  function releaseFollowIndex() {
+    if (followIndexTimer !== null) {
+      clearTimeout(followIndexTimer);
+      followIndexTimer = null;
+    }
+    followIndex = null;
+    followInit = null;
+    followIndexUrl = null;
+    followSeekTo = null;
+    followIndexChanged = null;
+    if (followSetSeekable !== null) { followSetSeekable(null); }
+  }
+
   // Everything the <video> element holds on to: the element itself keeps decoding
   // and the object URL keeps the MediaSource alive until both are let go.
   function releaseFollowPlayer() {
     followOnFailure = null;
     followInProgress = false;
+    releaseFollowIndex();
     var video = $('player');
     video.pause();
     video.removeAttribute('src');
@@ -167,6 +222,11 @@
         if (response.status === 401) { showLogin('Sign in to continue.'); return; }
         if (!response.ok) { throw new Error('HTTP ' + response.status); }
 
+        // The index is asked for now, alongside the first bytes: the init segment is
+        // cut out of those bytes, so both halves are wanted from the same moment.
+        followIndexUrl = indexUrlFor(url);
+        loadIndex(generation, 0);
+
         var codecs = response.headers.get('X-Codecs') || FOLLOW_CODECS_FALLBACK;
         var video = $('player');
         var source = new MediaSource();
@@ -177,6 +237,12 @@
         followSeekTarget = null;
         video.src = followUrl;
 
+        // **Once, and only once.** `sourceopen` is not a one-shot event: a MediaSource
+        // that reached `ended` (a finished recording, after `endOfStream()`) goes back
+        // to `open` the moment `remove()` is called on one of its buffers, and that is
+        // exactly what a seek does. A listener left attached would then add a second
+        // SourceBuffer and start a second `followFile` over a response body that has
+        // already been read to its end -- taking the state a seek moves with it.
         source.addEventListener('sourceopen', function () {
           if (generation !== followGeneration) { return; }
 
@@ -189,12 +255,113 @@
           }
           buffer.mode = 'segments';
           followFile(url, generation, source, buffer, response);
-        });
+        }, { once: true });
       })
       .catch(function (error) {
         if (generation !== followGeneration || error.name === 'AbortError') { return; }
         status($('playerStatus'), error.message, true);
       });
+  }
+
+  // The index lives beside the bytes on a route of its own. `{*path}` catches
+  // everything to the end of the URL, so the kind of answer cannot be a suffix -- every
+  // derived API takes the `/api/recording-<kind>/` shape for that reason.
+  var FOLLOW_MEDIA_PREFIX = '/api/recordings/';
+  var FOLLOW_INDEX_PREFIX = '/api/recording-fragments/';
+
+  function indexUrlFor(url) {
+    return url.indexOf(FOLLOW_MEDIA_PREFIX) === 0
+      ? FOLLOW_INDEX_PREFIX + url.substring(FOLLOW_MEDIA_PREFIX.length)
+      : null;
+  }
+
+  // **Nothing here reports a failure onto the page.** A file with no index (an older
+  // one, a request that did not arrive) plays exactly as it did before arbitrary
+  // seeking existed, and saying so would be noise over a player that works.
+  function loadIndex(generation, from) {
+    if (followIndexUrl === null) { return; }
+
+    fetch(followIndexUrl + '?from=' + from, { credentials: 'same-origin', cache: 'no-store' })
+      .then(function (response) {
+        if (generation !== followGeneration) { return undefined; }
+        if (!response.ok) { throw new Error('HTTP ' + response.status); }
+        return response.json();
+      })
+      .then(function (body) {
+        if (body === undefined || generation !== followGeneration) { return; }
+        applyIndex(body, from);
+      })
+      .catch(function () {
+        // No index: the player keeps the behaviour it had without one. But **a round
+        // that failed must not end the polling** -- a recording is still growing after
+        // one request went wrong, and dropping the timer here freezes the length the
+        // bar reaches for the rest of the playback. Only a file that already has an
+        // index is retried; the first request failing is the "there is none" case.
+        if (generation !== followGeneration || followIndex === null || !followIndex.inProgress) { return; }
+        scheduleIndexPoll(generation);
+      });
+  }
+
+  // The next round of the index polling. One timer, whichever side asks for it.
+  function scheduleIndexPoll(generation) {
+    if (followIndexTimer !== null) { return; }
+
+    followIndexTimer = setTimeout(function () {
+      followIndexTimer = null;
+      if (generation !== followGeneration || followIndex === null) { return; }
+      loadIndex(generation, followIndex.nextOffset);
+    }, FOLLOW_INDEX_POLL_MS);
+  }
+
+  // How far the seek bar reaches. **Told only once a seek could actually be carried
+  // out**: `seekTo` needs the init segment as much as it needs the index, and a control
+  // that answers a drag by doing nothing reads as broken rather than as unavailable.
+  // Either half can be the later one, so both call this.
+  function refreshSeekable() {
+    if (followSetSeekable === null || followIndex === null || followInit === null) { return; }
+    // A file whose fragments are all still to come has nothing to seek within yet.
+    if (followIndex.fragments.length === 0) { return; }
+
+    followSetSeekable(followIndex.totalDuration / followIndex.timescale);
+  }
+
+  // The server always counts from the beginning, so `initSize`, `nextOffset` and
+  // `totalDuration` describe the whole file however small `from` made the answer;
+  // only `fragments` is the part that has to be appended rather than replaced.
+  function applyIndex(body, from) {
+    if (followIndex === null || from === 0) {
+      followIndex = {
+        timescale: body.timescale,
+        initSize: body.initSize,
+        fragments: body.fragments,
+        nextOffset: body.nextOffset,
+        totalDuration: body.totalDuration,
+        inProgress: body.inProgress
+      };
+    } else {
+      for (var i = 0; i < body.fragments.length; i++) {
+        followIndex.fragments.push(body.fragments[i]);
+      }
+      followIndex.nextOffset = body.nextOffset;
+      followIndex.totalDuration = body.totalDuration;
+      followIndex.inProgress = body.inProgress;
+    }
+
+    if (followIndexChanged !== null) { followIndexChanged(); }
+    refreshSeekable();
+
+    // A file that is no longer being written has an index that is final.
+    if (!followIndex.inProgress) { return; }
+    scheduleIndexPoll(followGeneration);
+  }
+
+  // Whether a moment is somewhere the element could play right now.
+  function insideBuffered(video, seconds) {
+    var ranges = video.buffered;
+    for (var i = 0; i < ranges.length; i++) {
+      if (ranges.start(i) <= seconds && seconds <= ranges.end(i)) { return true; }
+    }
+    return false;
   }
 
   // Owns everything that spans the requests: how far the file has been read, what
@@ -215,6 +382,22 @@
     var stalledTrims = 0;
     // Whether the one unconditional jump to the live edge has been made.
     var joined = false;
+
+    // The leading bytes, held until the index says how many of them are the init
+    // segment. They are the arrays that go into the SourceBuffer too -- `appendBuffer`
+    // copies, so keeping them costs the init segment's size once the cut is made.
+    var head = [];
+    var headBytes = 0;
+
+    // Which half of a seek is waiting for `updateend`: 'removing' while the old media
+    // is being freed, 'appending' while the init segment goes back in, null otherwise.
+    var seekPhase = null;
+    var seekSeconds = 0;
+
+    // Bumped by every seek. A chunk that was already on its way when the seek happened
+    // belongs to the byte range that was abandoned: counting it into `next` would leave
+    // a hole in the stream, and a byte stream with a hole never recovers.
+    var epoch = 0;
 
     function fail(reason) {
       if (generation !== followGeneration) { return; }
@@ -307,6 +490,10 @@
               status($('playerStatus'),
                 'the buffer is full and nothing can be freed while the position stands still', true);
             }
+            // With an index there is a way out that does not need the position to
+            // move: free everything and fetch the fragment the position stands in
+            // again. Without one the only thing left is to wait for it to advance.
+            if (stalledTrims < FOLLOW_STALLED_TRIM_LIMIT && seekTo(video.currentTime, true)) { return; }
             scheduleFlush();
             return;
           }
@@ -328,19 +515,21 @@
     }
 
     function read(response) {
+      var mine = epoch;
       reading = true;
       receivedBytes = false;
       var reader = response.body.getReader();
 
       function step() {
         return reader.read().then(function (chunk) {
-          if (generation !== followGeneration) { return undefined; }
+          if (generation !== followGeneration || mine !== epoch) { return undefined; }
           if (chunk.done) {
             reading = false;
             flush();
             return undefined;
           }
 
+          captureHead(chunk.value);
           next += chunk.value.byteLength;
           receivedBytes = true;
           queue.push(chunk.value);
@@ -354,6 +543,7 @@
 
     function request() {
       var controller = new AbortController();
+      var mine = epoch;
       followAbort = controller;
 
       fetch(url, {
@@ -362,7 +552,7 @@
         cache: 'no-store',
         headers: { 'Range': 'bytes=' + next + '-' }
       }).then(function (response) {
-        if (generation !== followGeneration) { return undefined; }
+        if (generation !== followGeneration || mine !== epoch) { return undefined; }
         if (response.status === 401) { showLogin('Sign in to continue.'); return undefined; }
 
         inProgress = response.headers.get('X-In-Progress') !== 'false';
@@ -391,6 +581,10 @@
 
     buffer.addEventListener('updateend', function () {
       if (generation !== followGeneration) { return; }
+      // A seek owns the SourceBuffer until both of its operations are done; nothing
+      // else may append into the middle of them.
+      if (seekPhase !== null) { continueSeek(); return; }
+      applyIndexDuration();
       followEdge();
       flush();
     });
@@ -437,6 +631,188 @@
       followSeekTarget = target;
       video.currentTime = target;
     }
+
+    // ---- the index, and the arbitrary seeking it makes possible ----
+
+    function captureHead(chunk) {
+      if (followInit !== null || FOLLOW_INIT_CAPTURE_MAX < headBytes) { return; }
+      head.push(chunk);
+      headBytes += chunk.byteLength;
+      cutInit();
+    }
+
+    // The init segment is the file's first `initSize` bytes, and those have been read
+    // already: cutting them out of the stream costs nothing and needs no second request.
+    function cutInit() {
+      if (followInit !== null || followIndex === null) { return; }
+
+      var size = followIndex.initSize;
+      if (size <= 0 || headBytes < size) { return; }
+
+      var leading = new Uint8Array(headBytes);
+      var at = 0;
+      for (var i = 0; i < head.length; i++) {
+        leading.set(head[i], at);
+        at += head[i].byteLength;
+      }
+      followInit = leading.subarray(0, size);
+      head = [];
+      // The other half of what seeking stands on has just arrived; the bar may open now.
+      refreshSeekable();
+    }
+
+    // **Without a duration the element refuses to seek at all.** `moov` says 0 and MSE
+    // starts at NaN, so the length the index counted is the only one there is.
+    function applyIndexDuration() {
+      if (followIndex === null || buffer.updating || source.readyState !== 'open') { return; }
+
+      var length = followIndex.totalDuration / followIndex.timescale;
+      if (!isFinite(length) || length <= 0) { return; }
+
+      try {
+        if (followIndex.inProgress) {
+          // A file still being written has no end to declare; the seekable range is
+          // what says how much of it exists so far.
+          if (source.duration !== Infinity) { source.duration = Infinity; }
+          source.setLiveSeekableRange(0, length);
+          return;
+        }
+        // Never below what is already buffered: MSE frees the media past a shortened
+        // duration, which would cut the end off a finished recording.
+        if (bufferedEndOf(video) <= length) { source.duration = length; }
+      } catch (error) {
+        /* the next updateend tries again */
+      }
+    }
+
+    // Which fragment carries a moment **and may be started from**: only one whose first
+    // sample is a sync sample can begin a decode. Fragments are a second and the key
+    // frame interval is two, so about every other one cannot.
+    function fragmentFor(seconds) {
+      var fragments = followIndex.fragments;
+      if (fragments.length === 0) { return null; }
+
+      var time = seconds * followIndex.timescale;
+      var chosen = null;
+      for (var i = 0; i < fragments.length; i++) {
+        if (time < fragments[i].time) { break; }
+        if (fragments[i].sync) { chosen = fragments[i]; }
+      }
+      return chosen === null ? fragments[0] : chosen;
+    }
+
+    // Landing within catch-up distance of the live edge is joining it, not leaving it:
+    // the operator dragged the bar to "now". A file that is no longer written has no
+    // edge to join.
+    function restoreFollowLive(seconds) {
+      followLive = followIndex !== null && followIndex.inProgress
+        && followIndex.totalDuration / followIndex.timescale - FOLLOW_CATCHUP_LAG_SECONDS <= seconds;
+    }
+
+    // **The only way to a position that is not buffered.** The reading loop only ever
+    // goes forward from where it is, so the supply is torn down and started again at
+    // the fragment the index points at.
+    //
+    // `restart` skips the shortcut below: the caller (a SourceBuffer that is full and
+    // cannot be trimmed) needs the media freed even though the position is inside it.
+    function seekTo(seconds, restart) {
+      if (followIndex === null || followInit === null) { return false; }
+
+      var target = Math.max(0, seconds);
+
+      // **A seek asked for while the previous one is still freeing the media only has
+      // to change its mind.** Nothing has been fetched for it yet -- the old fetch is
+      // already abandoned and the queue already empty -- so moving where the resumed
+      // loop starts and where the position lands is the whole of it. Neither branch
+      // below applies: `abort()` throws while a range removal is running (the value
+      // would be dropped and the drag would look ignored), and what is still in
+      // `buffered` is on its way out, so the shortcut would land the position in media
+      // that is about to be freed. This is the path a dragged seek bar takes -- `input`
+      // fires many times before one removal ends.
+      if (seekPhase === 'removing') {
+        var pending = fragmentFor(target);
+        if (pending === null) { return false; }
+
+        next = pending.offset;
+        seekSeconds = target;
+        return true;
+      }
+
+      if (!restart && insideBuffered(video, target)) {
+        followSeekTarget = target;
+        video.currentTime = target;
+        restoreFollowLive(target);
+        return true;
+      }
+
+      var fragment = fragmentFor(target);
+      // `remove` needs a duration to measure against, and MSE starts at NaN.
+      if (fragment === null || isNaN(video.duration)) { return false; }
+
+      // **`abort()` is what resets the parser, and `remove()` is not.** Appends land on
+      // arbitrary byte boundaries, so the SourceBuffer is usually holding half a media
+      // segment; putting an init segment after that half is a parse error.
+      try {
+        if (source.readyState === 'open') { buffer.abort(); }
+        buffer.remove(0, Infinity);
+      } catch (error) {
+        return false;   // nothing has been torn down yet
+      }
+
+      epoch++;
+      if (followAbort !== null) { followAbort.abort(); followAbort = null; }
+      if (followTimer !== null) { clearTimeout(followTimer); followTimer = null; }
+
+      reading = false;
+      receivedBytes = false;
+      queue = [];
+      next = fragment.offset;
+      total = null;
+      trimmed = false;
+      stalledTrims = 0;
+      // The one unconditional jump to the live edge belongs to the start of playback,
+      // not to a position that was asked for.
+      joined = true;
+      followLive = false;
+      seekSeconds = target;
+      seekPhase = 'removing';
+      return true;
+    }
+
+    // A SourceBuffer takes one operation at a time: the removal has to finish before
+    // the init segment can go in, and that append before the position may be asked for.
+    function continueSeek() {
+      // `abort()` raises an `updateend` of its own when it cancelled an append. That
+      // one arrives while the removal is still running, and the next operation cannot
+      // be started on a SourceBuffer that is busy.
+      if (buffer.updating) { return; }
+
+      if (seekPhase === 'removing') {
+        seekPhase = 'appending';
+        try {
+          buffer.appendBuffer(followInit);
+        } catch (error) {
+          seekPhase = null;
+          fail('seek failed: ' + error.message);
+        }
+        return;
+      }
+
+      seekPhase = null;
+      // Recorded before the assignment: `seeking` arrives as a task, and the listener
+      // must not read this as the operator taking over from the following.
+      followSeekTarget = seekSeconds;
+      video.currentTime = seekSeconds;
+      restoreFollowLive(seekSeconds);
+      applyIndexDuration();
+      request();
+    }
+
+    followSeekTo = seekTo;
+    followIndexChanged = function () {
+      cutInit();
+      applyIndexDuration();
+    };
 
     inProgress = first.headers.get('X-In-Progress') !== 'false';
     followInProgress = inProgress;
@@ -1269,10 +1645,11 @@
     return ranges.length === 0 ? 0 : ranges.end(ranges.length - 1);
   }
 
-  // A position that is actually playable. Arbitrary seeking arrives in a later wave;
-  // until then a skip has to land inside something that has been buffered, because
-  // outside it there is nothing for the element to decode and the position would sit
-  // there until the supply side happened to reach it.
+  // A position that is actually playable **for a player that cannot seek** (no
+  // fragment index: a plain `<video src>`, or a file whose index could not be read).
+  // A skip has to land inside something that has been buffered, because outside it
+  // there is nothing for the element to decode and the position would sit there until
+  // the supply side happened to reach it.
   function clampToBuffered(video, target) {
     var ranges = video.buffered;
     if (ranges.length === 0) { return video.currentTime; }
@@ -1453,15 +1830,8 @@
     seek.value = '0';
     seek.dataset.action = 'seek';
     seek.setAttribute('aria-label', 'Position');
-    if (caps.seekable) {
-      controls.push(seek);
-      seek.addEventListener('input', function () { video.currentTime = Number(seek.value); });
-    } else {
-      // Shown, not operated: there is nowhere to seek to yet, and a control that
-      // answers a drag by snapping back reads as broken rather than as unavailable.
-      seek.disabled = true;
-      seek.tabIndex = -1;
-    }
+    controls.push(seek);
+    seek.addEventListener('input', function () { seekPosition(Number(seek.value)); });
     seekWrap.appendChild(seek);
     bar.appendChild(seekWrap);
 
@@ -1533,14 +1903,39 @@
       }
     }
 
-    // `currentTime` and nothing else. Where the media comes from is the supply side's
-    // business, and a skip must not be able to disturb it.
+    // Whether a position outside what is buffered can be reached at all. False until
+    // the supply side says otherwise (`setSeekable`) -- a control that answers a drag
+    // by snapping back reads as broken rather than as unavailable, so until then the
+    // seek bar is shown and not operated.
+    var seekable = caps.seekable === true;
+    var seekLimit = 0;
+
+    // `null` puts the bar back to the state it has with no index; a number both turns
+    // seeking on and says how far the media reaches (a recording still being written
+    // grows, so this arrives again on every index update).
+    function setSeekable(limit) {
+      seekable = limit !== null;
+      seekLimit = seekable ? limit : 0;
+      paint();
+    }
+
+    // Where the media comes from is the supply side's business: it is the one that can
+    // reach a position it has not fetched (`caps.onSeek`). Without that hook the
+    // element is simply told where to go, which only works inside what is buffered.
+    function seekPosition(target) {
+      if (!seekable || !hasSource()) { return; }
+      if (caps.onSeek) { caps.onSeek(target); return; }
+      video.currentTime = target;
+    }
+
     function skip(delta) {
       if (!hasSource()) { return; }
       var target = video.currentTime + delta;
-      if (caps.seekable) {
-        var limit = isFinite(video.duration) ? video.duration : bufferedEndOf(video);
-        video.currentTime = Math.max(0, Math.min(limit, target));
+      if (seekable) {
+        var limit = 0 < seekLimit
+          ? seekLimit
+          : (isFinite(video.duration) ? video.duration : bufferedEndOf(video));
+        seekPosition(Math.max(0, Math.min(limit, target)));
         return;
       }
       video.currentTime = clampToBuffered(video, target);
@@ -1606,6 +2001,10 @@
     function paint() {
       var source = hasSource();
       for (var i = 0; i < controls.length; i++) { controls[i].disabled = !source; }
+      // Shown, not operated, until there is a way to reach a position outside what has
+      // been buffered.
+      seek.disabled = !source || !seekable;
+      seek.tabIndex = seekable ? 0 : -1;
       idle.hidden = source;
 
       var playing = !video.paused && !video.ended;
@@ -1613,7 +2012,11 @@
       playButton.node.setAttribute('aria-label', playing ? 'Pause' : 'Play');
 
       var end = bufferedEndOf(video);
-      var total = isFinite(video.duration) && video.duration > 0 ? video.duration : end;
+      // The index's length first: a recording still being written has `duration`
+      // Infinity, and the buffered end is only the part that has been fetched.
+      var total = seekable && 0 < seekLimit
+        ? seekLimit
+        : (isFinite(video.duration) && video.duration > 0 ? video.duration : end);
       var live = caps.live && source && liveNow(video);
       var lag = Math.max(0, end - video.currentTime);
 
@@ -1759,7 +2162,9 @@
     }, SHELL_TICK_MS);
 
     paint();
-    return { wrapper: wrapper, overlay: overlay, bar: bar, paint: paint };
+    return {
+      wrapper: wrapper, overlay: overlay, bar: bar, paint: paint, setSeekable: setSeekable
+    };
   }
 
   // ---- what each of the two players can do ----
@@ -1798,14 +2203,21 @@
   // Both elements are shelled here rather than in app.js: the capabilities are this
   // file's own state (whether the followed file is still growing, what the preview
   // selector offers, how each of the two rejoins its live edge).
-  createShell($('player'), {
+  var playerShell = createShell($('player'), {
     live: true,
+    // Turned on by `setSeekable` once the fragment index for the open file has been
+    // read. A plain `<video src>` recording never gets one and keeps the clamped skip.
     seekable: false,
     speed: true,
     qualities: recordingQualities,
     onQuality: function () { /* one quality: the menu is never drawn */ },
-    onGoLive: resumeFollow
+    onGoLive: resumeFollow,
+    onSeek: function (seconds) {
+      if (followSeekTo !== null) { followSeekTo(seconds); }
+    }
   });
+
+  followSetSeekable = playerShell.setSeekable;
 
   createShell($('previewPlayer'), {
     live: true,
@@ -1830,13 +2242,29 @@
   // because the element has usually moved on by the time this runs -- and only
   // that one is forgiven.
   function onPlayerSeeking() {
+    var video = $('player');
     if (followSeekTarget !== null
-        && Math.abs($('player').currentTime - followSeekTarget) < FOLLOW_SEEK_MATCH_SECONDS) {
+        && Math.abs(video.currentTime - followSeekTarget) < FOLLOW_SEEK_MATCH_SECONDS) {
       followSeekTarget = null;
       return;
     }
     followSeekTarget = null;
     followLive = false;
+
+    // A position outside what is buffered has nothing to decode. With an index the
+    // supply side can be restarted at the fragment that carries it; without one the
+    // element waits where it is, as before. **The re-entry flag is needed**: the
+    // restart assigns `currentTime`, which raises this very event.
+    if (followReseeking || followSeekTo === null || insideBuffered(video, video.currentTime)) {
+      return;
+    }
+
+    followReseeking = true;
+    try {
+      followSeekTo(video.currentTime);
+    } finally {
+      followReseeking = false;
+    }
   }
 
   // A decode failure is otherwise silent: the picture stops and the polling keeps
@@ -1871,6 +2299,9 @@
     representations: function () { return dashRepresentations; },
     startFollow: startFollow,
     stopFollow: stopFollow,
+    // Arbitrary seeking within the recording being followed. False when there is no
+    // index to answer from.
+    seekTo: function (seconds) { return followSeekTo !== null && followSeekTo(seconds); },
     startSelectedPreview: startSelectedPreview,
     stopPreview: stopPreview,
     onPlayerSeeking: onPlayerSeeking,

@@ -1897,10 +1897,16 @@ UI スレッドで走る。`TryEnqueue` が false なら `RemoteApiException(12,
 | GET | `/api/events` | `Viewer` | SSE。`state` と `ping`。**Cookie だけで通る**（`EventSource` はヘッダーを付けられない） |
 | GET | `/api/recordings` | `Viewer` | 録画ファイルの一覧（`root` ＋ `files[]`。1 件は `path` / `length` / `lastWriteTimeUtc` / `inProgress` / `fragmented`） |
 | GET | `/api/recordings/{*path}` | `Viewer` | 1 ファイルの配信（Range 対応。`?download=1` で添付。応答に `X-In-Progress` と `X-Codecs`） |
+| GET | `/api/recording-fragments/{*path}` | `Viewer` | 1 ファイルの fragment 索引（`?from=<バイト位置>` で差分だけ）。`timescale` / `codecs` / `inProgress` / `initSize` / `nextOffset` / `totalDuration` ＋ `fragments[]`（1 件は `offset` / `size` / `time` / `duration` / `sync`）。fragmented でなければ 404 `not fragmented` |
 | GET | `/api/recorders/{id}/preview.mp4` | `Viewer` | ライブプレビュー（chunked fMP4） |
 | GET | `/api/recorders/{id}/dash/manifest.mpd` | `Viewer` | DASH プレビューの MPD（`application/dash+xml`）。**引くこと自体がリースを延ばす**（引かなくなれば第 2 パイプラインは畳まれる） |
 | GET | `/api/recorders/{id}/dash/init.mp4` | `Viewer` | 同 Init セグメント（`video/mp4`）。同じくリースを延ばす |
 | GET | `/api/recorders/{id}/dash/seg-{time}.m4s` | `Viewer` | 同メディアセグメント（`video/iso.segment`。`{time}` は MPD の `S@t`）。同じくリースを延ばす |
+
+1 つの録画ファイルから派生する答えは **`/api/recording-<kind>/{*path}`** の形に揃える。
+`{*path}` は URL の末尾まで捕まえるので `/api/recordings/{*path}/fragments` とは書けない
+── 種別を前に出す以外に、相対パスをそのまま載せる道が無い。索引の `ETag` は本体の配信のものへ
+`-idx` を（引用符の内側で）足した別値で、`Cache-Control` は `no-store`。
 
 **`HEAD` / `DELETE` / `OPTIONS` のハンドラは無い**（`MapGet` などしか呼んでいない）。CORS
 ミドルウェアも入れていない。未知の経路は `MapFallback` が 404 ＋ 終了コード 4 で返す。
@@ -2253,8 +2259,11 @@ appsrc name=src format=time block=false max-buffers=2 max-bytes=0 leaky-type=dow
 ボタンごと作らず、`,`/`.` も効かない）。プレビューは供給側が常にライブ端へ寄せるので、
 上げた速度は下の自動復帰ですぐ 1.0 へ戻り、効かない操作に見えるためである。
 
-**任意シークはまだ無い**（`caps.seekable` は両方 `false`）。シークバーは表示だけで、スキップは
-`buffered` の区間内へ丸める ── 区間の外を指した位置は再生できず、そこに置くと止まって見える。
+**任意シークができるのは fragment 索引が届いた録画だけ**である（`GET /api/recording-fragments/`）。
+索引が来ると `shell.setSeekable(尺)` でシークバーが操作可能になり、`max` と時間表示の総尺が
+索引の尺になる（録画中は伸びるので、索引を引き直すたびに更新する）。索引が無い再生
+── 非 fragmented の `<video src>` と、索引を引けなかった場合 ── では**シークバーは表示だけ**で、
+スキップは `buffered` の区間内へ丸める（区間の外を指した位置は再生できず、そこに置くと止まって見える）。
 速度を自分で 1.0 より上げた場合に限り、ライブ端との差が 0.5 秒を切った時点で 1.0 へ戻す
 （**利用者が設定した速度は触らない**）。全画面はラッパに `requestFullscreen()` を掛ける
 （無ければ `video.webkitEnterFullscreen()`）。
@@ -2312,6 +2321,23 @@ codecs はサーバーの `X-Codecs`、無ければ `avc1.4d401f`。続きは `R
 わずかに過ぎていることがある）。もう伸びないファイル（`X-In-Progress: false`）では追従そのものを行わない ──
 そこで寄せると、開き直した再生が末尾 1 秒へ飛んですぐ終わる。
 バッファは 70 秒を超えたら末尾 60 秒へ詰める（**再生位置より後ろは切らない**）。
+
+**任意の位置へのシークは索引が唯一の材料である。** ファイルは `mvhd` の尺が 0 で `sidx` も無いので、
+「その秒はどのバイトに在るか」に答えるものが他に無い。開くと同時に `GET /api/recording-fragments/`
+を引き、録画中は 1 秒ごとに `?from=<nextOffset>` で差分を足す。init セグメント（先頭 `initSize`
+バイト）は**読んだバイト列から切り出して**持っておく ── シークのたびに入れ直す必要があり、
+2 度目の要求を出す理由が無い。索引が取れたら `MediaSource` の尺を入れる: 録画中は
+`duration = Infinity` ＋ `setLiveSeekableRange(0, 尺)`、完了後は `duration = 尺`
+（**現在の `buffered` 末尾より小さくしない** ── MSE は縮めた尺より後ろの媒体を捨てる）。
+
+シーク先が `buffered` の内側なら `currentTime` を書くだけで済む。外側は供給側を張り替える:
+目標以下で `sync` が真の最後のフラグメントを索引から選び、取得中の fetch を `abort()`、
+`SourceBuffer.abort()`（**これが構文解析器を戻す ── `remove()` は戻さない**。取り込みは
+任意のバイト境界で切れるので、途中まで食わせた媒体セグメントの後ろに init を置くと解析が失敗する）、
+`remove(0, ∞)`、init を append、`Range: bytes=<そのフラグメントの位置>-` から取り直す。
+着地点が**ライブ端 − 1.5 秒以上**なら追従（`followLive`）を戻す ── バーを「今」まで引いたのは
+ライブへ戻る操作だからである。`SourceBuffer` が満杯でトリムが 1 バイトも解放できないときも、
+索引があれば同じ張り替えで抜ける（再生位置が動くのを待たずに済む）。
 
 ログインフォームは `index.html` に**最初から入っていて隠してある**（資産は増やさない）。
 `app-core.js` は fetch の集約点（`getJson` / `send`）で `401` を受けた時点でフォームへ切り替え、

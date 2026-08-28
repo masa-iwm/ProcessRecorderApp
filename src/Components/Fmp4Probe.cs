@@ -82,6 +82,111 @@ public static class Fmp4Probe
         return null;
     }
 
+    /// <summary>
+    /// メディアの時間の単位（<c>moov</c> &gt; <c>trak</c> &gt; <c>mdia</c> &gt; <c>mdhd</c> の
+    /// <c>timescale</c>）。<c>moof</c> の <c>tfdt</c> と <c>trun</c> が数える単位そのもので、
+    /// これが読めなければ <c>moof</c> の索引は秒へ直せない。
+    ///
+    /// <para>
+    /// <b>version 0 と 1 で幅が変わる</b>（creation / modification が 32bit か 64bit か）ので、
+    /// version を見てから位置を決める。<c>trak</c> は複数ありうるので、
+    /// <c>mdhd</c> の在る最初のものを採る（録画は映像 1 本）。
+    /// 0 は timescale として意味を持たないので「読めなかった」に畳む。
+    /// </para>
+    /// </summary>
+    public static bool TryReadMediaTimescale(ReadOnlySpan<byte> header, out uint timescale)
+    {
+        timescale = 0;
+
+        if (!TryFindMoov(header, out ReadOnlySpan<byte> moov))
+            return false;
+
+        for (int position = 0; position + BoxHeaderSize <= moov.Length;)
+        {
+            if (!TryReadBox(moov, position, out long size, out ReadOnlySpan<byte> type))
+                return false;
+
+            if (type.SequenceEqual("trak"u8)
+                && TryChildContent(moov, position, size, out ReadOnlySpan<byte> trak)
+                && TryFindChild(trak, "mdia"u8, out ReadOnlySpan<byte> mdia)
+                && TryFindChild(mdia, "mdhd"u8, out ReadOnlySpan<byte> mdhd)
+                && TryReadTimescale(mdhd, out timescale))
+            {
+                return true;
+            }
+
+            // trak より手前の箱が末尾で切れていたら、そこで読み終える。
+            if (moov.Length - position < size)
+                return false;
+
+            position += (int)size;
+        }
+
+        return false;
+    }
+
+    /// <summary><c>mdhd</c> の中身から <c>timescale</c> を読む。</summary>
+    private static bool TryReadTimescale(ReadOnlySpan<byte> mdhd, out uint timescale)
+    {
+        timescale = 0;
+
+        // version(1) flags(3) creation modification timescale duration
+        if (mdhd.Length < 4)
+            return false;
+
+        int offset = mdhd[0] == 0 ? 12 : 20;
+        if (mdhd.Length < offset + 4)
+            return false;
+
+        timescale = BinaryPrimitives.ReadUInt32BigEndian(mdhd[offset..]);
+        return timescale != 0;
+    }
+
+    /// <summary>1 段の子から最初の 1 件の中身を切り出す。</summary>
+    private static bool TryFindChild(
+        ReadOnlySpan<byte> parent, ReadOnlySpan<byte> type, out ReadOnlySpan<byte> content)
+    {
+        content = default;
+
+        for (int position = 0; position + BoxHeaderSize <= parent.Length;)
+        {
+            if (!TryReadBox(parent, position, out long size, out ReadOnlySpan<byte> boxType))
+                return false;
+
+            if (boxType.SequenceEqual(type))
+                return TryChildContent(parent, position, size, out content);
+
+            if (parent.Length - position < size)
+                return false;
+
+            position += (int)size;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// <paramref name="position"/> の箱の中身。<b>途中で切れていても読めるところまでを返す</b>
+    /// （渡されるのは先頭 64KB だけである）。
+    /// </summary>
+    private static bool TryChildContent(
+        ReadOnlySpan<byte> parent, int position, long size, out ReadOnlySpan<byte> content)
+    {
+        content = default;
+
+        int headerSize = BinaryPrimitives.ReadUInt32BigEndian(parent[position..]) == 1
+            ? LargeBoxHeaderSize
+            : BoxHeaderSize;
+
+        int start = position + headerSize;
+        int end = (int)Math.Min(position + size, parent.Length);
+        if (end <= start)
+            return false;
+
+        content = parent[start..end];
+        return true;
+    }
+
     /// <summary>最上位のボックスを走査して <c>moov</c> の中身を切り出す。</summary>
     private static bool TryFindMoov(ReadOnlySpan<byte> header, out ReadOnlySpan<byte> moov)
     {

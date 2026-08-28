@@ -50,6 +50,22 @@ public sealed class Fmp4ProbeTests
 
     private static byte[] Ftyp() => Box("ftyp", Encoding.ASCII.GetBytes("isom"));
 
+    private static byte[] U32(uint value)
+    {
+        byte[] bytes = new byte[4];
+        BinaryPrimitives.WriteUInt32BigEndian(bytes, value);
+        return bytes;
+    }
+
+    /// <summary>
+    /// <c>mdhd</c>。version 0 は creation / modification が 32bit、version 1 は 64bit で、
+    /// <c>timescale</c> の位置がそのぶん動く。
+    /// </summary>
+    private static byte[] Mdhd(uint timescale, byte version = 0)
+        => version == 0
+            ? Box("mdhd", [0, 0, 0, 0], new byte[8], U32(timescale), new byte[4])
+            : Box("mdhd", [1, 0, 0, 0], new byte[16], U32(timescale), new byte[8]);
+
     [Fact]
     public void AMoovWithMvex_IsFragmented()
     {
@@ -146,5 +162,63 @@ public sealed class Fmp4ProbeTests
         byte[] file = Concat(Ftyp(), Box("moov", Box("avc1", AvcC(0x42, 0xC0, 0x0E))));
 
         Assert.Equal("avc1.42c00e", Fmp4Probe.CodecString(file));
+    }
+
+    // ---- メディアの時間の単位 ----
+
+    /// <summary>
+    /// <c>timescale</c> は <c>moov</c> &gt; <c>trak</c> &gt; <c>mdia</c> &gt; <c>mdhd</c> から採る。
+    /// <b>version 0 と 1 の両方を読む</b> ── 同梱の <c>mp4mux</c> がどちらを書くかは実装の都合で、
+    /// 規格はどちらも許している。
+    /// </summary>
+    [Theory]
+    [InlineData((byte)0)]
+    [InlineData((byte)1)]
+    public void TheMediaTimescaleComesFromMdhd(byte version)
+    {
+        byte[] file = Concat(
+            Ftyp(),
+            Box("moov",
+                Box("mvhd", new byte[8]),
+                Box("trak", Box("mdia", Mdhd(90000, version), Box("hdlr", new byte[16]))),
+                Box("mvex", new byte[4])));
+
+        Assert.True(Fmp4Probe.TryReadMediaTimescale(file, out uint timescale));
+        Assert.Equal(90000u, timescale);
+    }
+
+    /// <summary>
+    /// <c>mdhd</c> を持たない <c>trak</c> は飛ばして次を見る（規格は複数の trak を許す）。
+    /// </summary>
+    [Fact]
+    public void ATrakWithoutMdhdDoesNotStopTheSearch()
+    {
+        byte[] file = Concat(
+            Ftyp(),
+            Box("moov",
+                Box("trak", Box("tkhd", new byte[16])),
+                Box("trak", Box("mdia", Mdhd(1000)))));
+
+        Assert.True(Fmp4Probe.TryReadMediaTimescale(file, out uint timescale));
+        Assert.Equal(1000u, timescale);
+    }
+
+    /// <summary>
+    /// <c>moov</c> が無い・<c>mdhd</c> が無い・<c>timescale</c> が 0・箱が切れている、は
+    /// すべて「読めなかった」に畳む（呼び出し側は 404 で答える）。
+    /// </summary>
+    [Fact]
+    public void WithoutAReadableMdhd_ThereIsNoTimescale()
+    {
+        Assert.False(Fmp4Probe.TryReadMediaTimescale(Concat(Ftyp(), Box("mdat", new byte[16])), out _));
+        Assert.False(Fmp4Probe.TryReadMediaTimescale(
+            Concat(Ftyp(), Box("moov", Box("trak", Box("mdia", new byte[8])))), out _));
+        Assert.False(Fmp4Probe.TryReadMediaTimescale(
+            Concat(Ftyp(), Box("moov", Box("trak", Box("mdia", Mdhd(0))))), out _));
+        Assert.False(Fmp4Probe.TryReadMediaTimescale([], out _));
+
+        // mdhd が途中で切れている（timescale まで届いていない）。
+        byte[] truncated = Concat(Ftyp(), Box("moov", Box("trak", Box("mdia", Mdhd(1000)))));
+        Assert.False(Fmp4Probe.TryReadMediaTimescale(truncated[..^8], out _));
     }
 }

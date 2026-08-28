@@ -955,8 +955,9 @@ public sealed class WebUiBrowserTests(PublishedApp app, ITestOutputHelper output
 
         Assert.True(await browser.EvaluateBoolAsync(ClickFirstPlay, Ct), "一覧に行がありません。");
 
-        // **バッファが 12 秒ぶん来てから押す。** 任意シークはまだ入っていない（波 3）ので、
-        // ＋10 秒はバッファの中へ丸められる ── 届いていなければ丸められて動かない。
+        // **バッファが 12 秒ぶん来てから押す。** 任意シークは fragment 索引が要り、
+        // 非 fragmented のファイルには索引が無い ── ＋10 秒はバッファの中へ丸められるので、
+        // 届いていなければ丸められて動かない。
         Assert.True(
             await browser.WaitUntilAsync($"12 < {BufferedEnd}", PlaybackBudget, Ct),
             "録画物が 12 秒ぶん読み込まれませんでした: " + await browser.EvaluateStringAsync(TextOf("playerStatus"), Ct));
@@ -1078,5 +1079,304 @@ public sealed class WebUiBrowserTests(PublishedApp app, ITestOutputHelper output
         Assert.True(
             await browser.EvaluateBoolAsync($"{ShellControl("player", "forward-10")}.disabled", Ct),
             "録画を選ぶ前からバーが有効になっています。");
+    }
+
+    // ---- (7) 任意シーク（fragment 索引） ----
+
+    /// <summary>
+    /// <see cref="FragmentedSettings"/> を約 20Mbit のソースにしたもの。
+    /// <b>取り込みを絞って「追い付けない取り込み」を作れる大きさが要る</b>
+    /// ── 既定の 320x240 の SMPTE バーは数十 kbit にしかならず、
+    /// ブラウザの取り込みをそこまで絞ると 1 フラグメントの取得も終わらない。
+    /// </summary>
+    private static SettingsFile BulkyFragmentedSettings()
+    {
+        var settings = RemoteBase(allowGuestRead: true);
+        settings.FragmentedOutput = true;
+        settings.AddRecorder("R1").AsBulkyButCheapToEncode();
+        return settings;
+    }
+
+    /// <summary>
+    /// ブラウザの取り込み速度の上限(bytes/s)。ソースの約 20Mbit に対して 4Mbit なので、
+    /// <b>録画は取り込みより速く伸びる</b> ── 索引が示す尺とバッファの終端が離れていき、
+    /// 「まだ取っていない位置」が作れる。1 フラグメント（1 秒・約 2.5MB）の取得は
+    /// この速度で約 5 秒で、<see cref="PlaybackBudget"/> に収まる。
+    /// </summary>
+    private const double SeekThrottleBytesPerSecond = 512 * 1024;
+
+    /// <summary>索引が届いてシークバーが操作できるようになったか。</summary>
+    private const string SeekBarIsEnabled = """
+        (function () {
+          var bar = document.getElementById('player').parentNode.querySelector('[data-action="seek"]');
+          return bar !== null && !bar.disabled;
+        })()
+        """;
+
+    /// <summary>シークバーを動かす（利用者のドラッグと同じ <c>input</c> を出す）。</summary>
+    private static string DragSeekBar(double seconds)
+        => $$"""
+            (function () {
+              var bar = document.getElementById('player').parentNode.querySelector('[data-action="seek"]');
+              bar.value = '{{seconds.ToString("R", System.Globalization.CultureInfo.InvariantCulture)}}';
+              bar.dispatchEvent(new Event('input'));
+              return true;
+            })()
+            """;
+
+    /// <summary>
+    /// <b>バッファの終端より先へシークバーを動かす。</b> 索引が示す尺（バーの <c>max</c>）は
+    /// 取り込みより先へ行っているので、その手前で「まだ取っていない位置」が選べる。
+    /// 選べなければ −1（＝取り込みが絞れていない＝この検査は成立していない）。
+    /// </summary>
+    private const string DragBeyondBuffered = """
+        (function () {
+          var video = document.getElementById('player');
+          var bar = video.parentNode.querySelector('[data-action="seek"]');
+          var ranges = video.buffered;
+          var end = ranges.length === 0 ? 0 : ranges.end(ranges.length - 1);
+          var target = Math.min(Number(bar.max) - 1.5, end + 4);
+          if (target < end + 2) { return -1; }
+          window.__target = target;
+          bar.value = String(target);
+          bar.dispatchEvent(new Event('input'));
+          return target;
+        })()
+        """;
+
+    /// <summary>索引の尺とバッファの終端の差（＝まだ取っていない秒数）。</summary>
+    private const string UnfetchedSeconds = """
+        (function () {
+          var video = document.getElementById('player');
+          var bar = video.parentNode.querySelector('[data-action="seek"]');
+          var ranges = video.buffered;
+          return Number(bar.max) - (ranges.length === 0 ? 0 : ranges.end(ranges.length - 1));
+        })()
+        """;
+
+    /// <summary>
+    /// <b>録画中のファイルの任意の位置へシークできること。</b> ファイルは <c>mvhd</c> の尺が 0 で
+    /// <c>sidx</c> も持たないので、これが成り立つのは<b>索引が届いているときだけ</b>である
+    /// ── 索引が無ければシークバーは操作できないままで、この検査は最初の待ちで落ちる。
+    ///
+    /// <para>
+    /// 前半は<b>取り込み済みの位置</b>（1 秒）へ戻る道: 位置がそこへ移り、再生が続き、
+    /// ライブ復帰でライブ端付近へ戻る。
+    /// </para>
+    /// <para>
+    /// 後半が<b>この波の本体</b>である ── 取り込みを絞って「索引は伸びるのに取り込みが
+    /// 追い付かない」状態を作り、<b>まだ 1 バイトも取っていない位置</b>へ跳ぶ。
+    /// 供給側は取り込みを畳んで索引が指すフラグメントから取り直すので、
+    /// <c>buffered.start</c> が先頭から離れる（＝古い媒体が解放された証人）。
+    /// 絞らないと取り込みがライブ端に貼り付いて跳び先が作れず、
+    /// <see cref="DragBeyondBuffered"/> が −1 を返してそこで落ちる。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task TheSeekBarReachesAPositionThatHasNotBeenFetched()
+    {
+        Assert.SkipUnless(EdgeCdp.IsAvailable, EdgeCdp.UnavailableReason);
+
+        using var instance = AppInstance.Create(app, BulkyFragmentedSettings(), configure: UseIsolatedRoot);
+        int port = WaitForPort(instance);
+
+        await using var browser = await EdgeCdp.LaunchAsync(Ct);
+        await browser.NavigateAsync($"http://127.0.0.1:{port}/", PageBudget, Ct);
+        Assert.True(await browser.WaitUntilAsync($"!{IsHidden("mainSections")}", PageBudget, Ct), "画面が出ませんでした。");
+
+        Assert.Equal(0, instance.Run("start-recording-all").ExitCode);
+
+        Assert.True(
+            await WaitForFirstRowAsync(browser, RowIsRecordingFragment, PlaybackBudget),
+            "録画中のファイルが fragmented として一覧に出ませんでした。");
+
+        Assert.True(await browser.EvaluateBoolAsync(ClickFirstPlay, Ct), "一覧に行がありません。");
+        Assert.True(
+            await browser.WaitUntilAsync($"0.5 < {PlayerTime}", PlaybackBudget, Ct),
+            "追いかけ再生が始まりませんでした: " + await browser.EvaluateStringAsync(TextOf("playerStatus"), Ct));
+
+        // 索引が届くまではバーは表示だけ（波 2 の挙動）。
+        Assert.True(
+            await browser.WaitUntilAsync(SeekBarIsEnabled, PlaybackBudget, Ct),
+            "索引が届かずシークバーが操作できないままです: "
+            + await browser.EvaluateStringAsync(TextOf("playerStatus"), Ct));
+
+        // ---- 前半: 取り込み済みの位置へ戻る ----
+
+        Assert.True(await browser.EvaluateBoolAsync(DragSeekBar(1), Ct), "シークバーがありません。");
+        Assert.True(
+            await browser.WaitUntilAsync($"Math.abs({PlayerTime} - 1) < 0.5", PageBudget, Ct),
+            $"1 秒へ移りませんでした（{await browser.EvaluateNumberAsync(PlayerTime, Ct):F2} 秒）: "
+            + await browser.EvaluateStringAsync(BufferedRanges, Ct));
+
+        // 止まっていないこと（位置が移っただけで再生が死んでいれば、ここで落ちる）。
+        Assert.True(
+            await browser.WaitUntilAsync($"1.5 < {PlayerTime}", PageBudget, Ct),
+            "シークした先で再生が進みません: " + await browser.EvaluateStringAsync(BufferedRanges, Ct));
+
+        // ---- ライブ復帰 ----
+
+        Assert.True(await browser.EvaluateBoolAsync(ClickShellControl("player", "live"), Ct),
+            "バーにライブ復帰のボタンがありません。");
+        Assert.True(
+            await browser.WaitUntilAsync($"{LiveLag} < 3", PageBudget, Ct),
+            $"ライブ端へ戻りませんでした（遅れ {await browser.EvaluateNumberAsync(LiveLag, Ct):F2} 秒）。");
+
+        // ---- 後半: まだ取っていない位置へ跳ぶ ----
+
+        await browser.ThrottleDownloadAsync(SeekThrottleBytesPerSecond, Ct);
+
+        Assert.True(
+            await browser.WaitUntilAsync($"6 < {UnfetchedSeconds}", PlaybackBudget, Ct),
+            $"取り込みが遅れていません（未取得 {await browser.EvaluateNumberAsync(UnfetchedSeconds, Ct):F2} 秒）"
+            + " ── この検査は成立していません。");
+
+        double target = await browser.EvaluateNumberAsync(DragBeyondBuffered, Ct);
+        output.WriteLine($"seek target {target:F2}s, " + await browser.EvaluateStringAsync(BufferedRanges, Ct));
+        Assert.True(0 < target, "バッファの外の跳び先が作れませんでした ── この検査は成立していません。");
+
+        Assert.True(
+            await browser.WaitUntilAsync("Math.abs(" + PlayerTime + " - window.__target) < 0.7", PageBudget, Ct),
+            $"取っていない位置（{target:F2} 秒）へ位置が移りませんでした"
+            + $"（{await browser.EvaluateNumberAsync(PlayerTime, Ct):F2} 秒）: "
+            + await browser.EvaluateStringAsync(BufferedRanges, Ct));
+
+        // **取り直しの証人。** 位置を書くだけなら一瞬で終わるので、そこで見ても何も言えない
+        // ── 媒体が跳び先に届いて初めて、供給側が張り替わったと言える。
+        // 先頭から溜めたままなら 0 のまま、取り直せていなければ空のままになる。
+        Assert.True(
+            await browser.WaitUntilAsync($"0.5 < {BufferedStart}", PlaybackBudget, Ct),
+            $"跳んだ先の媒体が届きません（{await browser.EvaluateStringAsync(BufferedRanges, Ct)}）。");
+        output.WriteLine("after the seek: " + await browser.EvaluateStringAsync(BufferedRanges, Ct));
+
+        Assert.True(
+            await browser.WaitUntilAsync("window.__target + 0.5 < " + PlayerTime, PlaybackBudget, Ct),
+            "跳んだ先で再生が進みません: " + await browser.EvaluateStringAsync(BufferedRanges, Ct));
+
+        Assert.Equal(0, instance.Run("stop-recording-all").ExitCode);
+    }
+
+    /// <summary>プレイヤーの状態表示がエラーになっているか（<c>status()</c> が付ける class）。</summary>
+    private const string PlayerStatusIsError =
+        "document.getElementById('playerStatus').className.indexOf('error') >= 0";
+
+    /// <summary>2 度目のシーク先(秒)。<see cref="LongClipSeconds"/> の中ほど。</summary>
+    private const double SecondSeekSeconds = 40;
+
+    /// <summary>
+    /// <b>読み切ったファイルでも、シークが何度でも効くこと。</b>
+    ///
+    /// <para>
+    /// 読み切った <c>MediaSource</c> は <c>endOfStream()</c> で <c>ended</c> になっているが、
+    /// <b><c>ended</c> は終着点ではない</b> ── そこで <c>SourceBuffer.remove()</c> を呼ぶと
+    /// MSE の規定どおり <c>open</c> へ戻り、<c>sourceopen</c> が<b>もう一度</b>配送される。
+    /// 任意シークは remove から始まるので、これはシークのたびに起こる。
+    /// 開始時のリスナーを付けっぱなしにしていると、そこで 2 本目の <c>SourceBuffer</c> を足し、
+    /// <b>読み尽くした応答本体</b>で供給の周回をもう 1 つ始める（<c>getReader()</c> が投げる）
+    /// ── シークが握っている状態が新しい方に差し替わり、以後のシークが壊れる。
+    /// </para>
+    /// <para>
+    /// <b>位置だけを見ていては気付けない。</b> 1 度目のシークは古い側の周回が最後まで
+    /// 面倒を見るので、<b>壊れていても位置は 1 秒へ移り、再生も進む</b>。証人は 2 つ:
+    /// <b>画面に失敗が出ていないこと</b>（<b>実測</b>: リスナーを付けっぱなしにすると
+    /// <c>Failed to execute 'addSourceBuffer' … reached the limit of SourceBuffer objects</c>
+    /// が状態表示へ出る）と、<b>2 度目のシークも効くこと</b>（ブラウザが 2 本目を
+    /// 受け入れる場合は、シークが握る状態がそちらへ差し替わっている）。
+    /// </para>
+    /// <para>
+    /// <b>クリップは起動点（70 秒）より長く、取り込みは絞る</b>
+    /// （<see cref="LongClipThrottleBytesPerSecond"/>）── トリムが先頭を削っていないと
+    /// 先頭付近が最初から <c>buffered</c> の中にあり、シークは位置を書くだけで終わって
+    /// <c>remove()</c> を通らない（＝この検査は成立しない）。踏んだことは
+    /// <c>buffered.start</c> で見届ける。
+    /// </para>
+    /// <para>
+    /// <b>ロードした GStreamer に <c>gst-launch-1.0.exe</c> か x264 のプラグインが無い場合は
+    /// Skip する</b>ので、緑だから走ったとは限らない ── 実行結果の skip 件数を見ること。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task AFinishedRecording_CanBeSeekedAgainAfterItWasReadToTheEnd()
+    {
+        Assert.SkipUnless(EdgeCdp.IsAvailable, EdgeCdp.UnavailableReason);
+
+        using var instance = AppInstance.Create(app, FragmentedSettings(), configure: UseIsolatedRoot);
+        int port = WaitForPort(instance);
+
+        Assert.True(instance.WaitForActivityLogEvent("gst.runtime", StartBudget),
+            "gst.runtime が現れませんでした。" + Environment.NewLine + instance.DiagnosticDump());
+
+        string? launcher = GstLaunchTool.FindLauncher(instance);
+        Assert.SkipWhen(launcher is null,
+            "ロードした GStreamer の bin に gst-launch-1.0.exe がありません"
+            + "（gst.runtime の dir= を見て探しています）。");
+        Assert.SkipUnless(GstLaunchTool.HasX264Plugin(launcher!),
+            $"ロードした GStreamer に x264 のプラグインがありません（{GstLaunchTool.PluginDirectoryOf(launcher!)}）。");
+
+        string clip = Path.Combine(instance.RecordingsDir, "long-clip.mp4");
+        await WriteLongFragmentedClipAsync(launcher!, clip, instance);
+
+        await using var browser = await EdgeCdp.LaunchAsync(Ct);
+        await browser.NavigateAsync($"http://127.0.0.1:{port}/", PageBudget, Ct);
+        Assert.True(await browser.WaitUntilAsync($"!{IsHidden("mainSections")}", PageBudget, Ct), "画面が出ませんでした。");
+
+        Assert.True(
+            await WaitForFirstRowAsync(browser, RowIsFinishedFragment, PlaybackBudget),
+            "作ったクリップが fragmented として一覧に出ませんでした: " + await browser.EvaluateStringAsync(FirstRowState, Ct));
+
+        await browser.ThrottleDownloadAsync(LongClipThrottleBytesPerSecond, Ct);
+
+        Assert.True(await browser.EvaluateBoolAsync(ClickFirstPlay, Ct), "一覧に行がありません。");
+
+        // `complete` ＝ endOfStream() 済み ＝ MediaSource は `ended`。ここからが対象である。
+        Assert.True(
+            await browser.WaitUntilAsync($"{TextOf("playerStatus")}.indexOf('complete') === 0", PlaybackBudget, Ct),
+            "クリップを読み切れませんでした: " + await browser.EvaluateStringAsync(TextOf("playerStatus"), Ct));
+
+        Assert.True(
+            await browser.WaitUntilAsync(SeekBarIsEnabled, PlaybackBudget, Ct),
+            "索引が届かずシークバーが操作できないままです: "
+            + await browser.EvaluateStringAsync(TextOf("playerStatus"), Ct));
+
+        double bufferedStart = await browser.EvaluateNumberAsync(BufferedStart, Ct);
+        output.WriteLine("read to the end: " + await browser.EvaluateStringAsync(BufferedRanges, Ct));
+        Assert.True(1 < bufferedStart,
+            $"トリムを踏んでいません（buffered.start が {bufferedStart:F3}）── 先頭が既に取ってあると"
+            + " シークは位置を書くだけで終わり、この検査は成立しません。");
+
+        // ---- 1 度目: 先頭へ戻る（remove から始まる道） ----
+
+        Assert.True(await browser.EvaluateBoolAsync(DragSeekBar(1), Ct), "シークバーがありません。");
+        Assert.True(
+            await browser.WaitUntilAsync($"Math.abs({PlayerTime} - 1) < 0.5", PlaybackBudget, Ct),
+            $"1 秒へ移りませんでした（{await browser.EvaluateNumberAsync(PlayerTime, Ct):F2} 秒）: "
+            + await browser.EvaluateStringAsync(BufferedRanges, Ct));
+        Assert.True(
+            await browser.WaitUntilAsync($"1.5 < {PlayerTime}", PlaybackBudget, Ct),
+            "シークした先で再生が進みません: " + await browser.EvaluateStringAsync(BufferedRanges, Ct));
+
+        Assert.False(await browser.EvaluateBoolAsync(PlayerStatusIsError, Ct),
+            "シークが失敗を出しました: " + await browser.EvaluateStringAsync(TextOf("playerStatus"), Ct));
+        output.WriteLine("after the first seek: " + await browser.EvaluateStringAsync(BufferedRanges, Ct));
+
+        // ---- 2 度目: ここで、差し替わった状態が出る ----
+
+        Assert.True(await browser.EvaluateBoolAsync(DragSeekBar(SecondSeekSeconds), Ct), "シークバーがありません。");
+        Assert.True(
+            await browser.WaitUntilAsync(
+                $"Math.abs({PlayerTime} - {SecondSeekSeconds.ToString("R", System.Globalization.CultureInfo.InvariantCulture)}) < 0.7",
+                PlaybackBudget, Ct),
+            $"2 度目のシークで {SecondSeekSeconds:F0} 秒へ移りませんでした"
+            + $"（{await browser.EvaluateNumberAsync(PlayerTime, Ct):F2} 秒）: "
+            + await browser.EvaluateStringAsync(BufferedRanges, Ct));
+        Assert.True(
+            await browser.WaitUntilAsync(
+                $"{(SecondSeekSeconds + 1).ToString("R", System.Globalization.CultureInfo.InvariantCulture)} < {PlayerTime}",
+                PlaybackBudget, Ct),
+            "2 度目のシークの先で再生が進みません: " + await browser.EvaluateStringAsync(BufferedRanges, Ct));
+
+        Assert.False(await browser.EvaluateBoolAsync(PlayerStatusIsError, Ct),
+            "2 度目のシークが失敗を出しました: " + await browser.EvaluateStringAsync(TextOf("playerStatus"), Ct));
+        output.WriteLine("after the second seek: " + await browser.EvaluateStringAsync(BufferedRanges, Ct));
     }
 }
