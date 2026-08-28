@@ -1469,15 +1469,23 @@
     goLive.node.addEventListener('click', function () { caps.onGoLive(); paint(); });
     bar.appendChild(goLive.node);
 
-    var speedMenu = menuButton('speed', 'i-quality', 'Playback speed');
-    var speedLabel = labelled(speedMenu.button, '1x');
-    speedMenu.build = function (menu) {
-      SHELL_SPEEDS.forEach(function (rate) {
-        var item = menuItem(menu, rate + 'x', video.playbackRate === rate, function () { setSpeed(rate); });
-        item.dataset.speed = String(rate);
-      });
-    };
-    bar.appendChild(speedMenu.holder);
+    // **Not on every player.** `caps.speed` is false for the live preview: its supply
+    // side keeps the element at the live edge, so a raised rate is given back within
+    // SHELL_SETTLE_SECONDS and the control reads as one that does nothing. Left
+    // undrawn rather than hidden -- a hidden button still says the feature is there.
+    var canSetSpeed = caps.speed !== false;
+    var speedLabel = null;
+    if (canSetSpeed) {
+      var speedMenu = menuButton('speed', 'i-speed', 'Playback speed');
+      speedLabel = labelled(speedMenu.button, '1x');
+      speedMenu.build = function (menu) {
+        SHELL_SPEEDS.forEach(function (rate) {
+          var item = menuItem(menu, rate + 'x', video.playbackRate === rate, function () { setSpeed(rate); });
+          item.dataset.speed = String(rate);
+        });
+      };
+      bar.appendChild(speedMenu.holder);
+    }
 
     // **Not switched off with the rest.** The `<select>` this writes is hidden, so
     // this menu is the only way left to say which stream the *next* Preview should
@@ -1628,7 +1636,7 @@
       muteButton.node.setAttribute('aria-label', muted ? 'Unmute' : 'Mute');
       if (document.activeElement !== volume) { volume.value = String(muted ? 0 : video.volume); }
 
-      speedLabel.textContent = video.playbackRate + 'x';
+      if (speedLabel !== null) { speedLabel.textContent = video.playbackRate + 'x'; }
 
       // One quality is not a choice: the menu is only drawn when there is something
       // to pick between.
@@ -1697,8 +1705,8 @@
         case 'l': case 'L': case 'ArrowRight': skip(large); break;
         case 'f': case 'F': toggleFullscreen(); break;
         case 'm': case 'M': video.muted = !video.muted; break;
-        case ',': stepSpeed(-1); break;
-        case '.': stepSpeed(1); break;
+        case ',': handled = stepSpeed(-1); break;
+        case '.': handled = stepSpeed(1); break;
         case 'Escape': closeMenu(); break;
         default: handled = false;
       }
@@ -1709,10 +1717,14 @@
       }
     });
 
+    // Answers whether the key was acted on: where the menu is not drawn the shortcut
+    // is not the shell's either, and the press is left to the page.
     function stepSpeed(direction) {
+      if (!canSetSpeed) { return false; }
       var index = SHELL_SPEEDS.indexOf(video.playbackRate);
       if (index < 0) { index = SHELL_SPEEDS.indexOf(1); }
       setSpeed(SHELL_SPEEDS[Math.max(0, Math.min(SHELL_SPEEDS.length - 1, index + direction))]);
+      return true;
     }
 
     // A click anywhere else closes the open menu. On the document, because "anywhere
@@ -1789,6 +1801,7 @@
   createShell($('player'), {
     live: true,
     seekable: false,
+    speed: true,
     qualities: recordingQualities,
     onQuality: function () { /* one quality: the menu is never drawn */ },
     onGoLive: resumeFollow
@@ -1797,6 +1810,9 @@
   createShell($('previewPlayer'), {
     live: true,
     seekable: false,
+    // The supply side holds this element at the live edge, so a rate above 1.0 is
+    // taken back within half a second: the menu could only ever look broken.
+    speed: false,
     qualities: previewQualities,
     onQuality: choosePreviewQuality,
     onGoLive: resumePreviewLive

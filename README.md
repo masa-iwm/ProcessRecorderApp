@@ -264,8 +264,9 @@ switches the colour scheme between light and dark and remembers the choice in th
 without a choice it follows the operating system.
 
 **Player controls.** The preview and the recording playback share one control bar: skip by 10 or
-30 seconds, playback speed (0.5× to 2×), volume and full screen. On a live picture the quality
-(recording quality or preview settings) is switched from there too.
+30 seconds, volume and full screen. Playback speed (0.5× to 2×) is offered for a recording only: a
+live picture is held at the live edge, so a raised rate would be given back at once. On a live
+picture the quality (recording quality or preview settings) is switched from there too.
 
 **Security — read this before turning it on.**
 
