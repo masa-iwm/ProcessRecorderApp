@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Globalization;
 using System.Net;
 using System.Net.Http;
@@ -914,6 +914,147 @@ public sealed class WebUiBrowserTests(PublishedApp app, ITestOutputHelper output
 
         // 「Stop preview」は両モード共通の後始末で、状態表示は `stopped` に置き換わる
         // （空にはしない ── その文言は chunked のときから変わっていない）。
+        Assert.True(await browser.EvaluateBoolAsync(Click("stopPreview"), Ct), "Stop preview を押せませんでした。");
+        Assert.True(
+            await browser.WaitUntilAsync($"{TextOf("previewStatus")} === 'stopped'", PageBudget, Ct),
+            "Stop preview で配信が畳まれませんでした: " + await browser.EvaluateStringAsync(TextOf("previewStatus"), Ct));
+    }
+
+    /// <summary>
+    /// プレビューの <c>waiting</c>（＝バッファ切れの停止）を数え始める（<c>window.__praWaiting</c>）。
+    /// <b>プレビューを開く前に仕掛ける</b> ── 開いてから仕掛けると、最初の停止が窓の外に落ちる。
+    /// 二度仕掛けても購読は 1 つのまま、数だけが 0 へ戻る（<see cref="StartCountingSeeks"/> と同じ形）。
+    /// </summary>
+    private const string StartCountingPreviewWaiting = """
+        (function () {
+          window.__praWaiting = 0;
+          if (!window.__praWaitingCounter) {
+            window.__praWaitingCounter = function () { window.__praWaiting++; };
+            document.getElementById('previewPlayer').addEventListener('waiting', window.__praWaitingCounter);
+          }
+          return true;
+        })()
+        """;
+
+    private const string PreviewWaitingCount = "window.__praWaiting";
+
+    /// <summary>
+    /// プレビューのライブ端の余裕（<c>buffered.end</c> − <c>currentTime</c>）。バッファが空なら -1。
+    /// <b>これが 1 秒を切ったまま推移する形が、DASH で止まり続けている姿である</b>
+    /// ── セグメントは 1 秒に 1 つしか来ないので、1 秒未満の余裕では次が間に合わない。
+    /// </summary>
+    private const string PreviewCushion = """
+        (function () {
+          var video = document.getElementById('previewPlayer');
+          var ranges = video.buffered;
+          return ranges.length === 0 ? -1 : ranges.end(ranges.length - 1) - video.currentTime;
+        })()
+        """;
+
+    /// <summary>滑らかさを測る秒数（1 秒ごとに 1 標本）。</summary>
+    private const int DashSmoothnessSeconds = 12;
+
+    /// <summary>
+    /// join のぶんの停止が出切るまでの秒数。<b>ここまでの停止は数に入れない</b>
+    /// ── 空のリングへ join する 2〜3 回は実測でここまでに出る。
+    /// </summary>
+    private const int DashJoinSeconds = 4;
+
+    /// <summary>
+    /// 「余裕が育った」と見なす秒数。<b>ライブ端の 0.5 秒手前へ寄せ続ける形では届かない</b>
+    /// ── そこでの余裕は寄せ先＋append のジッタで、実測 0.80 秒が上限だった。
+    /// </summary>
+    private const double DashGrownCushionSeconds = 1.0;
+
+    /// <summary>
+    /// <b>DASH プレビューがライブ端の手前で止まり続けないこと。</b>
+    ///
+    /// <para>
+    /// <see cref="TheDashPreviewPlaysInTheBrowser"/> は「2 秒で 1 秒以上進む」しか見ないので、
+    /// <b>止まっては跳ぶ</b>形（進みは足りているのに絵はカクついている）を通してしまう。
+    /// 機構はこうである: 追従がライブ端の 0.5 秒手前へ寄せる → DASH は 1 秒セグメント×
+    /// 1 秒ポーリングなので次のセグメントが間に合わず停止（<c>waiting</c>）→ 停止の間に
+    /// 遅れが開いてまた寄せる、の周期。余裕は 0.5 秒に張り付き、<c>waiting</c> が数秒ごとに増える。
+    /// </para>
+    /// <para>
+    /// 断定は 3 つ ── <b>進み</b>（止まっていない）・<b>join を除いた停止の回数</b>
+    /// （定常で止まっていない）・<b>余裕が一度は育つこと</b>（ライブ端に貼り付いていない）。
+    /// 1 秒ごとの余裕は <c>output</c> へ出す（赤のときはこの列が機構そのものを示す）。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task TheDashPreviewPlaysWithoutStallingBehindTheLiveEdge()
+    {
+        Assert.SkipUnless(EdgeCdp.IsAvailable, EdgeCdp.UnavailableReason);
+
+        using var instance = AppInstance.Create(app, DashSettings(), configure: UseIsolatedRoot);
+        int port = WaitForPort(instance);
+
+        Assert.True(instance.WaitForActivityLogEvent("recorder.init ok", PageBudget),
+            "recorder.init ok が現れませんでした。" + Environment.NewLine + instance.DiagnosticDump());
+
+        await using var browser = await EdgeCdp.LaunchAsync(Ct);
+        await browser.NavigateAsync($"http://127.0.0.1:{port}/", PageBudget, Ct);
+        Assert.True(await browser.WaitUntilAsync($"!{IsHidden("mainSections")}", PageBudget, Ct), "画面が出ませんでした。");
+
+        Assert.True(
+            await browser.WaitUntilAsync("document.querySelectorAll('#recordersBody tr').length > 0", PageBudget, Ct),
+            "レコーダーの一覧が出ませんでした。");
+
+        // 計数は DASH を開く前に仕掛ける（開始直後の停止も数に入れる）。
+        Assert.True(await browser.EvaluateBoolAsync(StartCountingPreviewWaiting, Ct), "waiting を数え始められませんでした。");
+        Assert.True(await browser.EvaluateBoolAsync(SelectDashMode, Ct), "画質切替に dash がありません。");
+        Assert.True(await browser.EvaluateBoolAsync(ClickFirstPreview, Ct), "行に Preview のボタンがありません。");
+
+        Assert.True(
+            await browser.WaitUntilAsync($"{TextOf("previewStatus")}.indexOf('DASH: live') === 0", PlaybackBudget, Ct),
+            "DASH の配信が始まりませんでした: " + await browser.EvaluateStringAsync(TextOf("previewStatus"), Ct));
+
+        double before = await browser.EvaluateNumberAsync(PreviewTime, Ct);
+        double cushion = -1;
+        double peak = -1;
+        double waitingAfterJoin = 0;
+        for (int second = 1; second <= DashSmoothnessSeconds; second++)
+        {
+            await Task.Delay(TimeSpan.FromSeconds(1), Ct);
+            cushion = await browser.EvaluateNumberAsync(PreviewCushion, Ct);
+            double position = await browser.EvaluateNumberAsync(PreviewTime, Ct);
+            double stalls = await browser.EvaluateNumberAsync(PreviewWaitingCount, Ct);
+            peak = Math.Max(peak, cushion);
+            if (second == DashJoinSeconds) { waitingAfterJoin = stalls; }
+            output.WriteLine(
+                $"dash smoothness t+{second,2}s: currentTime={position:F2}s cushion={cushion:F2}s waiting={stalls:F0}");
+        }
+
+        double after = await browser.EvaluateNumberAsync(PreviewTime, Ct);
+        double waiting = await browser.EvaluateNumberAsync(PreviewWaitingCount, Ct);
+        string state = await browser.EvaluateStringAsync(TextOf("previewStatus"), Ct);
+        output.WriteLine(
+            $"dash smoothness: {before:F2}s -> {after:F2}s (+{after - before:F2}s), "
+            + $"waiting={waiting:F0} (+{waiting - waitingAfterJoin:F0} after join), "
+            + $"cushion={cushion:F2}s (peak {peak:F2}s), status='{state}'");
+
+        Assert.True(10 <= after - before,
+            $"{DashSmoothnessSeconds} 秒のあいだに再生位置が {after - before:F2} 秒しか進みませんでした（status='{state}'）。");
+
+        // **停止の総数では見ない ── join のぶんを除いて数える。** リースは要求されて
+        // 初めて第 2 パイプラインを起こすので、最初の視聴者が居合わせるリングは必ず空に近く、
+        // そこでは必ず何度か止まる ── `play()` そのもので 1 回、そこから余裕を育てるのにもう 1 回
+        //（生きた配信では生産レート＝再生レートなので、余裕は**止まっている間にしか増えない**）。
+        // その 2〜3 回は実測で `DashJoinSeconds` までに出切るので、**それ以降の増分**だけを見る。
+        // 寄せすぎて周期的に止まる形は、その区間でも止まり続ける（旧の実測で +3）。
+        Assert.True(waiting - waitingAfterJoin <= 1,
+            $"t+{DashJoinSeconds} 秒以降にバッファ切れの停止が {waiting - waitingAfterJoin:F0} 回ありました（1 回まで）── "
+            + $"ライブ端に寄せすぎています（status='{state}'）。");
+
+        // **終わりの余裕では見ない。** 寄せは前へしか跳ばないので余裕を足せず、12 秒後の値は
+        // 落ち着いた再生でもドリフトのぶんだけ振れる（実測 0.58〜1.98）。見るのは
+        // **一度でもここまで育ったか**で、寄せすぎている側は 0.5 秒へ引き戻され続けるので
+        // 構造的にここへ届かない（実測の最大 0.80 秒）。
+        Assert.True(DashGrownCushionSeconds <= peak,
+            $"ライブ端の余裕が一度も {DashGrownCushionSeconds} 秒を超えませんでした（最大 {peak:F2} 秒）── "
+            + $"ライブ端に張り付いています（status='{state}'）。");
+
         Assert.True(await browser.EvaluateBoolAsync(Click("stopPreview"), Ct), "Stop preview を押せませんでした。");
         Assert.True(
             await browser.WaitUntilAsync($"{TextOf("previewStatus")} === 'stopped'", PageBudget, Ct),

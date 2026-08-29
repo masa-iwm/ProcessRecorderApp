@@ -1684,6 +1684,13 @@
   // seeking forward is the only way back (the stream has no seekable timeline).
   var PREVIEW_LAG_SECONDS = 3;
 
+  // Where that seek lands: this far behind the live edge. Chunked delivery is
+  // continuous -- every fragment reaches the SourceBuffer as soon as the muxer
+  // writes it -- so half a second of cushion keeps the decoder fed. The DASH mode
+  // is delivered in one-second pieces and cannot use this number
+  // (see DASH_LIVE_TARGET_SECONDS).
+  var PREVIEW_LIVE_TARGET_SECONDS = 0.5;
+
   var PREVIEW_RECONNECT_MS = 1000;
 
   // The most undelivered body we will hold. Reached only when appends cannot keep
@@ -1859,7 +1866,7 @@
     buffer.addEventListener('updateend', function () {
       if (broken || generation !== previewGeneration) { return; }
       trimPreview(video, buffer);
-      followPreview(video);
+      followPreview(video, PREVIEW_LAG_SECONDS, PREVIEW_LIVE_TARGET_SECONDS);
       flush();
     });
 
@@ -1927,22 +1934,35 @@
     }
   }
 
-  function followPreview(video) {
+  // `lag` is how far behind the live edge playback has to fall before this seeks at
+  // all; `target` is where the seek lands. The two modes pass different numbers
+  // because they are delivered differently (see the constants) -- and the pair has to
+  // match: landing closer to the edge than the stream can refill is what turns one
+  // correction into a stall, a fresh correction, and another stall.
+  //
+  // Nothing else runs after the seek. The browser resumes on its own once the next
+  // segment lands, and a handler that reacted to `waiting` would only race it.
+  function followPreview(video, lag, target) {
     var ranges = video.buffered;
     if (ranges.length === 0) { return; }
 
     var end = ranges.end(ranges.length - 1);
-    if (end - video.currentTime > PREVIEW_LAG_SECONDS) { video.currentTime = end - 0.5; }
+    if (end - video.currentTime > lag) { video.currentTime = end - target; }
   }
 
   // The preview's "go live": the correction `followPreview` makes on its own, without
   // the lag threshold -- the operator asked for it, so no amount of lag is too small.
+  // The landing point is the running mode's, not the smaller of the two: a DASH
+  // preview parked half a second behind the live edge runs dry on the next segment.
   function resumePreviewLive() {
     var video = $('previewPlayer');
     var ranges = video.buffered;
     if (ranges.length === 0) { return; }
 
-    var target = ranges.end(ranges.length - 1) - 0.5;
+    var behind = $('previewMode').value === 'dash'
+      ? DASH_LIVE_TARGET_SECONDS
+      : PREVIEW_LIVE_TARGET_SECONDS;
+    var target = ranges.end(ranges.length - 1) - behind;
     if (target <= video.currentTime) { return; }
     video.currentTime = target;
   }
@@ -1983,6 +2003,20 @@
   //    exactly what breaks MSE, so that case rebuilds everything from scratch.
 
   var DASH_POLL_MS = 1000;
+
+  // How far behind the live edge the DASH mode plays, and how far behind that it has
+  // to fall before `followPreview` seeks.
+  //
+  // Segments are one second long and the manifest is read once a second, so half a
+  // second of cushion is less than the stream needs to refill: playback runs dry
+  // (`waiting`), the buffer keeps growing while it is stopped, the lag crosses the
+  // threshold, and the seek drops it back exactly where it ran dry -- measured as a
+  // cushion pinned at 0.50s and a `waiting` every few seconds. Two segments plus
+  // jitter is a cushion the delivery can hold, and the server's ring is six seconds,
+  // so aiming here stays inside what can still be fetched. The threshold is the
+  // target plus one more segment, so ordinary jitter never seeks at all.
+  var DASH_LIVE_TARGET_SECONDS = 2.5;
+  var DASH_LAG_SECONDS = 4.5;
 
   // The server's word for "the encoder is running but nothing is ready yet". It
   // arrives as the `error` of a 503 and any of the three requests can meet it, so
@@ -2271,7 +2305,7 @@
         buffer.addEventListener('updateend', function () {
           if (!alive()) { return; }
           trimPreview(video, buffer);
-          followPreview(video);
+          followPreview(video, DASH_LAG_SECONDS, DASH_LIVE_TARGET_SECONDS);
           flush();
         });
 
@@ -2394,7 +2428,13 @@
   var SHELL_IDLE_MS = 2500;
 
   // Past this much lag the "go live" button is emphasised rather than merely present.
-  var SHELL_LIVE_LAG_SECONDS = 3;
+  // It has to clear the largest lag a mode reaches on purpose: the DASH preview plays
+  // 2.5s behind the live edge, so a lower number would leave the button lit the whole
+  // time it is behaving. The chunked mode seeks itself forward at 3s, so it never
+  // reaches this. The recordings player (#player, follow mode) shares the constant:
+  // after the operator seeks away its lag is no longer corrected, and the emphasis
+  // starts at 5s there too.
+  var SHELL_LIVE_LAG_SECONDS = 5;
 
   // How close to the live edge a speed **the shell raised itself** is given back.
   // A rate the operator set (or a test set directly) is never touched.
