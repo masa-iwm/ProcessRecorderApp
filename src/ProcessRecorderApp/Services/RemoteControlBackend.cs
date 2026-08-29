@@ -95,11 +95,16 @@ internal sealed partial class RemoteControlBackend(DispatcherQueue dispatcherQue
     private static RecordersSnapshot ToSnapshot(StatusResult status)
         // 具体型（配列）を明示する ── コレクション式を IReadOnlyList<T> へ直接向けると
         // CsWinRT1032（AOT でどの実装型になるか決まらない）になる。
+        //
+        // 補助エンコーダー枠の 2 つはレコーダーの状態ではなくプロセス全体の値で、
+        // **クランプ済みの実体（Shared）から読む** ── 設定の生の値を読むと、
+        // 範囲外を書いた直後だけ SSE と実際の枠数が食い違う。
         => new(
             status.Statuses.Select(s => new RecorderStatusDto(
                 s.Name, s.IsInitialized, s.IsRecording, s.IsAwaitingRecoveryResume,
                 s.LastFilename, s.ContinuousState, s.ContinuousLastFilename, s.LastError)).ToArray(),
-            status.CanStartAll, status.CanStopAll, status.IsIdleAll);
+            status.CanStartAll, status.CanStopAll, status.IsIdleAll,
+            AuxiliaryEncoderSlots.Shared.Limit, AuxiliaryEncoderSlots.Shared.Free);
 
     /// <inheritdoc/>
     public Task<JsonObject> GetAppSettingsAsync(CancellationToken ct)
@@ -653,6 +658,39 @@ internal sealed partial class RemoteControlBackend(DispatcherQueue dispatcherQue
             return Task.FromResult(state);
         });
 
+    /// <inheritdoc/>
+    public Task<TranscodeCapability> GetCapabilitiesAsync(CancellationToken ct)
+        => RunOnUiAsync(() =>
+        {
+            if (GstControllerViewModel.Current is not { } controller)
+                throw new RemoteApiException(NotAvailableExitCode, "the recording engine is not ready yet");
+
+            return Task.FromResult(controller.Transcodes.Capability);
+        });
+
+    /// <inheritdoc/>
+    public async Task<TranscodeOpenResult> OpenTranscodeAsync(TranscodeOpen open, CancellationToken ct)
+    {
+        // **UI スレッドで行うのは供給元の取り出しだけ。** `TryOpen` はパイプラインを組んで
+        // 状態遷移と位置指定の再試行を待つ（最大 5 秒）ので、UI スレッドに載せると
+        // その間だけ画面が固まる ── 供給元は録画にもレコーダーにも触らないため、
+        // 取り出した後はどのスレッドから呼んでもよい（`Controller.Transcodes` の doc）。
+        var transcodes = await RunOnUiAsync(() =>
+        {
+            if (GstControllerViewModel.Current is not { } controller)
+                throw new RemoteApiException(NotAvailableExitCode, "the recording engine is not ready yet");
+
+            return Task.FromResult(controller.Transcodes);
+        });
+
+        // **要求元が切っても最後まで待つ。** `TryOpen` は取り消しを受け付けず、
+        // 途中で見捨てると開いたパイプラインと枠が誰にも畳まれないまま残る。
+        return await Task.Run(() =>
+            transcodes.TryOpen(open, out var reader, out string? reason)
+                ? new TranscodeOpenResult(reader, null)
+                : new TranscodeOpenResult(null, reason));
+    }
+
     /// <summary>
     /// 画質の読み書きの失敗。<b>「対象が無い」だけが 13（404）</b>で、残りは 12
     /// （<c>GetDashPreviewSnapshotAsync</c> と同じ写像）。
@@ -689,6 +727,15 @@ internal sealed partial class RemoteControlBackend(DispatcherQueue dispatcherQue
     /// <b>通知は <see cref="DispatcherQueueTimer"/>（単発）で畳む。</b> 1 回の操作で
     /// 複数のプロパティが変わるため、変化のたびに読むと同じ内容を何度も配ることになる。
     /// </para>
+    /// <para>
+    /// <b>補助エンコーダー枠の変化だけは UI スレッド外から来る</b>
+    /// （<see cref="AuxiliaryEncoderSlots.Changed"/> の発火元は録画の
+    /// ストリーミングスレッドと HTTP のスレッド）。そのまま同じデバウンスへ入れると
+    /// タイマーを UI スレッド外から触ることになるので、<see cref="DispatcherQueue.TryEnqueue"/>
+    /// を 1 段挟む。<b><see cref="AuxiliaryEncoderSlots.Shared"/> は静的</b>なので、
+    /// 購読の解除は UI スレッドが無くなった後でも行えるように <see cref="Dispose"/> でも行う
+    /// ── ここだけは外し損ねると、購読が寿命を超えて残る。
+    /// </para>
     /// </summary>
     private sealed partial class StateSubscription(DispatcherQueue dispatcherQueue, Action<RecordersSnapshot> onChange)
         : IDisposable
@@ -721,6 +768,25 @@ internal sealed partial class RemoteControlBackend(DispatcherQueue dispatcherQue
             controller.Recorders.CollectionChanged += OnRecordersChanged;
             foreach (var recorder in controller.Recorders)
                 Subscribe(recorder);
+
+            AuxiliaryEncoderSlots.Shared.Changed += OnSlotsChanged;
+
+            // 張った後にもう一度見る ── Dispose と競ったときに、解除の済んだ後で
+            // 静的なイベントへ張り直したまま残さない。
+            if (_disposed)
+                AuxiliaryEncoderSlots.Shared.Changed -= OnSlotsChanged;
+        }
+
+        /// <summary>
+        /// 枠の増減。<b>呼び手は UI スレッドではない</b>ので、デバウンスへは
+        /// UI スレッドへ渡してから入れる（戻り値は捨てる ── UI スレッドが無ければ
+        /// 配る相手も既に居ない）。
+        /// </summary>
+        private void OnSlotsChanged()
+        {
+            if (_disposed)
+                return;
+            _dispatcherQueue.TryEnqueue(Schedule);
         }
 
         private void OnRecordersChanged(object? sender, NotifyCollectionChangedEventArgs e)
@@ -810,12 +876,19 @@ internal sealed partial class RemoteControlBackend(DispatcherQueue dispatcherQue
                 return;
             _disposed = true;
 
+            // **静的なイベントだけはその場で外す。** UI スレッドが無ければ下の
+            // TryEnqueue は届かず、購読だけがプロセスの寿命まで残る
+            // （フィールドイベントの += / -= はスレッド安全で、二重の解除は無害）。
+            AuxiliaryEncoderSlots.Shared.Changed -= OnSlotsChanged;
+
             // 戻り値は捨てる ── UI スレッドがもう無いなら、解除すべき購読も既に無い。
             _dispatcherQueue.TryEnqueue(DetachOnUi);
         }
 
         private void DetachOnUi()
         {
+            AuxiliaryEncoderSlots.Shared.Changed -= OnSlotsChanged;
+
             if (_timer is { } timer)
             {
                 timer.Stop();

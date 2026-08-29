@@ -137,6 +137,14 @@ public static class DashPreviewReasons
 
     /// <summary>候補のエンコーダーが尽きた（この寿命では二度と組めない）。</summary>
     public const string EncoderUnavailable = "no encoder accepts the preview settings";
+
+    /// <summary>
+    /// 補助エンコーダー枠が空いていないので第 2 パイプラインを組めない。
+    /// <b>録画トランスコードと同じ枠を取り合う</b>ので、文言は
+    /// <see cref="TranscodeReasons.Busy"/> そのものである（HTTP の 409 の本文も同じ）。
+    /// 枠が空けば次のサンプルで組まれるので、クライアントは待ってよい。
+    /// </summary>
+    public const string Busy = TranscodeReasons.Busy;
 }
 
 /// <summary>DASH プレビューの上限値。</summary>

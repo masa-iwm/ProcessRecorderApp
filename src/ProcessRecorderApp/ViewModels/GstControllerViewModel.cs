@@ -65,6 +65,13 @@ namespace ProcessRecorderApp.ViewModels
         /// <summary>DASH プレビューの供給元（<see cref="Controller.DashPreviews"/> の素通し）。</summary>
         public Components.IDashPreviewSource DashPreviews => Model.DashPreviews;
 
+        /// <summary>
+        /// 録画トランスコードの供給元（<see cref="Controller.Transcodes"/> の素通し）。
+        /// <b>取り出しだけが UI スレッド</b>で、取り出した後の <c>TryOpen</c> は
+        /// どのスレッドから呼んでもよい（レコーダーにも録画中のパイプラインにも触らない）。
+        /// </summary>
+        public Components.ITranscodeSource Transcodes => Model.Transcodes;
+
         /// <summary>Settings_Recorders_CollectionChanged の遅延実行用（Initialize を呼んだ UI スレッドのキュー）。</summary>
         private readonly DispatcherQueue _dispatcherQueue;
 

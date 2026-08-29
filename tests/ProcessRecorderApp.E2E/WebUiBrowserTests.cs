@@ -951,6 +951,86 @@ public sealed class WebUiBrowserTests(PublishedApp app, ITestOutputHelper output
     /// <summary>録画物が 1 本できるまで録る秒数（＋10 秒を踏める尺が要る）。</summary>
     private static readonly TimeSpan ClipRecordingTime = TimeSpan.FromSeconds(16);
 
+    /// <summary>録画プレイヤーの画質メニューの holder（1 つしか無い一覧では隠れている）。</summary>
+    private const string QualityMenuHidden =
+        "document.getElementById('player').parentNode"
+        + ".querySelector('[data-action=\"quality\"]').parentNode.hidden";
+
+    /// <summary>いま何を変換して再生しているか（<c>PRA.player.transcodeState()</c>）。</summary>
+    private const string TranscodeActive = "window.PRA.player.transcodeState().active";
+
+    /// <inheritdoc cref="TranscodeActive"/>
+    private const string TranscodeDump = "JSON.stringify(window.PRA.player.transcodeState())";
+
+    /// <summary>起動時に読んだ能力（<c>GET /api/capabilities</c>）。</summary>
+    private const string CapabilitiesDump = "JSON.stringify(window.PRA.core.state.capabilities)";
+
+    /// <summary>
+    /// <b>ハードウェア H.264 デコーダーの無い機械では、録画の画質メニューが出ないこと。</b>
+    ///
+    /// <para>
+    /// <b>この機械で実際に走るのは false の経路だけである。</b> 変換の実体は GPU 実機でしか
+    /// 動かないので（同梱ランタイムにソフトウェアの H.264 デコーダーは無い）、ここで固定するのは
+    /// 「できないと分かっている機械が、できるふりをしないこと」── メニューに出した項目は
+    /// 押せば 404 になるので、出さないことそのものが仕様である。
+    /// </para>
+    /// <para>
+    /// 判定は 2 つ。<c>original</c> しか無い一覧は「1 つは選択肢ではない」の規則で
+    /// メニューごと隠れ、<c>transcodeState().active</c> は false のまま
+    /// ── 隠れているだけで裏では変換を始めている、という壊れ方を後者が捕まえる。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task TheRecordingPlayerOffersNoTranscodeWithoutAHardwareDecoder()
+    {
+        Assert.SkipUnless(EdgeCdp.IsAvailable, EdgeCdp.UnavailableReason);
+
+        // 完成した（moov の在る）ファイルで見る ── 録画中のものは、能力に関わらず
+        // サーバーが断る側なので、メニューの判断が効いているかを分けられない。
+        var settings = RemoteBase(allowGuestRead: true);
+        settings.FragmentedOutput = false;
+        settings.AddRecorder("R1");
+
+        using var instance = AppInstance.Create(app, settings, configure: UseIsolatedRoot);
+        int port = WaitForPort(instance);
+
+        await using var browser = await EdgeCdp.LaunchAsync(Ct);
+        await browser.NavigateAsync($"http://127.0.0.1:{port}/", PageBudget, Ct);
+        Assert.True(
+            await browser.WaitUntilAsync($"!{IsHidden("mainSections")}", PageBudget, Ct),
+            "画面が出ませんでした。");
+
+        Assert.Equal(0, instance.Run("start-recording-all").ExitCode);
+        await Task.Delay(TimeSpan.FromSeconds(5), Ct);
+        Assert.Equal(0, instance.Run("stop-recording-all").ExitCode);
+
+        // **行が在ることも述語に入れる**（完成した非 fragmented の state 欄は空文字）。
+        Assert.True(
+            await WaitForFirstRowAsync(
+                browser,
+                "s === '' && document.querySelectorAll('#recordingsBody tr').length > 0",
+                PlaybackBudget),
+            "録画の終わったファイルが一覧に出ませんでした: "
+                + await browser.EvaluateStringAsync(FirstRowState, Ct)
+                + Environment.NewLine + await browser.EvaluateStringAsync(ListingDump, Ct)
+                + Environment.NewLine + instance.DiagnosticDump());
+
+        Assert.True(await browser.EvaluateBoolAsync(ClickFirstPlay, Ct), "一覧に行がありません。");
+        Assert.True(
+            await browser.WaitUntilAsync($"0 < {PlayerTime}", PlaybackBudget, Ct),
+            "再生が始まりませんでした: " + await browser.EvaluateStringAsync(TextOf("playerStatus"), Ct));
+
+        output.WriteLine(await browser.EvaluateStringAsync(CapabilitiesDump, Ct));
+
+        Assert.False(
+            await browser.EvaluateBoolAsync(TranscodeActive, Ct),
+            "この機械で変換再生が始まりました: " + await browser.EvaluateStringAsync(TranscodeDump, Ct));
+        Assert.True(
+            await browser.EvaluateBoolAsync(QualityMenuHidden, Ct),
+            "録画の画質メニューが出ています（能力は "
+                + await browser.EvaluateStringAsync(CapabilitiesDump, Ct) + "）。");
+    }
+
     /// <summary>
     /// <b>バーの「+10s」が実際に位置を 10 秒進め、速度メニューが <c>playbackRate</c> を変える。</b>
     ///

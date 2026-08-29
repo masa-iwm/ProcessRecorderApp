@@ -5,10 +5,10 @@
 // combination and nothing else. "Nothing here" and "there is more" are said in
 // `#recordingsEmpty` / `#recordingsTruncated`, outside the table body.
 //
-// The two ways a row can be played: a plain `<video src>` for a file whose `moov` is
-// finished, and the follow-along MSE path (app-player.js) for a fragmented one.
-// Which of the two a row gets is decided here; how each one plays is not this
-// file's business.
+// How a row is played is **not decided here**: the whole row is handed to
+// `player.openRecording`, which owns both the plain `<video src>` for a file whose `moov`
+// is finished and the follow-along MSE path for a fragmented one -- and the re-encoded
+// playback, which needs the row's height and length to know what it may offer.
 'use strict';
 
 (function () {
@@ -325,11 +325,7 @@
     play.addEventListener('click', function () {
       selectedPath = file.path;
       markSelectedRow();
-      if (file.fragmented) { player.startFollow(url, file.path); return; }
-      player.stopFollow('');
-      var element = $('player');
-      element.src = url;
-      element.play().catch(function () { /* the browser decides; the controls remain */ });
+      player.openRecording(file, url);
     });
     td.appendChild(play);
 

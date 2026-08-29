@@ -228,6 +228,7 @@ public static class RemoteApiRules
         "GstDebug",
         "LogScrollbackLines",
         "PreferredH264Encoder",
+        "RemoteAuxiliaryEncoderLimit",
         "StopFinalizeTimeoutMs",
         "RecordingRetentionDays",
         "RecordingCleanupIntervalHours",
@@ -246,6 +247,8 @@ public static class RemoteApiRules
     /// <b>リモート操作の設定そのもの（<c>RemoteControl*</c>）も拒否側に置く。</b>
     /// リモートから自分の待ち受けとトークンを書き換えられると、
     /// アクセスを与えた相手がそのまま鍵を掛け替えられる。
+    /// <c>RemoteAuxiliaryEncoderLimit</c> は<b>容量の目盛りであって鍵ではない</b>ので
+    /// 許可側にある（書き換えても待ち受けも認証も変わらない）。
     /// </para>
     /// </summary>
     public static readonly string[] RemoteDeniedAppSettings =

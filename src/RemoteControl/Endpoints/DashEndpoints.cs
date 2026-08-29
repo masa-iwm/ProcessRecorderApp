@@ -31,6 +31,12 @@ namespace ProcessRecorderApp.RemoteControl.Endpoints;
 /// ── ここで待つと、要求 1 本が最大 1 GOP ぶんスレッドを占める。
 /// </para>
 /// <para>
+/// <b>補助エンコーダー枠が空いていない（<see cref="DashPreviewReasons.Busy"/>）だけは
+/// 409 で返す。</b> 待てば直る点は 503 と同じだが、<b>空くのは他人が止めたとき</b>であって
+/// 時間ではない ── <c>Retry-After</c> の秒数を書くと、待つ根拠の無い数字を配ることになる。
+/// クライアントは SSE の <c>state</c> の <c>auxiliaryEncodersFree</c> で解除を知る。
+/// </para>
+/// <para>
 /// <b><c>ETag</c> も <c>Range</c> も使わない。</b> セグメントはリングから落ちれば
 /// 二度と戻らないので、条件付き要求に意味のある「同じ表現」が存在しない
 /// （すべて <c>Cache-Control: no-store</c>）。
@@ -81,7 +87,19 @@ internal static class DashEndpoints
             // **姿を先に取る。** ここで失敗すれば応答はまだ始まっていないので、
             // RemoteControlHost の例外の受け口が 404（13）/ 503（12・Retry-After 付き）の
             // JSON を書ける（PreviewEndpoints と同じ順序）。
-            var snapshot = await backend.GetDashPreviewSnapshotAsync(id, ct);
+            DashPreviewSnapshot snapshot;
+            try
+            {
+                snapshot = await backend.GetDashPreviewSnapshotAsync(id, ct);
+            }
+            catch (RemoteApiException ex) when (ex.Message == DashPreviewReasons.Busy)
+            {
+                // **枠が無いのは 409。** 受け口の写像（12 → 503 ＋ Retry-After）へ落とすと、
+                // 待つ根拠の無い秒数が付く ── 終了コードは経路そのものの失敗と同じ 4 で、
+                // MapFallback の 404 と同じく状態を明示して書く。
+                await ApiResponse.WriteErrorAsync(ctx, 409, ApiResponse.HttpLayerExitCode, ex.Message);
+                return;
+            }
 
             ctx.Response.Headers.CacheControl = "no-store";
             ctx.Response.Headers[GenerationHeader] =

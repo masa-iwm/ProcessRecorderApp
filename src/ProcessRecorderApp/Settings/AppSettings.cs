@@ -495,6 +495,42 @@ public partial class AppSettings : JsonSettingsBase<AppSettings>
     public partial string RemoteControlAccessToken { get; set; } = "";
 
     /// <summary>
+    /// ライブ画質切替と録画トランスコードが同時に使える追加エンコーダーの数
+    /// （<c>Components.AuxiliaryEncoderLimits.MinLimit</c>〜<c>MaxLimit</c>＝1〜8）。
+    ///
+    /// <para>
+    /// <b>録画そのものは 1 枠も使わない。</b> 数えるのはレコーダーごとのライブ DASH
+    /// （mux が在るあいだ 1 枠）と録画トランスコードのセッション（1 つにつき 1 枠）だけで、
+    /// 足りなければ新しい要求が <c>auxiliary encoder busy</c> で断られる。
+    /// </para>
+    /// <para>
+    /// <b>下げても、既に走っているものは止まらない</b>（空き枠が 0 に張り付くだけ）。
+    /// </para>
+    /// </summary>
+    [System.ComponentModel.Category("PropCat_RemoteControl")]
+    [System.ComponentModel.Description("PropDesc_RemoteAuxiliaryEncoderLimit")]
+    [ObservableProperty]
+    public partial int RemoteAuxiliaryEncoderLimit { get; set; } = Components.AuxiliaryEncoderLimits.DefaultLimit;
+
+    /// <summary>
+    /// 範囲外は<b>プロパティ自体へ丸めた値を代入し直す</b>（2 回目の呼び出しは範囲内で止まる）。
+    /// こうしておくと <c>GET /api/settings</c>・スキーマ・<c>AuxiliaryEncoderSlots.Shared.Limit</c> が
+    /// 常に同じ値を指す ── 計数器の側だけで丸めると、設定に残った値と実際の枠数が食い違う。
+    /// </summary>
+    partial void OnRemoteAuxiliaryEncoderLimitChanged(int value)
+    {
+        int clamped = Math.Clamp(
+            value, Components.AuxiliaryEncoderLimits.MinLimit, Components.AuxiliaryEncoderLimits.MaxLimit);
+        if (clamped != value)
+        {
+            RemoteAuxiliaryEncoderLimit = clamped;
+            return;
+        }
+
+        Components.AuxiliaryEncoderSlots.Shared.Limit = clamped;
+    }
+
+    /// <summary>
     /// <see cref="RemoteControlAccessToken"/> のビルダー識別キー。
     /// <b><c>PropCat_</c> / <c>PropDesc_</c> で始めてはいけない</b>（<see cref="EncoderChoiceListKey"/> と同じ理由）。
     /// </summary>
@@ -962,6 +998,7 @@ public partial class AppSettings : JsonSettingsBase<AppSettings>
         RemoteControlAccessToken = loaded.RemoteControlAccessToken;
         RemoteControlBindAddress = loaded.RemoteControlBindAddress;
         RemoteControlPort = loaded.RemoteControlPort;
+        RemoteAuxiliaryEncoderLimit = loaded.RemoteAuxiliaryEncoderLimit;
         RemoteControlEnabled = loaded.RemoteControlEnabled;
         UiaTriggersEnabled = loaded.UiaTriggersEnabled;
         // トリガ定義は差し替え運用（要素を in-place 変更しない）なので参照コピーでよい
@@ -1022,6 +1059,7 @@ public partial class AppSettings : JsonSettingsBase<AppSettings>
         GStreamer.EventRecorder.DebugDumpDotDirectory =
             Components.AppDirectories.ResolveOptional(GstDebugDumpDotDir) ?? "";
         Components.LogBuffer.Shared.MaxLines = LogScrollbackLines;
+        Components.AuxiliaryEncoderSlots.Shared.Limit = RemoteAuxiliaryEncoderLimit;
 
         // テンプレート変数を実行時ストアへ復元する。
         // **SetTemplateVariable は使わない** ── TemplateVariablesChanged が飛んで

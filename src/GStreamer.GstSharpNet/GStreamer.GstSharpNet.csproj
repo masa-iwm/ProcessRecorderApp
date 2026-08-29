@@ -79,6 +79,10 @@
   <ItemGroup>
     <!-- BusMessageThrottle（internal）の L1 テスト用 -->
     <InternalsVisibleTo Include="ProcessRecorderApp.Tests" />
+    <!-- TranscodeSession（internal）を GPU 無しの機械で実行して確かめる検証ハーネス用
+         （リポジトリ外。ハードウェア H.264 デコーダーの無い機械では
+         TranscodeCapability.Transcode が false なので、公開の口からは 1 行も走らない）。 -->
+    <InternalsVisibleTo Include="Wave8TranscodeHarness" />
   </ItemGroup>
 
   <ItemGroup>

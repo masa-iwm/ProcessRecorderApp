@@ -362,6 +362,9 @@
   <data name="PropDesc_RemoteControlPort" xml:space="preserve">
     <value>TCP port to listen on. 0 lets the operating system pick a free port - the port actually taken is written to activity.log as remote.start. Windows Firewall still has to be opened by hand for the port you end up on.</value>
   </data>
+  <data name="PropDesc_RemoteAuxiliaryEncoderLimit" xml:space="preserve">
+    <value>How many extra H.264 encoders may run at the same time for live quality switching and recording transcode (1-8). Recording itself never uses one. Lowering it does not stop what is already running.</value>
+  </data>
   <data name="PropDesc_RemoteControlAccessToken" xml:space="preserve">
     <value>Secret required for every write (starting and stopping recordings, changing settings). It is generated when remote control is first turned on; the "..." button makes a new one, which invalidates the old one and any browser session opened with it. Reading is not covered by this token.</value>
   </data>

@@ -28,6 +28,12 @@
     guest: false,
     userName: '',
     recorderNames: [],
+    // What this machine can do (`GET /api/capabilities`), read once at start-up. It
+    // starts at "cannot transcode" for the same reason the role starts at 'Viewer':
+    // drawing a menu entry that the server is going to refuse is worse than drawing it a
+    // moment late. Only the answer replaces it, so a refused or failed read leaves the
+    // page working without the feature.
+    capabilities: { transcode: false, decoder: null, auxiliaryEncoderLimit: 0 },
     // Assigned by app.js. Called from here and from app-player.js when a 401 says
     // the session is gone.
     showLogin: null

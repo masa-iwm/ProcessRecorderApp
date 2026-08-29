@@ -1760,13 +1760,13 @@ UI スレッドで走る。`TryEnqueue` が false なら `RemoteApiException(12,
 ＝ 503。UI スレッドから返す値はすべて不変 DTO へ写してから境界を越える。
 
 サーバーの寿命は `Services/RemoteControlService`（アプリの起動時に `Start`、
-`AppWindow.Destroying` で `Dispose`）。設定 6 キー（待ち受け 3 ＋ トークン ＋ `RemoteUsers` ＋
+`AppWindow.Destroying` で `Dispose`）。再起動を要する設定 6 キー（待ち受け 3 ＋ トークン ＋ `RemoteUsers` ＋
 `RemoteControlAllowGuestRead`）のいずれかが変わると 300ms 合流させたうえで
 **必ず停止 → 起動**をやり直す（`activity.log` には `remote.stop` → `remote.start` の順で出る）。
 停止は内側 3 秒・外側 8 秒で有界。**サーバーが立たなくても録画は止めない**ので、起動の失敗は
 `remote.error` にしか現れない。
 
-### 設定（`AppSettings` の 6 キー）
+### 設定（`AppSettings` の 7 キー）
 
 | 設定 | 型・既定 | 意味 |
 |---|---|---|
@@ -1775,6 +1775,7 @@ UI スレッドで走る。`TryEnqueue` が false なら `RemoteApiException(12,
 | `RemoteControlPort` | `int` / `8752` | 待ち受ける TCP ポート。`0` なら空いているポートを OS が選ぶ ── **実際に使われたポートは `remote.start` にしか出ない** |
 | `RemoteControlAccessToken` | `string` / `""` | **それ 1 つで `Admin` として通る**秘密の文字列（`Authorization: Bearer` と `GET /?token=`）。利用者を登録していなくても、これだけで全操作ができる |
 | `RemoteControlAllowGuestRead` | `bool` / `false` | ログインしていない相手に `Viewer` 相当の読み取りを許すか。**既定は false ＝ 読み取りにも名乗りが要る**。書き込みは値に関わらず 401 |
+| `RemoteAuxiliaryEncoderLimit` | `int` / `2` | **補助エンコーダー枠**の上限（1〜8。範囲外は setter がクランプする）。録画そのもの以外で H.264 エンコーダーを走らせる仕事 ── レコーダーごとのライブ DASH（mux が在るあいだ 1 枠）と録画トランスコードのセッション（1 本につき 1 枠）── が、**この 1 つの計数器を取り合う**。空きが無ければどちらも `auxiliary encoder busy` で断られる。**サーバーは再起動しない**（次に枠を取る／返すときから効く）。下げても既に走っているものは止まらない |
 | `RemoteUsers` | `RemoteUserDefinition[]` / `[]` | リモート利用者（名前・パスワードのハッシュ・役割）。**PropertyGrid には出ない**（settings.json を直に書くか、`RemoteUserList` の行の「…」で開く編集ダイアログでのみ変わる）。役割は `Viewer` / `Operator` / `Admin` を名前で保存する。パスワードは `RemoteUserRules` の PBKDF2-SHA256（`pbkdf2-sha256$<iter>$<salt>$<hash>`）で、平文は保存しない。**`GET /api/settings` の応答には出さない** |
 
 待ち受けの 4 キーがネストではなくフラットなのは、`AppSettings` がフラット構造で PropertyGrid が
@@ -1895,7 +1896,7 @@ UI スレッドで走る。`TryEnqueue` が false なら `RemoteApiException(12,
 | GET | `/api/sources` | `Viewer` | 編集できるソース要素の候補（`element` / `displayName` / `memoryFeature` / `recordingType` ＋ `properties[]` ＋ `capsFields[]`）。モニターとカメラの選択肢は解決済み |
 | PUT | `/api/recorders/{id}/source` | `Admin`（**W**） | `{element, properties, caps}` から `SrcPipeline` と `Type` を組み立てて書く。応答は `PatchResultDto` の 3 つ ＋ `srcPipeline`。録画中は 409 |
 | GET | `/api/settings` | `Viewer` | アプリ設定（`RemoteControlAccessToken`・`RemoteUsers`・`RemoteUserList` を除く） |
-| PATCH | `/api/settings` | `Admin`（**W**） | `RemoteApiRules.RemoteEditableAppSettings` の 10 キーだけ |
+| PATCH | `/api/settings` | `Admin`（**W**） | `RemoteApiRules.RemoteEditableAppSettings` の 11 キーだけ |
 | GET | `/api/variables` | `Viewer` | ファイル名テンプレートの変数の一覧 |
 | PUT | `/api/variables/{key}` | `Operator`（**W**） | `{value, persist}`（`--set` / `--persist` / `--no-persist` と同義）。両方 null は 400 |
 | POST | `/api/ping` | `Viewer`（**W**） | 認証の疎通確認（`{"ok":true}`）。**書き込み扱い**なのでヘッダーの有無まで切り分けられる |
@@ -1911,6 +1912,8 @@ UI スレッドで走る。`TryEnqueue` が false なら `RemoteApiException(12,
 | GET | `/api/recorders/{id}/dash/seg-{time}.m4s` | `Viewer` | 同メディアセグメント（`video/iso.segment`。`{time}` は MPD の `S@t`）。同じくリースを延ばす |
 | GET | `/api/recorders/{id}/preview/qualities` | `Viewer` | ライブ画質の姿（`current` / `source`（`width`・`height`・`fps`。読めていなければ null）/ `effective`（いま配信している `id` ＋ 4 値。配信していなければ null）/ `qualities[]`（`id` / `label` / `width` / `height` / `fps` / `bitrateKbps`。**末尾は必ず `custom`**））。**リースを延ばさない** |
 | POST | `/api/recorders/{id}/preview/quality` | `Operator`（**W**） | `{"id":"720p"}`（`1080p` / `720p` / `480p` / `360p` / `custom`）。応答は GET と同じ本体。表にも `custom` にも無い id と `id` 欠落は 400 `unknown preview quality` |
+| GET | `/api/capabilities` | `Viewer` | この実機で何が使えるか（`transcode` / `decoder`（使う H.264 デコーダーの要素名。false なら null）/ `auxiliaryEncoderLimit`）。**起動時に 1 回だけ引くもの**で、枠の空きは SSE の `state` にだけ出る |
+| GET | `/api/recording-transcode/{*path}` | `Viewer` | 1 ファイルを別の解像度・fps へ変換し直して流す（chunked fMP4）。`?start=<秒>&q=<プリセット id>&session=<id>` は**すべて必須**。応答に `X-Codecs` / `X-Transcode-Quality` / `X-Transcode-Start`。断り方は「録画トランスコード」節 |
 
 1 つの録画ファイルから派生する答えは **`/api/recording-<kind>/{*path}`** の形に揃える。
 `{*path}` は URL の末尾まで捕まえるので `/api/recordings/{*path}/fragments` とは書けない
@@ -1921,7 +1924,7 @@ UI スレッドで走る。`TryEnqueue` が false なら `RemoteApiException(12,
 ミドルウェアも入れていない。未知の経路は `MapFallback` が 404 ＋ 終了コード 4 で返す。
 
 アプリ設定の PATCH は `RemoteApiRules` の**明示 2 配列**で決める ──
-`RemoteEditableAppSettings`（10 キー）と `RemoteDeniedAppSettings`（24 キー）。L1 が
+`RemoteEditableAppSettings`（11 キー）と `RemoteDeniedAppSettings`（24 キー）。L1 が
 「`AppSettings` の全 public プロパティ ＝ 許可 ∪ 拒否、かつ過不足なし」を検査するので、
 プロパティを増やして書き忘れると赤くなる（「拒否リストに無いものは書ける」という既定にはしない）。
 `OutputDirectory` を拒否しているのは、**動かせると録画配信の root ごと動く**ため。
@@ -2009,7 +2012,7 @@ flush する。応答ヘッダーは `text/event-stream; charset=utf-8` ＋ `Cac
 
 | `event` | `data` | いつ |
 |---|---|---|
-| `state` | `RecordersSnapshot` | 接続直後に 1 件、以後はレコーダーの状態が変わるたび |
+| `state` | `RecordersSnapshot` | 接続直後に 1 件、以後はレコーダーの状態か**補助エンコーダー枠**が変わるたび |
 | `recording` | `{kind, path}`（`kind` は `added` / `completed` / `removed` / `updated`） | 録画一覧の索引が作り直されて差分が出たとき |
 | `ping` | `{}` | 無通信が `EventsEndpoint.PingInterval` ＝ **15 秒**続いたとき |
 
@@ -2023,8 +2026,15 @@ flush する。応答ヘッダーは `text/event-stream; charset=utf-8` ＋ `Cac
 クライアントは「一覧を取り直す合図」としてだけ使い、`data` の中身で差分を当てない
 （1 件落ちたぶんだけ永久にずれる）。
 
+`RecordersSnapshot` には全体の値として `auxiliaryEncoderLimit`（上限＝`RemoteAuxiliaryEncoderLimit` の
+クランプ後）と `auxiliaryEncodersFree`（いま取れる数）が載る。**空き枠の変化を押し出す経路は
+これ 1 本だけ**で、クライアントは `auxiliaryEncodersFree > 0` を見て「busy」表示を解除する
+── 枠が空くのは他人が止めたときであり、待つべき秒数を書けるものが誰も居ない。
+
 押し出しは UI スレッドで `PropertyChanged` を購読し、**200ms デバウンス**
-（`RemoteControlBackend.DebounceInterval`）してから不変 DTO にする。
+（`RemoteControlBackend.DebounceInterval`）してから不変 DTO にする。**枠の変化（`AuxiliaryEncoderSlots.Changed`）だけは UI スレッド外**（録画の
+ストリーミングスレッド・HTTP のスレッド）から来るので、`DispatcherQueue.TryEnqueue` を
+1 段挟んで同じデバウンスへ入れる。
 **ヘッダーを書く前に一度 `GetRecordersAsync` を呼ぶ** ── そうしないと、起動直後の失敗を
 500 / 503 の JSON で返せなくなる（ヘッダーを送った後では手遅れ）。同じ場所で
 `GetRecordingsRootAsync` も呼んで索引へ `Rebind` する ── 一覧を一度も読まないクライアント
@@ -2347,6 +2357,12 @@ caps 変化のたびに解き直される:
 `avc1.PPCCLL` を読み、`DashManifest.Build` が `SegmentTemplate` ＋ `SegmentTimeline` の
 ライブ MPD（`profiles=urn:mpeg:dash:profile:isoff-live:2011`）を組む。
 
+**mux が在るあいだ補助エンコーダー枠を 1 つ握る**（`owner="dash:<レコーダー名>"`）。取るのは
+`StartMux` の**パイプラインを組む前**で、返すのは `Teardown` と `Close`。取れなければ第 2
+パイプラインを作らずに降り、次のサンプルで試し直す ── そのあいだ姿の理由は
+`DashPreviewReasons.Busy`（＝`auxiliary encoder busy`）になる。枠は録画トランスコードと
+**同じ計数器**（`AuxiliaryEncoderSlots.Shared`、上限は `RemoteAuxiliaryEncoderLimit`）である。
+
 **寿命は貸出（lease）で決まる。** `IDashPreviewSource.TryGetSnapshot` を呼ぶたびに
 `DashPreviewLimits.LeaseMs = 10000`（10 秒）の貸出が延び、切れたら次のサンプルで第 2 パイプラインを
 畳む ── 明示的な購読解除を持たない代わりに、これで寿命を有界にしている。保持するセグメントは
@@ -2394,6 +2410,11 @@ caps 変化のたびに解き直される:
   本文の `error` は `DashPreviewReasons.Starting` の文字列そのもの。**HTTP 層は特別扱いしない**
   ── 待つかどうかを決めるのはクライアントで、ここで待つと要求 1 本が最大 1 GOP ぶん
   スレッドを占める。対象のレコーダーが無ければ 404（終了コード 13）。
+- **補助エンコーダー枠が空いていない**（`DashPreviewReasons.Busy`）→ **409**、本文の `error` は
+  `auxiliary encoder busy`。**`Retry-After` は付けない** ── 待てば直る点は 503 と同じだが、
+  空くのは他人が止めたときであって時間ではない。クライアントは SSE の `state` の
+  `auxiliaryEncodersFree` で解除を知る。終了コードは経路そのものの失敗と同じ 4 で、
+  `MapFallback` の 404 と同じく状態を明示して書く（`RemoteApiRules.HttpStatusFor` は通さない）。
 - **期限切れのセグメント**（リングから落ちた・まだ来ていない・別の連続体のもの）→ 404
   `"segment not available"`。3 つを区別しない ── クライアントの対処はどれも「飛ばす」である。
 - 応答はすべて `Cache-Control: no-store` ＋ **`X-Dash-Generation`**（＝ MPD の `Period@id`）
@@ -2406,6 +2427,69 @@ caps 変化のたびに解き直される:
 
 遅延の目安は**おおむね 2〜3 秒**（セグメントの長さは次のセグメントが来るまで確定しない
 ぶんが 1 本＝約 1 秒、ポーリングの粒度が 1 秒、そこへ MSE の緩衝が乗る）。
+
+### 録画トランスコード
+
+録画済みの `.mp4` を、指定の位置から別の解像度・fps で変換し直して fMP4 として流す
+（`TranscodeSession` / `TranscodeStreams`）。**ハードウェア H.264 デコーダーのある PC でだけ
+成立する** ── 同梱ランタイムにソフトウェアの H.264 デコーダーは無く、
+`EncoderCatalog.H264DecoderCandidates` が 1 つも見つからない機械では
+`TranscodeCapability.Transcode` が false になる。エンコーダー側は候補列の**先頭 1 つだけ**を試し、
+巡回はしない。**映像のみ**（録画に音声トラックが無い）で、**録画中のファイルは変換できない**。
+
+同時に走らせられる本数は**補助エンコーダー枠**（`AuxiliaryEncoderSlots`、設定は
+`RemoteAuxiliaryEncoderLimit`＝1〜8）で、レコーダーごとのライブ DASH（mux が在るあいだ 1 枠）と
+**同じ計数器を取り合う**。枠が取れなければどちらも `auxiliary encoder busy` で断られる。
+
+停止理由（ログイベント名 `transcode.<理由>`）:
+
+| 理由 | 起きる条件 |
+|---|---|
+| `eos` | 変換元の末尾まで流し切った |
+| `client-closed` | 読み手が閉じた（切断・画質の切り替え・ページ遷移） |
+| `replaced` | 同じ `session` の新しい要求（＝シーク）に置き換えられた。枠はそのまま引き継ぐ |
+| `lease-expired` | 読み手が閉じた後、`TranscodeLimits.GraceMs = 10000`（10 秒）のあいだ同じ `session` が戻って来なかったので枠を返した |
+| `error` | 走行中の破綻（バスの ERROR・例外。内訳は `detail=`） |
+| `start-failed` | 組み立てか位置指定に失敗した（内訳は `detail=`） |
+| `shutdown` | アプリの終了（`Controller` の破棄） |
+
+**理由はこの 7 個で全部である**（`TranscodeSession.StopReasons`）。例外の `Message` のような
+自由文は理由に入れず `detail=` へ出す。
+
+#### HTTP
+
+`GET /api/recording-transcode/{*path}?start=<秒>&q=<プリセット id>&session=<id>`（`Viewer`）。
+**検査の順序が約束である**（L1 の `RecordingTranscodeEndpointTests` がソーステキストで固定する）
+── 前に置いた検査ほど「相手の手元だけで直せる失敗」で、能力の判定を前へ出すと
+ハードウェア デコーダーの無い PC ではクエリの誤りが一切表に出なくなる:
+
+1. `start` ── `double`（`InvariantCulture`）で有限かつ 0 以上。**省略も 400**（`invalid start`）
+   ── 既定を 0 に畳むと、綴りを間違えた要求が「先頭から再生された」形で静かに成功する。
+2. `q` ── `1080p` / `720p` / `480p` / `360p` のどれか。**`custom` は受けない**（400
+   `unknown transcode quality`）── カスタムはレコーダー設定の 4 値で、録画済みのファイルには
+   対応する設定が無い。
+3. `session` ── 1〜64 文字の `[A-Za-z0-9_-]`（400 `invalid session`）。**クライアントが名乗る**
+   ものであり、同じ id での再要求＝シークが前のパイプラインを `replaced` で畳んで枠を引き継ぐ。
+4. ファイル ── 解決は `/api/recordings/{*path}` と同じ規則（無い・開けないは 404、root の外・
+   拡張子違いは 400）。**録画中は 409 `recording in progress`** ── `filesrc` は開いた時点の
+   長さで終わりを決めるので、伸びた分が出ないまま EOS になる。
+5. 能力 ── `TranscodeCapability.Transcode` が false なら **404 `transcode unavailable`**。
+6. 枠 ── 取れなければ **409 `auxiliary encoder busy`**（`Retry-After` は付けない。DASH の 409 と
+   同じ理由）。それ以外の失敗（組み立て・位置指定）は **503 ＋ `Retry-After`**（終了コード 12）で
+   本文は `transcode start failed`。
+
+**init（`ftyp`＋`moov`）が揃うまで応答ヘッダーを書かない。** `X-Codecs` はそこからしか作れず、
+無いとブラウザ側の `isTypeSupported` が false になって再生そのものが始まらない ── 揃うまでは
+まだ 503 を書ける（ヘッダーを送った後では手遅れ）。10 秒・1 MiB を超えるか、読めないまま
+最上位に `moof` が現れたら `transcode start failed` で断る。**溜めたバイト列は最初の書き込みで
+そのまま流す**（`moov` の後ろに mp4mux が書く `uuid` 箱も含めて無加工）。以降は chunked で、
+`Content-Type: video/mp4` ＋ `Cache-Control: no-store` ＋ `X-Codecs` ＋ `X-Transcode-Quality`
+＋ `X-Transcode-Start`（要求値を小数 3 桁に丸めた表記。クライアントは `timestampOffset` にこれを使う）。
+
+**読み取りは必ずスレッドプールへ逃がす**（`Task.Run`）── `TranscodeReader.TryRead` は
+呼び手のスレッドを最大 1 秒塞ぐので、HTTP のスレッドで直に回すと同時視聴者の数だけ止まる。
+終端は **`TryRead` が false を返した後に `Ended` を見る**（`Ended` はロックが取れなければ
+false を返すので、単独では信用できない）。
 
 ### Web UI
 
@@ -2832,6 +2916,7 @@ GPU テクスチャになるため**アクセシブルテキストが 1 つも�
 | `cleanup.run` | INFO | `RecordingCleanupScheduler` | 古い mp4 の自動削除の結果（保存先・削除数・解放バイト数・削除したフォルダー数・失敗数）。**何もしなかった周回は出さない** |
 | `cleanup.error` | WARN | 同上 | 削除できなかった理由（1件1行・上限あり）。ロック中のファイルなど |
 | `gst.encoders` | INFO | `Controller.StaticInitialize` | プローブ結果（存在/欠落と候補順）。1回のみ |
+| `gst.decoders` | INFO | 同上 | H.264 デコーダーのプローブ結果（`h264=<要素名｜(none)> transcode=<True\|False>`）。1回のみ。**録画トランスコードが使えるかはここでしか分からない**（候補はハードウェアだけで、同梱ランタイムには 1 つも無い） |
 | `gst.encoder selected` | INFO | `EventRecorder.Initialize` | 実際に採用されたエンコーダーとメモリ要件・失敗した試行数 |
 | `gst.encoder candidate-failed` | WARN | 同上 | 候補が落ちた理由（要素が無い／リンク不可／未知のプロパティ） |
 | `gst.encoder fallback-from` | WARN | 同上 | フォールバックが起きた場合の全失敗の一覧 |
@@ -2883,6 +2968,15 @@ GPU テクスチャになるため**アクセシブルテキストが 1 つも�
 | `dash.stream-stop` | INFO | `DashPreviewStream.Teardown` | 第 2 パイプラインを退役させた（`reason=` は `lease expired｜settings changed｜caps changed｜encoder failed｜pts rewind｜gop too long｜init unparsable｜splitter fault｜stream error｜close` の 10 種。上の停止理由の表を参照） |
 | `dash.stream-error` | ERROR | `DashPreviewStream` の `OnRawSample` / `StartMux` / `OnMuxSample` / `OnBusMessage` / `Retire` | 押し込みの失敗／候補のエンコーダーで組めなかった（候補が尽きた場合は**1 回だけ**）／切り出し・集約の破綻（`reason=` ＋ 自由文の `detail=`）／バスの ERROR ／退役したパイプラインを綺麗に落とせなかった。**録画は止めない**ので、ここが唯一の観測点になる |
 | `dash.leak` | WARN | `DashPreviewStream.Close` | `Monitor.TryEnter(_muxLock, 5000)` が抜けず、第 2 パイプラインを止めずに手放した（`preview.leak` と同じ規律） |
+| `transcode.start` | INFO | `TranscodeStreams.TryOpen` | トランスコードを 1 本開いた（`session=` / `file=` / `start=` / `quality=` / `size=WxH` / `fps=` / `decoder=` / `encoder=`）。**実際に採用されたデコーダーとエンコーダーはここにしか出ない** |
+| `transcode.eos` | INFO | `TranscodeSession.Close` | 変換元の末尾まで流し切って畳んだ（`session=`） |
+| `transcode.client-closed` | INFO | 同上 | 読み手が閉じたので畳んだ（切断・画質の切り替え・ページ遷移）。**枠はまだ返さない**（`GraceMs` の猶予に入る） |
+| `transcode.replaced` | INFO | 同上 | 同じ `session` の新しい要求（＝シーク）に置き換えられた。枠はそのまま引き継ぐ |
+| `transcode.lease-expired` | INFO | `TranscodeStreams` の失効タイマー（1 秒周期） | 読み手が閉じてから `TranscodeLimits.GraceMs` ＝ **10 秒**のあいだ同じ `session` が戻らなかったので枠を返した。**`transcode.client-closed` と対で数える**と、枠が漏れているかどうかが分かる |
+| `transcode.error` | ERROR ／ INFO | `TranscodeStreams.TryOpen` ／ `TranscodeSession` の `OnBusMessage` / `Close` | 組めなかった（候補のエンコーダーが無い・`Start()` が失敗した）／バスの ERROR ／畳むときの例外。**停止理由としての 1 行だけが INFO**（`Close` から出るもの）で、残りは ERROR。**録画は止めない**ので、ここが唯一の観測点になる |
+| `transcode.start-failed` | INFO | `TranscodeSession.Close` | 組み立てか位置指定（`qtdemux` への seek の再試行）に失敗して畳んだ（内訳は `detail=`） |
+| `transcode.shutdown` | INFO | `TranscodeStreams.CloseAll`（`Controller` の破棄） | アプリの終了で畳んだ。**猶予の途中の枠もここで返す** |
+| `transcode.leak` | WARN | `TranscodeSession.Close` | 読み取りが走ったままで `Monitor.TryEnter(_readLock)` が抜けず、パイプラインを解放せずに手放した（`dash.leak` / `preview.leak` と同じ規律 ── クラッシュ回避のための意図的なリーク） |
 | `variables.duplicate-key` | WARN | `TemplateVariableViewModel.OnKeyChanged` | Variables 画面で既存の行と重複するキーを入力したため、元のキーへ差し戻した（重複を許すと既存の値を空文字で潰し、片方の削除で実体まで消える） |
 | `settings.load` | ERROR | `AppSettings.ReportLoadFailure` | settings.json を読めず既定値へ倒れた（読めなかったファイルは `.bad` へ退避） |
 | `settings.seed` | INFO | `AppSettings.ReportSeedUsed` | 保存先に settings.json が無く、**実行ファイルの隣の settings.json を既定設定（種）として読んだ**。無記録だと「設定した覚えのない初期値で始まった」ことを追えない |

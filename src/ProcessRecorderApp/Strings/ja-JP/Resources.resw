@@ -362,6 +362,9 @@
   <data name="PropDesc_RemoteControlPort" xml:space="preserve">
     <value>待ち受ける TCP ポート。0 を指定すると空いているポートを OS が選びます ── 実際に使われたポートは activity.log の remote.start に記録されます。どのポートになっても Windows Firewall の許可は手動で行う必要があります。</value>
   </data>
+  <data name="PropDesc_RemoteAuxiliaryEncoderLimit" xml:space="preserve">
+    <value>ライブ画質切替と録画トランスコードが同時に使える追加エンコーダの数（1〜8）。録画そのものは 1 つも使いません。下げても、既に走っているものは止まりません。</value>
+  </data>
   <data name="PropDesc_RemoteControlAccessToken" xml:space="preserve">
     <value>書き込み操作（録画の開始・停止、設定の変更）に要る秘密の文字列。リモート操作を初めて有効にしたときに生成されます。「…」ボタンで作り直すと、古いトークンとそれで開いたブラウザのセッションは無効になります。読み取りはこのトークンでは保護されません。</value>
   </data>

@@ -64,6 +64,12 @@ public sealed class DashPreviewTests(PublishedApp app, ITestOutputHelper output)
     /// <summary>「まだ始まっていない」の正本（<c>Components.DashPreviewReasons.Starting</c>）。</summary>
     private const string StartingReason = "dash preview is starting";
 
+    /// <summary>
+    /// 「補助エンコーダー枠が空いていない」の正本
+    /// （<c>Components.TranscodeReasons.Busy</c> ＝ <c>DashPreviewReasons.Busy</c>）。
+    /// </summary>
+    private const string BusyReason = "auxiliary encoder busy";
+
     private static readonly TimeSpan StartBudget = TimeSpan.FromSeconds(30);
 
     /// <summary>短い要求（JSON・MPD・セグメント）の打ち切り。本文はすべて有限。</summary>
@@ -707,6 +713,194 @@ public sealed class DashPreviewTests(PublishedApp app, ITestOutputHelper output)
             output.WriteLine($"guest read off: {(int)response.StatusCode}");
             Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
         }
+    }
+
+    // ---- (6') 補助エンコーダー枠 ----
+
+    /// <summary>
+    /// レコーダー 2 台・枠 1 つの構成。<b>両方とも初期化される</b>ので、どちらの DASH も
+    /// 要求できる状態から始められる。
+    /// </summary>
+    private static SettingsFile TwoRecorderSettings(int limit)
+    {
+        var settings = new SettingsFile
+        {
+            RemoteControlEnabled = true,
+            RemoteControlBindAddress = "127.0.0.1",
+            RemoteControlPort = 0,
+            RemoteControlAccessToken = Token,
+            RemoteControlAllowGuestRead = true,
+            RemoteAuxiliaryEncoderLimit = limit,
+        };
+        settings.AddRecorder("R1").EncodingProperties = SettingsFile.LargeEncodingProperties;
+        settings.AddRecorder("R2").EncodingProperties = SettingsFile.LargeEncodingProperties;
+        return settings;
+    }
+
+    /// <summary>
+    /// <paramref name="expected"/> が返るまで引き続ける。
+    ///
+    /// <para>
+    /// <b>待ってよい応答は 2 つだけ</b>: 503（まだ始まっていない）と 409（枠が空いていない）。
+    /// 他が来たら即座に落とす ── 別の理由で待ち続けると、失敗が「時間切れ」としてしか現れない。
+    /// </para>
+    /// <para>
+    /// <paramref name="keepAlive"/> を渡すと、毎回そちらも引く。<b>「見ている」の表明は
+    /// 引き続けることだけ</b>なので、待っているあいだに別のレコーダーの mux が畳まれて
+    /// 枠を返してしまうと、見たかった条件そのものが消える。
+    /// </para>
+    /// </summary>
+    private async Task<string> PollUntilAsync(
+        HttpClient client, string path, HttpStatusCode expected, TimeSpan budget, string label,
+        string? keepAlive = null, Action<HttpResponseMessage>? inspect = null)
+    {
+        var watch = Stopwatch.StartNew();
+        int polls = 0;
+        string last = "(1 度も応答を読めていない)";
+
+        while (watch.Elapsed < budget)
+        {
+            if (keepAlive is { } alive)
+                (await client.GetAsync(alive, Ct)).Dispose();
+
+            polls++;
+            using var response = await client.GetAsync(path, Ct);
+            string body = await response.Content.ReadAsStringAsync(Ct);
+
+            if (response.StatusCode == expected)
+            {
+                output.WriteLine(
+                    $"{label}: {(int)expected} after {watch.Elapsed.TotalSeconds:F1}s ({polls} polls)");
+                inspect?.Invoke(response);
+                return body;
+            }
+
+            Assert.True(
+                response.StatusCode is HttpStatusCode.ServiceUnavailable or HttpStatusCode.Conflict,
+                $"{label}: 待てない応答が返りました: {(int)response.StatusCode} {body}");
+
+            using (var reason = JsonDocument.Parse(body))
+            {
+                string? error = reason.RootElement.GetProperty("error").GetString();
+                Assert.True(
+                    error == StartingReason || error == BusyReason,
+                    $"{label}: 待てない理由が返りました: {(int)response.StatusCode} {body}");
+            }
+
+            last = body;
+            await Task.Delay(PollInterval, Ct);
+        }
+
+        Assert.Fail(
+            $"{label}: {(int)expected} が {budget.TotalSeconds:F0} 秒以内に返りませんでした"
+            + $"（{polls} 回引いた）。最後の応答: {last}");
+        return "";
+    }
+
+    /// <summary>次に届く <c>state</c> の <c>auxiliaryEncodersFree</c>。</summary>
+    private async Task<string> ReadStateAsync(StreamReader reader, TimeSpan budget)
+    {
+        var deadline = Stopwatch.StartNew();
+        string? current = null;
+
+        while (deadline.Elapsed < budget)
+        {
+            var line = await reader.ReadLineAsync(Ct).AsTask().WaitAsync(budget - deadline.Elapsed, Ct);
+            if (line is null)
+                break;
+
+            if (line.StartsWith("event: ", StringComparison.Ordinal))
+                current = line["event: ".Length..];
+            else if (line.StartsWith("data: ", StringComparison.Ordinal) && current == "state")
+                return line["data: ".Length..];
+        }
+
+        Assert.Fail($"SSE の 'state' が {budget.TotalSeconds:F0} 秒以内に届きませんでした。");
+        return "";
+    }
+
+    /// <summary>
+    /// <b>ライブ DASH はレコーダー 1 台につき補助エンコーダー枠を 1 つ占める。</b>
+    /// 枠が 1 つしか無ければ、2 台目は空くまで 409 <c>auxiliary encoder busy</c> で断られ、
+    /// 1 台目の貸出が切れて mux が畳まれると通るようになる。
+    ///
+    /// <para>
+    /// <b>503 を経由するのは正常である。</b> 枠を試すのは最初のサンプルが届いたときなので、
+    /// 要求の直後は「まだ始まっていない」で、そのあと 409 に変わる ── どちらも
+    /// クライアントにとっては「待て」で、区別は表示だけである。
+    /// </para>
+    /// <para>
+    /// <b>2 台目を待つあいだ 1 台目を引き続ける。</b> 引くのをやめたレコーダーは
+    /// <c>LeaseMs</c>（10 秒）で mux を畳んで枠を返すので、待っているだけでは
+    /// 見たかった状態（枠が埋まっている）が途中で消える。
+    /// </para>
+    /// <para>
+    /// <b>409 に <c>Retry-After</c> は付けない。</b> 空くのは時間ではなく他人が止めたときで、
+    /// 秒数を示せばそれは嘘になる（503 の「まだ始まっていない」とはそこが違う）。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task TheLiveDashHoldsOneAuxiliaryEncoderPerRecorder()
+    {
+        using var instance = AppInstance.Create(app, TwoRecorderSettings(limit: 1));
+        int port = WaitForPort(instance);
+
+        // 2 台とも初期化されるまで待つ（1 台目だけでは 2 台目の要求が別の理由で 503 になる）。
+        var initialized = Stopwatch.StartNew();
+        while (initialized.Elapsed < EventBudget
+            && ActivityLogFile.Events(instance.ReadActivityLog(), "recorder.init ok").Count < 2)
+        {
+            Thread.Sleep(200);
+        }
+
+        Assert.True(
+            2 <= ActivityLogFile.Events(instance.ReadActivityLog(), "recorder.init ok").Count,
+            "recorder.init ok が 2 件現れませんでした。" + Environment.NewLine + instance.DiagnosticDump());
+
+        using var client = CreateClient(port);
+        const string SecondManifest = "api/recorders/R2/dash/manifest.mpd";
+
+        // 1 台目が枠を取る。
+        await WaitForManifestAsync(client, StartBudget, "R1");
+
+        // 空きが 0 になったことは SSE にだけ出る。**開いて最初の state を読むだけ**
+        // ── ここで長く待つと、その間 R1 を引けずに畳まれてしまう。
+        using (var events = await client.GetAsync(
+            "api/events", HttpCompletionOption.ResponseHeadersRead, Ct))
+        {
+            Assert.Equal(HttpStatusCode.OK, events.StatusCode);
+            using var stream = await events.Content.ReadAsStreamAsync(Ct);
+            using var reader = new StreamReader(stream);
+
+            string state = await ReadStateAsync(reader, TimeSpan.FromSeconds(5));
+            output.WriteLine(state);
+            using var snapshot = JsonDocument.Parse(state);
+            Assert.Equal(1, snapshot.RootElement.GetProperty("auxiliaryEncoderLimit").GetInt32());
+            Assert.Equal(0, snapshot.RootElement.GetProperty("auxiliaryEncodersFree").GetInt32());
+        }
+
+        // 2 台目は断られる（1 台目を引き続けながら）。
+        string busy = await PollUntilAsync(
+            client, SecondManifest, HttpStatusCode.Conflict, StartBudget, "R2-busy",
+            keepAlive: ManifestPath,
+            inspect: static response => Assert.Null(response.Headers.RetryAfter));
+
+        using (var body = JsonDocument.Parse(busy))
+        {
+            Assert.Equal(BusyReason, body.RootElement.GetProperty("error").GetString());
+            Assert.Equal(4, body.RootElement.GetProperty("exitCode").GetInt32());
+        }
+
+        // どちらも引くのをやめる。1 台目の貸出が切れれば mux が畳まれ、枠が戻る。
+        await Task.Delay(LeaseExpiryWait, Ct);
+
+        var stops = ActivityLogFile.Events(instance.ReadActivityLog(), "dash.stream-stop");
+        output.WriteLine(string.Join(Environment.NewLine, stops));
+        Assert.Contains(stops, line =>
+            ActivityLogFile.DetailOf(line).Contains("reason=lease expired", StringComparison.Ordinal));
+
+        // 空いた枠で 2 台目が通る（503 を経由するのは同じ）。
+        await PollUntilAsync(client, SecondManifest, HttpStatusCode.OK, StartBudget, "R2-after-lease");
     }
 
     // ---- (6) ライブ画質プリセット ----

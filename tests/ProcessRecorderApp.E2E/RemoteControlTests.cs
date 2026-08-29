@@ -2070,4 +2070,212 @@ public sealed class RemoteControlTests(PublishedApp app, ITestOutputHelper outpu
             Assert.Equal(2000, values.GetProperty("PreviewBitrateKbps").GetInt32());
         }
     }
+
+    // ---- 能力と補助エンコーダー枠 ----
+
+    /// <summary>
+    /// <b>ハードウェア H.264 デコーダーの無い機械では <c>transcode</c> が false であること</b>、
+    /// そして <c>RemoteAuxiliaryEncoderLimit</c> が能力・設定・SSE の 3 つに同じ値で出ること。
+    ///
+    /// <para>
+    /// <b>false は断定する。</b> 「true か false のどちらか」では、能力検出が壊れて
+    /// 常に true を返すようになっても緑のままになる。開発機と CI には
+    /// <c>d3d11h264dec</c> / <c>d3d12h264dec</c> / <c>nvh264dec</c> / <c>qsvh264dec</c> の
+    /// どれも登録されていない（同梱ランタイムにソフトウェアの H.264 デコーダーは無い）。
+    /// <b>GPU の在る機械ではこのケースは赤になる</b> ── そのときに読むべきものは
+    /// <c>decoder</c> で、失敗の本文に入れてある（tests/README.md）。
+    /// </para>
+    /// <para>
+    /// 範囲外の上限は<b>断らずに丸める</b>（<c>PreviewFps</c> と同じ流儀）。丸めた値が
+    /// 能力の応答にも出ることが要点で、設定の生の値を読んでいると
+    /// 「応答が 9・実際の枠は 8」というずれが観測されないまま残る。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task TheCapabilitiesReportNoTranscodeOnAMachineWithoutAHardwareDecoder()
+    {
+        var settings = RemoteSettings();
+        settings.RemoteAuxiliaryEncoderLimit = 3;
+
+        using var instance = AppInstance.Create(app, settings);
+        int port = WaitForPort(instance);
+        using var client = CreateClient(port);
+
+        using (var response = await client.GetAsync("api/capabilities", Ct))
+        {
+            using var body = await ExpectAsync(response, HttpStatusCode.OK);
+            var root = body.RootElement;
+
+            var decoder = root.GetProperty("decoder");
+            Assert.False(
+                root.GetProperty("transcode").GetBoolean(),
+                "この機械にはハードウェア H.264 デコーダーが無い前提ですが transcode=true が返りました"
+                + $"（decoder={(decoder.ValueKind == JsonValueKind.Null ? "null" : decoder.GetString())}）。"
+                + " GPU の在る機械ではこのケースは赤になります（tests/README.md）。");
+            Assert.Equal(JsonValueKind.Null, decoder.ValueKind);
+            Assert.Equal(3, root.GetProperty("auxiliaryEncoderLimit").GetInt32());
+        }
+
+        using (var response = await SendAsync(
+            client, Patch, "api/settings", "{\"RemoteAuxiliaryEncoderLimit\":9}"))
+        {
+            using var body = await ExpectAsync(response, HttpStatusCode.OK);
+            Assert.Contains("RemoteAuxiliaryEncoderLimit", StringsOf(body.RootElement.GetProperty("applied")));
+            Assert.Contains("RemoteAuxiliaryEncoderLimit", StringsOf(body.RootElement.GetProperty("clamped")));
+        }
+
+        using (var response = await client.GetAsync("api/settings", Ct))
+        {
+            using var body = await ExpectAsync(response, HttpStatusCode.OK);
+            Assert.Equal(8, body.RootElement.GetProperty("RemoteAuxiliaryEncoderLimit").GetInt32());
+        }
+
+        using (var response = await client.GetAsync("api/capabilities", Ct))
+        {
+            using var body = await ExpectAsync(response, HttpStatusCode.OK);
+            Assert.Equal(8, body.RootElement.GetProperty("auxiliaryEncoderLimit").GetInt32());
+        }
+
+        // SSE にも同じ 2 つが出ること（画面が空き枠を知る経路はここだけ）。
+        using var events = await client.GetAsync("api/events", HttpCompletionOption.ResponseHeadersRead, Ct);
+        Assert.Equal(HttpStatusCode.OK, events.StatusCode);
+        using var stream = await events.Content.ReadAsStreamAsync(Ct);
+        using var reader = new StreamReader(stream);
+
+        string state = await ReadEventAsync(reader, "state", TimeSpan.FromSeconds(5));
+        output.WriteLine(state);
+        using var snapshot = JsonDocument.Parse(state);
+        Assert.Equal(8, snapshot.RootElement.GetProperty("auxiliaryEncoderLimit").GetInt32());
+        // 何も使っていないので全部空き（DASH もトランスコードも起こしていない）。
+        Assert.Equal(8, snapshot.RootElement.GetProperty("auxiliaryEncodersFree").GetInt32());
+    }
+
+    /// <summary>録画の一覧から、望む状態の 1 本目の相対パスを取る。</summary>
+    private async Task<string> WaitForRecordingAsync(HttpClient client, bool inProgress, TimeSpan budget)
+    {
+        var deadline = Stopwatch.StartNew();
+        string last = "(1 度も一覧を読めていない)";
+
+        while (deadline.Elapsed < budget)
+        {
+            using var response = await client.GetAsync("api/recordings", Ct);
+            last = await response.Content.ReadAsStringAsync(Ct);
+            if (response.StatusCode == HttpStatusCode.OK)
+            {
+                using var body = JsonDocument.Parse(last);
+                foreach (var file in body.RootElement.GetProperty("files").EnumerateArray())
+                {
+                    if (file.GetProperty("inProgress").GetBoolean() == inProgress)
+                    {
+                        string path = file.GetProperty("path").GetString()!;
+                        output.WriteLine($"inProgress={inProgress}: {path}");
+                        return path;
+                    }
+                }
+            }
+            await Task.Delay(TimeSpan.FromMilliseconds(500), Ct);
+        }
+
+        Assert.Fail(
+            $"inProgress={inProgress} の録画が {budget.TotalSeconds:F0} 秒以内に一覧へ出ませんでした。"
+            + $"最後の応答: {last}");
+        return "";
+    }
+
+    /// <summary>トランスコードの要求を 1 回投げ、状態と本文の理由を突き合わせる。</summary>
+    private async Task ExpectTranscodeRefusalAsync(
+        HttpClient client, string query, HttpStatusCode status, string error)
+    {
+        using var response = await client.GetAsync("api/recording-transcode/" + query, Ct);
+        using var body = await ExpectAsync(response, status);
+        Assert.Equal(error, body.RootElement.GetProperty("error").GetString());
+    }
+
+    /// <summary>
+    /// <b>クエリの検査がファイルより前、ファイルが能力より前にあること。</b>
+    ///
+    /// <para>
+    /// <b>順序そのものが API の約束である。</b> 能力を先に見ると、この機械では
+    /// <c>start</c> の綴りを間違えた要求まで「この PC ではできない」になり、
+    /// 呼び出し側は自分の誤りに永久に気付けない。逆にファイルをクエリより先に見ると、
+    /// 打ち間違えたパスが 400 ではなく 404 で返る。
+    /// </para>
+    /// <para>
+    /// <b>最後の 2 つがこの機械の到達点である</b> ── 正しい要求は 404
+    /// <c>transcode unavailable</c>（ハードウェアデコーダーが無い）、録画中のファイルは
+    /// その手前の 409。true の経路は <c>tools/Verify-Transcode.ps1</c>（GPU 実機）が見る。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task TheTranscodeEndpointValidatesItsQueryBeforeTheCapability()
+    {
+        // 配信 root を録画の書き先へ揃える（`TheEventStream_PushesRecordingChanges` と同じ理由）。
+        using var instance = AppInstance.Create(
+            app, RemoteSettings(), configure: static i => i.Settings.OutputDirectory = i.RecordingsDir);
+        int port = WaitForPort(instance);
+        using var client = CreateClient(port);
+
+        const string Missing = "no-such-recording.mp4";
+        const string Session = "e2e-transcode-session";
+
+        // ---- クエリはファイルより前 ----
+        // どれも存在しないパスに対して投げている: 400 が返るということは、
+        // ファイルを見るところまで進んでいないということである。
+        await ExpectTranscodeRefusalAsync(
+            client, $"{Missing}?q=360p&session={Session}", HttpStatusCode.BadRequest, "invalid start");
+        await ExpectTranscodeRefusalAsync(
+            client, $"{Missing}?start=abc&q=360p&session={Session}",
+            HttpStatusCode.BadRequest, "invalid start");
+        await ExpectTranscodeRefusalAsync(
+            client, $"{Missing}?start=-1&q=360p&session={Session}",
+            HttpStatusCode.BadRequest, "invalid start");
+        // カスタムは「レコーダー設定の 4 値」であって、録画済みファイルには対応物が無い。
+        await ExpectTranscodeRefusalAsync(
+            client, $"{Missing}?start=0&q=custom&session={Session}",
+            HttpStatusCode.BadRequest, "unknown transcode quality");
+        await ExpectTranscodeRefusalAsync(
+            client, $"{Missing}?start=0&q=x&session={Session}",
+            HttpStatusCode.BadRequest, "unknown transcode quality");
+        await ExpectTranscodeRefusalAsync(
+            client, $"{Missing}?start=0&q=360p", HttpStatusCode.BadRequest, "invalid session");
+        await ExpectTranscodeRefusalAsync(
+            client, $"{Missing}?start=0&q=360p&session=has%20space",
+            HttpStatusCode.BadRequest, "invalid session");
+
+        // クエリが全部正しければ、ようやくファイルを見る。
+        await ExpectTranscodeRefusalAsync(
+            client, $"{Missing}?start=0&q=360p&session={Session}", HttpStatusCode.NotFound, "not found");
+
+        // ---- 録画中は 409、完了済みは能力で 404 ----
+        using (var response = await SendAsync(client, HttpMethod.Post, "api/recorders/0/start"))
+            (await ExpectAsync(response, HttpStatusCode.OK)).Dispose();
+
+        // 409 の検査が落ちても録画は必ず止める ── 止め損なうと、この後の
+        // 「完了済みファイル」が現れず、後始末でプロセスを畳むまで書き続けることになる。
+        // finally では断定しない（例外を投げると本来の失敗を覆い隠す）。停止が効いたことは
+        // 直後の `WaitForRecordingAsync(inProgress: false)` が示す。
+        try
+        {
+            string running = await WaitForRecordingAsync(client, inProgress: true, TimeSpan.FromSeconds(30));
+            await ExpectTranscodeRefusalAsync(
+                client, $"{running}?start=0&q=360p&session={Session}",
+                HttpStatusCode.Conflict, "recording in progress");
+
+            Thread.Sleep(RecordingWindow);
+        }
+        finally
+        {
+            using var stop = await SendAsync(client, HttpMethod.Post, "api/recorders/0/stop");
+            output.WriteLine($"stop={(int)stop.StatusCode}");
+        }
+
+        string finished = await WaitForRecordingAsync(client, inProgress: false, TimeSpan.FromSeconds(30));
+        await ExpectTranscodeRefusalAsync(
+            client, $"{finished}?start=0&q=360p&session={Session}",
+            HttpStatusCode.NotFound, "transcode unavailable");
+        // 位置と画質を変えても答えは同じ（能力はファイルの中身に依らない）。
+        await ExpectTranscodeRefusalAsync(
+            client, $"{finished}?start=1.5&q=720p&session={Session}",
+            HttpStatusCode.NotFound, "transcode unavailable");
+    }
 }

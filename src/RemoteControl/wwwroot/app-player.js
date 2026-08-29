@@ -186,6 +186,11 @@
   }
 
   function stopFollow(message) {
+    // A transcode is another supply side for this same element, and it is not held by
+    // any of the state below: whatever stops the follow stops it too, or a tab that
+    // moved on would go on holding an auxiliary encoder slot.
+    stopTranscode();
+
     followGeneration++;
     if (followTimer !== null) {
       clearTimeout(followTimer);
@@ -905,6 +910,748 @@
     video.currentTime = target;
   }
 
+  // ---- transcoded playback of a finished recording ----
+  //
+  // The same file, re-encoded to a smaller frame while it is read. The server owns one
+  // pipeline per session and answers with a fragmented MP4 that starts at the position
+  // that was asked for, so this side does what the live preview does with its chunked
+  // body -- plus three things the preview has no need of:
+  //
+  // 1. `mode = 'sequence'` with `timestampOffset = start`. The response always begins at
+  //    presentation time zero (it is a fresh pipeline, not a cut out of the file), so the
+  //    offset is what puts the picture back onto the recording's own timeline and keeps
+  //    the clock and the seek bar honest.
+  // 2. **The reading is held back.** The server converts as fast as the machine can
+  //    (`sync=false`), and reading to the end would pull a whole recording through an
+  //    encoder for someone watching its first minute. While more than
+  //    TRANSCODE_READ_AHEAD_SECONDS is buffered ahead of the position, `read()` is not
+  //    called at all: the response stays open and the server blocks on its own appsink.
+  //    **Closing it instead would give the auxiliary encoder slot away**, and getting one
+  //    back is not something this page can promise.
+  // 3. A seek is a new request on the **same session id**, which is what lets the server
+  //    hand the slot from the old pipeline to the new one. A new id would ask for a
+  //    second slot while still holding the first.
+  // 4. **One request at a time, and one target waiting for it.** A dragged seek bar fires
+  //    `input` many times, and each of them reaches this side. `transcodePhase` says why
+  //    the buffer cannot answer right now -- 'removing' while a range removal runs (a
+  //    SourceBuffer takes one operation at a time and `abort()` throws while it does),
+  //    'requesting' from the moment a request goes out until the SourceBuffer it will be
+  //    appended to exists. In either state a seek only writes `transcodeSeekAt` and
+  //    returns; whoever ends the phase (the removal's `updateend`, or the answer
+  //    arriving) takes that target. So a whole drag costs one request in flight plus at
+  //    most one behind it, rather than one pipeline per `input`.
+  //
+  // Which quality is playing is this page's business alone -- the server keeps no
+  // selection -- so a reload comes back on the recording's own stream.
+
+  var TRANSCODE_PREFIX = '/api/recording-transcode/';
+
+  // The server's word for "every auxiliary encoder is in use". It arrives as the `error`
+  // of a 409, from this route and from the DASH preview's three, and it is the one
+  // refusal that repairs itself: the SSE `state` says when a slot came back.
+  var TRANSCODE_BUSY = 'auxiliary encoder busy';
+
+  // How far ahead of the position the response is allowed to run before reading stops,
+  // and how long to wait before looking again.
+  var TRANSCODE_READ_AHEAD_SECONDS = 60;
+  var TRANSCODE_RESUME_MS = 500;
+
+  // How far the target a seek left behind has to be from the position the answer on its
+  // way was asked for before that answer is dropped and the request made again. Below it
+  // the difference is not worth a pipeline: the media that is arriving already covers it.
+  var TRANSCODE_RETARGET_SECONDS = 0.25;
+
+  // The presets the server offers, largest first. **Their heights are the whole of what
+  // is mirrored here**: which of them apply to a recording is `preset.height <= its
+  // height`, the same rule the server uses for the live preview, and the frame each one
+  // resolves to is never computed on this side (only the supply side sees the caps).
+  var TRANSCODE_PRESETS = [
+    { id: '1080p', label: '1080p', height: 1080 },
+    { id: '720p', label: '720p', height: 720 },
+    { id: '480p', label: '480p', height: 480 },
+    { id: '360p', label: '360p', height: 360 }
+  ];
+
+  // One id for the lifetime of the page. Every request this tab makes carries it, so the
+  // server sees one session however often the quality or the position changes.
+  var transcodeSession = null;
+
+  // What the recordings page last handed over: the row `#player` is showing. Both the
+  // original and every transcode of it are opened from this one record.
+  var currentRecording = null;
+
+  var transcodeActive = false;
+  var transcodeQuality = null;
+  var transcodeStart = 0;
+
+  // Bumped by every attempt. **An answer that is no longer the newest attempt installs
+  // nothing** -- a dragged seek bar can put several requests in flight, and the one that
+  // arrives last is not necessarily the one that was asked for last.
+  var transcodeRequests = 0;
+
+  // Bumped by every install and every stop: a pending read, an `updateend` or a timer
+  // belonging to an older stream returns without touching anything.
+  var transcodeGeneration = 0;
+
+  var transcodeAbort = null;
+  var transcodeTimer = null;
+  var transcodeReadTimer = null;
+  var transcodeSource = null;
+  var transcodeBuffer = null;
+
+  // The running stream's `flush`, so that the one `updateend` listener on the SourceBuffer
+  // can reach whichever stream owns it now.
+  var transcodeFlush = null;
+
+  // Why the SourceBuffer cannot answer a seek right now (point 4 above): 'removing' while
+  // a seek is freeing the media it is about to replace -- nothing may be appended in
+  // between -- 'requesting' from the moment a request goes out until the buffer it will
+  // be appended to exists, null when the buffer is the playback's own to seek within.
+  var transcodePhase = null;
+
+  // Where the seek that is waiting on that phase wants to land, and whether one is
+  // waiting at all. **At most one is kept**: a drag that has moved on has said what it
+  // wants, and the positions it passed over on the way are not wanted at all.
+  var transcodeSeekAt = 0;
+  var transcodeLatched = false;
+
+  // Whether the playback that is being rebuilt was running. Read when the rebuild starts,
+  // because by the time the first chunk of the answer lands the element has been emptied
+  // and is paused whatever the user asked for.
+  var transcodeResume = true;
+
+  // The position this file asked the element to move to, recognised the same way the
+  // follow's corrections are: `seeking` is delivered as a task and the element has
+  // usually moved a little past it by then.
+  var transcodeSeekTarget = null;
+
+  // Set by a 409 and cleared by the first `state` that reports a free slot. The menu reads
+  // it so that a refusal is visible on the entries that were refused, not only in the
+  // status line.
+  var transcodeBusy = false;
+
+  // What the last SSE `state` said. null until one arrives -- unknown is not "none free",
+  // and greying the menu out before the first event would make the feature look absent.
+  var auxiliaryEncodersFree = null;
+
+  function transcodeSessionId() {
+    if (transcodeSession === null) {
+      // The server accepts [A-Za-z0-9_-]{1,64}, which a UUID satisfies as it is written.
+      transcodeSession = window.crypto && window.crypto.randomUUID
+        ? window.crypto.randomUUID()
+        : 'tc-' + Date.now().toString(36) + '-' + Math.random().toString(36).substring(2);
+    }
+    return transcodeSession;
+  }
+
+  // Beside the bytes, on a route of its own -- the same shape as the fragment index, and
+  // for the same reason: `{*path}` reaches the end of the URL, so the kind of answer
+  // cannot be a suffix.
+  function transcodeUrlFor(url) {
+    return url.indexOf(FOLLOW_MEDIA_PREFIX) === 0
+      ? TRANSCODE_PREFIX + url.substring(FOLLOW_MEDIA_PREFIX.length)
+      : null;
+  }
+
+  // Everything a transcode holds, without touching the element: `stopFollow` owns the
+  // teardown of `#player` and calls this on its way through, so releasing the element
+  // here as well would tear it down twice.
+  function stopTranscode() {
+    transcodeRequests++;
+    transcodeGeneration++;
+    if (transcodeAbort !== null) {
+      transcodeAbort.abort();
+      transcodeAbort = null;
+    }
+    if (transcodeTimer !== null) {
+      clearTimeout(transcodeTimer);
+      transcodeTimer = null;
+    }
+    if (transcodeReadTimer !== null) {
+      clearTimeout(transcodeReadTimer);
+      transcodeReadTimer = null;
+    }
+    transcodeActive = false;
+    transcodeQuality = null;
+    transcodeSource = null;
+    transcodeBuffer = null;
+    transcodeFlush = null;
+    transcodePhase = null;
+    transcodeLatched = false;
+    transcodeResume = true;
+    transcodeSeekTarget = null;
+  }
+
+  // The end of a request, whatever it answered. The phase it set is dropped, and a seek
+  // that arrived while it was on the wire is taken now -- there is nothing left to wait
+  // for. Only the newest attempt may do this; an older one that finally comes back would
+  // otherwise clear the phase a newer request is holding.
+  function endTranscodeRequest() {
+    transcodePhase = null;
+    if (!transcodeLatched) { return; }
+
+    transcodeLatched = false;
+    if (transcodeActive) { restartTranscodeAt(transcodeSeekAt); }
+  }
+
+  // Where a seek that arrived while a request was on the wire wants to land, when that is
+  // far enough from what the request asked for to be worth building the pipeline again.
+  // Null means the answer in hand already covers it, drag or no drag.
+  function transcodeRetargetFor(start) {
+    if (!transcodeLatched) { return null; }
+    return TRANSCODE_RETARGET_SECONDS < Math.abs(transcodeSeekAt - start) ? transcodeSeekAt : null;
+  }
+
+  // **The request comes first and the player is rebuilt from its answer.** The refusals
+  // this route has are ordinary answers (no slot, this machine cannot transcode, the file
+  // is still being written), and a switch that tore the playback down before asking would
+  // turn every one of them into a black rectangle.
+  function requestTranscode(id, start, reuse) {
+    var file = currentRecording;
+    if (file === null || typeof MediaSource === 'undefined') { return; }
+
+    var base = transcodeUrlFor(file.url);
+    if (base === null) { return; }
+
+    var attempt = ++transcodeRequests;
+    var controller = new AbortController();
+    var url = base
+      + '?start=' + encodeURIComponent(Math.max(0, start).toFixed(3))
+      + '&q=' + encodeURIComponent(id)
+      + '&session=' + encodeURIComponent(transcodeSessionId());
+
+    // Held from here until the answer has a SourceBuffer behind it: while it is set, a
+    // seek only moves the target it will land on, so a dragged bar cannot put a second
+    // request on the wire for a position it has already left.
+    transcodePhase = 'requesting';
+
+    fetch(url, { signal: controller.signal, credentials: 'same-origin', cache: 'no-store' })
+      .then(function (response) {
+        // Superseded while this was in flight: the body is not read and the connection is
+        // dropped, which is what tells the server to let the pipeline behind it go. The
+        // phase belongs to the newer request now and is left where it is.
+        if (attempt !== transcodeRequests) { controller.abort(); return undefined; }
+        if (response.status === 401) {
+          endTranscodeRequest();
+          showLogin('Sign in to continue.');
+          return undefined;
+        }
+        if (!response.ok) {
+          endTranscodeRequest();
+          return refuseTranscode(response);
+        }
+
+        installTranscode(response, controller, id, Math.max(0, start), reuse === true);
+        return undefined;
+      })
+      .catch(function (error) {
+        if (attempt !== transcodeRequests || error.name === 'AbortError') { return; }
+        endTranscodeRequest();
+        status($('playerStatus'), error.message, true);
+      });
+  }
+
+  // A refusal changes nothing that is playing. The 409 is remembered as well as shown: the
+  // quality menu greys its presets out until a slot is reported free again.
+  function refuseTranscode(response) {
+    return response.json().catch(function () { return {}; }).then(function (body) {
+      if (response.status === 409 && body.error === TRANSCODE_BUSY) { transcodeBusy = true; }
+      status($('playerStatus'), describe(body, response.status), true);
+    });
+  }
+
+  function installTranscode(response, controller, id, start, reuse) {
+    var codecs = response.headers.get('X-Codecs') || FOLLOW_CODECS_FALLBACK;
+    var served = response.headers.get('X-Transcode-Quality') || id;
+    var mime = 'video/mp4; codecs="' + codecs + '"';
+
+    // **Read before anything is torn down.** Where the seek bar went while this answer was
+    // on its way is what the playback has to end up at.
+    var retarget = transcodeRetargetFor(start);
+    transcodeLatched = false;
+    transcodePhase = null;
+
+    // **A refusal, not a failure.** Nothing this page can do makes a codec the browser
+    // will not decode playable, so the body is dropped unread -- which is what lets the
+    // server fold the pipeline -- and whatever is playing is left exactly as it is. The
+    // same reading the DASH preview does of a representation it cannot take.
+    if (typeof MediaSource === 'undefined' || !MediaSource.isTypeSupported(mime)) {
+      controller.abort();
+      status($('playerStatus'), 'this browser cannot play ' + mime, true);
+      return;
+    }
+
+    // A seek keeps the presentation it already has: the element's position is where the
+    // user put it, and building a new MediaSource would send it back to zero and lose it.
+    if (reuse && transcodeBuffer !== null && transcodeSource !== null
+        && transcodeSource.readyState === 'open') {
+      transcodeGeneration++;
+      transcodeAbort = controller;
+      transcodeActive = true;
+      transcodeQuality = served;
+      transcodeStart = start;
+
+      // The bar moved on while this was in flight. The buffer is emptied again for where
+      // it went -- one more request behind the one that is being dropped, never one per
+      // `input`, because the phase that starts here latches everything that follows.
+      if (retarget !== null) {
+        restartTranscodeAt(retarget);
+        return;
+      }
+
+      // `place()` is asked for even here: the removal that preceded this request emptied
+      // the buffer, so the position has nothing under it until the first chunk lands, and
+      // the call only ever moves forward to the first sample that arrives.
+      pumpTranscode(response, transcodeGeneration, transcodeBuffer, transcodeSource, 0 < start);
+      return;
+    }
+
+    // Whatever owns the element now is let go first -- including a transcode, which
+    // `stopFollow` stops on its way through. **It resets the resume intent as well**, and
+    // this rebuild is not what decided it: a seek taken while the user has the playback
+    // paused reaches here too, whenever the length is unknown and nothing can be removed.
+    var resume = transcodeResume;
+    stopFollow('');
+    transcodeResume = resume;
+
+    var generation = ++transcodeGeneration;
+    transcodeAbort = controller;
+    transcodeActive = true;
+    transcodeQuality = served;
+    transcodeStart = start;
+
+    // `stopFollow` cleared the phase on its way through `stopTranscode`, and it goes back:
+    // **the SourceBuffer does not exist until `sourceopen`**, and a seek arriving in that
+    // window has nothing to remove from -- it would build a second MediaSource, and the
+    // position would be thrown back to zero for each one.
+    transcodePhase = 'requesting';
+
+    var video = $('player');
+    var source = new MediaSource();
+    releaseFollowUrl();
+    followUrl = URL.createObjectURL(source);
+    video.src = followUrl;
+    status($('playerStatus'), 'transcoding ' + served + '...', false);
+
+    // **Once, and only once**, for the reason the follow documents: a MediaSource that
+    // reached `ended` goes back to `open` when one of its buffers is removed from, and a
+    // second listener would add a second SourceBuffer over a body already read to its end.
+    source.addEventListener('sourceopen', function () {
+      if (generation !== transcodeGeneration) { return; }
+
+      var buffer;
+      try {
+        buffer = source.addSourceBuffer(mime);
+      } catch (error) {
+        // The element is already holding this empty MediaSource (`stopFollow` handed it
+        // over above), so letting the state go is not enough -- the element has to be
+        // released with it or a black rectangle stays where the playback was.
+        failTranscode(error.message);
+        return;
+      }
+
+      // 'sequence', not 'segments': the pipeline starts a timeline of its own at zero
+      // however far into the file it was told to begin, so the offset is what carries the
+      // position. In 'segments' the media would land at the head of the recording.
+      buffer.mode = 'sequence';
+      try {
+        buffer.timestampOffset = start;
+      } catch (error) {
+        /* the media lands at zero; the picture is right and only the clock is not */
+      }
+
+      transcodeSource = source;
+      transcodeBuffer = buffer;
+      buffer.addEventListener('updateend', onTranscodeUpdateEnd);
+      buffer.addEventListener('error', function () {
+        if (generation !== transcodeGeneration) { return; }
+        failTranscode('the source buffer failed');
+      });
+
+      applyTranscodeDuration(source);
+
+      // The buffer exists, so the phase is over -- and whatever the bar asked for while
+      // it lasted is taken now. **Nothing has been appended yet**, so the position is
+      // reached by asking again rather than by emptying anything: the offset simply moves
+      // with it, and this body is dropped unread.
+      transcodePhase = null;
+      // **The newest wins.** A drag that came back to where this answer starts is still
+      // the last thing said, so it is the one measured against it -- taking the older
+      // target because the newer one is near would send the playback where the user has
+      // just left.
+      var desired = transcodeLatched ? transcodeSeekAt : retarget;
+      transcodeLatched = false;
+      var target = desired !== null && TRANSCODE_RETARGET_SECONDS < Math.abs(desired - start)
+        ? desired
+        : null;
+      if (target !== null) {
+        controller.abort();
+        try {
+          buffer.timestampOffset = target;
+        } catch (error) {
+          /* the media lands at zero; the picture is right and only the clock is not */
+        }
+        requestTranscode(transcodeQuality, target, true);
+        return;
+      }
+
+      pumpTranscode(response, generation, buffer, source, 0 < start);
+    }, { once: true });
+  }
+
+  // The length is the listing's, not the media's: the response carries only the part that
+  // was asked for, so nothing in it says how long the recording is. **Without a duration
+  // the element refuses to seek at all**, which is the whole of what the bar offers here.
+  function applyTranscodeDuration(source) {
+    var known = currentRecording !== null && 0 < currentRecording.durationMs
+      ? currentRecording.durationMs / 1000
+      : 0;
+    if (known <= 0) { return; }
+
+    try {
+      source.duration = known;
+    } catch (error) {
+      /* the bar falls back to the buffered end */
+    }
+    if (followSetSeekable !== null) { followSetSeekable(known); }
+  }
+
+  // A SourceBuffer takes one operation at a time, so the removal a seek starts owns it
+  // until it is done; only then may the offset move and the new request be made.
+  function onTranscodeUpdateEnd() {
+    if (!transcodeActive || transcodeBuffer === null) { return; }
+
+    // Only a removal ends here. 'requesting' is not an operation on the buffer, and
+    // reading it as one would take an ordinary append's `updateend` for the end of a seek.
+    if (transcodePhase === 'removing') {
+      if (transcodeBuffer.updating) { return; }
+      transcodePhase = null;
+      // `transcodeSeekAt` is where the drag last put it, which is the whole point of
+      // latching: every `input` after the removal started wrote it, and this takes the
+      // last one rather than the one the removal began for.
+      transcodeLatched = false;
+      try {
+        transcodeBuffer.timestampOffset = transcodeSeekAt;
+      } catch (error) {
+        /* the append still lands; only its place on the timeline is the old one */
+      }
+      requestTranscode(transcodeQuality, transcodeSeekAt, true);
+      return;
+    }
+
+    if (transcodeFlush !== null) { transcodeFlush(); }
+  }
+
+  function failTranscode(reason) {
+    stopTranscode();
+    releaseFollowPlayer();
+    status($('playerStatus'), reason, true);
+  }
+
+  // Owns everything that spans one response: the chunks waiting for the SourceBuffer,
+  // whether the body has been read to its end, and whether the position has been put where
+  // the media starts.
+  function pumpTranscode(response, generation, buffer, source, reposition) {
+    var video = $('player');
+    var queue = [];
+    var reading = false;
+    var ended = false;
+    var started = false;
+    var placed = !reposition;
+    var trimmed = false;
+    var reader = response.body.getReader();
+
+    function alive() { return generation === transcodeGeneration; }
+
+    // The element outlives every stream, so its `error` listener is attached once and
+    // routed through this hook -- the same shape the follow and the preview use.
+    followOnFailure = function (reason) {
+      if (!alive()) { return; }
+      failTranscode(reason);
+    };
+
+    // The first frames land at `start`, so an element sitting at zero has nothing to
+    // decode. Done once, and recorded so that the `seeking` it raises is not read as the
+    // user taking over.
+    function place() {
+      if (placed) { return; }
+      var ranges = video.buffered;
+      if (ranges.length === 0) { return; }
+
+      placed = true;
+      var target = ranges.start(0);
+      if (video.currentTime < target) {
+        transcodeSeekTarget = target;
+        video.currentTime = target;
+      }
+    }
+
+    function flush() {
+      if (!alive() || buffer.updating || transcodePhase === 'removing') { return; }
+      place();
+
+      // One remove() between two appends, and the flag is what stops it taking every turn:
+      // a cut can free nothing (remove is granular to random access points) and would
+      // otherwise ask to be repeated forever.
+      if (!trimmed) {
+        trimmed = true;
+        if (trimFollow(buffer, false)) { return; }   // its own updateend comes back here
+      }
+
+      if (0 < queue.length) {
+        var chunk = queue[0];
+        try {
+          buffer.appendBuffer(chunk);
+        } catch (error) {
+          // A full SourceBuffer is not a failure: what is in it still plays and the media
+          // behind the position can be freed as the position advances. The chunk stays at
+          // the head of the queue -- a byte stream with a hole never recovers.
+          if (error.name === 'QuotaExceededError') {
+            trimmed = false;
+            if (trimFollow(buffer, true)) { return; }
+            scheduleTranscodeFlush(generation, flush);
+            return;
+          }
+          failTranscode('append failed: ' + error.message);
+          return;
+        }
+        queue.shift();
+        trimmed = false;
+        // Only what was running goes on running: a seek taken while the user had the
+        // element paused rebuilds the supply, and starting it here would take the pause
+        // away from them. `transcodeResume` was read when the rebuild began, because by
+        // now the element is paused whichever way it was.
+        if (!started) {
+          started = true;
+          if (transcodeResume) {
+            video.play().catch(function () { /* the browser decides; the controls remain */ });
+          }
+        }
+        return;
+      }
+
+      if (!reading && ended) { finish(); }
+    }
+
+    function finish() {
+      try {
+        if (source.readyState === 'open') { source.endOfStream(); }
+      } catch (error) {
+        /* the element already has everything; nothing is left to repair */
+      }
+      status($('playerStatus'), 'complete (transcode ' + transcodeQuality + ')', false);
+    }
+
+    // How far the media reaches beyond the position. A negative distance (a seek forward
+    // into nothing) reads as "keep reading", which is what it means.
+    function readAhead() {
+      var ranges = video.buffered;
+      if (ranges.length === 0) { return 0; }
+      return ranges.end(ranges.length - 1) - video.currentTime;
+    }
+
+    function step() {
+      if (!alive()) { return; }
+
+      // **Not a smaller read, no read at all.** The response is the back pressure: while
+      // this side does not read, the server's appsink fills and its pipeline waits.
+      if (TRANSCODE_READ_AHEAD_SECONDS < readAhead()) {
+        reading = false;
+        if (transcodeReadTimer === null) {
+          transcodeReadTimer = setTimeout(function () {
+            transcodeReadTimer = null;
+            step();
+          }, TRANSCODE_RESUME_MS);
+        }
+        return;
+      }
+
+      reading = true;
+      reader.read().then(function (chunk) {
+        if (!alive()) { return; }
+        if (chunk.done) {
+          reading = false;
+          ended = true;
+          flush();
+          return;
+        }
+        queue.push(chunk.value);
+        flush();
+        step();
+      }).catch(function (error) {
+        if (!alive() || error.name === 'AbortError') { return; }
+        failTranscode(error.message);
+      });
+    }
+
+    transcodeFlush = flush;
+    step();
+  }
+
+  // A retry of an append the SourceBuffer refused. One timer, shared with the read
+  // throttle, which is safe because the two cannot both be wanted: a refused append means
+  // the queue is not empty, and the throttle only runs when it is.
+  function scheduleTranscodeFlush(generation, flush) {
+    if (transcodeTimer !== null) { return; }
+    transcodeTimer = setTimeout(function () {
+      transcodeTimer = null;
+      if (generation !== transcodeGeneration) { return; }
+      flush();
+    }, FOLLOW_POLL_MS);
+  }
+
+  // **The only way to a position the response has not reached.** The pipeline reads
+  // forward from where it was told to start, so a position outside what is buffered is a
+  // new request -- on the same session, which is what hands the encoder slot over rather
+  // than asking for a second one.
+  function seekTranscode(seconds) {
+    if (!transcodeActive) { return false; }
+
+    var video = $('player');
+    var target = Math.max(0, seconds);
+
+    if (video.currentTime !== target) {
+      transcodeSeekTarget = target;
+      video.currentTime = target;
+    }
+
+    // **Before the shortcut, not after it.** What `buffered` reports while a removal runs
+    // is on its way out, and while a request is out it belongs to a position that has been
+    // left, so neither may be read as "already have it" -- the seek would be answered by
+    // media that is about to disappear. The target is remembered and the phase's own end
+    // takes it. This is the path a dragged bar takes, `input` after `input`.
+    if (transcodePhase !== null) {
+      transcodeSeekAt = target;
+      transcodeLatched = true;
+      return true;
+    }
+
+    if (insideBuffered(video, target)) { return true; }
+
+    restartTranscodeAt(target);
+    return true;
+  }
+
+  function restartTranscodeAt(seconds) {
+    // **A seek asked for while the last one is still being carried out only has to change
+    // its mind** -- the same shortcut `seekTo` takes for the follow, and for the same
+    // reason: `abort()` throws while a range removal runs, so the value would be dropped
+    // and the drag would look ignored, and a second request would have the server build a
+    // pipeline for a position that has already been passed.
+    if (transcodePhase !== null) {
+      transcodeSeekAt = seconds;
+      transcodeLatched = true;
+      return;
+    }
+
+    // Read while the element still says so: everything below empties it, and a paused
+    // playback would look running by the time the first chunk lands.
+    transcodeResume = !$('player').paused;
+
+    // The connection that is running belongs to the position that was abandoned. Dropping
+    // it is also what tells the server it may fold that pipeline.
+    if (transcodeAbort !== null) {
+      transcodeAbort.abort();
+      transcodeAbort = null;
+    }
+    if (transcodeTimer !== null) {
+      clearTimeout(transcodeTimer);
+      transcodeTimer = null;
+    }
+    if (transcodeReadTimer !== null) {
+      clearTimeout(transcodeReadTimer);
+      transcodeReadTimer = null;
+    }
+    transcodeGeneration++;
+    transcodeFlush = null;
+    transcodeSeekAt = seconds;
+    transcodeLatched = false;
+
+    if (transcodeBuffer === null || transcodeSource === null
+        || transcodeSource.readyState !== 'open') {
+      requestTranscode(transcodeQuality, seconds, false);
+      return;
+    }
+
+    // **`abort()` is what resets the parser, and `remove()` is not.** Appends land on
+    // arbitrary byte boundaries, so the buffer is usually holding half a media segment,
+    // and the next response starts with an init segment of its own.
+    try {
+      transcodeBuffer.abort();
+      transcodeBuffer.remove(0, Infinity);
+      transcodePhase = 'removing';
+    } catch (error) {
+      // `remove()` refuses while the MediaSource has no duration, which is the case for a
+      // recording whose length is not known yet (no listing length, no index read across).
+      // The whole player is built again for that seek -- the request below latches the
+      // ones that follow, so it happens once per seek and not once per `input`.
+      transcodePhase = null;
+      requestTranscode(transcodeQuality, seconds, false);
+    }
+  }
+
+  // What the row that was picked in the listing offers. The Play button hands the whole
+  // row over rather than a URL, because the quality menu needs the frame height, the
+  // length and whether the file is finished -- and reading those back out of the table
+  // would tie this file to the shape of that table.
+  function openRecording(file, url) {
+    currentRecording = {
+      path: file.path,
+      url: url,
+      height: typeof file.height === 'number' ? file.height : 0,
+      durationMs: typeof file.durationMs === 'number' ? file.durationMs : 0,
+      fragmented: file.fragmented === true,
+      inProgress: file.inProgress === true
+    };
+    transcodeBusy = false;
+    openOriginal(0);
+  }
+
+  // The recording as it was written. **Both supply sides live here**: a fragmented file
+  // over MSE (it can be played while it is still being written) and a plain `<video src>`
+  // for one whose `moov` is finished.
+  function openOriginal(resumeAt) {
+    var file = currentRecording;
+    if (file === null) { return; }
+
+    if (file.fragmented) {
+      startFollow(file.url, file.path);
+      resumeFollowAt(resumeAt, followGeneration);
+      return;
+    }
+
+    stopFollow('');
+    var element = $('player');
+    element.src = file.url;
+    if (0 < resumeAt) { seekWhenLoaded(element, file.url, resumeAt); }
+    element.play().catch(function () { /* the browser decides; the controls remain */ });
+  }
+
+  // A position cannot be assigned before the element knows how long the media is.
+  function seekWhenLoaded(element, url, seconds) {
+    element.addEventListener('loadedmetadata', function () {
+      // Another row may have been opened while the metadata was being read.
+      if (element.getAttribute('src') !== url) { return; }
+      element.currentTime = seconds;
+    }, { once: true });
+  }
+
+  // Coming back from a transcode to the recording's own stream keeps the position, and
+  // reaching it needs the fragment index, which arrives a moment after the first bytes.
+  // **Bounded**: a file with no index plays from its beginning rather than not at all.
+  var FOLLOW_RESUME_ATTEMPTS = 30;
+
+  function resumeFollowAt(seconds, generation) {
+    if (seconds <= 0) { return; }
+
+    var attempts = 0;
+    (function retry() {
+      if (generation !== followGeneration || FOLLOW_RESUME_ATTEMPTS < ++attempts) { return; }
+      if (followSeekTo !== null && followSeekTo(seconds)) { return; }
+      setTimeout(retry, FOLLOW_INDEX_POLL_MS / 2);
+    })();
+  }
+
   // ---- live preview (fragmented MP4 over MSE) ----
   //
   // The response is an endless chunked body: one init segment (ftyp+moov) and then
@@ -1247,6 +1994,12 @@
 
   var DASH_STARTING_STATUS = 'DASH: starting…';
 
+  // Every auxiliary encoder is in use (409, `TRANSCODE_BUSY`). Treated exactly like the
+  // 503 above: the recorder's mux is built on the first sample that finds a free slot, so
+  // waiting is the whole of the repair -- and, unlike the 503, what has to happen first is
+  // somebody else stopping.
+  var DASH_BUSY_STATUS = 'DASH: busy (auxiliary encoder)';
+
   // What the manifest currently offers, in the order it lists them. The server
   // publishes one representation today and the first one is always the one played;
   // the list is kept so that the quality menu can be given more than one entry
@@ -1365,6 +2118,10 @@
       return response.json().catch(function () { return {}; }).then(function (body) {
         if (response.status === 503 && body.error === DASH_STARTING_ERROR) {
           status($('previewStatus'), DASH_STARTING_STATUS, false);
+          return;
+        }
+        if (response.status === 409 && body.error === TRANSCODE_BUSY) {
+          status($('previewStatus'), DASH_BUSY_STATUS, false);
           return;
         }
         fail(describe(body, response.status));
@@ -2311,10 +3068,86 @@
     });
   }
 
-  // A recording is served as it was written; there is nothing to pick between, so the
-  // menu is not drawn at all.
+  // "The recording as it was written", followed by every preset this machine could
+  // re-encode it to. **The first entry is always offered and never uses an encoder slot**:
+  // whatever else is refused, the bytes on disk can be served.
+  //
+  // The presets appear only for a finished recording. A file that is still being written
+  // has no length the converter could rely on -- `filesrc` decides where the end is when
+  // it opens -- and the server refuses it for that reason.
   function recordingQualities() {
-    return [{ id: 'original', label: 'Original', current: true }];
+    var offered = [{ id: 'original', label: 'Original', current: !transcodeActive }];
+
+    var capabilities = core.state.capabilities;
+    if (capabilities === null || capabilities.transcode !== true
+        || currentRecording === null || currentRecording.inProgress) {
+      return offered;
+    }
+
+    // **A refusal is drawn, not dropped.** A menu that loses its entries whenever the
+    // slots are taken reads as broken; one that greys them out says what is going on. The
+    // transcode that is running is exempt: switching it keeps the slot it already holds
+    // (the server sees the same session id and hands the lease over).
+    var busy = (transcodeBusy || auxiliaryEncodersFree === 0) && !transcodeActive;
+
+    transcodePresetsFor(currentRecording.height).forEach(function (preset) {
+      offered.push({
+        id: preset.id,
+        label: busy ? preset.label + ' (busy)' : preset.label,
+        current: transcodeActive && transcodeQuality === preset.id,
+        disabled: busy
+      });
+    });
+
+    return offered;
+  }
+
+  // Which presets a frame of this height can be asked for: the ones that are not larger
+  // than it, because the server never scales a recording up. A height it does not know
+  // (an older sidecar) offers all of them -- the server resolves each against the real
+  // caps anyway, so the worst case is a menu entry that lands on the source's own size.
+  function transcodePresetsFor(height) {
+    if (height <= 0) { return TRANSCODE_PRESETS; }
+
+    var cap = height - (height % 2);
+    var offered = TRANSCODE_PRESETS.filter(function (preset) { return preset.height <= cap; });
+    // Nothing fits: the smallest preset is still offered, which is what the server does
+    // for a source below every one of them.
+    return 0 < offered.length ? offered : [TRANSCODE_PRESETS[TRANSCODE_PRESETS.length - 1]];
+  }
+
+  // The position is carried across the switch in both directions: a quality menu that
+  // sends the playback back to the beginning is one nobody uses twice.
+  function chooseRecordingQuality(id) {
+    rememberRecordingLength();
+    var at = $('player').currentTime;
+    if (id === 'original') {
+      openOriginal(at);
+      return;
+    }
+    // Picking a quality is asking to watch it, the same as opening a row: the playback
+    // that is built for it starts. (A seek is the other case -- see `restartTranscodeAt`.)
+    transcodeResume = true;
+    requestTranscode(id, at, false);
+  }
+
+  // **The listing has no length for a fragmented recording** (`moov` says 0 and is never
+  // rewritten), so the only place it exists is the fragment index -- which is released along
+  // with the follow. Read across before the switch, it is what gives the transcoded playback
+  // a seek bar; without it the element refuses to seek at all.
+  function rememberRecordingLength() {
+    if (currentRecording === null || 0 < currentRecording.durationMs) { return; }
+    if (followIndex === null || !(0 < followIndex.timescale)) { return; }
+
+    currentRecording.durationMs = 1000 * followIndex.totalDuration / followIndex.timescale;
+  }
+
+  // How many slots the server last reported free (SSE `state`). A slot coming back is the
+  // only thing that clears a refusal: nothing this page does can free one.
+  function onAuxiliaryEncoders(free) {
+    if (typeof free !== 'number') { return; }
+    auxiliaryEncodersFree = free;
+    if (0 < free) { transcodeBusy = false; }
   }
 
   // Both elements are shelled here rather than in app.js: the capabilities are this
@@ -2327,9 +3160,10 @@
     seekable: false,
     speed: true,
     qualities: recordingQualities,
-    onQuality: function () { /* one quality: the menu is never drawn */ },
+    onQuality: chooseRecordingQuality,
     onGoLive: resumeFollow,
     onSeek: function (seconds) {
+      if (transcodeActive) { seekTranscode(seconds); return; }
       if (followSeekTo !== null) { followSeekTo(seconds); }
     }
   });
@@ -2360,6 +3194,20 @@
   // that one is forgiven.
   function onPlayerSeeking() {
     var video = $('player');
+
+    // A transcode reads forward from the position it was started at, so a position it has
+    // not reached is a new request rather than a wait. The moves this file makes itself
+    // (putting the element where the media starts) are recognised the same way the
+    // follow's corrections are, and are not restarts.
+    if (transcodeActive) {
+      var ours = transcodeSeekTarget !== null
+        && Math.abs(video.currentTime - transcodeSeekTarget) < FOLLOW_SEEK_MATCH_SECONDS;
+      transcodeSeekTarget = null;
+      if (ours || insideBuffered(video, video.currentTime)) { return; }
+      restartTranscodeAt(video.currentTime);
+      return;
+    }
+
     if (followSeekTarget !== null
         && Math.abs(video.currentTime - followSeekTarget) < FOLLOW_SEEK_MATCH_SECONDS) {
       followSeekTarget = null;
@@ -2409,6 +3257,20 @@
     if (previewTarget !== null) { startSelectedPreview(previewTarget); }
   }
 
+  // **Leaving the page gives the encoder slot back.** The router hides a page, it never
+  // takes one down, so a transcode would otherwise keep converting -- and keep its slot --
+  // for as long as the tab is open. Only the transcode is stopped: a playback the operator
+  // left running is theirs, and the recording's own bytes cost the server nothing.
+  //
+  // app-core.js owns the router and is loaded first, so the page's `hidden` is already up
+  // to date by the time this runs.
+  window.addEventListener('hashchange', function () {
+    if ($('pageRecordings').hidden && transcodeActive) {
+      stopTranscode();
+      status($('playerStatus'), '', false);
+    }
+  });
+
   PRA.player = {
     createShell: createShell,
     // What the manifest last offered. One entry today; the quality menu reads it once
@@ -2420,6 +3282,24 @@
     previewQualityState: function () { return previewQualityState; },
     startFollow: startFollow,
     stopFollow: stopFollow,
+    // How a row of the listing is played. **The whole row is handed over**, because which
+    // qualities the menu may offer is decided from its height, its length and whether it
+    // is finished -- and reading those back out of the table would tie this file to the
+    // shape of that table.
+    openRecording: openRecording,
+    // How many auxiliary encoder slots the server last reported free (SSE `state`).
+    onAuxiliaryEncoders: onAuxiliaryEncoders,
+    // What is being transcoded, for the E2E layer. `active` is false whenever the
+    // recording's own stream is playing, which is every case on a machine with no
+    // hardware H.264 decoder.
+    transcodeState: function () {
+      return {
+        active: transcodeActive,
+        quality: transcodeQuality,
+        session: transcodeSession,
+        start: transcodeStart
+      };
+    },
     // Arbitrary seeking within the recording being followed. False when there is no
     // index to answer from.
     seekTo: function (seconds) { return followSeekTo !== null && followSeekTo(seconds); },

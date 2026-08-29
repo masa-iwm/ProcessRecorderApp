@@ -972,3 +972,78 @@ public class EncoderBitrateParameterizationTests
         Assert.Throws<OverflowException>(() => def.WithBitrateKbps((int.MaxValue / 1000) + 1));
     }
 }
+
+/// <summary>
+/// 録画トランスコードに使う H.264 デコーダーの検出。
+///
+/// <para>
+/// <b>候補はハードウェアだけである。</b> 同梱ランタイムにソフトウェアの H.264 デコーダーは
+/// 入れていないので、1 つも見つからない機械では録画トランスコードを提供しない
+/// ── ここで「見つかったことにする」種類の緩和を入れると、GPU の無い機械で
+/// <c>parse_launch</c> が落ちる形になる。
+/// </para>
+/// <para>
+/// 実機に依存しないよう<b>プローブを注入</b>して検証する。
+/// </para>
+/// </summary>
+public sealed class H264DecoderProbeTests
+{
+    /// <summary>候補の並び。<c>d3d11h264dec</c> は DXVA 経由でベンダに依存しないので先頭。</summary>
+    [Fact]
+    public void TheCandidatesAreTheFrozenHardwareList()
+    {
+        string[] expected = ["d3d11h264dec", "d3d12h264dec", "nvh264dec", "qsvh264dec"];
+        string[] actual = [.. EncoderCatalog.H264DecoderCandidates];
+
+        Assert.Equal<IEnumerable<string>>(expected, actual);
+    }
+
+    /// <summary>候補順で最初に見つかったものを返す（後ろのものは選ばれない）。</summary>
+    [Theory]
+    [InlineData("d3d11h264dec")]
+    [InlineData("d3d12h264dec")]
+    [InlineData("nvh264dec")]
+    [InlineData("qsvh264dec")]
+    public void TheFirstAvailableCandidateWins(string available)
+    {
+        // 「その 1 つだけ在る」ときは必ずそれが選ばれる。
+        Assert.Equal(available, EncoderCatalog.ProbeH264Decoder(n => n == available));
+    }
+
+    [Fact]
+    public void EarlierCandidatesBeatLaterOnes()
+    {
+        Assert.Equal("d3d11h264dec", EncoderCatalog.ProbeH264Decoder(_ => true));
+        Assert.Equal("d3d12h264dec",
+            EncoderCatalog.ProbeH264Decoder(n => n != "d3d11h264dec"));
+        Assert.Equal("nvh264dec",
+            EncoderCatalog.ProbeH264Decoder(n => n is "nvh264dec" or "qsvh264dec"));
+    }
+
+    /// <summary>
+    /// 1 つも無ければ <see langword="null"/>。<b>ソフトウェアへ落とさない</b>
+    /// ── 同梱していないものを名指しても <c>parse_launch</c> が落ちるだけである。
+    /// </summary>
+    [Fact]
+    public void NoCandidateMeansNull()
+    {
+        Assert.Null(EncoderCatalog.ProbeH264Decoder(_ => false));
+        Assert.Null(EncoderCatalog.ProbeH264Decoder(n => n == "avdec_h264"));
+        Assert.Null(EncoderCatalog.ProbeH264Decoder(n => n == "openh264dec"));
+    }
+
+    /// <summary>結果は <c>LastH264Decoder</c> にも残る（診断と能力の応答が同じ値を見る）。</summary>
+    [Fact]
+    public void TheResultIsKeptInLastH264Decoder()
+    {
+        EncoderCatalog.ProbeH264Decoder(n => n == "qsvh264dec");
+        Assert.Equal("qsvh264dec", EncoderCatalog.LastH264Decoder);
+
+        EncoderCatalog.ProbeH264Decoder(_ => false);
+        Assert.Null(EncoderCatalog.LastH264Decoder);
+    }
+
+    [Fact]
+    public void ANullProbeIsRejected()
+        => Assert.Throws<ArgumentNullException>(() => EncoderCatalog.ProbeH264Decoder(null!));
+}

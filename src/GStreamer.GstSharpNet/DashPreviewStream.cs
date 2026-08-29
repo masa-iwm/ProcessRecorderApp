@@ -202,6 +202,13 @@ internal sealed partial class DashPreviewStream : IDisposable
     private readonly IDashPreviewHost _host;
 
     /// <summary>
+    /// 補助エンコーダー枠（プロセス全体で 1 つ。宿主は
+    /// <see cref="Components.AuxiliaryEncoderSlots.Shared"/> を渡す）。
+    /// <b>mux が在るあいだ 1 枠を握る</b>。
+    /// </summary>
+    private readonly Components.AuxiliaryEncoderSlots _slots;
+
+    /// <summary>
     /// mux（<see cref="_mux"/>）の生成・破棄に触ってよい者を 1 人に絞るロック。
     /// <b><c>lock</c> で取らない</b> ── 取るのは録画と同じストリーミングスレッドで、
     /// 待たせてよい区間が 1 つも無い。
@@ -242,8 +249,21 @@ internal sealed partial class DashPreviewStream : IDisposable
     /// <summary>破綻の理由（<see cref="_faulted"/> と対）。</summary>
     private volatile string? _faultReason;
 
+    /// <summary>
+    /// 補助エンコーダー枠が空いていないので mux を作れていない
+    /// （<see cref="_wantMux"/> は立っている）。<b>立てるのは枝A のスレッド、読むのは HTTP</b>。
+    /// </summary>
+    private volatile bool _slotBusy;
+
     /// <summary>いま動いている mux（<see cref="_muxLock"/>）。読み手が居なければ null。</summary>
     private MuxEngine? _mux;
+
+    /// <summary>
+    /// いま握っている枠（<see cref="_muxLock"/>。<see cref="Close"/> だけはロック外でも触る）。
+    /// <b><see cref="_mux"/> と対で、mux が消える経路はすべて
+    /// <see cref="Teardown"/> の <c>finally</c> を通す</b>。
+    /// </summary>
+    private Components.AuxiliaryEncoderLease? _lease;
 
     /// <summary>最後に <see cref="TryGetSnapshot"/> が呼ばれた時刻（<c>TickCount64</c>）。</summary>
     private long _lastTouchTicks;
@@ -277,9 +297,10 @@ internal sealed partial class DashPreviewStream : IDisposable
 
     private bool _disposed;
 
-    public DashPreviewStream(IDashPreviewHost host)
+    public DashPreviewStream(IDashPreviewHost host, Components.AuxiliaryEncoderSlots slots)
     {
         _host = host;
+        _slots = slots;
 
         // 生成は宿主の初期化（sink パイプラインが PLAYING に達した段）で行われるので、
         // ここで開けてよい。倒すのは Close だけ。
@@ -537,6 +558,21 @@ internal sealed partial class DashPreviewStream : IDisposable
             return;
         }
 
+        // **枠はパイプラインを作る前に取る。** 取れなければ何も作らずに降り、
+        // 次のサンプルで試し直す（枠が空くまで待たない ── ここは録画の
+        // ストリーミングスレッドである）。TryGetSnapshot はこの間 Busy を返す。
+        if (_lease is null)
+        {
+            if (!_slots.TryAcquire("dash:" + _host.Name, out var acquired))
+            {
+                _slotBusy = true;
+                return;
+            }
+
+            _lease = acquired;
+        }
+        _slotBusy = false;
+
         Pipeline? pipeline = null;
         MuxEngine engine;
         IDisposable? subscription = null;
@@ -722,35 +758,50 @@ internal sealed partial class DashPreviewStream : IDisposable
     /// </summary>
     private Pipeline? Teardown(string reason)
     {
-        if (_mux is not { } engine)
-            return null;
-
-        engine.Retired = true;
-        _mux = null;
-        _faulted = false;
-        _faultReason = null;
-
-        // 購読はパイプラインの Dispose より前に外す（ContinuousRecorder と同じ）。
-        engine.Subscription?.Dispose();
-        engine.Subscription = null;
-
-        lock (_ringLock)
+        try
         {
-            _ring.Clear();
-            _init = null;
-            _codecs = null;
-            _timescale = 0;
-            _presentationTimeOffset = 0;
-            _hasPresentationTimeOffset = false;
+            if (_mux is not { } engine)
+                return null;
 
-            // **ソースの形は残す。** 選択肢はそれで決まるので、mux が畳まれても
-            // 「何が選べるか」は答えられなければならない。
-            _ringHasMux = false;
-            _ringQualityId = null;
+            engine.Retired = true;
+            _mux = null;
+            _faulted = false;
+            _faultReason = null;
+
+            // 購読はパイプラインの Dispose より前に外す（ContinuousRecorder と同じ）。
+            engine.Subscription?.Dispose();
+            engine.Subscription = null;
+
+            lock (_ringLock)
+            {
+                _ring.Clear();
+                _init = null;
+                _codecs = null;
+                _timescale = 0;
+                _presentationTimeOffset = 0;
+                _hasPresentationTimeOffset = false;
+
+                // **ソースの形は残す。** 選択肢はそれで決まるので、mux が畳まれても
+                // 「何が選べるか」は答えられなければならない。
+                _ringHasMux = false;
+                _ringQualityId = null;
+            }
+
+            Components.ActivityLog.Info("dash.stream-stop", $"recorder='{_host.Name}' reason={reason}");
+            return engine.Pipeline;
         }
+        finally
+        {
+            // **枠は mux が消える経路すべてで返す。** mux がまだ無い（＝
+            // StartMux が組み立てに失敗した）呼び出しもここを通るので、
+            // 取ったまま降りる道が 1 本も残らない。Dispose は冪等。
+            _lease?.Dispose();
+            _lease = null;
 
-        Components.ActivityLog.Info("dash.stream-stop", $"recorder='{_host.Name}' reason={reason}");
-        return engine.Pipeline;
+            // **枠待ちの印も一緒に戻す。** 残すと、枠を待っているうちに畳まれた後
+            // （猶予失効など）の TryGetSnapshot が、もう待っていないのに Busy を返し続ける。
+            _slotBusy = false;
+        }
     }
 
     /// <summary>退役したパイプラインの後始末をプールスレッドへ逃がす。</summary>
@@ -974,7 +1025,10 @@ internal sealed partial class DashPreviewStream : IDisposable
         {
             if (_init is not { } init || _codecs is not { } codecs || _ring.Count == 0)
             {
-                reason = DashPreviewReasons.Starting;
+                // **貸出は上で既に延ばしてある。** 枠が空くのを待つあいだも
+                // _wantMux を立て続けないと、枝A のスレッドが TryAcquire を
+                // 試し直さなくなり、空いても 409 のままになる。
+                reason = _slotBusy ? DashPreviewReasons.Busy : DashPreviewReasons.Starting;
                 return false;
             }
 
@@ -1058,6 +1112,11 @@ internal sealed partial class DashPreviewStream : IDisposable
             if (entered)
                 Monitor.Exit(_muxLock);
         }
+
+        // **枠はロックを取れなくても返す。** リークするのはネイティブの mux だけで、
+        // 枠まで道連れにすると以後そのレコーダーぶんの席が永久に減る（Dispose は冪等なので、
+        // 上の Teardown が既に返していれば何も起きない）。
+        Interlocked.Exchange(ref _lease, null)?.Dispose();
 
         // **同期で畳む。** 呼び出し元はこの直後に宿主のパイプラインを解放しうるので、
         // プールへ逃がすと解放済みのものを触りにいく。

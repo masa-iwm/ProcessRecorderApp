@@ -73,6 +73,10 @@
     // `state.recorderNames` was just rewritten, and the recordings filter is drawn
     // from it. Nothing else on that page notices this event.
     recordings.syncRecorderOptions();
+    // The auxiliary encoder slots are a property of the process, not of a recorder, and
+    // this event is the only thing that carries them: the quality menu of the recording
+    // player is what reads them.
+    player.onAuxiliaryEncoders(snapshot.auxiliaryEncodersFree);
   }
 
   function state(recorder) {
@@ -214,6 +218,7 @@
       // Only an Admin can use the result, and enumerating monitors and cameras is
       // not free -- so it is not fetched for the roles that cannot apply it.
       if (allows('admin')) { settings.loadSources(); }
+      loadCapabilities();
       settings.loadAppSettings();
       settings.loadVariables();
       recordings.loadRecordings();
@@ -222,6 +227,18 @@
       // and goes to the form too, because nothing on the main page can be trusted
       // to have loaded.
       showLogin('Sign in to continue.');
+    });
+  }
+
+  // What this machine can do. **Read once**: the decoder is probed once per process, and
+  // the part that does change (how many encoder slots are free) rides on the SSE `state`.
+  // A failure is swallowed on purpose -- the page works without the feature, and an error
+  // over a screen that is otherwise fine says nothing anyone can act on.
+  function loadCapabilities() {
+    getJson('/api/capabilities').then(function (capabilities) {
+      shared.capabilities = capabilities;
+    }).catch(function () {
+      shared.capabilities = { transcode: false, decoder: null, auxiliaryEncoderLimit: 0 };
     });
   }
 

@@ -177,6 +177,7 @@ public sealed class RemoteControlHost : IAsyncDisposable
             PreviewEndpoints.Map(app, backend, auth);
             DashEndpoints.Map(app, backend, auth);
             PreviewQualityEndpoints.Map(app, backend, auth);
+            CapabilitiesEndpoint.Map(app, backend, auth);
 
             app.MapFallback(async (HttpContext ctx) =>
                 await ApiResponse.WriteErrorAsync(

@@ -272,6 +272,13 @@ public sealed class SettingsFile
     public bool? RemoteControlAllowGuestRead { get; set; }
 
     /// <summary>
+    /// 補助エンコーダー枠の上限（ライブ DASH と録画トランスコードが分け合う本数）。
+    /// null なら書かない（＝製品の既定＝2）。<b>範囲外を書いてよい</b> ──
+    /// 丸めるのは製品側の setter で、それを見るケースがある。
+    /// </summary>
+    public int? RemoteAuxiliaryEncoderLimit { get; set; }
+
+    /// <summary>
     /// リモート利用者。空なら書かない。<b>パスワードは平文を持たない</b>ので、
     /// テストは <see cref="RemoteUserSpec"/> の固定ハッシュを使う。
     /// </summary>
@@ -341,6 +348,8 @@ public sealed class SettingsFile
             root["RemoteControlAccessToken"] = remoteToken;
         if (RemoteControlAllowGuestRead is { } allowGuestRead)
             root["RemoteControlAllowGuestRead"] = allowGuestRead;
+        if (RemoteAuxiliaryEncoderLimit is { } auxiliaryLimit)
+            root["RemoteAuxiliaryEncoderLimit"] = auxiliaryLimit;
 
         if (RemoteUsers.Count > 0)
         {

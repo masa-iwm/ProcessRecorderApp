@@ -631,6 +631,50 @@ DASH 側を選び、**かつライブ画質が `custom` のときだけ**、こ�
 - **ソース解像度が実行中に変わったときの解き直しは手動確認。** プリセットの意味は
   「ソースに対する相対」で、caps が変われば `caps changed` のあとに新しいソースで解き直される
   ── これが要るのはウィンドウ キャプチャの大きさが変わる場合で、E2E のソースは大きさが変わらない。
+- **枠が尽きたときの `(busy)` 表示は手動確認。** メニューの項目が無効化されるのは
+  「SSE の `auxiliaryEncodersFree` が 0」かつ「自分の変換が走っていない」ときで、
+  解除は次の `state` が空きを報せたときである。**枠を実際に尽きさせるには変換が要る**ので、
+  この機械では作れない（DASH 側だけで尽きさせても、録画プレイヤーのメニューは
+  `capabilities.transcode` が false なので描かれない）。GPU 機で 2 枚開いて見ること。
+
+### 録画トランスコードの true 経路
+
+**この機械（GPU 無し）では 1 行も走らない。** 変換はハードウェア H.264 デコーダーを要求し、
+同梱ランタイムにソフトウェアの H.264 デコーダーは無い（OpenH264 を同梱しない決定）ので、
+`GET /api/capabilities` は `transcode:false` を返し、`GET /api/recording-transcode/…` は
+クエリが全部正しくても 404 `transcode unavailable` で終わる。
+
+自動で守られているのは **false の側だけ**である:
+
+- L2 `RemoteControlTests.TheCapabilitiesReportNoTranscodeOnAMachineWithoutAHardwareDecoder`
+  ── `transcode` が false であることを**断定**する（「どちらでもよい」にすると、能力検出が
+  壊れて常に true を返しても緑になる）。**GPU 機では赤になる**のが正しい。
+- L2 `RemoteControlTests.TheTranscodeEndpointValidatesItsQueryBeforeTheCapability`
+  ── 検査の順序（クエリ → ファイル → 録画中 → 能力）と、その到達点である 404。**到達点が
+  404 `transcode unavailable` であることを断定している**ので、**GPU 機ではこの 2 箇所が
+  赤になる**（順序の部分は色に関わらず有効）。
+- L2 `WebUiBrowserTests.TheRecordingPlayerOffersNoTranscodeWithoutAHardwareDecoder`
+  ── メニューが描かれず、裏でも変換が始まっていないこと。**holder が hidden であることを
+  断定している**ので、これも **GPU 機では赤になる**。
+- 枠そのもの（取得・解放・上限・並行）は L1 `AuxiliaryEncoderSlotsTests`、ライブ DASH が
+  枠を 1 つ使うことは L2 `DashPreviewTests.TheLiveDashHoldsOneAuxiliaryEncoderPerRecorder`
+  ── こちらは変換を使わずに枠を尽きさせられるので、この機械でも走る。
+
+true の側で走っているのは 2 つだけ:
+
+- **product の `TranscodeSession` をスクラッチ ハーネスで**（フル構成の GStreamer ＋
+  `avdec_h264` ＋ `x264enc`）。位置指定の手順（`qtdemux` へ seek が受理されるまで再試行 →
+  `Playing`）と、出力が `ftyp`＋`moov` 1 回 → `moof` の並びになることはここで確かめた。
+- **`tools/Verify-Transcode.ps1`**（GPU 実機、6 ケース）── 能力・一覧・先頭からの変換・
+  シーク・枠の枯渇と回復・DASH と枠を分け合うこと。読み方は
+  [docs/gpu-verification.md](gpu-verification.md)。
+
+**どちらも触っていないもの**: ブラウザからの変換再生そのもの（MSE への流し込み・読み取りの
+抑制・`seeking` での作り直し）と、複数のクライアントが同時に別々の録画を変換する形。
+GPU 機で Web UI を開いて手で見るしかない。
+そのとき併せて見ること: **索引が届く前の切替（`durationMs` が未知）では、シークのたびに
+MediaSource を作り直す** ── 長さが無いと `remove()` が拒まれるためで、画が一瞬途切れる
+（1 回のドラッグにつき 1 回。`input` ごとではない）。
 
 ### GPU 実機レポートが流すのは既定ビットレートの起動文字列だけ
 

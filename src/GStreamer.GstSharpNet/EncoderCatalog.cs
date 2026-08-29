@@ -399,6 +399,51 @@ public static class EncoderCatalog
         return report;
     }
 
+    // ---- H.264 デコーダー（録画トランスコード） --------------------------------------
+
+    /// <summary>
+    /// 録画トランスコードに使う H.264 デコーダーの候補（この順）。
+    ///
+    /// <para>
+    /// <b>ハードウェアだけ</b>である。<c>d3d11h264dec</c> は DXVA 経由でベンダに依存しないので
+    /// 先頭に置く。<b>ソフトウェアのデコーダーは同梱ランタイムに 1 つも無い</b>
+    /// （<c>avdec_h264</c> / <c>openh264dec</c> はフルインストールの GStreamer にしか無い）ので、
+    /// ここに書いても実機で 1 つも見つからない環境がそのまま残る ── その場合は
+    /// 録画トランスコードを提供しない（<c>TranscodeCapability.Transcode</c> が false）。
+    /// </para>
+    /// </summary>
+    public static readonly IReadOnlyList<string> H264DecoderCandidates =
+        (string[])["d3d11h264dec", "d3d12h264dec", "nvh264dec", "qsvh264dec"];
+
+    /// <summary>
+    /// 直近の <see cref="ProbeH264Decoder"/> の結果（未実行・1 つも無いなら <see langword="null"/>）。
+    /// <c>Controller.StaticInitialize()</c> が <see cref="Probe"/> の直後に 1 回だけ設定する。
+    /// </summary>
+    public static string? LastH264Decoder { get; private set; }
+
+    /// <summary>
+    /// <see cref="H264DecoderCandidates"/> のうち<b>実機に在る最初の 1 つ</b>を返す
+    /// （1 つも無ければ <see langword="null"/>）。結果は <see cref="LastH264Decoder"/> にも残す。
+    /// </summary>
+    /// <param name="probe">存在確認。テストから差し替えられるよう引数で受ける。</param>
+    public static string? ProbeH264Decoder(Func<string, bool> probe)
+    {
+        ArgumentNullException.ThrowIfNull(probe);
+
+        string? found = null;
+        foreach (string name in H264DecoderCandidates)
+        {
+            if (probe(name))
+            {
+                found = name;
+                break;
+            }
+        }
+
+        LastH264Decoder = found;
+        return found;
+    }
+
     // ---- 選択肢一覧（設定画面用） ----------------------------------------------------
 
     /// <summary>

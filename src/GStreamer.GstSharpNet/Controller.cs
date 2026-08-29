@@ -165,6 +165,25 @@ namespace ProcessRecorderApp.GStreamer
         }
 
         /// <summary>
+        /// 録画トランスコードの供給元（<c>RecordingEndpoints</c> が要求ごとに引く）。
+        /// <b>レコーダーには触らないので、呼ぶスレッドを問わない</b>
+        /// ── 変換元は録画済みのファイルで、動いているパイプラインとは無関係である。
+        /// </summary>
+        public Components.ITranscodeSource Transcodes => _transcodes;
+
+        private readonly TranscodeStreams _transcodes;
+
+        /// <summary>
+        /// この実機の能力。<b>要求ごとに読む</b> ── 判定は
+        /// <see cref="StaticInitialize"/> のプローブが済んでいることが前提で、
+        /// <see cref="Controller"/> の生成との前後関係に依存させない。
+        /// </summary>
+        private static Components.TranscodeCapability CurrentCapability()
+            => EncoderCatalog.LastH264Decoder is { } decoder
+                ? new Components.TranscodeCapability(true, decoder)
+                : new Components.TranscodeCapability(false, null);
+
+        /// <summary>
         /// Preview イベントを購読済みのレコーダー。
         /// Reset の通知はコレクションが既に空になった後に来るため、
         /// コレクション自体を走査しても購読解除できない（＝購読が漏れる）。
@@ -198,6 +217,8 @@ namespace ProcessRecorderApp.GStreamer
         {
             PreviewStreams = new PreviewStreamSource(this);
             DashPreviews = new DashPreviewSource(this);
+            _transcodes = new TranscodeStreams(
+                CurrentCapability, Components.AuxiliaryEncoderSlots.Shared);
 
             Recorders.CollectionChanged += (_, e) =>
             {
@@ -341,6 +362,10 @@ namespace ProcessRecorderApp.GStreamer
             {
                 if (disposing)
                 {
+                    // トランスコードを先に畳む（録画とは無関係だが、握っている
+                    // 補助エンコーダー枠を返してからレコーダーを止める）。
+                    _transcodes.Dispose();
+
                     // プレビュー面を先に閉じてからレコーダーを破棄する
                     // （逆順だと、破棄途中のレコーダーのプレビュースレッドが生きたまま
                     //   PushSample を呼びうる）。
@@ -449,6 +474,12 @@ namespace ProcessRecorderApp.GStreamer
                 // 出力先は activity.log（複写により アプリ内 Log 画面と AppSettings.DebugLogFile へも届く）。
                 var report = EncoderCatalog.Probe();
                 Components.ActivityLog.Info("gst.encoders", report.ToLogLine());
+
+                // 同じ段で H.264 デコーダーも 1 回だけ確認する（録画トランスコードの可否）。
+                // **候補はハードウェアだけ**なので、無い機械では録画トランスコードを提供しない。
+                string? decoder = EncoderCatalog.ProbeH264Decoder(EncoderCatalog.ProbeWithGStreamer);
+                Components.ActivityLog.Info("gst.decoders",
+                    $"h264={decoder ?? "(none)"} transcode={(decoder is not null ? "True" : "False")}");
             }
             catch (Exception ex)
             {

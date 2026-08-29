@@ -69,6 +69,38 @@ fMP4 の配信（`GET /api/recorders/{id}/preview.mp4`）を、発行物へ本�
 配信しても録画が無傷であること、知らない相手とゲストが 404 / 401 になること。**ここが第 2
 パイプラインを初めて実際に走らせる層である**（L1 が縛るのはパイプライン文字列と純関数だけ）。
 
+**録画トランスコードは false の経路しか走らない。** 変換にはハードウェア H.264 デコーダーが
+要り、同梱ランタイムにソフトウェアの H.264 デコーダーは無いので、開発機と CI では
+`GET /api/capabilities` が `transcode:false` を返す。
+
+> **GPU 機では次の 3 件が赤になる。** どれも「変換できない」という到達点そのものを断定して
+> いるためで、それが意図である ── 「どちらでもよい」にすると、能力検出が壊れて常に true を
+> 返すようになっても緑のままになる。
+>
+> - `RemoteControlTests.TheCapabilitiesReportNoTranscodeOnAMachineWithoutAHardwareDecoder`
+>   ── `GET /api/capabilities` の `transcode` が **false であることを断定**する。
+> - `RemoteControlTests.TheTranscodeEndpointValidatesItsQueryBeforeTheCapability`
+>   ── 検査の順序を見るテストだが、**最後の 2 つの到達点が 404 `transcode unavailable` で
+>   あることも断定**している（GPU 機ではここが 200 になる）。
+> - `WebUiBrowserTests.TheRecordingPlayerOffersNoTranscodeWithoutAHardwareDecoder`
+>   ── 画質メニューの holder が **hidden であることを断定**している（GPU 機では出る）。
+>
+> GPU 機ではこの 3 件が赤になることを見込んだうえで、true の経路は
+> `tools/Verify-Transcode.ps1`（[docs/gpu-verification.md](../docs/gpu-verification.md)）で見る。
+
+`RemoteAuxiliaryEncoderLimit`（補助エンコーダー枠の上限）を書く E2E は 2 件:
+`RemoteControlTests.TheCapabilitiesReportNoTranscodeOnAMachineWithoutAHardwareDecoder`
+（3 を書き、9 への PATCH が 8 に丸められること）と
+`DashPreviewTests.TheLiveDashHoldsOneAuxiliaryEncoderPerRecorder`
+（1 を書き、レコーダー 2 台で 2 台目が 409 `auxiliary encoder busy` になること）。
+
+リモート操作まわりだけを回すときのフィルタと**実測の選択件数**（この 4 クラスで 72 件・約 10 分）:
+
+```powershell
+dotnet test tests/ProcessRecorderApp.E2E -c Release `
+  --filter "FullyQualifiedName~DashPreviewTests|FullyQualifiedName~WebUiBrowserTests|FullyQualifiedName~RemoteControlTests|FullyQualifiedName~SettingsSchemaTests"
+```
+
 L3（GUI・UIA）は同じプロジェクトに入っている。**対話セッションとデスクトップが要る**
 （切断中の RDP セッションでも UIA から要素を辿れることは確認済み。ただし
 `Category=Fragile` は物理カーソルを使うため対話セッションでしか回せない）。

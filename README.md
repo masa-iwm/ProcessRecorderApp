@@ -267,6 +267,15 @@ belongs to the recorder and is shared by everyone watching it, is not written to
 and is forgotten when the application exits. Either way the price is latency:
 **roughly 2 to 3 seconds**.
 
+**Recording transcode.** A finished recording can also be played back re-encoded, at the same
+1080p / 720p / 480p / 360p presets: the quality menu of the recording player offers those that are
+not larger than the file, the conversion starts from wherever the playback is, and it needs a
+**hardware H.264 decoder** — on a PC without one the menu is not drawn at all (the bundled runtime
+carries no software H.264 decoder). `RemoteAuxiliaryEncoderLimit` (`2` by default, `1` to `8`) is
+how many of these conversions and re-encoded live previews may run **at the same time**, counted
+across the whole application; beyond it the page says `auxiliary encoder busy` until one of them
+ends.
+
 **Pages and appearance.** The page is split into three: **Live** (`#/live`), **Recordings**
 (`#/recordings`) and **Settings** (`#/settings`), reached from the links in the top bar; switching
 between them does not stop a preview or a playback that is running. The button next to them

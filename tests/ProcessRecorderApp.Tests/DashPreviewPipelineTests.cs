@@ -220,6 +220,70 @@ public sealed class DashPreviewPipelineTests
             "Advance が動いている mux の画質 id と比べていない。");
     }
 
+    /// <summary>
+    /// <b>補助エンコーダー枠は第 2 パイプラインを組む前に取り、mux が消える経路すべてで返す。</b>
+    ///
+    /// <para>
+    /// 取るのが <c>ParseLaunch</c> より後だと、枠が無いのに <c>parse_launch</c> と状態遷移を
+    /// 回してから捨てることになる（録画のストリーミングスレッドで）。返し漏れると、
+    /// そのレコーダーぶんの席がプロセスの寿命のあいだ減ったままになる ── 返す経路は
+    /// <c>Teardown</c> の <c>finally</c>（組み立て失敗も畳みもここを通る）と、
+    /// <c>Close</c> の<b>ロックを取れなかった場合</b>（<c>dash.leak</c>）の 2 つである。
+    /// </para>
+    /// <para>
+    /// <b>ソーステキストとして見る。</b> 実行で確かめるには本物の GStreamer と
+    /// 録画スレッドが要り、L1 からは到達できない。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void TheAuxiliaryEncoderSlotIsTakenBeforeTheSecondPipelineAndAlwaysReturned()
+    {
+        string start = SourceMethodBody.Extract(StreamSource, "private void StartMux");
+
+        int acquire = SourceMethodBody.IndexOfCode(start, "_slots.TryAcquire(");
+        int parse = SourceMethodBody.IndexOfCode(start, "Gst.Global.ParseLaunch(");
+
+        Assert.True(0 <= acquire, "StartMux が補助エンコーダー枠を取っていない。");
+        Assert.True(0 <= parse, "StartMux に ParseLaunch が見つからない。");
+        Assert.True(acquire < parse,
+            "枠の取得が ParseLaunch より後にある。"
+            + "枠が無いのに parse_launch と状態遷移を録画スレッドで回すことになる。");
+
+        string teardown = SourceMethodBody.Extract(StreamSource, "private Pipeline? Teardown");
+        Assert.True(SourceMethodBody.ContainsCode(teardown, "finally"),
+            "Teardown に finally が無い。mux がまだ無い呼び出し（組み立て失敗）で枠が返らない。");
+        Assert.True(SourceMethodBody.ContainsCode(teardown, "_lease?.Dispose();"),
+            "Teardown が枠を返していない。");
+
+        string close = SourceMethodBody.Extract(StreamSource, "public void Close");
+        Assert.True(SourceMethodBody.ContainsCode(close, "Interlocked.Exchange(ref _lease, null)?.Dispose();"),
+            "Close がロックの取得可否に関わらず枠を返していない。"
+            + "dash.leak の経路で席が永久に減る。");
+    }
+
+    /// <summary>
+    /// 枠が取れないあいだの理由は <c>Starting</c> ではなく <c>Busy</c>。
+    /// <b>両者で HTTP の状態が違う</b>（503 と 409）ので、混ぜるとクライアントは
+    /// 「もうすぐ来る」と「席が空くまで来ない」を区別できない。
+    /// </summary>
+    [Fact]
+    public void TheSnapshotReasonDistinguishesBusyFromStarting()
+    {
+        string body = SourceMethodBody.Extract(StreamSource, "internal bool TryGetSnapshot");
+
+        Assert.True(SourceMethodBody.ContainsCode(body, "DashPreviewReasons.Busy"),
+            "TryGetSnapshot が枠待ちの理由を返していない。");
+        Assert.True(SourceMethodBody.ContainsCode(body, "DashPreviewReasons.Starting"),
+            "TryGetSnapshot が開始中の理由を返していない。");
+
+        // **貸出の延長は理由を決めるより前。** ここを後ろに置くと、枠が空いても
+        // 枝A のスレッドが TryAcquire を試し直さず 409 のままになる。
+        int touch = SourceMethodBody.IndexOfCode(body, "_wantMux = true;");
+        int busy = SourceMethodBody.IndexOfCode(body, "DashPreviewReasons.Busy");
+        Assert.True(0 <= touch && touch < busy,
+            "busy を返す前に _wantMux を立てていない。枠が空いても組み直されなくなる。");
+    }
+
     /// <summary>コメント行を除いた出現回数。</summary>
     private static int CountCode(string body, string needle)
     {

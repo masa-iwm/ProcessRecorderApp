@@ -111,6 +111,32 @@ public interface IRemoteControlBackend
     Task<Components.PreviewQualityState> SetPreviewQualityAsync(
         string id, string qualityId, CancellationToken ct);
 
+    /// <summary>
+    /// この実機で録画トランスコードが成立するか。<b>失敗しない</b>
+    /// ── 判定は起動時のプローブ 1 回の結果を読むだけで、録画エンジンの状態には依らない
+    /// （エンジンがまだ無ければ <see cref="RemoteApiException"/> の 12 になる点だけが他と同じ）。
+    /// </summary>
+    Task<Components.TranscodeCapability> GetCapabilitiesAsync(CancellationToken ct);
+
+    /// <summary>
+    /// 録画トランスコードを 1 本開く。<b>成功しても失敗しても例外にしない</b>
+    /// ── 断る理由（能力が無い・枠が空いていない・組み立てに失敗した）はどれも
+    /// 呼び出し側が別々の HTTP ステータスへ写すもので、終了コードの写像には乗らない。
+    ///
+    /// <para>
+    /// <b>読み出し口を受け取った側は必ず <see cref="IDisposable.Dispose"/> すること。</b>
+    /// 返さないと補助エンコーダー枠が <c>TranscodeLimits.GraceMs</c> より長く握られる。
+    /// </para>
+    /// <para>
+    /// <b><paramref name="open"/> は検査済みの前提。</b> <c>QualityId</c> は
+    /// <c>PreviewQualityPresets.IsValidId</c> を通り <c>custom</c> でないこと、
+    /// <c>SessionId</c> は <c>TranscodeOpen.IsValidSessionId</c> を通っていること
+    /// ── 通っていない値は実装側の <see cref="System.ArgumentException"/> になる。
+    /// </para>
+    /// </summary>
+    Task<Components.TranscodeOpenResult> OpenTranscodeAsync(
+        Components.TranscodeOpen open, CancellationToken ct);
+
     // ---- 書き込み ----
     //
     // **CancellationToken を取らない。** 開始・停止・設定変更は、要求元が切っても

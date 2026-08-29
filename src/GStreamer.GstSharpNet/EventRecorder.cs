@@ -1804,7 +1804,9 @@ public partial class EventRecorder : ObservableObject, IDisposable
 
             // DASH の配信エンジンも同じ段で用意する。**第 2 パイプラインは作らない**
             // ── 誰も引かなければ何も起きず、録画経路の費用も変わらない。
-            Volatile.Write(ref _dash, new DashPreviewStream(new DashPreviewHost(this)));
+            // 枠はプロセス全体で 1 つ（録画トランスコードと同じ計数器を取り合う）。
+            Volatile.Write(ref _dash,
+                new DashPreviewStream(new DashPreviewHost(this), Components.AuxiliaryEncoderSlots.Shared));
 
             // 常時録画は sink パイプラインが PLAYING になってから起こす。
             // ここで投げると呼び出し側（InitializeCore）が枝なしで組み直す。
