@@ -9,7 +9,7 @@ README 記載の契約の大半は UI 自動化(UIA)を使わずに検証でき�
 | L2 E2E | `ProcessRecorderApp.E2E` | 発行済み exe を起動し CLI + 生成MP4 + activity.log を検証 | 録画の中核契約・終了コード・変数・永続化・常駐/多重起動 |
 | L3 GUI | `ProcessRecorderApp.E2E` | FlaUI (UIA3) | GUI でしか触れない操作：プロパティ編集・画面切替・トレイ格納・正常終了パス・レコーダー管理・パイプライン編集ダイアログ・**表示言語の強制** |
 | L4 ローカライズ | `ProcessRecorderApp.Tests` | `.resw` / README をファイルとして直接検証 ＋ L3 で言語強制 | en-US / ja-JP のキー整合・書式整合・参照キー実在・README 言語対・フォールバック |
-| L2 ブラウザ | `ProcessRecorderApp.E2E` | headless Edge ＋ DevTools プロトコル（自前。`msedge` 不在なら Skip） | Web UI（`app.js`）でしか触れないもの：ログイン画面への切り替え・ゲストの取り消し・MSE の追いかけ再生 |
+| L2 ブラウザ | `ProcessRecorderApp.E2E` | headless Edge ＋ DevTools プロトコル（自前。`msedge` 不在なら Skip） | Web UI（`app.js`）でしか触れないもの：ログイン画面への切り替え・ゲストの取り消し・MSE の追いかけ再生・変換再生の画質切替 |
 
 > **この文書や docs/ でコードを指すときは、行番号ではなく型名・メソッド名で書くこと。**
 > 行番号は次の編集で腐るうえ、**腐ったことが目に見えない**。
@@ -69,8 +69,42 @@ fMP4 の配信（`GET /api/recorders/{id}/preview.mp4`）を、発行物へ本�
 配信しても録画が無傷であること、知らない相手とゲストが 404 / 401 になること。**ここが第 2
 パイプラインを初めて実際に走らせる層である**（L1 が縛るのはパイプライン文字列と純関数だけ）。
 
-**録画トランスコードは false の経路しか走らない。** 変換にはハードウェア H.264 デコーダーが
-要り、同梱ランタイムにソフトウェアの H.264 デコーダーは無いので、開発機と CI では
+`TranscodeTests` は録画トランスコードの**成立する側**を見る ── 変換された本文が
+`ftyp`+`moov` に続く `moof`/`mdat` であること、要求した位置から始まること、高さがソースへ
+丸められること、ライブ DASH と 1 つの補助エンコーダー枠を取り合うこと、同じ `session` での
+シークが枠を引き継ぐこと。
+
+> **前提: ソフトウェアの H.264 デコーダーを持つ GStreamer が要る。** 製品のデコーダー候補は
+> ハードウェアだけなので、GPU の無い機械では `SoftwareDecoderRuntime` が
+> ワーカーの `PATH` の**先頭**へ別のランタイムの `bin` を置き（ローダーは PATH の走査を
+> 最優先で解決し、勝った `bin` のランタイムを丸ごと選ぶ）、
+> `PROCESSRECORDERAPP_H264_DECODER` で要素名を名指す。
+>
+> - 開発機 ── 公式のフルインストール `%LOCALAPPDATA%\Programs\gstreamer\1.0\mingw_x86_64\bin`
+>   が在ればそれを自動で使う。別の場所なら `PROCESSRECORDERAPP_E2E_GST_BIN` で指す
+>   （**空文字を明示すると「そのまま」**＝実行環境の解決に任せる）。
+> - CI ── MSYS2(UCRT64) の `gst-plugins-bad` に `libgstopenh264.dll` が入っているので、
+>   `PROCESSRECORDERAPP_E2E_GST_BIN` は設定しない（そのままで `openh264dec` が在る）。
+> - 名指しするデコーダーは既定 `openh264dec`。`PROCESSRECORDERAPP_E2E_H264_DECODER` で変えられる。
+>
+> **能力は断定する。** 変換が成立しなければ各ケースは冒頭で落ちる（黙って skip しない）
+> ── 失敗の本文に `bin` と名指しと `gst.runtime` / `gst.decoders` / `transcode.start` の行が入る。
+> **同梱ランタイムの上では変換の経路は依然として 1 行も走らない**（同梱物としての true 経路は
+> `tools/Verify-Transcode.ps1`）。
+> **GPU の在る機械で `openh264dec` が無ければ `TranscodeTests` の 3 件と
+> `WebUiBrowserTests` の変換の 2 件は落ちる** ── その場合は
+> `PROCESSRECORDERAPP_E2E_H264_DECODER` にその機械のデコーダー（`d3d11h264dec` など）を置く。
+
+`WebUiBrowserTests` は同じ前提で**ブラウザ側**を見る 2 件を持つ ──
+`TheRecordingQualityMenuTranscodesAndKeepsThePositionAcrossQualities`（画質メニューが変換再生へ
+切り替わり、取り込んでいない位置へのシークがパイプラインを作り直し、元のままへ戻しても位置が
+残ること、そして**要求が飛んでいる最中にページを離れても枠を返すこと**）と
+`TheRecordingQualityMenuShowsBusyWhileAnotherSessionHoldsTheSlot`（他人が枠を握っているあいだ
+項目が `(busy)` で無効になり、手放せば戻ること）。**変換を MSE へ流し込む形を実行するのは
+この 2 件だけである。**
+
+**上書きを置かないインスタンスでは false の経路しか走らない。** 変換にはハードウェア H.264
+デコーダーが要り、同梱ランタイムにソフトウェアの H.264 デコーダーは無いので、開発機と CI では
 `GET /api/capabilities` が `transcode:false` を返す。
 
 > **GPU 機では次の 3 件が赤になる。** どれも「変換できない」という到達点そのものを断定して
@@ -93,8 +127,18 @@ fMP4 の配信（`GET /api/recorders/{id}/preview.mp4`）を、発行物へ本�
 （3 を書き、9 への PATCH が 8 に丸められること）と
 `DashPreviewTests.TheLiveDashHoldsOneAuxiliaryEncoderPerRecorder`
 （1 を書き、レコーダー 2 台で 2 台目が 409 `auxiliary encoder busy` になること）。
+`TranscodeTests` は 3 件のうち 2 件が 1 を書く（変換とライブ DASH の取り合い・シークの引き継ぎ）。
+`WebUiBrowserTests` の変換の 2 件も 1 を書く（離脱で枠が返ること・`(busy)` の表示）。
 
-リモート操作まわりだけを回すときのフィルタと**実測の選択件数**（この 4 クラスで 72 件・約 10 分）:
+トランスコードまわりだけを回すときのフィルタと**実測の選択件数**
+（`TranscodeTests` 3 件＋`RemoteControlTests` 42 件＋`DashPreviewTests` 7 件＝**52 件**・約 5 分半）:
+
+```powershell
+dotnet test tests/ProcessRecorderApp.E2E -c Release `
+  --filter "FullyQualifiedName~TranscodeTests|FullyQualifiedName~RemoteControlTests|FullyQualifiedName~DashPreviewTests"
+```
+
+リモート操作まわりだけを回すときのフィルタと**実測の選択件数**（この 4 クラスで 74 件・約 12 分）:
 
 ```powershell
 dotnet test tests/ProcessRecorderApp.E2E -c Release `

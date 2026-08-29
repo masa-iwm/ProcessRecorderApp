@@ -3264,8 +3264,15 @@
   //
   // app-core.js owns the router and is loaded first, so the page's `hidden` is already up
   // to date by the time this runs.
+  //
+  // **A request that is still on the wire counts as running.** `transcodeActive` is only
+  // set once the answer has been installed, and the server holds the slot from the moment
+  // it starts converting -- so leaving during 'requesting' would let the answer arrive on
+  // a page nobody is looking at and keep the slot for the life of the tab. `stopTranscode`
+  // is what stops it: the attempt it bumps is no longer the newest, so the answer is
+  // dropped unread and its connection aborted.
   window.addEventListener('hashchange', function () {
-    if ($('pageRecordings').hidden && transcodeActive) {
+    if ($('pageRecordings').hidden && (transcodeActive || transcodePhase === 'requesting')) {
       stopTranscode();
       status($('playerStatus'), '', false);
     }

@@ -639,12 +639,17 @@ DASH 側を選び、**かつライブ画質が `custom` のときだけ**、こ�
 
 ### 録画トランスコードの true 経路
 
-**この機械（GPU 無し）では 1 行も走らない。** 変換はハードウェア H.264 デコーダーを要求し、
-同梱ランタイムにソフトウェアの H.264 デコーダーは無い（OpenH264 を同梱しない決定）ので、
-`GET /api/capabilities` は `transcode:false` を返し、`GET /api/recording-transcode/…` は
-クエリが全部正しくても 404 `transcode unavailable` で終わる。
+**変換そのものは走る（ただし同梱ランタイムの上ではない）。** 変換はハードウェア
+H.264 デコーダーを要求し、同梱ランタイムにソフトウェアの H.264 デコーダーは無い
+（OpenH264 を同梱しない決定は不変）。E2E は**ワーカーの `PATH` の先頭へ別のランタイムの
+`bin` を置き**（開発機は公式のフルインストール、CI は MSYS2(UCRT64) の `gst-plugins-bad`）、
+`PROCESSRECORDERAPP_H264_DECODER` で `openh264dec` を名指して走らせている
+（`tests/ProcessRecorderApp.E2E/SoftwareDecoderRuntime.cs`）。
+**同梱ランタイムの上では、変換の経路は依然として 1 行も走らない。**
 
-自動で守られているのは **false の側だけ**である:
+上書きを置かないインスタンス（＝この機械の既定）では `GET /api/capabilities` が
+`transcode:false` を返し、`GET /api/recording-transcode/…` はクエリが全部正しくても
+404 `transcode unavailable` で終わる。**false の側**を守っているのは:
 
 - L2 `RemoteControlTests.TheCapabilitiesReportNoTranscodeOnAMachineWithoutAHardwareDecoder`
   ── `transcode` が false であることを**断定**する（「どちらでもよい」にすると、能力検出が
@@ -660,21 +665,29 @@ DASH 側を選び、**かつライブ画質が `custom` のときだけ**、こ�
   枠を 1 つ使うことは L2 `DashPreviewTests.TheLiveDashHoldsOneAuxiliaryEncoderPerRecorder`
   ── こちらは変換を使わずに枠を尽きさせられるので、この機械でも走る。
 
-true の側で走っているのは 2 つだけ:
+**true の側**（ソフトウェアのデコーダーを名指したインスタンス）で走るのは:
 
-- **product の `TranscodeSession` をスクラッチ ハーネスで**（フル構成の GStreamer ＋
-  `avdec_h264` ＋ `x264enc`）。位置指定の手順（`qtdemux` へ seek が受理されるまで再試行 →
-  `Playing`）と、出力が `ftyp`＋`moov` 1 回 → `moof` の並びになることはここで確かめた。
-- **`tools/Verify-Transcode.ps1`**（GPU 実機、6 ケース）── 能力・一覧・先頭からの変換・
-  シーク・枠の枯渇と回復・DASH と枠を分け合うこと。読み方は
-  [docs/gpu-verification.md](gpu-verification.md)。
+- L2 `TranscodeTests`（3 件）── 変換された本文が `ftyp`＋`moov` に続く `moof`/`mdat` で
+  あること、要求した位置から始まること、高さがソースへ丸められること、ライブ DASH と
+  1 つの枠を取り合うこと、同じ `session` のシークが枠を引き継ぐこと。
+- L2 `WebUiBrowserTests` の 2 件 ── 画質メニューが変換再生へ切り替えて位置を持ち越すこと
+  （取り込んでいない位置へのシークがパイプラインを作り直すこと、要求が飛んでいる最中に
+  ページを離れても枠を返すことを含む）と、他人が枠を握っているあいだ項目が `(busy)` で
+  無効になり手放せば戻ること。**ブラウザから MSE へ流し込む形を実行するのはここだけである。**
 
-**どちらも触っていないもの**: ブラウザからの変換再生そのもの（MSE への流し込み・読み取りの
-抑制・`seeking` での作り直し）と、複数のクライアントが同時に別々の録画を変換する形。
-GPU 機で Web UI を開いて手で見るしかない。
-そのとき併せて見ること: **索引が届く前の切替（`durationMs` が未知）では、シークのたびに
-MediaSource を作り直す** ── 長さが無いと `remove()` が拒まれるためで、画が一瞬途切れる
-（1 回のドラッグにつき 1 回。`input` ごとではない）。
+**それでも守られていないもの**:
+
+- **同梱物としての変換** ── 同梱ランタイムの要素だけ（`filesrc` / `qtdemux` / …）で経路が
+  組めるかは、`-GstBin` を渡さない `tools/Verify-Transcode.ps1`（GPU 実機、6 ケース）の
+  担当のまま。読み方は [docs/gpu-verification.md](gpu-verification.md)。
+- **ハードウェア デコーダーのメモリ交渉と GPU のエンコーダー** ── ソフトウェアのデコーダーは
+  システムメモリしか出さないので、`d3d11` / `d3d12` のメモリを跨ぐ交渉はどの層でも走らない。
+- **2 倍速再生**と、**複数のクライアントが同時に別々の録画を変換する形** ── GPU 機で
+  Web UI を 2 枚開いて手で見るしかない。
+  そのとき併せて見ること: **索引が届く前の切替（`durationMs` が未知）では、シークのたびに
+  MediaSource を作り直す** ── 長さが無いと `remove()` が拒まれるためで、画が一瞬途切れる
+  （1 回のドラッグにつき 1 回。`input` ごとではない）。
+- **Edge 以外のブラウザ** ── ブラウザ E2E はシステムの `msedge` 1 つでしか走らない。
 
 ### GPU 実機レポートが流すのは既定ビットレートの起動文字列だけ
 

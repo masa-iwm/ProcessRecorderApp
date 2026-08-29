@@ -410,6 +410,8 @@ public static class EncoderCatalog
     /// （<c>avdec_h264</c> / <c>openh264dec</c> はフルインストールの GStreamer にしか無い）ので、
     /// ここに書いても実機で 1 つも見つからない環境がそのまま残る ── その場合は
     /// 録画トランスコードを提供しない（<c>TranscodeCapability.Transcode</c> が false）。
+    /// <b>この表の外の要素は <see cref="ProbeH264Decoder"/> の <c>preferred</c>
+    /// （検証用の環境変数）でしか選ばれない。</b>
     /// </para>
     /// </summary>
     public static readonly IReadOnlyList<string> H264DecoderCandidates =
@@ -424,19 +426,35 @@ public static class EncoderCatalog
     /// <summary>
     /// <see cref="H264DecoderCandidates"/> のうち<b>実機に在る最初の 1 つ</b>を返す
     /// （1 つも無ければ <see langword="null"/>）。結果は <see cref="LastH264Decoder"/> にも残す。
+    ///
+    /// <para>
+    /// <paramref name="preferred"/> が空でなく<b>実機に在れば、候補表より先にそれを返す</b>。
+    /// 名指しできるのは検証のためで（<c>PROCESSRECORDERAPP_H264_DECODER</c>）、
+    /// 利用者側の GStreamer に <c>openh264dec</c> / <c>avdec_h264</c> のような
+    /// ソフトウェアのデコーダーが在るときだけ効く ── 在らなければ候補表へ落ちるので、
+    /// 綴りを間違えても「デコーダーが無い」以上の壊れ方はしない。
+    /// </para>
     /// </summary>
     /// <param name="probe">存在確認。テストから差し替えられるよう引数で受ける。</param>
-    public static string? ProbeH264Decoder(Func<string, bool> probe)
+    /// <param name="preferred">先に試す要素名（未指定・空白のみなら候補表だけを見る）。</param>
+    public static string? ProbeH264Decoder(Func<string, bool> probe, string? preferred = null)
     {
         ArgumentNullException.ThrowIfNull(probe);
 
         string? found = null;
-        foreach (string name in H264DecoderCandidates)
+
+        if (!string.IsNullOrWhiteSpace(preferred) && probe(preferred))
+            found = preferred;
+
+        if (found is null)
         {
-            if (probe(name))
+            foreach (string name in H264DecoderCandidates)
             {
-                found = name;
-                break;
+                if (probe(name))
+                {
+                    found = name;
+                    break;
+                }
             }
         }
 

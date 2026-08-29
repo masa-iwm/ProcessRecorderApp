@@ -100,6 +100,7 @@ public class AppEnvironmentTests
         Assert.Equal("PROCESSRECORDERAPP_LANG", AppEnvironment.LanguageVariable);
         Assert.Equal("PROCESSRECORDERAPP_MIRROR_STDERR", AppEnvironment.MirrorToOriginalStdErrVariable);
         Assert.Equal("PROCESSRECORDERAPP_TEST_DEVICE_ARRIVAL", AppEnvironment.TestDeviceArrivalVariable);
+        Assert.Equal("PROCESSRECORDERAPP_H264_DECODER", AppEnvironment.H264DecoderVariable);
     }
 
     // ---- デバイス到着の注入（テスト専用） ----

@@ -797,27 +797,12 @@ public sealed class DashPreviewTests(PublishedApp app, ITestOutputHelper output)
         return "";
     }
 
-    /// <summary>次に届く <c>state</c> の <c>auxiliaryEncodersFree</c>。</summary>
-    private async Task<string> ReadStateAsync(StreamReader reader, TimeSpan budget)
-    {
-        var deadline = Stopwatch.StartNew();
-        string? current = null;
-
-        while (deadline.Elapsed < budget)
-        {
-            var line = await reader.ReadLineAsync(Ct).AsTask().WaitAsync(budget - deadline.Elapsed, Ct);
-            if (line is null)
-                break;
-
-            if (line.StartsWith("event: ", StringComparison.Ordinal))
-                current = line["event: ".Length..];
-            else if (line.StartsWith("data: ", StringComparison.Ordinal) && current == "state")
-                return line["data: ".Length..];
-        }
-
-        Assert.Fail($"SSE の 'state' が {budget.TotalSeconds:F0} 秒以内に届きませんでした。");
-        return "";
-    }
+    /// <summary>
+    /// 次に届く <c>state</c> の <c>auxiliaryEncodersFree</c>。
+    /// 読み方の実体は <see cref="ServerSentEvents"/>（<c>TranscodeTests</c> と共有する）。
+    /// </summary>
+    private static Task<string> ReadStateAsync(StreamReader reader, TimeSpan budget)
+        => ServerSentEvents.ReadDataAsync(reader, "state", budget, Ct);
 
     /// <summary>
     /// <b>ライブ DASH はレコーダー 1 台につき補助エンコーダー枠を 1 つ占める。</b>

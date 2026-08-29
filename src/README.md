@@ -2437,6 +2437,12 @@ caps 変化のたびに解き直される:
 `TranscodeCapability.Transcode` が false になる。エンコーダー側は候補列の**先頭 1 つだけ**を試し、
 巡回はしない。**映像のみ**（録画に音声トラックが無い）で、**録画中のファイルは変換できない**。
 
+デコーダーは環境変数 `PROCESSRECORDERAPP_H264_DECODER` で名指しできる（候補表より優先。
+無ければ候補表へ落ちる）。**検証用であって同梱物の話ではない** ── 効くのは利用者側の
+GStreamer に `openh264dec` / `avdec_h264` が在るときだけで、**OpenH264 も libav も同梱しない**
+決定は変わらない。GPU の無い機械で変換の経路を実際に走らせているのはこの1つで、
+E2E の `TranscodeTests` と `tools/Verify-Transcode.ps1 -GstBin … -H264Decoder openh264dec` が使う。
+
 同時に走らせられる本数は**補助エンコーダー枠**（`AuxiliaryEncoderSlots`、設定は
 `RemoteAuxiliaryEncoderLimit`＝1〜8）で、レコーダーごとのライブ DASH（mux が在るあいだ 1 枠）と
 **同じ計数器を取り合う**。枠が取れなければどちらも `auxiliary encoder busy` で断られる。
@@ -2916,7 +2922,7 @@ GPU テクスチャになるため**アクセシブルテキストが 1 つも�
 | `cleanup.run` | INFO | `RecordingCleanupScheduler` | 古い mp4 の自動削除の結果（保存先・削除数・解放バイト数・削除したフォルダー数・失敗数）。**何もしなかった周回は出さない** |
 | `cleanup.error` | WARN | 同上 | 削除できなかった理由（1件1行・上限あり）。ロック中のファイルなど |
 | `gst.encoders` | INFO | `Controller.StaticInitialize` | プローブ結果（存在/欠落と候補順）。1回のみ |
-| `gst.decoders` | INFO | 同上 | H.264 デコーダーのプローブ結果（`h264=<要素名｜(none)> transcode=<True\|False>`）。1回のみ。**録画トランスコードが使えるかはここでしか分からない**（候補はハードウェアだけで、同梱ランタイムには 1 つも無い） |
+| `gst.decoders` | INFO | 同上 | H.264 デコーダーのプローブ結果（`h264=<要素名｜(none)> transcode=<True\|False>`。`PROCESSRECORDERAPP_H264_DECODER` が在るときだけ後ろに `preferred='<名前>' used=<True\|False>` が付く）。1回のみ。**録画トランスコードが使えるかはここでしか分からない**（候補はハードウェアだけで、同梱ランタイムには 1 つも無い） |
 | `gst.encoder selected` | INFO | `EventRecorder.Initialize` | 実際に採用されたエンコーダーとメモリ要件・失敗した試行数 |
 | `gst.encoder candidate-failed` | WARN | 同上 | 候補が落ちた理由（要素が無い／リンク不可／未知のプロパティ） |
 | `gst.encoder fallback-from` | WARN | 同上 | フォールバックが起きた場合の全失敗の一覧 |
@@ -3313,6 +3319,7 @@ API は `StopAsync()`（完了を表す `Task` を返す）/ `Stop()`（fire-and
 | `PROCESSRECORDERAPP_LANG` | 表示言語を BCP-47 タグで強制する（**`Microsoft.Windows.Globalization`**`.ApplicationLanguages.PrimaryLanguageOverride`）。`Program.Main` の先頭、リソース解決より前に適用する。不正なタグは警告を出して無視する | OS の表示言語を切り替えないと ja-JP / en-US / フォールバック（例: de-DE）の各経路を検証できない。GitHub ランナーは en-US 固定なので ja-JP が永久に未検証になる |
 | `PROCESSRECORDERAPP_MIRROR_STDERR` | `1`/`true` で、捕捉した標準出力・標準エラーを差し替え前の標準エラーへも複写する（`StandardStreamRedirector`） | 標準ストリームを捕捉へ差し替えた後は、外からプロセスを起動した側が出力を1行も受け取れず、E2E ハーネスが診断を失う |
 | `PROCESSRECORDERAPP_TEST_DEVICE_ARRIVAL` | `1`/`true` で、名前付きイベント `{キー接頭辞}-DeviceArrival` のシグナルを**デバイスの到着として扱う**（`DeviceArrivalWatcher`）。実際のデバイスプロバイダには一切触れない | 開発機にも CI にも**カメラが無く、モニタの抜き差しもできない**ので、「到着で復帰の待ちを打ち切る」経路がどのテスト層でも1行も実行されない |
+| `PROCESSRECORDERAPP_H264_DECODER` | 録画トランスコードに使う H.264 デコーダーの要素名を名指しする。**候補表より先に**試し、その要素が実機に無ければ候補表へ落ちる。結果は `gst.decoders` に `preferred='<名前>' used=<True\|False>` として出る。**検証用**であり、**利用者側の GStreamer にソフトウェアのデコーダー（`openh264dec` / `avdec_h264`）が在るときだけ効く**（同梱ランタイムには無い）。設定項目にはしない | 候補表はハードウェアのデコーダーだけなので、GPU の無い開発機と CI では**変換の経路がどのテスト層でも1行も実行されない**（false の断りしか通らない） |
 | `PROCESSRECORDERAPP_WEBROOT` | リモート操作の Web UI（`wwwroot` の 7 ファイル）を、埋め込みリソースではなく指定したディレクトリから読む。**マニフェストに在る名前だけ**が対象で、配信する集合は広げられない。読めなければ黙って埋め込みへ戻る | 資産を1文字直すたびに再ビルドが要る。**この1つだけ性格が違う** ── 解決規則は `AppEnvironment` ではなく `RemoteControl/WebAssets.cs` にあり、**要求ごとに**評価される（プロセス起動時の1回ではない）。E2E の `RecordingDeliveryTests` が「持っているファイルだけを差し替える」ことを検査する |
 
 > **`Windows.Globalization` ではなく `Microsoft.Windows.Globalization` を使うこと。**

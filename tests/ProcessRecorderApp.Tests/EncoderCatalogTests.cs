@@ -1046,4 +1046,56 @@ public sealed class H264DecoderProbeTests
     [Fact]
     public void ANullProbeIsRejected()
         => Assert.Throws<ArgumentNullException>(() => EncoderCatalog.ProbeH264Decoder(null!));
+
+    /// <summary>
+    /// 名指し（<c>PROCESSRECORDERAPP_H264_DECODER</c>）が在れば<b>候補表より先</b>に採られる。
+    /// 表の中の要素を名指しても同じ（順序が入れ替わる）。
+    /// </summary>
+    [Fact]
+    public void ThePreferredDecoderBeatsTheCandidates()
+    {
+        // 表に無いソフトウェアのデコーダーでも、実機に在れば採られる。
+        Assert.Equal("openh264dec",
+            EncoderCatalog.ProbeH264Decoder(_ => true, "openh264dec"));
+        Assert.Equal("avdec_h264",
+            EncoderCatalog.ProbeH264Decoder(n => n is "avdec_h264" or "d3d11h264dec", "avdec_h264"));
+
+        // 表の中の後ろの要素を名指せば、先頭の候補を飛び越す。
+        Assert.Equal("qsvh264dec", EncoderCatalog.ProbeH264Decoder(_ => true, "qsvh264dec"));
+
+        // 結果は名指しでも LastH264Decoder に残る（能力の応答が読むのは同じ値）。
+        Assert.Equal("qsvh264dec", EncoderCatalog.LastH264Decoder);
+    }
+
+    /// <summary>
+    /// 名指したものが<b>実機に無ければ候補表へ落ちる</b>
+    /// ── 綴りを間違えても「デコーダーが無い」以上の壊れ方はしない。
+    /// </summary>
+    [Fact]
+    public void AnAbsentPreferredDecoderFallsBackToTheCandidates()
+    {
+        Assert.Equal("d3d11h264dec",
+            EncoderCatalog.ProbeH264Decoder(n => n != "openh264dec", "openh264dec"));
+        Assert.Equal("nvh264dec",
+            EncoderCatalog.ProbeH264Decoder(n => n is "nvh264dec" or "qsvh264dec", "typo-h264dec"));
+
+        // 候補も 1 つも無ければ null（名指しの有無で答えは変わらない）。
+        Assert.Null(EncoderCatalog.ProbeH264Decoder(_ => false, "openh264dec"));
+    }
+
+    /// <summary>
+    /// 空・空白のみの名指しは<b>無かったことにする</b>（存在確認にも掛けない）
+    /// ── 環境変数を空で置く形は「設定していない」と同じでなければならない。
+    /// </summary>
+    [Fact]
+    public void AnEmptyPreferredDecoderIsIgnored()
+    {
+        foreach (string? preferred in new string?[] { null, "", "   " })
+        {
+            var probed = new List<string>();
+            Assert.Equal("d3d11h264dec", EncoderCatalog.ProbeH264Decoder(
+                n => { probed.Add(n); return true; }, preferred));
+            Assert.Equal(["d3d11h264dec"], probed);
+        }
+    }
 }

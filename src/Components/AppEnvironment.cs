@@ -23,6 +23,9 @@ namespace ProcessRecorderApp.Components;
 ///     デバイス到着シグナルの外部注入。カメラの抜き差しもモニタの抜き差しも
 ///     自動テストからは起こせないので、これが無いと「到着で復帰が早まる」経路を
 ///     一度も実行できない。</item>
+///   <item><see cref="H264DecoderVariable"/> ──
+///     録画トランスコードの H.264 デコーダーの名指し。候補表はハードウェアだけなので、
+///     GPU の無い機械ではこれが無いと変換の経路を一度も実行できない。</item>
 /// </list>
 /// </summary>
 public static class AppEnvironment
@@ -74,6 +77,23 @@ public static class AppEnvironment
     /// </para>
     /// </summary>
     public const string TestDeviceArrivalVariable = "PROCESSRECORDERAPP_TEST_DEVICE_ARRIVAL";
+
+    /// <summary>
+    /// 録画トランスコードに使う H.264 デコーダーの要素名を名指しする環境変数名。
+    ///
+    /// <para>
+    /// <b>検証のためだけに存在する。</b> 候補表（<c>EncoderCatalog.H264DecoderCandidates</c>）は
+    /// ハードウェアのデコーダーだけなので、GPU の無い機械では変換の経路が
+    /// <b>どのテスト層でも 1 行も実行されない</b>。ここで
+    /// <c>openh264dec</c> / <c>avdec_h264</c> を名指すと、<b>利用者側の GStreamer に
+    /// そのデコーダーが在るときだけ</b>変換が成立する（同梱ランタイムには無い）。
+    /// </para>
+    /// <para>
+    /// <b>設定項目にはしない。</b> 名指したものが実機に無ければ候補表へ落ちるだけで、
+    /// 「無い」以上の壊れ方はしない。
+    /// </para>
+    /// </summary>
+    public const string H264DecoderVariable = "PROCESSRECORDERAPP_H264_DECODER";
 
     /// <summary>上書きが無い場合の単一インスタンスキー接頭辞。</summary>
     public const string DefaultKeyPrefix = nameof(ProcessRecorderApp);

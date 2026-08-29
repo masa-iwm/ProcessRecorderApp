@@ -477,9 +477,27 @@ namespace ProcessRecorderApp.GStreamer
 
                 // 同じ段で H.264 デコーダーも 1 回だけ確認する（録画トランスコードの可否）。
                 // **候補はハードウェアだけ**なので、無い機械では録画トランスコードを提供しない。
-                string? decoder = EncoderCatalog.ProbeH264Decoder(EncoderCatalog.ProbeWithGStreamer);
-                Components.ActivityLog.Info("gst.decoders",
-                    $"h264={decoder ?? "(none)"} transcode={(decoder is not null ? "True" : "False")}");
+                //
+                // 環境変数で名指しがあれば候補表より先に試す（検証用。利用者側の GStreamer に
+                // ソフトウェアのデコーダーが在るときだけ効く）。**名指しの有無と、それが
+                // 実際に採られたか**をログへ出す ── 名指しが効かなかったときに
+                // 「変換できない」以外の手掛かりがここにしか無い。
+                // **前後の空白を落としてから渡す。** 環境変数は設定ファイルやシェル経由で
+                // 入るので末尾の空白が混じりうる ── 素のまま渡すと要素名が一致せず、
+                // 「名指ししたのに使われない」だけの形で黙って候補表へ落ちる。
+                string? preferred = Environment.GetEnvironmentVariable(
+                    Components.AppEnvironment.H264DecoderVariable);
+                preferred = string.IsNullOrWhiteSpace(preferred) ? null : preferred.Trim();
+                string? decoder = EncoderCatalog.ProbeH264Decoder(
+                    EncoderCatalog.ProbeWithGStreamer, preferred);
+                string line = $"h264={decoder ?? "(none)"} transcode={(decoder is not null ? "True" : "False")}";
+                if (!string.IsNullOrWhiteSpace(preferred))
+                {
+                    bool used = string.Equals(decoder, preferred, StringComparison.Ordinal);
+                    line += $" preferred='{preferred}' used={used}";
+                }
+
+                Components.ActivityLog.Info("gst.decoders", line);
             }
             catch (Exception ex)
             {

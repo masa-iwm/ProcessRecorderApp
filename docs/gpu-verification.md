@@ -260,9 +260,23 @@ GPU 実機に**発行物一式**（`dotnet publish -p:PublishProfile=win-x64-aot
 ## Verify-Transcode.ps1
 
 録画トランスコードと補助エンコーダー枠を、GPU 実機で無人検証する。
-**GPU の無い機械では `capabilities` が FAILED になり、以降のケースは SKIPPED になる**
-── それがこの機械での正しい結果で（同梱ランタイムにソフトウェアの H.264 デコーダーは無い）、
-開発機で確かめられるのは「構文が通ること」と「起動 → 録画 → `list` までが動くこと」だけである。
+**引数無しで走らせると、GPU の無い機械では `capabilities` が FAILED になり、以降のケースは
+SKIPPED になる** ── それがこの機械での正しい結果である（同梱ランタイムにソフトウェアの
+H.264 デコーダーは無い）。
+
+**開発機でも `-GstBin` と `-H264Decoder` を渡せば 6 ケースすべてを流せる。** ワーカーの
+`PATH` の先頭へ、ソフトウェアの H.264 デコーダーを持つ別のランタイムの `bin` を置き
+（ローダーは PATH の走査を最優先で解決し、勝った `bin` のランタイムを丸ごと選ぶ）、
+使う要素名を名指しする:
+
+```powershell
+.\tools\Verify-Transcode.ps1 `
+  -GstBin "$env:LOCALAPPDATA\Programs\gstreamer\1.0\mingw_x86_64\bin" -H264Decoder openh264dec
+```
+
+開発機での実測は 6 ケースすべて OK（`transcode-start0` は 767,694 bytes を 1.0 秒、
+`transcode-seek` は 468,837 bytes）。**この走らせ方は同梱物についての言明にはならない**
+── 当たっているのは外のランタイムで、ハードウェア デコーダーのメモリ交渉も踏まない。
 
 ```powershell
 # 発行してから、引数なしで実行できる
@@ -318,5 +332,5 @@ MinGW 版で流したもの。
 - `amfh264enc`（AMD）── AMD GPU の機械が無く未検証（MinGW 版・MSVC 版のどちらでも同じ。実機のレポートでは両方とも `missing=[amfh264enc,openh264enc,x264enc]`）。AMD 機で `tools/Verify-GpuEncoders.ps1` を1回流せばケースは自動生成される。カタログに実在しない名前を書いても例外も警告も出ずに候補から黙って消え、録画は他候補で成立してしまうため、「録画できている」ことは名前が正しい証拠にならない ── レポート冒頭の `All H.264 encoders gst-inspect reports` 行に `amfh264enc` が載り、専用ケースが OK になっていることまで確認する。確認済みのプロパティをカタログへ足すときは `EncoderCatalogScriptSyncTests` が落ちてスクリプト側の一覧の追随を迫るので、一緒に直す。
 - （解決済み）`nvd3d11h264enc` のメモリ交渉 ── `tools/Verify-NvD3d11Memory.ps1` を NVIDIA 実機で流して決着した。sink caps は `video/x-raw(memory:D3D11Memory)` と素の `video/x-raw` だけで **D3D12Memory は受けない**（download は必須）。一方で、`video/x-raw(memory:SystemMemory)` の capsfilter を外すと **`d3d12download` の src もエンコーダーの sink も `memory:D3D11Memory` で折り合う** ── つまり CPU 往復を強いていたのはこちらの capsfilter であり、現行の形は `d3d12download ! videoconvert !` にしてある（`videoconvert` の caps は `video/x-raw(ANY)` なので交渉を妨げない）。**この形で NVIDIA/Intel 実機の全ケースが OK であることまで確認済み** ── `nvd3d11h264enc` / `nvh264enc` / `nvautogpuh264enc` の専用ケースがいずれも選ばれ、`retries` 0 で有効な MP4 を出す。
 - **DASH プレビューの第 2 パイプラインを実 GPU のエンコーダー候補で流すこと ── 未検証（手動）。** L2 の `DashPreviewTests` が通すのは、その機械で `EncoderCatalog` の先頭に来た候補 1 つだけである。GPU 機では Web UI の画質切替を `dash` にして絵が出ること、`activity.log` の `dash.stream-start` の `encoder=` が期待した GPU 候補になっていること、`dash.stream-error` が出ていないことを 1 度目で確かめる。
-- **録画トランスコードの true 経路 ── 開発機では 1 行も走らない。** `tools/Verify-Transcode.ps1` を GPU 実機で流し、6 ケースすべてが OK になること（レポートの `H.264 decoder the app found` が期待したデコーダーであること）を確かめる。**スクリプトが触らないもの**: ブラウザからの 2 倍速再生と、複数のクライアントが同時に別々の録画を変換する形 ── どちらも Web UI を 2 枚開いて手で見る（画質メニューの `(busy)` 表示が出て、片方を閉じると消えることまで）。
+- **同梱ランタイムでの録画トランスコード ── 未検証。** `-GstBin` を渡さない `tools/Verify-Transcode.ps1` を GPU 実機で流し、6 ケースすべてが OK になること（レポートの `H.264 decoder the app found` が期待したデコーダーであること）を確かめる。開発機で `-GstBin` ＋ `-H264Decoder openh264dec` を渡した走行は**外のランタイムについての結果**であって、これの代わりにはならない。**スクリプトが触らないもの**: ブラウザからの 2 倍速再生と、複数のクライアントが同時に別々の録画を変換する形 ── どちらも Web UI を 2 枚開いて手で見る。画質メニューの `(busy)` 表示と、握っている側が手放せば戻ることは L2 `WebUiBrowserTests.TheRecordingQualityMenuShowsBusyWhileAnotherSessionHoldsTheSlot` が自動で見る。
 - スクリプトは実在する要素からしかケースを作らないため、無い要素は黙って検証されない（走らなかったことは FAILED としては現れない）。意図した要素が本当に検証されたかは、レポートのケース一覧と冒頭の `All H.264 encoders gst-inspect reports` 行で確認する（どちらもレポート内にあり、手で `gst-inspect` を叩く必要はない）。

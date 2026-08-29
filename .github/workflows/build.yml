@@ -189,6 +189,9 @@ jobs:
       #
       # ここで落としておく。E2E まで持ち越すと、原因が「GStreamer が無い」なのか
       # 製品の不具合なのかの切り分けに数十分かかる。
+      #
+      # `libgstopenh264.dll`（gst-plugins-bad）も同じ理由で確かめる ── 録画トランスコードの
+      # E2E は `openh264dec` を名指しており、抜けると能力の断定でまとめて赤くなる。
       - name: Make GStreamer visible to the app
         run: |
           $bin = Join-Path '${{ steps.msys2.outputs.msys2-location }}' 'ucrt64\bin'
@@ -196,6 +199,8 @@ jobs:
           if (-not (Test-Path $core)) { throw "GStreamer not found: $core" }
           $x264 = Join-Path (Join-Path '${{ steps.msys2.outputs.msys2-location }}' 'ucrt64\lib\gstreamer-1.0') 'libgstx264.dll'
           if (-not (Test-Path $x264)) { throw "gst-plugins-ugly (x264enc) not found: $x264" }
+          $openh264 = Join-Path (Join-Path '${{ steps.msys2.outputs.msys2-location }}' 'ucrt64\lib\gstreamer-1.0') 'libgstopenh264.dll'
+          if (-not (Test-Path $openh264)) { throw "gst-plugins-bad (openh264dec) not found: $openh264" }
           Add-Content -Path $env:GITHUB_PATH -Value $bin
           Write-Host "gstreamer: $core"
 
@@ -435,6 +440,8 @@ jobs:
           $bin = Join-Path '${{ steps.msys2.outputs.msys2-location }}' 'ucrt64\bin'
           $core = Join-Path $bin 'libgstreamer-1.0-0.dll'
           if (-not (Test-Path $core)) { throw "GStreamer not found: $core" }
+          $openh264 = Join-Path (Join-Path '${{ steps.msys2.outputs.msys2-location }}' 'ucrt64\lib\gstreamer-1.0') 'libgstopenh264.dll'
+          if (-not (Test-Path $openh264)) { throw "gst-plugins-bad (openh264dec) not found: $openh264" }
           Add-Content -Path $env:GITHUB_PATH -Value $bin
           Write-Host "gstreamer: $core"
 

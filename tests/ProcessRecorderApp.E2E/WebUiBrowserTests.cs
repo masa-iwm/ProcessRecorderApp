@@ -1031,6 +1031,726 @@ public sealed class WebUiBrowserTests(PublishedApp app, ITestOutputHelper output
                 + await browser.EvaluateStringAsync(CapabilitiesDump, Ct) + "）。");
     }
 
+    // ---- (6b) 録画の画質メニュー（変換が成立する機械での経路） ----
+
+    /// <summary>
+    /// 変換が成立する構成。<b>fragmented は切る</b> ── 変換の対象は完成したファイルだけで、
+    /// 書き込み中のものはサーバーが断る側なので、メニューの判断を分けて見られない。
+    /// </summary>
+    private static SettingsFile TranscodeSettings(int limit)
+    {
+        var settings = RemoteBase(allowGuestRead: true);
+        settings.FragmentedOutput = false;
+        settings.RemoteAuxiliaryEncoderLimit = limit;
+        settings.AddRecorder("R1");
+        return settings;
+    }
+
+    /// <summary>
+    /// ソフトウェアの H.264 デコーダーを持つランタイムで起こす（配信 root の隔離も併せて）。
+    /// <b><c>AppInstance.Create</c> の <c>configure</c> でしか効かない</b>
+    /// ── デコーダーの確認は常駐ワーカーの静的初期化で 1 回だけ行われる。
+    /// </summary>
+    private static void UseSoftwareDecoder(AppInstance instance)
+    {
+        UseIsolatedRoot(instance);
+        SoftwareDecoderRuntime.Apply(instance);
+    }
+
+    /// <summary>
+    /// 変換元にする録画の長さ。<b>10 秒要る</b> ── 変換を 5 秒から始め、そこから
+    /// <see cref="TranscodeSeekSeconds"/> へ<b>戻る</b>ことでシークの作り直しを踏む形なので、
+    /// 2 つの位置が離れていて、かつどちらの後ろにも再生が進む余地が要る。
+    /// </summary>
+    private static readonly TimeSpan TranscodeClipTime = TimeSpan.FromSeconds(10);
+
+    /// <summary>変換を始める位置（選んだ時点の再生位置がそのまま始点になる）。</summary>
+    private const double TranscodeOpenSeconds = 5;
+
+    /// <summary>
+    /// 変換再生をシークする位置。<b><see cref="TranscodeOpenSeconds"/> より前にする</b>
+    /// ── パイプラインは始点から前へ読むだけなので、始点より手前は取り込みようがない。
+    /// これで「まだ取っていない位置へのシーク」が取り込み速度に関わらず成立する
+    /// （後ろへ跳ぶと、短いクリップは一瞬で全部届いていて作り直しを踏まない）。
+    /// </summary>
+    private const double TranscodeSeekSeconds = 3;
+
+    /// <summary>変換の応答が届いて再生が進むまでの待ち。</summary>
+    private static readonly TimeSpan TranscodeBudget = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// 枠が返るのを待つ長さ。<b>猶予（<c>TranscodeLimits.GraceMs</c>＝10 秒）は EOS から
+    /// 数え始める</b>ので、手放した時刻から測れば足りる（SSE の畳み込みぶんを足してある）。
+    /// </summary>
+    private static readonly TimeSpan SlotBudget = TimeSpan.FromSeconds(45);
+
+    /// <summary>SSE の <c>state</c> を 1 件読むまでの待ち（接続直後に 1 件届く）。</summary>
+    private static readonly TimeSpan SseBudget = TimeSpan.FromSeconds(10);
+
+    /// <summary>枠を握り続けるための再要求の間隔（猶予 10 秒より短くする）。</summary>
+    private static readonly TimeSpan HoldRefreshInterval = TimeSpan.FromSeconds(5);
+
+    /// <summary>離脱した後に「変換が始まらないこと」を見張る窓（始まるなら 1〜2 秒で始まる）。</summary>
+    private static readonly TimeSpan LeaveWatchWindow = TimeSpan.FromSeconds(6);
+
+    /// <summary>画質メニューを 1 度も開けなかったときの姿（比較の実際値として出る）。</summary>
+    private const string NoQualityMenu = "(menu closed)";
+
+    /// <summary>
+    /// <b>開いている</b>画質メニューの中身。<c>data-quality</c>・ラベル・<c>disabled</c>・
+    /// 選択印を 1 本の文字列にする（比較の実際値がそのまま失敗の説明になる）。
+    ///
+    /// <para>
+    /// <b><c>[hidden]</c> を除くのが要点。</b> メニューを閉じても項目は DOM に残るので、
+    /// 素で引くと<b>前回開いたときの姿</b>を読んでしまう ── <c>(busy)</c> が付いたか
+    /// 消えたかを見るケースでは、そのまま偽の緑になる。
+    /// </para>
+    /// </summary>
+    private const string QualityMenuDump = """
+        (function () {
+          var items = document.getElementById('player').parentNode
+            .querySelectorAll('.player-menu:not([hidden]) [data-quality]');
+          if (items.length === 0) { return '(menu closed)'; }
+          var text = [];
+          for (var i = 0; i < items.length; i++) {
+            text.push(items[i].dataset.quality + '=' + items[i].textContent
+              + (items[i].disabled ? ' [disabled]' : '')
+              + (items[i].getAttribute('aria-checked') === 'true' ? ' [checked]' : ''));
+          }
+          return text.join(', ');
+        })()
+        """;
+
+    /// <summary>
+    /// 320x240 の録画が提供する画質。<b>2 つだけ</b> ── 元のままと、ソースより小さい
+    /// プリセットが 1 つも無いときに残る最小の <c>360p</c>（高さはサーバーが 240 へ丸める）。
+    /// </summary>
+    private const string QualityMenuOffered = "original=Original [checked], 360p=360p";
+
+    /// <summary>枠が塞がっているときの同じメニュー（描かれるが押せない）。</summary>
+    private const string QualityMenuBusy = "original=Original [checked], 360p=360p (busy) [disabled]";
+
+    /// <summary>
+    /// 状態表示が<b>この変換のもの</b>になっているか。<b>2 つの文言を受ける</b>
+    /// ── 変換中（<c>transcoding 360p...</c>）と、応答を読み切った後
+    /// （<c>complete (transcode 360p)</c>）。<b>5 秒ぶんの変換は 1 秒足らずで届き切る</b>ので、
+    /// 前者だけを待つと「速すぎて間に合わなかった」で赤くなる（実測）。どちらも画質の名前を
+    /// 含み、元のままの再生では決して現れない。
+    /// </summary>
+    private const string PlayerStatusNamesTheTranscode = """
+        (function () {
+          var text = document.getElementById('playerStatus').textContent;
+          return text.indexOf('transcoding 360p') >= 0
+            || text.indexOf('complete (transcode 360p)') >= 0;
+        })()
+        """;
+
+    /// <inheritdoc cref="TranscodeActive"/>
+    private const string TranscodeQuality = "window.PRA.player.transcodeState().quality";
+
+    /// <inheritdoc cref="TranscodeActive"/>
+    private const string TranscodeStart = "window.PRA.player.transcodeState().start";
+
+    /// <summary>再生位置を直接書く（バーを経由しない ── 見たいのは要素のシークそのもの）。</summary>
+    private static string AssignPlayerTime(double seconds)
+        => "(function () { document.getElementById('player').currentTime = "
+         + seconds.ToString("0.###", CultureInfo.InvariantCulture)
+         + "; return true; })()";
+
+    /// <summary>
+    /// <b>1 つのタスクの中で</b>「360p を選ぶ」と「ライブのページへ移る」を続けて行う。
+    ///
+    /// <para>
+    /// <b>要求が飛んでいる最中の離脱を決定的に作るための形である。</b> <c>fetch</c> の応答は
+    /// 別のタスクでしか届かないので、この式が終わった直後に走る <c>hashchange</c> は
+    /// <b>必ず</b>「要求中（<c>transcodePhase === 'requesting'</c>）」の窓に当たる
+    /// ── 2 回の評価に分けると、速い応答が先に届いて窓を外す。
+    /// </para>
+    /// <para>
+    /// <b>押せない項目は false で返す。</b> 枠の空きがブラウザへ届く前のメニューは
+    /// <c>360p</c> を <c>(busy)</c> の無効な項目として描いており、<c>click()</c> は
+    /// 何も起こさない ── 要求が 1 本も飛ばないまま「離脱の窓」を外したことが、
+    /// 押せたことと区別できなくなる。
+    /// </para>
+    /// </summary>
+    private const string ChooseTranscodeAndLeave = """
+        (function () {
+          var item = document.getElementById('player').parentNode
+            .querySelector('.player-menu:not([hidden]) [data-quality="360p"]');
+          if (item === null || item.disabled) { return false; }
+          item.click();
+          location.hash = '#/live';
+          return true;
+        })()
+        """;
+
+    /// <summary>1 行目に印を付ける（<see cref="FirstRowIsFresh"/> と対）。</summary>
+    private const string MarkFirstRow = """
+        (function () {
+          var rows = document.querySelectorAll('#recordingsBody tr');
+          if (rows.length === 0) { return false; }
+          rows[0].dataset.stale = '1';
+          return true;
+        })()
+        """;
+
+    /// <inheritdoc cref="MarkFirstRow"/>
+    private const string FirstRowIsFresh = """
+        (function () {
+          var rows = document.querySelectorAll('#recordingsBody tr');
+          return 0 < rows.length && rows[0].dataset.stale !== '1';
+        })()
+        """;
+
+    /// <summary>ライブのページへ移り終えたか（<c>hashchange</c> のルータが走った後）。</summary>
+    private const string RecordingsPageIsHidden = "document.getElementById('pageRecordings').hidden";
+
+    /// <summary>トークンを付けて Viewer として通すクライアント（ゲスト読み取りに頼らない）。</summary>
+    private static HttpClient CreateAuthorizedClient(int port)
+    {
+        var client = CreateClient(port);
+        client.DefaultRequestHeaders.Add("Authorization", "Bearer " + Token);
+        return client;
+    }
+
+    /// <summary>
+    /// 変換が成立するランタイムで走っていることの<b>断定</b>（黙って skip しない）。
+    ///
+    /// <para>
+    /// 落ちたときに読むべきものを全部メッセージに入れる ── どの <c>bin</c> を PATH の
+    /// 先頭に置いたか、ランタイムを実際にどこから読んだか（<c>gst.runtime</c>）、名指しが
+    /// 採られたか（<c>gst.decoders</c> の <c>preferred=</c> / <c>used=</c>）。
+    /// </para>
+    /// </summary>
+    private async Task AssertTranscodeIsAvailableAsync(HttpClient client, AppInstance instance)
+    {
+        using var response = await client.GetAsync("api/capabilities", Ct);
+        string text = await response.Content.ReadAsStringAsync(Ct);
+        output.WriteLine($"{(int)response.StatusCode} {text}");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        using var body = JsonDocument.Parse(text);
+        bool transcode = body.RootElement.GetProperty("transcode").GetBoolean();
+        var decoder = body.RootElement.GetProperty("decoder");
+        string reported = decoder.ValueKind == JsonValueKind.Null ? "null" : decoder.GetString()!;
+
+        if (!transcode || !string.Equals(reported, SoftwareDecoderRuntime.Decoder, StringComparison.Ordinal))
+        {
+            Assert.Fail(
+                $"変換が成立していません: transcode={transcode} decoder={reported}"
+                + $"（期待は transcode=true decoder={SoftwareDecoderRuntime.Decoder}）。"
+                + Environment.NewLine + SoftwareDecoderRuntime.Describe()
+                + Environment.NewLine + RuntimeDiagnostics(instance));
+        }
+    }
+
+    /// <summary>ランタイムの解決・デコーダーの確認・変換の開始をログから抜き出す。</summary>
+    private static string RuntimeDiagnostics(AppInstance instance)
+    {
+        var log = instance.ReadActivityLog();
+        var text = new StringBuilder();
+
+        foreach (string name in new[] { "gst.runtime", "gst.decoders", "transcode.start" })
+        {
+            var lines = ActivityLogFile.Events(log, name);
+            if (lines.Count == 0)
+            {
+                text.AppendLine($"{name}: 0 行");
+                continue;
+            }
+
+            foreach (string line in lines)
+                text.AppendLine(line);
+        }
+
+        return text.ToString();
+    }
+
+    /// <summary>
+    /// 完成した録画の相対パスを一覧から取る。
+    /// <b><c>height</c> が出るまで待つ</b> ── 高さは sidecar から来るので、行が現れた時点では
+    /// まだ入っていないことがあり、それを見た画質メニューはプリセットを全部並べる（実測）。
+    /// </summary>
+    private async Task<string> FinishedRecordingPathAsync(HttpClient client)
+    {
+        var deadline = Stopwatch.StartNew();
+        string last = "(1 度も一覧を読めていない)";
+
+        while (deadline.Elapsed < PlaybackBudget)
+        {
+            using var response = await client.GetAsync("api/recordings", Ct);
+            last = await response.Content.ReadAsStringAsync(Ct);
+            if (response.StatusCode == HttpStatusCode.OK)
+            {
+                using var body = JsonDocument.Parse(last);
+                foreach (var file in body.RootElement.GetProperty("files").EnumerateArray())
+                {
+                    if (!file.GetProperty("inProgress").GetBoolean()
+                        && file.TryGetProperty("height", out var height)
+                        && height.ValueKind == JsonValueKind.Number
+                        && 0 < height.GetInt32())
+                    {
+                        output.WriteLine($"transcode source: {file}");
+                        return file.GetProperty("path").GetString()!;
+                    }
+                }
+            }
+
+            await Task.Delay(TimeSpan.FromMilliseconds(500), Ct);
+        }
+
+        Assert.Fail(
+            $"高さの入った完成した録画が一覧に出ませんでした。最後の応答: {last}");
+        return "";
+    }
+
+    /// <summary>
+    /// いまの空き枠（<c>auxiliaryEncodersFree</c>）。<b>SSE にしか出ない</b>ので、
+    /// 1 件読むためだけに接続する（接続した直後に現在の状態が 1 件届く）。
+    /// </summary>
+    private async Task<int> ReadFreeSlotsAsync(HttpClient client)
+    {
+        using var events = await client.GetAsync(
+            "api/events", HttpCompletionOption.ResponseHeadersRead, Ct);
+        Assert.Equal(HttpStatusCode.OK, events.StatusCode);
+
+        using var stream = await events.Content.ReadAsStreamAsync(Ct);
+        using var reader = new StreamReader(stream);
+
+        string state = await ServerSentEvents.ReadDataAsync(reader, "state", SseBudget, Ct);
+        using var snapshot = JsonDocument.Parse(state);
+        return snapshot.RootElement.GetProperty("auxiliaryEncodersFree").GetInt32();
+    }
+
+    /// <summary>空き枠が <paramref name="expected"/> になるまで引く。</summary>
+    private async Task WaitForFreeSlotsAsync(HttpClient client, int expected, string what)
+    {
+        var deadline = Stopwatch.StartNew();
+        int last = -1;
+
+        while (deadline.Elapsed < SlotBudget)
+        {
+            last = await ReadFreeSlotsAsync(client);
+            if (last == expected)
+            {
+                output.WriteLine($"{what}: free={last}（{deadline.Elapsed.TotalSeconds:F1}s）");
+                return;
+            }
+
+            await Task.Delay(TimeSpan.FromSeconds(1), Ct);
+        }
+
+        Assert.Fail(
+            $"{what}: 空き枠が {SlotBudget.TotalSeconds:F0} 秒以内に {expected} になりませんでした"
+            + $"（最後に読めたのは {last}）。");
+    }
+
+    /// <summary>
+    /// 枠を握り続ける。<b>同じ <c>session</c> で 5 秒ごとに要求し直す</b>
+    /// ── 変換は 1〜2 秒で EOS に達し、猶予が過ぎれば枠は返ってしまうので、
+    /// 「応答を開いたまま」では往復の長いブラウザ操作のあいだ持たない。同じ session の
+    /// 再要求は前のパイプラインを畳んで貸出を引き継ぐので、空きは 0 のまま保たれる。
+    ///
+    /// <para>
+    /// <b>失敗を投げずに記録する。</b> 呼び出し側の <c>finally</c> で待つので、ここで
+    /// 例外にすると本題の失敗をこれが上書きしてしまう ── 起きたことは
+    /// <paramref name="log"/> に積み、呼び出し側が本題の後で表明する。
+    /// </para>
+    /// </summary>
+    private static async Task KeepHoldingAsync(
+        HttpClient client, string path, HttpResponseMessage first, List<string> log, CancellationToken ct)
+    {
+        var held = first;
+        try
+        {
+            while (true)
+            {
+                await Task.Delay(HoldRefreshInterval, ct);
+                var next = await client.GetAsync(path, HttpCompletionOption.ResponseHeadersRead, ct);
+                log.Add(((int)next.StatusCode).ToString(CultureInfo.InvariantCulture));
+                held.Dispose();
+                held = next;
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // 呼び出し側が止めた（本題は終わっている）。
+        }
+        catch (Exception error)
+        {
+            log.Add("例外: " + error.Message);
+        }
+        finally
+        {
+            held.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// 一覧を取り直させ、<b>取り直されたことを見届ける</b>。
+    ///
+    /// <para>
+    /// <b>Play が渡すのは、いま表を作っている応答の行そのものである。</b> 画質メニューが
+    /// 何を並べられるかはその行の <c>height</c> で決まり、<b><c>height</c> は sidecar に
+    /// しか無い</b> ── sidecar の届く前の応答で押すと、高さを知らないメニューが
+    /// プリセットを全部並べる（実測）。だから「サーバー側に高さが出た」ことを確かめた後で
+    /// 表を作り直させ、その作り直しを見届けてから押す。
+    /// </para>
+    /// <para>
+    /// 見届け方は行に付けた印で行う ── <c>renderRows</c> は行ごと入れ替えるので、印の
+    /// 消えた行が現れたことが「この取り直しの応答で作られた表」の証拠になる。
+    /// 「Refresh を押した」だけでは、応答が返る前の古い表を読むことになる。
+    /// </para>
+    /// </summary>
+    private static async Task<bool> RefreshListingAsync(EdgeCdp browser, TimeSpan budget)
+    {
+        Assert.True(await browser.EvaluateBoolAsync(MarkFirstRow, Ct), "一覧に行がありません。");
+        Assert.True(await browser.EvaluateBoolAsync(Click("loadRecordings"), Ct), "Refresh を押せませんでした。");
+        return await browser.WaitUntilAsync(FirstRowIsFresh, budget, Ct);
+    }
+
+    /// <summary>画質メニューを開いて中身を読む（開いたままにする）。</summary>
+    private static async Task<string> OpenQualityMenuAsync(EdgeCdp browser)
+    {
+        Assert.True(
+            await browser.EvaluateBoolAsync(ClickShellControl("player", "quality"), Ct),
+            "バーに画質メニューのボタンがありません。");
+        return await browser.EvaluateStringAsync(QualityMenuDump, Ct);
+    }
+
+    /// <summary>画質メニューを閉じる（同じボタンが開閉を兼ねる）。</summary>
+    private static async Task CloseQualityMenuAsync(EdgeCdp browser)
+        => Assert.True(
+            await browser.EvaluateBoolAsync(ClickShellControl("player", "quality"), Ct),
+            "画質メニューを閉じられませんでした。");
+
+    /// <summary>
+    /// メニューの中身が <paramref name="expected"/> になるまで、開いては閉じて引く。
+    /// <b>成立したときはメニューを開いたまま返す</b>（そのまま項目を押せるように）。
+    /// 返すのは最後に読めた中身で、比較は呼び出し側が行う ── 失敗の本文に実際の姿が出る。
+    /// </summary>
+    private static async Task<string> WaitForQualityMenuAsync(
+        EdgeCdp browser, string expected, TimeSpan budget)
+    {
+        var deadline = Stopwatch.StartNew();
+        string last = NoQualityMenu;
+
+        while (deadline.Elapsed < budget)
+        {
+            last = await OpenQualityMenuAsync(browser);
+            if (last == expected)
+                return last;
+
+            await CloseQualityMenuAsync(browser);
+            await Task.Delay(TimeSpan.FromMilliseconds(500), Ct);
+        }
+
+        return last;
+    }
+
+    /// <summary>枠を握る側が使う変換の URL（ブラウザと同じ経路）。</summary>
+    private static string TranscodePath(string recording, string session)
+        => $"api/recording-transcode/{recording}?start=0&q=360p&session={session}";
+
+    /// <summary>
+    /// <b>画質メニューが実際に変換再生へ切り替え、位置を持ち越すこと。</b>
+    ///
+    /// <para>
+    /// <b>ブラウザで変換再生が成立するのはここだけである。</b> 応答を MSE へ流し込む形
+    /// （<c>mode='sequence'</c> ＋ <c>timestampOffset</c>）も、取り込んでいない位置への
+    /// シークがパイプラインを作り直す形も、L1 と API 級の E2E は 1 行も実行しない。
+    /// </para>
+    /// <para>
+    /// <b>シークは前へ戻る。</b> 変換は始点から前へ読むだけなので、始点より手前は
+    /// 取り込みようがない ── 短いクリップでも「まだ取っていない位置」が確実に作れる
+    /// （後ろへ跳ぶと、全部届いた後では作り直しを踏まずに緑になる）。
+    /// </para>
+    /// <para>
+    /// <b>最後に離脱を見る。</b> 画質を選んだ<b>同じタスクの中で</b>ページを移ると、
+    /// <c>hashchange</c> は必ず「要求が飛んでいる最中」に当たる ── その窓で止めていないと、
+    /// 誰も見ていないページへ応答が届き、タブが開いているあいだ枠を握り続ける。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task TheRecordingQualityMenuTranscodesAndKeepsThePositionAcrossQualities()
+    {
+        Assert.SkipUnless(EdgeCdp.IsAvailable, EdgeCdp.UnavailableReason);
+
+        // 枠は 1 つ。離脱で枠が返ることを空きの回復で見るので、上限は小さいほど鋭い。
+        using var instance = AppInstance.Create(app, TranscodeSettings(limit: 1), configure: UseSoftwareDecoder);
+        int port = WaitForPort(instance);
+        using var client = CreateAuthorizedClient(port);
+
+        await AssertTranscodeIsAvailableAsync(client, instance);
+
+        await using var browser = await EdgeCdp.LaunchAsync(Ct);
+        await browser.NavigateAsync($"http://127.0.0.1:{port}/", PageBudget, Ct);
+        Assert.True(await browser.WaitUntilAsync($"!{IsHidden("mainSections")}", PageBudget, Ct), "画面が出ませんでした。");
+
+        // **録画のページへ移っておく。** 起動時の経路はライブなので、ここを踏まないと
+        // 最後の `#/live` への遷移が `hashchange` を起こさない。
+        Assert.True(await browser.EvaluateBoolAsync(GoToRecordings, Ct), "録画のページへ移れませんでした。");
+
+        Assert.Equal(0, instance.Run("start-recording-all").ExitCode);
+        await Task.Delay(TranscodeClipTime, Ct);
+        Assert.Equal(0, instance.Run("stop-recording-all").ExitCode);
+
+        Assert.True(
+            await WaitForFirstRowAsync(
+                browser,
+                "s === '' && document.querySelectorAll('#recordingsBody tr').length > 0",
+                PlaybackBudget),
+            "録画の終わったファイルが一覧に出ませんでした: "
+                + await browser.EvaluateStringAsync(FirstRowState, Ct)
+                + Environment.NewLine + await browser.EvaluateStringAsync(ListingDump, Ct)
+                + Environment.NewLine + instance.DiagnosticDump());
+
+        // **sidecar が届いてから押す**（理由は RefreshListingAsync）。
+        output.WriteLine("recording: " + await FinishedRecordingPathAsync(client));
+        Assert.True(
+            await RefreshListingAsync(browser, PlaybackBudget),
+            "一覧が作り直されませんでした: " + await browser.EvaluateStringAsync(ListingDump, Ct));
+
+        Assert.True(await browser.EvaluateBoolAsync(ClickFirstPlay, Ct), "一覧に行がありません。");
+        Assert.True(
+            await browser.WaitUntilAsync($"0 < {PlayerTime}", PlaybackBudget, Ct),
+            "再生が始まりませんでした: " + await browser.EvaluateStringAsync(TextOf("playerStatus"), Ct));
+
+        // ---- メニューの中身 ----
+
+        Assert.True(
+            await browser.WaitUntilAsync($"{QualityMenuHidden} === false", PageBudget, Ct),
+            "画質メニューが出ません（能力は "
+                + await browser.EvaluateStringAsync(CapabilitiesDump, Ct) + "）。");
+
+        // **変換の始点を先に決める。** 選んだ時点の再生位置がそのまま始点になるので、
+        // ここを固定しないと、後で戻る先（3 秒）を追い越したまま始まることがある。
+        Assert.True(
+            await browser.WaitUntilAsync($"{TranscodeOpenSeconds} < {BufferedEnd}", PlaybackBudget, Ct),
+            $"録画物が {TranscodeOpenSeconds} 秒ぶん読み込まれませんでした: "
+                + await browser.EvaluateStringAsync(BufferedRanges, Ct));
+        Assert.True(
+            await browser.EvaluateBoolAsync(AssignPlayerTime(TranscodeOpenSeconds), Ct),
+            "再生位置を書けませんでした。");
+
+        Assert.Equal(QualityMenuOffered, await OpenQualityMenuAsync(browser));
+
+        // ---- 360p を選ぶ ----
+
+        Assert.True(
+            await browser.EvaluateBoolAsync(ClickMenuItem("player", "quality", "360p"), Ct),
+            "画質メニューに 360p の項目がありません。");
+
+        Assert.True(
+            await browser.WaitUntilAsync(TranscodeActive, TranscodeBudget, Ct),
+            "変換再生が始まりませんでした: " + await browser.EvaluateStringAsync(TextOf("playerStatus"), Ct)
+                + Environment.NewLine + RuntimeDiagnostics(instance));
+        Assert.Equal("360p", await browser.EvaluateStringAsync(TranscodeQuality, Ct));
+        Assert.True(
+            await browser.WaitUntilAsync(PlayerStatusNamesTheTranscode, TranscodeBudget, Ct),
+            "状態表示が変換のものになりませんでした: "
+                + await browser.EvaluateStringAsync(TextOf("playerStatus"), Ct));
+
+        output.WriteLine(
+            $"transcode opened at {await browser.EvaluateNumberAsync(TranscodeStart, Ct):F2}s: "
+            + await browser.EvaluateStringAsync(TranscodeDump, Ct));
+
+        double before = await browser.EvaluateNumberAsync(PlayerTime, Ct);
+        Assert.True(
+            await browser.WaitUntilAsync(
+                $"{(before + 1).ToString("R", CultureInfo.InvariantCulture)} < {PlayerTime}", TranscodeBudget, Ct),
+            $"変換再生の位置が進みませんでした（{before:F2} 秒のまま）: "
+                + await browser.EvaluateStringAsync(BufferedRanges, Ct));
+
+        // ---- 取り込んでいない位置へ戻る ----
+
+        // **成立条件そのものである。** 跳び先が既に届いていれば要素はその媒体で答えてしまい、
+        // パイプラインの作り直しは 1 度も起きない（直っていても壊れていても緑になる）。
+        double bufferedStart = await browser.EvaluateNumberAsync(BufferedStart, Ct);
+        Assert.True(
+            TranscodeSeekSeconds < bufferedStart,
+            $"跳び先（{TranscodeSeekSeconds} 秒）が既に取り込まれています"
+                + $"（buffered.start={bufferedStart:F2}）── この検査は成立していません。");
+
+        Assert.True(
+            await browser.EvaluateBoolAsync(AssignPlayerTime(TranscodeSeekSeconds), Ct),
+            "再生位置を書けませんでした。");
+        Assert.True(
+            await browser.WaitUntilAsync(
+                $"Math.abs({TranscodeStart} - {TranscodeSeekSeconds}) <= 0.5", TranscodeBudget, Ct),
+            "シークがパイプラインを作り直しませんでした: "
+                + await browser.EvaluateStringAsync(TranscodeDump, Ct));
+        Assert.True(
+            await browser.WaitUntilAsync(
+                $"{(TranscodeSeekSeconds + 0.2).ToString("R", CultureInfo.InvariantCulture)} < {PlayerTime}",
+                TranscodeBudget, Ct),
+            "跳んだ先で変換再生が進みません: " + await browser.EvaluateStringAsync(BufferedRanges, Ct));
+
+        // ---- 元のままへ戻す ----
+
+        Assert.True(
+            await browser.EvaluateBoolAsync(ClickShellControl("player", "quality"), Ct),
+            "バーに画質メニューのボタンがありません。");
+        Assert.True(
+            await browser.EvaluateBoolAsync(ClickMenuItem("player", "quality", "original"), Ct),
+            "画質メニューに original の項目がありません。");
+
+        Assert.True(
+            await browser.WaitUntilAsync($"{TranscodeActive} === false", TranscodeBudget, Ct),
+            "変換が止まりませんでした: " + await browser.EvaluateStringAsync(TranscodeDump, Ct));
+        Assert.True(
+            await browser.WaitUntilAsync($"2.5 <= {PlayerTime}", TranscodeBudget, Ct),
+            "元のままへ戻したときに位置が引き継がれませんでした"
+                + $"（{await browser.EvaluateNumberAsync(PlayerTime, Ct):F2} 秒）: "
+                + await browser.EvaluateStringAsync(BufferedRanges, Ct));
+
+        double resumed = await browser.EvaluateNumberAsync(PlayerTime, Ct);
+        output.WriteLine($"back on the original at {resumed:F2}s");
+        Assert.True(
+            await browser.WaitUntilAsync(
+                $"{(resumed + 0.5).ToString("R", CultureInfo.InvariantCulture)} < {PlayerTime}", TranscodeBudget, Ct),
+            "元のままへ戻した再生が進みません: " + await browser.EvaluateStringAsync(BufferedRanges, Ct));
+
+        // ---- 要求中の離脱 ----
+
+        // 変換を手放したので、猶予が過ぎれば枠は返る（返っていないと下の断定が鈍る）。
+        await WaitForFreeSlotsAsync(client, 1, "元のままへ戻した後");
+
+        // **ブラウザ側が空きを受け取るまで待って開く。** サーバーが空きを返した直後の
+        // メニューはまだ `(busy)` を描いており（空きは SSE のデバウンス越しに届く）、
+        // その項目は押せない ── 押せないまま進むと、要求が 1 本も飛ばずに
+        // 「離脱の窓」を外したものが下の 3 つの断定を全部通ってしまう。
+        // 成立したときはメニューを開いたまま返るので、ここで開き直してはいけない。
+        Assert.Equal(
+            QualityMenuOffered, await WaitForQualityMenuAsync(browser, QualityMenuOffered, SlotBudget));
+
+        // 離脱で消えない観測点。TranscodeStreams はパイプラインを組んだ時点で記録し、
+        // ブラウザは応答の頭が届くまで要求を打ち切らない（要求中は AbortController を
+        // まだ握っていない）ので、この 1 件は必ず出る。
+        int startsBefore = ActivityLogFile.Events(instance.ReadActivityLog(), "transcode.start").Count;
+
+        Assert.True(
+            await browser.EvaluateBoolAsync(ChooseTranscodeAndLeave, Ct),
+            "画質メニューの 360p を押せませんでした: "
+                + await browser.EvaluateStringAsync(QualityMenuDump, Ct));
+        Assert.True(
+            await browser.WaitUntilAsync(RecordingsPageIsHidden, PageBudget, Ct),
+            "ライブのページへ移れませんでした。");
+
+        Assert.False(
+            await browser.WaitUntilAsync(TranscodeActive, LeaveWatchWindow, Ct),
+            "離脱した後で変換が始まりました: " + await browser.EvaluateStringAsync(TranscodeDump, Ct));
+        await WaitForFreeSlotsAsync(client, 1, "離脱した後");
+
+        // 「要求は出た → 止めた → 枠は返った」の 1 つ目。これが増えていなければ、
+        // 上の 2 つは「何も起きなかった」ことしか語っていない。
+        Assert.Equal(
+            startsBefore + 1,
+            ActivityLogFile.Events(instance.ReadActivityLog(), "transcode.start").Count);
+    }
+
+    /// <summary>
+    /// <b>他人が枠を握っているあいだ、画質メニューは <c>(busy)</c> を描いて押させないこと。</b>
+    ///
+    /// <para>
+    /// 断りは<b>落とすのではなく描く</b> ── 項目が消えるメニューは壊れて見える。
+    /// 元のままは常に選べる（ディスクのバイトはエンコーダーを使わない）ので、
+    /// 無効になるのはプリセットだけである。
+    /// </para>
+    /// <para>
+    /// <b>枠は握り続ける。</b> 応答を開いたままにするだけでは、変換が EOS に達して猶予が
+    /// 過ぎた時点で空いてしまう ── ブラウザの操作は往復が長いので、同じ <c>session</c> の
+    /// 再要求で貸出を引き継がせ続ける（<see cref="KeepHoldingAsync"/>）。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task TheRecordingQualityMenuShowsBusyWhileAnotherSessionHoldsTheSlot()
+    {
+        Assert.SkipUnless(EdgeCdp.IsAvailable, EdgeCdp.UnavailableReason);
+
+        using var instance = AppInstance.Create(app, TranscodeSettings(limit: 1), configure: UseSoftwareDecoder);
+        int port = WaitForPort(instance);
+        using var client = CreateAuthorizedClient(port);
+
+        await AssertTranscodeIsAvailableAsync(client, instance);
+
+        await using var browser = await EdgeCdp.LaunchAsync(Ct);
+        await browser.NavigateAsync($"http://127.0.0.1:{port}/", PageBudget, Ct);
+        Assert.True(await browser.WaitUntilAsync($"!{IsHidden("mainSections")}", PageBudget, Ct), "画面が出ませんでした。");
+
+        Assert.Equal(0, instance.Run("start-recording-all").ExitCode);
+        await Task.Delay(TranscodeClipTime, Ct);
+        Assert.Equal(0, instance.Run("stop-recording-all").ExitCode);
+
+        Assert.True(
+            await WaitForFirstRowAsync(
+                browser,
+                "s === '' && document.querySelectorAll('#recordingsBody tr').length > 0",
+                PlaybackBudget),
+            "録画の終わったファイルが一覧に出ませんでした: "
+                + await browser.EvaluateStringAsync(FirstRowState, Ct)
+                + Environment.NewLine + await browser.EvaluateStringAsync(ListingDump, Ct)
+                + Environment.NewLine + instance.DiagnosticDump());
+
+        // **sidecar が届いてから押す**（理由は RefreshListingAsync）。
+        string recording = await FinishedRecordingPathAsync(client);
+        Assert.True(
+            await RefreshListingAsync(browser, PlaybackBudget),
+            "一覧が作り直されませんでした: " + await browser.EvaluateStringAsync(ListingDump, Ct));
+
+        Assert.True(await browser.EvaluateBoolAsync(ClickFirstPlay, Ct), "一覧に行がありません。");
+        Assert.True(
+            await browser.WaitUntilAsync($"0 < {PlayerTime}", PlaybackBudget, Ct),
+            "再生が始まりませんでした: " + await browser.EvaluateStringAsync(TextOf("playerStatus"), Ct));
+
+        Assert.True(
+            await browser.WaitUntilAsync($"{QualityMenuHidden} === false", PageBudget, Ct),
+            "画質メニューが出ません（能力は "
+                + await browser.EvaluateStringAsync(CapabilitiesDump, Ct) + "）。");
+
+        // ---- 別 session が枠を握る ----
+
+        string holdPath = TranscodePath(recording, "hold");
+
+        // **応答の始末は表明の前後で切れ目なく持つ。** 通れば KeepHoldingAsync が引き取り、
+        // 落ちればここで閉じる ── 開いたままの応答は変換のパイプラインを握り続ける。
+        var holdLog = new List<string>();
+        using var stopHolding = new CancellationTokenSource();
+        var first = await client.GetAsync(holdPath, HttpCompletionOption.ResponseHeadersRead, Ct);
+        Task holding;
+        try
+        {
+            Assert.Equal(HttpStatusCode.OK, first.StatusCode);
+            holding = KeepHoldingAsync(client, holdPath, first, holdLog, stopHolding.Token);
+        }
+        catch
+        {
+            first.Dispose();
+            throw;
+        }
+
+        string busy;
+        try
+        {
+            busy = await WaitForQualityMenuAsync(browser, QualityMenuBusy, SlotBudget);
+        }
+        finally
+        {
+            stopHolding.Cancel();
+            await holding;
+        }
+
+        // 保持そのものが壊れていたら、上の結果は「枠が塞がっていた」ことの証拠にならない。
+        Assert.Empty(holdLog.FindAll(code => code != "200"));
+        Assert.Equal(QualityMenuBusy, busy);
+        await CloseQualityMenuAsync(browser);
+
+        // ---- 手放せば戻る ----
+
+        Assert.Equal(QualityMenuOffered, await WaitForQualityMenuAsync(browser, QualityMenuOffered, SlotBudget));
+        await CloseQualityMenuAsync(browser);
+    }
+
     /// <summary>
     /// <b>バーの「+10s」が実際に位置を 10 秒進め、速度メニューが <c>playbackRate</c> を変える。</b>
     ///

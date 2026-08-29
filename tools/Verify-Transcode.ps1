@@ -1,14 +1,23 @@
 <#
 .SYNOPSIS
     Unattended verification of recording transcode and the auxiliary encoder slots on a
-    machine with a real GPU.
+    machine with a real GPU (or, with -GstBin/-H264Decoder, against a GStreamer that has a
+    software H.264 decoder).
 
 .DESCRIPTION
-    Recording transcode re-encodes a finished recording while it is served, and it needs a
-    hardware H.264 DECODER. The bundled GStreamer runtime has no software H.264 decoder
-    (OpenH264 is deliberately not shipped), so on a machine without one the product answers
-    'transcode unavailable' and every case below is inconclusive. That is what the E2E layer
-    pins down; this script is the other half -- the true path, which only a GPU box can run.
+    Recording transcode re-encodes a finished recording while it is served, and it needs an
+    H.264 DECODER. The product only looks for hardware decoders, and the bundled GStreamer
+    runtime has no software H.264 decoder (OpenH264 is deliberately not shipped), so on a
+    machine without a GPU the product answers 'transcode unavailable' and every case below is
+    inconclusive. That is the true path this script exists for, and only a GPU box can run it
+    against the bundled runtime.
+
+    On a machine without a GPU the same cases can still be exercised against ANOTHER GStreamer
+    that does have a software decoder: pass -GstBin (prepended to the worker's PATH, which is
+    what the loader scans first) and -H264Decoder openh264dec (which the product accepts
+    through PROCESSRECORDERAPP_H264_DECODER). That covers the transcode code path but NOT the
+    bundled runtime and NOT the hardware decoder's memory negotiation -- with these two
+    parameters the run is no longer a statement about what ships.
 
     Everything is done here: an isolated data directory, a generated settings.json, the
     resident worker, one recording, then HTTP requests against the running server. No manual
@@ -39,16 +48,28 @@
 .PARAMETER KeepWorkDir
     Keep the working directory (settings.json, debug.log, MP4s) after the run.
 
+.PARAMETER GstBin
+    A GStreamer 'bin' directory to put FIRST on the worker's PATH. The binding's loader scans
+    PATH before anything else and takes the whole runtime it finds there (bin plus the
+    lib\gstreamer-1.0 next to it), so this selects that runtime wholesale -- plugins are not
+    mixed. Empty (the default) changes nothing.
+
+.PARAMETER H264Decoder
+    The H.264 decoder element the product should use (PROCESSRECORDERAPP_H264_DECODER). It is
+    tried before the hardware candidate list and falls back to that list when the element is
+    not present. Empty (the default) changes nothing. Use 'openh264dec' together with -GstBin.
+
 .EXAMPLE
     .\Verify-Transcode.ps1
     .\Verify-Transcode.ps1 -PublishDir D:\pra\publish -Limit 3 -KeepWorkDir
+    .\Verify-Transcode.ps1 -GstBin "$env:LOCALAPPDATA\Programs\gstreamer\1.0\mingw_x86_64\bin" -H264Decoder openh264dec
 
 .OUTPUTS
     A markdown report at <WorkDir>\transcode-report.md and the same summary on stdout.
     Exit code 0 only if every case actually ran AND behaved as expected; 1 otherwise
     (a skipped case verified nothing, so it counts as inconclusive, not as success).
-    On a machine with no hardware H.264 decoder the 'capabilities' case FAILS and the
-    transcode cases are SKIPPED -- that is the expected outcome there, not a defect.
+    With no usable H.264 decoder the 'capabilities' case FAILS and the transcode cases are
+    SKIPPED -- that is the expected outcome there, not a defect.
 #>
 [CmdletBinding()]
 param(
@@ -57,7 +78,9 @@ param(
     [int]$RecordSeconds = 6,
     [int]$Port = 8760,
     [int]$Limit = 2,
-    [switch]$KeepWorkDir
+    [switch]$KeepWorkDir,
+    [string]$GstBin,
+    [string]$H264Decoder
 )
 
 $ErrorActionPreference = 'Stop'
@@ -106,6 +129,23 @@ $null = New-Item -ItemType Directory -Force $WorkDir
 $env:PROCESSRECORDERAPP_DATA_DIR   = $WorkDir
 $env:PROCESSRECORDERAPP_KEY_PREFIX = 'PraTranscodeVerify_' + [guid]::NewGuid().ToString('N')
 
+# Both of these default to doing nothing: an unmodified run is the statement about what
+# ships, and neither variable may leak into it. The worker inherits this process's
+# environment, so setting them here is enough (the CLI is started with UseShellExecute=false).
+if ($GstBin) {
+    $GstBin = [System.IO.Path]::GetFullPath($GstBin)
+    # -PathType Container: a file with that name would be accepted by a bare Test-Path and
+    # then silently prepend a non-directory to PATH.
+    if (-not (Test-Path $GstBin -PathType Container)) { throw "-GstBin '$GstBin' is not a directory." }
+    $env:PATH = $GstBin + ';' + $env:PATH
+}
+if ($H264Decoder) {
+    $env:PROCESSRECORDERAPP_H264_DECODER = $H264Decoder
+} elseif (Test-Path Env:\PROCESSRECORDERAPP_H264_DECODER) {
+    # A leftover from the caller's shell would silently change what is being verified.
+    Remove-Item Env:\PROCESSRECORDERAPP_H264_DECODER
+}
+
 $recDir = Join-Path $WorkDir 'rec'
 $null = New-Item -ItemType Directory -Force $recDir
 
@@ -119,6 +159,8 @@ Write-Host "Publish dir : $PublishDir"
 Write-Host "Work dir    : $WorkDir"
 Write-Host "Port        : $Port"
 Write-Host "Slot limit  : $Limit"
+Write-Host ("GStreamer   : {0}" -f $(if ($GstBin) { $GstBin } else { '(resolved by the loader)' }))
+Write-Host ("H264 decoder: {0}" -f $(if ($H264Decoder) { $H264Decoder } else { '(hardware candidates)' }))
 Write-Host '---------------------------------------------------------------'
 
 # ---------------------------------------------------------------- helpers
@@ -145,6 +187,29 @@ function Stop-AllWorkers {
         }
     }
     Start-Sleep -Milliseconds 600
+}
+
+# The report must say what the worker actually loaded, not what this script asked for: -GstBin
+# and -H264Decoder are requests, and a run where neither took effect looks identical in the
+# results table. Both facts are written once per worker to the isolated activity.log
+# ('gst.runtime <where the bindings loaded from>' and 'gst.decoders h264=... preferred=... used=...').
+# The newest match wins (several workers start during a run) and the rotated file is only
+# consulted when the live one has none. The log is UTF-8 without a BOM, so read it as UTF-8:
+# PS 5.1 would otherwise decode it as ANSI.
+function Get-LastActivityLine {
+    param([string]$EventName)
+    foreach ($log in @((Join-Path $WorkDir 'activity.log'), (Join-Path $WorkDir 'activity.log.1'))) {
+        if (Test-Path $log) {
+            $lines = @()
+            try { $lines = [IO.File]::ReadAllLines($log, [Text.Encoding]::UTF8) } catch { $lines = @() }
+            # ' <event> ' -- space delimited per the log format. Level is not anchored on
+            # purpose: gst.runtime is written as ERROR when the load failed, and that is
+            # precisely the case worth reporting.
+            $hit = @($lines | Where-Object { $_ -match ([regex]::Escape(' ' + $EventName + ' ')) })
+            if ($hit.Count -gt 0) { return $hit[$hit.Count - 1] }
+        }
+    }
+    return '(not found in activity.log)'
 }
 
 function Invoke-Cli {
@@ -456,9 +521,9 @@ if ($answer.Status -ne 200) {
     if ($transcodeAvailable) {
         Add-Result 'capabilities' 'OK' $detail
     } else {
-        # Expected on a machine with no hardware H.264 decoder. It is still a FAILED row:
-        # this script exists to verify the true path, and nothing below it can run.
-        Add-Result 'capabilities' 'FAILED' "$detail (no hardware H.264 decoder on this machine)"
+        # Expected on a machine with no hardware H.264 decoder and no -H264Decoder. It is
+        # still a FAILED row: this script verifies the true path, and nothing below can run.
+        Add-Result 'capabilities' 'FAILED' "$detail (no usable H.264 decoder for this run)"
     }
 }
 
@@ -479,7 +544,7 @@ if ($answer.Status -ne 200) {
 }
 
 $skipReason = $null
-if (-not $transcodeAvailable) { $skipReason = 'no hardware H.264 decoder' }
+if (-not $transcodeAvailable) { $skipReason = 'no usable H.264 decoder' }
 elseif ($null -eq $recording) { $skipReason = 'no recording to convert' }
 
 # ---- transcode-start0
@@ -623,14 +688,19 @@ $null = $sb.AppendLine()
 $null = $sb.AppendLine("- Machine: $env:COMPUTERNAME")
 $null = $sb.AppendLine("- Publish dir: ``$PublishDir``")
 $null = $sb.AppendLine("- H.264 decoder the app found: ``$decoder``")
+$null = $sb.AppendLine("- Runtime the worker loaded (activity.log ``gst.runtime``): ``$(Get-LastActivityLine 'gst.runtime')``")
+$null = $sb.AppendLine("- Decoder probe the worker logged (activity.log ``gst.decoders``): ``$(Get-LastActivityLine 'gst.decoders')``")
+$null = $sb.AppendLine("- GStreamer bin put first on PATH: ``$(if ($GstBin) { $GstBin } else { '(none -- resolved by the loader)' })``")
+$null = $sb.AppendLine("- Decoder named through PROCESSRECORDERAPP_H264_DECODER: ``$(if ($H264Decoder) { $H264Decoder } else { '(none -- hardware candidates only)' })``")
 $null = $sb.AppendLine("- Auxiliary encoder limit: $Limit")
 $null = $sb.AppendLine("- Recording: ``$(if ($recording) { $recording } else { '(none)' })`` (${RecordSeconds}s)")
 $null = $sb.AppendLine()
 if (-not $transcodeAvailable) {
-    $null = $sb.AppendLine('**This machine cannot transcode.** The bundled runtime has no software H.264 decoder, ')
-    $null = $sb.AppendLine('so every case below the capability check is SKIPPED and the run is inconclusive by design. ')
-    $null = $sb.AppendLine('Run this script on a box with a hardware H.264 decoder (d3d11h264dec / d3d12h264dec / ')
-    $null = $sb.AppendLine('nvh264dec / qsvh264dec).')
+    $null = $sb.AppendLine('**This run could not transcode.** Every case below the capability check is SKIPPED and ')
+    $null = $sb.AppendLine('the run is inconclusive. Either run this script on a box with a hardware H.264 decoder ')
+    $null = $sb.AppendLine('(d3d11h264dec / d3d12h264dec / nvh264dec / qsvh264dec), or point it at a GStreamer that ')
+    $null = $sb.AppendLine('has a software decoder: -GstBin <...\bin> -H264Decoder openh264dec. The bundled runtime ')
+    $null = $sb.AppendLine('has no software H.264 decoder (OpenH264 is deliberately not shipped).')
     $null = $sb.AppendLine()
 }
 $null = $sb.AppendLine('| Case | Result | Detail |')

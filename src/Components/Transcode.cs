@@ -7,10 +7,12 @@ namespace ProcessRecorderApp.Components;
 /// この実機で録画トランスコードが成立するか。
 ///
 /// <para>
-/// <b>条件はハードウェア H.264 デコーダーが在ることだけ</b>
+/// <b>条件は H.264 デコーダーが 1 つ在ることだけ</b>で、候補表
+/// （<c>EncoderCatalog.H264DecoderCandidates</c>）は<b>ハードウェアだけ</b>である
 /// ── 同梱ランタイムにソフトウェアの H.264 デコーダーは無く（<c>avdec_h264</c> /
 /// <c>openh264dec</c> はフルインストールの GStreamer にしか無い）、
 /// 無ければ <see cref="Transcode"/> は false になる。
+/// 表の外の要素は <see cref="AppEnvironment.H264DecoderVariable"/>（検証用）でだけ選べる。
 /// </para>
 /// </summary>
 /// <param name="Transcode">録画トランスコードを提供できるか。</param>
