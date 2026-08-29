@@ -628,6 +628,42 @@ internal sealed partial class RemoteControlBackend(DispatcherQueue dispatcherQue
         });
 
     /// <inheritdoc/>
+    public Task<PreviewQualityState> GetPreviewQualityAsync(string id, CancellationToken ct)
+        => RunOnUiAsync(() =>
+        {
+            if (GstControllerViewModel.Current is not { } controller)
+                throw new RemoteApiException(NotAvailableExitCode, "the recording engine is not ready yet");
+
+            if (!controller.DashPreviews.TryGetQuality(id, out var state, out string? reason))
+                throw PreviewQualityFailure(reason);
+
+            return Task.FromResult(state);
+        });
+
+    /// <inheritdoc/>
+    public Task<PreviewQualityState> SetPreviewQualityAsync(string id, string qualityId, CancellationToken ct)
+        => RunOnUiAsync(() =>
+        {
+            if (GstControllerViewModel.Current is not { } controller)
+                throw new RemoteApiException(NotAvailableExitCode, "the recording engine is not ready yet");
+
+            if (!controller.DashPreviews.TrySetQuality(id, qualityId, out var state, out string? reason))
+                throw PreviewQualityFailure(reason);
+
+            return Task.FromResult(state);
+        });
+
+    /// <summary>
+    /// 画質の読み書きの失敗。<b>「対象が無い」だけが 13（404）</b>で、残りは 12
+    /// （<c>GetDashPreviewSnapshotAsync</c> と同じ写像）。
+    /// </summary>
+    private static RemoteApiException PreviewQualityFailure(string? reason)
+        => new(reason == PreviewStreamReasons.RecorderNotFound
+                   ? ActivationCommands.ExitCode_RecorderNotFound
+                   : NotAvailableExitCode,
+               reason ?? "the preview quality is not available");
+
+    /// <inheritdoc/>
     public IDisposable SubscribeState(Action<RecordersSnapshot> onChange)
     {
         var subscription = new StateSubscription(_dispatcherQueue, onChange);

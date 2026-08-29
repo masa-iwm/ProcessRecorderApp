@@ -95,6 +95,73 @@ namespace ProcessRecorderApp.GStreamer
 
                 return dash.TryGetSnapshot(out snapshot, out reason);
             }
+
+            public bool TryGetQuality(
+                string target,
+                [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out Components.PreviewQualityState? state,
+                [System.Diagnostics.CodeAnalysis.NotNullWhen(false)] out string? reason)
+            {
+                if (Resolve(target, out var recorder, out reason))
+                {
+                    state = recorder.GetPreviewQualityState();
+                    return true;
+                }
+
+                state = null;
+                return false;
+            }
+
+            public bool TrySetQuality(
+                string target,
+                string qualityId,
+                [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out Components.PreviewQualityState? state,
+                [System.Diagnostics.CodeAnalysis.NotNullWhen(false)] out string? reason)
+            {
+                if (!Components.PreviewQualityPresets.IsValidId(qualityId))
+                {
+                    throw new ArgumentException(
+                        $"'{qualityId}' is not a preview quality id", nameof(qualityId));
+                }
+
+                if (!Resolve(target, out var recorder, out reason))
+                {
+                    state = null;
+                    return false;
+                }
+
+                // **カスタムは「指示なし」。** null に戻すことで、配信は設定 4 値へ戻る。
+                recorder.PreviewQualityPreset =
+                    string.Equals(qualityId, Components.PreviewQualityPresets.Custom, StringComparison.Ordinal)
+                        ? null
+                        : qualityId;
+
+                state = recorder.GetPreviewQualityState();
+                return true;
+            }
+
+            /// <summary>
+            /// 対象を 1 つに解決する。<b>画質の 2 つは配信エンジンの有無を条件にしない</b>
+            /// ── 初期化前でも選択肢と指示は答えられる（<see cref="TryGetSnapshot"/> は
+            /// 配信物そのものを返すので、あちらだけが「まだ動いていない」で失敗する）。
+            /// </summary>
+            private bool Resolve(
+                string target,
+                [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out EventRecorder? recorder,
+                [System.Diagnostics.CodeAnalysis.NotNullWhen(false)] out string? reason)
+            {
+                string[] names = [.. owner.Recorders.Select(r => r.Name)];
+                int index = RecorderCliRules.ResolveTargetIndex(names, target);
+                if (index < 0)
+                {
+                    recorder = null;
+                    reason = Components.PreviewStreamReasons.RecorderNotFound;
+                    return false;
+                }
+
+                recorder = owner.Recorders[index];
+                reason = null;
+                return true;
+            }
         }
 
         /// <summary>

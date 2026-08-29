@@ -127,7 +127,7 @@ GStreamer が使われる」という取り違えもここから起きる（ど�
 | `PreviewFps` | `15` | ブラウザーへ配信するプレビューのフレームレート(fps)。1〜60（同上） |
 | `PreviewBitrateKbps` | `2000` | ブラウザーへ配信するプレビューのビットレート(kbit/s)。100〜20000（同上）。エンコーダーごとの単位差は `H264EncoderDef.WithBitrateKbps` が吸収する |
 
-プレビューの 4 設定は **まだ配信面に配線していない**（現在のライブプレビューは録画と同じ画質のまま流す）。値を変えても今のところ配信物は変わらない。
+プレビューの 4 設定を読むのは **DASH プレビューだけ**である（録画画質のライブプレビューは録画済みの H.264 をそのまま包むので、値を変えても 1 バイトも変わらない）。さらに DASH 側でも、効くのは**ライブ画質が `custom` のとき**に限る ── プリセット（`1080p` 等）が選ばれているあいだは、そちらの解決値が配信物を決める（「DASH プレビュー エンジン」の「ライブ画質プリセット」）。
 
 `faststart=true`（`FragmentedOutput` を OFF にしたときの形）は EOS のあとにファイル全体を
 書き直して `moov` を先頭へ移すので、**書き込み中の `filesink` の出力先は 0 バイトのまま**である
@@ -1909,6 +1909,8 @@ UI スレッドで走る。`TryEnqueue` が false なら `RemoteApiException(12,
 | GET | `/api/recorders/{id}/dash/manifest.mpd` | `Viewer` | DASH プレビューの MPD（`application/dash+xml`）。**引くこと自体がリースを延ばす**（引かなくなれば第 2 パイプラインは畳まれる） |
 | GET | `/api/recorders/{id}/dash/init.mp4` | `Viewer` | 同 Init セグメント（`video/mp4`）。同じくリースを延ばす |
 | GET | `/api/recorders/{id}/dash/seg-{time}.m4s` | `Viewer` | 同メディアセグメント（`video/iso.segment`。`{time}` は MPD の `S@t`）。同じくリースを延ばす |
+| GET | `/api/recorders/{id}/preview/qualities` | `Viewer` | ライブ画質の姿（`current` / `source`（`width`・`height`・`fps`。読めていなければ null）/ `effective`（いま配信している `id` ＋ 4 値。配信していなければ null）/ `qualities[]`（`id` / `label` / `width` / `height` / `fps` / `bitrateKbps`。**末尾は必ず `custom`**））。**リースを延ばさない** |
+| POST | `/api/recorders/{id}/preview/quality` | `Operator`（**W**） | `{"id":"720p"}`（`1080p` / `720p` / `480p` / `360p` / `custom`）。応答は GET と同じ本体。表にも `custom` にも無い id と `id` 欠落は 400 `unknown preview quality` |
 
 1 つの録画ファイルから派生する答えは **`/api/recording-<kind>/{*path}`** の形に揃える。
 `{*path}` は URL の末尾まで捕まえるので `/api/recordings/{*path}/fragments` とは書けない
@@ -2293,12 +2295,49 @@ HTTP 側（`PreviewEndpoints`）は `video/mp4` ＋ `Cache-Control: no-store` �
 appsrc name=src format=time block=false max-buffers=2 max-bytes=0 leaky-type=downstream ! videorate drop-only=true ! videoscale ! video/x-raw,width={w},height={h},framerate={fps}/1,pixel-aspect-ratio=1/1 ! videoconvert ! {encoder} ! h264parse config-interval=-1 ! mp4mux name=mux fragment-duration=1000 fragment-mode=dash-or-mss ! appsink name=sink sync=false async=false
 ```
 
-`{w}` / `{h}` / `{fps}` と `{encoder}` の `bitrate=` は、`EventRecorderSettings` の
-`PreviewWidth` / `PreviewHeight` / `PreviewFps` / `PreviewBitrateKbps` から**毎サンプル読み直す**
-── 値が変われば次のサンプルで組み直す（宿主から通知は受けない）。エンコーダーは
+`{w}` / `{h}` / `{fps}` と `{encoder}` の `bitrate=` は**毎サンプル読み直す** ── 値が変われば
+次のサンプルで組み直す（宿主から通知は受けない）。読む先は**ライブ画質が `custom` なら**
+`EventRecorderSettings` の `PreviewWidth` / `PreviewHeight` / `PreviewFps` / `PreviewBitrateKbps`
+で、プリセットが選ばれていればソースに対する解決値（次節）である。エンコーダーは
 `EncoderCatalog.Resolve(System, PreferredH264Encoder, …, gop: fps)` の並びを候補列として、
 先頭から 1 つずつ試す。**`bitrate=` トークンを持たないエンコーダー候補では
 `PreviewBitrateKbps` は効かない**（`WithBitrateKbps` が素通しする）。
+
+#### ライブ画質プリセット
+
+**視聴者側から画質を選べる。** 選択は `1080p` / `720p` / `480p` / `360p` の**プリセット id** か
+`custom`（＝設定の 4 値そのまま）で、**非永続・レコーダー単位・全視聴者で共有・最後勝ち**である
+── settings.json には写らず（`EventRecorderSettings` に項目は無い）、アプリを終了すれば消える。
+永続的に変えるのは `PATCH /api/recorders/{id}/settings`（`Admin`）の方で、こちらは別物である。
+
+**プリセットが持つのは高さ・fps・ビットレートだけで、幅は持たない。** 幅を書くと 16:9 でない
+ソースで歪むためで、表（`Components.PreviewQualityPresets.All`。この順が API とメニューの順）は:
+
+| id | 高さ | fps | kbit/s |
+|---|---|---|---|
+| `1080p` | 1080 | 30 | 6000 |
+| `720p` | 720 | 30 | 3000 |
+| `480p` | 480 | 30 | 1500 |
+| `360p` | 360 | 15 | 800 |
+
+**解決はソースの caps に対して行う**（`PreviewQualityPresets.Resolve`）── プリセットの意味は
+「ソースに対する相対」で、ウィンドウ ソースのように実行中に解像度が変わる相手でも
+caps 変化のたびに解き直される:
+
+- 高さ ＝ `min(プリセットの高さ, ソースの高さを偶数へ切り下げた値)`（ソース未知ならプリセットのまま）
+- 幅 ＝ その高さ × ソースの縦横比（未知なら 16:9）を**最も近い偶数**へ
+- 幅は 160〜3840、高さは 120〜2160 へ丸める（上下限は `EventRecorderSettings` の `Min/MaxPreview*` と同じ）
+- fps ＝ `min(プリセットの fps, ソースの fps)`（ソース未知ならプリセットのまま。下限 1）
+- ビットレートは**縮めない**（小さく符号化した方が余裕が出るだけで、上限として害が無い）
+
+選択肢（`Offered`）は**ソースより高いプリセットを出さない**（拡大しても情報は増えず帯域だけ増える）。
+1 つも残らなければ最小（`360p`）だけを出し、末尾には必ず `custom` が付く。**`custom` は
+クランプしない** ── 設定した 4 値をそのまま配る道を常に残す。
+
+**切り替わり方は設定変更と同じ**である。次のサンプルで `settings changed` として mux を畳み、
+新しい 4 値で組み直す ── `Period@id`（generation）が変わるので、クライアントは連続体を
+開き直す（可視復帰はおおむね 2〜4 秒）。**`custom` のときだけ `Preview*` の 4 設定が配信に効く**
+── プリセットが選ばれているあいだにデスクトップ側で 4 設定を変えても、配信物は変わらない。
 
 `appsink` の出力は `Fmp4SegmentSplitter` が Init / Media に切り、`DashSegmentAssembler` が
 **同期サンプル（IDR）始まりの fragment を切れ目として** DASH のセグメントへ集約する
@@ -2319,7 +2358,7 @@ appsrc name=src format=time block=false max-buffers=2 max-bytes=0 leaky-type=dow
 | 理由 | 起きる条件 |
 |---|---|
 | `lease expired` | 10 秒のあいだ `TryGetSnapshot` が 1 度も呼ばれなかった（＝読み手が居なくなった） |
-| `settings changed` | 幅・高さ・fps・ビットレートのどれかが変わった（次のサンプルで新しい値で組み直す） |
+| `settings changed` | 幅・高さ・fps・ビットレートのどれか、またはライブ画質の選択が変わった（次のサンプルで新しい値で組み直す） |
 | `caps changed` | 枝A の caps が変わった（＝ init が変わる。連続体を切り直す） |
 | `encoder failed` | 動いている第 2 パイプラインのバスに ERROR（`not-negotiated` 等）が出た。その候補は不採用にして、次のサンプルで次の候補を試す |
 | `pts rewind` | fragment の `tfdt` が進んでいない（`SegmentTimeline` が単調でなくなる） |
@@ -2357,7 +2396,9 @@ appsrc name=src format=time block=false max-buffers=2 max-bytes=0 leaky-type=dow
   スレッドを占める。対象のレコーダーが無ければ 404（終了コード 13）。
 - **期限切れのセグメント**（リングから落ちた・まだ来ていない・別の連続体のもの）→ 404
   `"segment not available"`。3 つを区別しない ── クライアントの対処はどれも「飛ばす」である。
-- 応答はすべて `Cache-Control: no-store` ＋ **`X-Dash-Generation`**（＝ MPD の `Period@id`）。
+- 応答はすべて `Cache-Control: no-store` ＋ **`X-Dash-Generation`**（＝ MPD の `Period@id`）
+  ＋ **`X-Dash-Quality`**（＝この連続体を組んだときのライブ画質の id。プリセット id か `custom`）。
+  後者は**指示ではなく実際に配信しているもの**で、クライアントはこれで切り替えが効いたかを見る。
   **ETag も Range も使わない** ── リングから落ちたものは二度と戻らないので、
   条件付き要求に意味のある「同じ表現」が存在しない。
 - **取得がリースを延ばす。** manifest を引き続けることが「見ている」の唯一の表明で、
@@ -2448,13 +2489,22 @@ appsrc name=src format=time block=false max-buffers=2 max-bytes=0 leaky-type=dow
 `<script src="http` と `import ` を持たないこと・`index.html` の参照先がすべてマニフェスト内の
 名前であることを縛る。
 
-プレビューには**画質の切替が 2 項目**あり、**既定は録画画質**
-（従来の chunked `preview.mp4`。録画用に符号化済みの H.264 をそのまま包むので追加費用が無い）。
-`dash` を選ぶと、そのレコーダーの `Preview*` 4 設定で再符号化した DASH の方を再生する。
-選択そのものは `<select id="previewMode">` が持ち、**画面からは `hidden` で外してある** ──
-操作はプレビューのバーの画質メニューで、項目の文言は `<option>` のテキストをそのまま読む。
-メニューは `#previewMode.value` を書いて `change` を `dispatchEvent` するので、
-切り替えの経路は従来と 1 本のままである。
+プレビューの画質メニューは、**録画画質**（既定。従来の chunked `preview.mp4` で、録画用に
+符号化済みの H.264 をそのまま包むので追加費用が無い）に続けて、
+`GET /api/recorders/{id}/preview/qualities` が返したプリセットと `custom` を並べる。
+**`dash` という項目は無い** ── DASH は 1 つの画質ではなく画質の族なので、項目が名乗るのは
+サーバーが知っている id（`1080p`…`360p`・`custom`）である。`custom` の文言だけはクライアントが
+組む（`Custom (1280×720 15 fps)`）。一覧は**プレビューを開始した直後に投げっぱなしで引く**ので、
+取れなければメニューは 2 項目（録画画質と `custom`）のまま動く。
+
+**モードの正本は `<select id="previewMode">`**（値は `recording` / `dash`）で、**画面からは
+`hidden` で外してある**。項目を選ぶと **POST が先、モードの切替が後**である ── 逆順にすると
+最初の mux を古い画質で組んで捨てることになり、無駄な作り直し（2〜4 秒の黒）を 1 回払う。
+`Viewer` には現在値以外のプリセットを **`disabled` で出す**（切り替えは全視聴者に効くので
+サーバーが `Operator` を要求する）── 項目ごと消さないのは、**何が在るかが役割で変わって
+見えない**ようにするためである。状態表示は配信中 `DASH: live (<X-Dash-Quality>)` で、
+名乗るのは**いま実際に流れているもの**である（指示を変えても mux を組み直すまでは古いまま）。
+他の視聴者が変えた場合も、mux の作り直し → `Period@id` の変化 → 連続体の開き直しで追随する。
 レコーダー行の「Preview」はこの選択を見てどちらかを開き、**配信中に切り替えたら
 同じレコーダーで開き直す**（2 つのモードは init も時間軸も違うので `MediaSource` を共有できない）。
 後始末は `stopPreview()` **1 か所**で、どちらのモードもポーリングのタイマー・

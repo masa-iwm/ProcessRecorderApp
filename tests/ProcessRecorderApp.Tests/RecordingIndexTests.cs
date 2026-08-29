@@ -125,6 +125,29 @@ public sealed class RecordingIndexTests : IDisposable
         }
     }
 
+    /// <summary>通知・作り直しを待つときの上限。</summary>
+    private static readonly TimeSpan WaitBudget = TimeSpan.FromSeconds(20);
+
+    /// <summary>
+    /// <paramref name="condition"/> が満たされるまで上限つきで見に行く。
+    /// <b>固定の待ちは置かない</b> ── デバウンスのタイマも走査もスレッドプールで走るので、
+    /// 壁時計の見積もりは同時に走る他のテストの負荷で外れる。
+    /// </summary>
+    private static bool WaitFor(Func<bool> condition)
+    {
+        var deadline = Stopwatch.StartNew();
+
+        while (deadline.Elapsed < WaitBudget)
+        {
+            if (condition())
+                return true;
+
+            Thread.Sleep(50);
+        }
+
+        return condition();
+    }
+
     // ---- 合成 -----------------------------------------------------------
 
     [Fact]
@@ -727,6 +750,116 @@ public sealed class RecordingIndexTests : IDisposable
         Assert.True(listed,
             $"書き込みが続いている 20 秒の間、一覧に一度も出なかった（作り直しが飢えている）。"
             + $"デバウンスは {RecordingIndex.DebounceMilliseconds}ms。");
+    }
+
+    /// <summary>
+    /// <b>録画中の項目が在る間は、通知が 1 度も来なくても自分で作り直しを張り直す。</b>
+    ///
+    /// <para>
+    /// 書き込みで握られている間、NTFS はディレクトリ エントリを更新しない ── だから
+    /// <see cref="FileSystemWatcher"/> の通知は<b>作成の 1 回きり</b>で、以後は録画が終わるまで
+    /// 何も来ない。その 1 回が <c>mp4mux</c> の書いた <c>ftyp</c>+<c>moov</c> より前に走ると、
+    /// <see cref="RecordingEntry.Fragmented"/> は録画の終わりまで <see langword="false"/> に
+    /// 固まる（一覧を引き直しても直らない ── <see cref="RecordingIndex.Rebind"/> は
+    /// 速い経路で返る）。Web UI の追いかけ再生はこの旗で始まるので、固まると再生できない。
+    /// </para>
+    /// <para>
+    /// <b><c>Flush(flushToDisk: true)</c> は使わない。</b> メタデータまで書かせると
+    /// ディレクトリ エントリが更新されて通知が出てしまい、「通知が来ない」という
+    /// 前提そのものが消える。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void AnInProgressRecordingIsRebuiltWithoutFurtherNotifications()
+    {
+        using var index = new RecordingIndex(_root);
+        Assert.Empty(index.Snapshot());
+
+        const string name = "20260828_101500_cam1.mp4";
+
+        // 録画中の filesink と同じ握り方。ここで出る作成の通知が最後の 1 回になる。
+        using var stream = new FileStream(
+            Path.Combine(_root, name), FileMode.CreateNew, FileAccess.Write,
+            FileShare.Read | FileShare.Delete);
+
+        // **まだ 0 バイト（moov より前）のうちに載ることを確かめる。** ヘッダーを
+        // 書いてから待つと、1 回きりの作り直しが読めてしまい何も検査できない。
+        Assert.True(
+            WaitFor(() => index.Snapshot().Count == 1),
+            "録画中のファイルが一覧に出なかった（作成の通知が届いていない）。");
+
+        var first = Single(index);
+        Assert.True(first.InProgress);
+        Assert.False(first.Fragmented);
+
+        // 最初の Added は数えない。購読より前に差分は決まっているが、通知はロックの外で
+        // 配られるので、ここで足したハンドラに届くことがある。
+        var changes = new ConcurrentQueue<RecordingIndexChange>();
+        index.Changed += changes.Enqueue;
+
+        // mp4mux が moov（mvex 入り）を書いた。**通知は出ない。**
+        stream.Write(FragmentedMp4());
+        stream.Flush();
+
+        Assert.True(
+            WaitFor(() => index.Snapshot() is [{ Fragmented: true }]),
+            $"通知が来ないまま {WaitBudget.TotalSeconds} 秒待っても fragmented が反転しなかった"
+            + "（録画中の項目が残っているのに作り直しを張り直していない）。");
+
+        // 握りを外す＝録画の終わり。ここで InProgress が落ち、張り直しも止まる。
+        stream.Close();
+
+        Assert.True(
+            WaitFor(() => index.Snapshot() is [{ InProgress: false }]),
+            "ハンドルを閉じても録画中のままだった。");
+
+        // **SSE へ流れるのは 2 件だけ。** 長さと更新時刻の変化は Diff が畳むので、
+        // 張り直しを続けても通知は増えない。
+        var kinds = changes
+            .Select(change => change.Kind)
+            .Where(kind => kind != RecordingIndexChangeKind.Added)
+            .ToArray();
+
+        Assert.Equal(
+            new[] { RecordingIndexChangeKind.Updated, RecordingIndexChangeKind.Completed }, kinds);
+        Assert.All(changes, change => Assert.Equal(name, change.RelativePath));
+    }
+
+    [Fact]
+    public void AnIndexBuiltDuringARecordingRebuildsItself()
+    {
+        const string name = "20260828_101500_cam1.mp4";
+
+        // **索引より先に録画が始まっている。** 再起動や保存先の差し替えのあと、
+        // 初回の走査が録画の最中に当たる形。作成の通知は索引より前に過ぎている。
+        using var stream = new FileStream(
+            Path.Combine(_root, name), FileMode.CreateNew, FileAccess.Write,
+            FileShare.Read | FileShare.Delete);
+
+        using var index = new RecordingIndex(_root);
+
+        // 構築時の走査は同期なので、待たずに載っている（まだ 0 バイト＝moov より前）。
+        var first = Single(index);
+        Assert.True(first.InProgress);
+        Assert.False(first.Fragmented);
+
+        // mp4mux が moov（mvex 入り）を書いた。**通知は出ない**
+        // ── 書き込みで握られている間はディレクトリ エントリが更新されないので、
+        // 自発的な張り直しが無ければ fragmented=false のまま固まる。
+        stream.Write(FragmentedMp4());
+        stream.Flush();
+
+        Assert.True(
+            WaitFor(() => index.Snapshot() is [{ Fragmented: true }]),
+            $"通知が来ないまま {WaitBudget.TotalSeconds} 秒待っても fragmented が反転しなかった"
+            + "（構築時の走査が録画中の項目を見たのに作り直しを張っていない）。");
+
+        // 握りを外す＝録画の終わり。ここで InProgress が落ち、張り直しも止まる。
+        stream.Close();
+
+        Assert.True(
+            WaitFor(() => index.Snapshot() is [{ InProgress: false }]),
+            "ハンドルを閉じても録画中のままだった。");
     }
 
     [Fact]

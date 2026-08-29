@@ -90,6 +90,14 @@ public sealed record RecordingDayCount(string Date, int Count);
 /// ── 書き込みで握られている間はディレクトリ エントリが更新されず、キーが固まるため。
 /// </para>
 /// <para>
+/// <b>録画中の項目が一覧に在る間は、通知を待たずに <see cref="DebounceMilliseconds"/> ごとに
+/// 作り直す。</b> 同じ理由（ディレクトリ エントリが更新されない）で、録画中の
+/// <see cref="FileSystemWatcher"/> の通知は作成の 1 回きりしか来ない ── 通知だけに頼ると、
+/// その 1 回で読んだ値（<c>mp4mux</c> が <c>moov</c> を書く前なら
+/// <see cref="RecordingEntry.Fragmented"/> は <see langword="false"/>、長さは 0）が録画の
+/// 終わりまで動かない。録画が終われば張り直しも止まる。
+/// </para>
+/// <para>
 /// <b><see cref="Snapshot"/> と <see cref="Rebind"/> はどのスレッドからでも呼べる。</b>
 /// <see cref="Changed"/> はスレッドプールのスレッドで、ロックを持たずに発火する。
 /// </para>
@@ -254,6 +262,15 @@ public sealed partial class RecordingIndex : IDisposable
             // 以後は速い経路を通してよい。**立てるのはここだけ** ── 走査せずに返る経路
             // （見張れない root）で立てると、初回の走査の最中がまた素通りになる。
             _built = true;
+
+            // **ここで作った一覧に録画中の項目が在れば、自分で作り直しを張る。**
+            // 索引が録画の最中に初めて構築されると、作成の通知は既に過ぎていて
+            // 書き込みで握られている間はディレクトリ エントリも更新されない
+            // ── 自発的な張り直しが無いと fragmented・長さ・録画中の別が
+            // 録画の終わりまで固まる。以後の張り直しは OnDebounceElapsed が継ぐ。
+            // ロックは再入できるので、ここから呼んでよい。
+            if (HasInProgress(_snapshot))
+                ScheduleRebuild();
         }
     }
 
@@ -767,13 +784,33 @@ public sealed partial class RecordingIndex : IDisposable
             lock (_gate)
             {
                 _rebuilding = false;
-                again = _rebuildPending && !_disposed;
+
+                // **録画中の項目が残っていれば、通知が来ていなくても張り直す。**
+                // 書き込みで握られている間はディレクトリ エントリが更新されないので、
+                // watcher の通知は録画 1 本につき作成の 1 回きりしか来ない ── その 1 回が
+                // mp4mux の書く ftyp+moov より前に走ると、fragmented・長さ・録画中の別が
+                // 録画の終わりまで固まる（Rebind は速い経路で返るので一覧を引き直しても
+                // 直らない）。録画が終われば次の作り直しが InProgress=false を見て、
+                // ここで張り直さなくなる。
+                again = (_rebuildPending || HasInProgress(_snapshot)) && !_disposed;
                 _rebuildPending = false;
             }
 
             if (again)
                 ScheduleRebuild();
         }
+    }
+
+    /// <summary>録画中の項目が 1 件でも在る。</summary>
+    private static bool HasInProgress(IReadOnlyList<RecordingEntry> entries)
+    {
+        foreach (var entry in entries)
+        {
+            if (entry.InProgress)
+                return true;
+        }
+
+        return false;
     }
 
     private void OnWatcherRetryElapsed()

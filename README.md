@@ -260,7 +260,12 @@ is pushed the new state whenever it changes, so it follows what you do in the GU
 preview comes in **two modes**: **recording quality (low latency)**, the default, reuses the H.264
 stream that is already being encoded for recording, so it costs no extra encoding; **preview
 settings (DASH)** re-encodes at the resolution, frame rate and bitrate you set per recorder.
-Either way the price is latency: **roughly 2 to 3 seconds**.
+The re-encoded mode also offers the **presets 1080p, 720p, 480p and 360p**, which shrink to the
+source rather than blowing it up: a preset taller than what the recorder captures is not offered,
+and the width follows the source's own aspect ratio. Picking one takes an `Operator`; the choice
+belongs to the recorder and is shared by everyone watching it, is not written to the settings file
+and is forgotten when the application exits. Either way the price is latency:
+**roughly 2 to 3 seconds**.
 
 **Pages and appearance.** The page is split into three: **Live** (`#/live`), **Recordings**
 (`#/recordings`) and **Settings** (`#/settings`), reached from the links in the top bar; switching
@@ -281,7 +286,8 @@ appear and finish; the Refresh button is there for when you would rather ask.
 **Player controls.** The preview and the recording playback share one control bar: skip by 10 or
 30 seconds, volume and full screen. Playback speed (0.5× to 2×) is offered for a recording only: a
 live picture is held at the live edge, so a raised rate would be given back at once. On a live
-picture the quality (recording quality or preview settings) is switched from there too.
+picture the quality — recording quality, one of the presets, or the recorder's own preview
+settings — is switched from there too; entries your role may not write are shown greyed out.
 
 **Security — read this before turning it on.**
 

@@ -791,6 +791,54 @@ public partial class EventRecorder : ObservableObject, IDisposable
     }
     private int _previewBitrateKbps;
 
+    /// <summary>
+    /// ライブ画質プリセットの id（<c>Components.PreviewQualityPresets.All</c> の id）。
+    /// <see langword="null"/> ならカスタム＝上の 4 設定をそのまま配信する。
+    ///
+    /// <para>
+    /// <b>非永続で、通知も出さない。</b> settings.json へは写さず（<c>EventRecorderSettings</c>
+    /// に対応するプロパティが無い）、<c>SetProperty</c> も使わない ── 画面に出す値ではなく、
+    /// 配信のストリーミング スレッドが毎サンプル読むだけの指示だからである。
+    /// 読み書きが別スレッドなので <see cref="Volatile"/> で通す。
+    /// </para>
+    /// <para>
+    /// <b>表に無い id と <c>custom</c> は <see langword="null"/>（カスタム）へ丸める</b>
+    /// ── 配信側は毎サンプルこの値を engine の id と序数比較するので、解決結果が同じでも
+    /// 表記が違う値が入ると mux を組み直し続ける。
+    /// </para>
+    /// </summary>
+    public string? PreviewQualityPreset
+    {
+        get => Volatile.Read(ref _previewQualityPreset);
+        set => Volatile.Write(
+            ref _previewQualityPreset,
+            value is not null && Components.PreviewQualityPresets.TryFind(value, out _) ? value : null);
+    }
+    private string? _previewQualityPreset;
+
+    /// <summary>
+    /// ライブ画質の姿を 1 枚読む。<b>配信エンジンが無くても答える</b>
+    /// （ソースも実効値も <see langword="null"/> になる）── 選択肢は
+    /// レコーダーが動いていなくても示せなければならない。
+    ///
+    /// <para>
+    /// <b>状態ロックを取らない。</b> 読むのはロックフリーな 4 設定と配信エンジンの
+    /// リングだけで、どちらも録画の停止経路と競合しない。
+    /// </para>
+    /// </summary>
+    public Components.PreviewQualityState GetPreviewQualityState()
+    {
+        if (DashPreview is { } dash)
+            return dash.GetQualityState();
+
+        return Components.PreviewQualityPresets.BuildState(
+            PreviewQualityPreset,
+            null,
+            new Components.PreviewQuality(PreviewWidth, PreviewHeight, PreviewFps, PreviewBitrateKbps),
+            null,
+            null);
+    }
+
     /// <summary>常時録画のセグメント長(秒)。設定・VM と同じく 3 箇所すべてで丸める。</summary>
     public int ContinuousSegmentSeconds
     {
@@ -2004,8 +2052,8 @@ public partial class EventRecorder : ObservableObject, IDisposable
     }
 
     /// <summary>
-    /// DASH プレビューの配信エンジンから見た宿主。<b>名前と 4 つの設定しか渡さない</b> ──
-    /// 配信は観測値を一切書き換えない（録画の状態表示に影響しない）。
+    /// DASH プレビューの配信エンジンから見た宿主。<b>名前と 4 つの設定と画質の指示しか
+    /// 渡さない</b> ── 配信は観測値を一切書き換えない（録画の状態表示に影響しない）。
     /// </summary>
     private sealed class DashPreviewHost(EventRecorder owner) : IDashPreviewHost
     {
@@ -2018,6 +2066,8 @@ public partial class EventRecorder : ObservableObject, IDisposable
         public int PreviewFps => owner.PreviewFps;
 
         public int PreviewBitrateKbps => owner.PreviewBitrateKbps;
+
+        public string? PreviewQualityPreset => owner.PreviewQualityPreset;
     }
 
     /// <summary>

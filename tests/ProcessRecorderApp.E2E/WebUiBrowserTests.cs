@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Net;
 using System.Net.Http;
+using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Xunit;
@@ -273,6 +274,37 @@ public sealed class WebUiBrowserTests(PublishedApp app, ITestOutputHelper output
         return false;
     }
 
+    /// <summary>
+    /// 一覧が待ちに応えなかったときの<b>クライアント側の姿</b>。
+    ///
+    /// <para>
+    /// <b><see cref="FirstRowState"/> だけでは足りない。</b> 「行が 1 つも無い」と
+    /// 「行は在るが状態が違う」は、どちらも状態セルの空文字か別の文字列として現れ、
+    /// 失敗の本文からは区別が付かない ── 取得の鎖（最新日 → 月の件数 → その日の一覧）の
+    /// どこで止まったのかは、選ばれている日と「この日は空」の掲示に出る。
+    /// サーバー側の姿は <c>DiagnosticDump()</c> が別に載せる。
+    /// </para>
+    /// </summary>
+    private const string ListingDump = """
+        (function () {
+          function textOf(id) {
+            var node = document.getElementById(id);
+            return node === null ? '(no node)' : (node.hidden ? '(hidden)' : node.textContent);
+          }
+          var rows = document.querySelectorAll('#recordingsBody tr');
+          var cells = [];
+          if (rows.length !== 0) {
+            for (var i = 0; i < rows[0].cells.length; i++) { cells.push(rows[0].cells[i].textContent); }
+          }
+          return 'rows=' + rows.length
+            + ' day=' + textOf('recordingsDay')
+            + ' root=' + textOf('recordingsRoot')
+            + ' empty=' + textOf('recordingsEmpty')
+            + ' truncated=' + textOf('recordingsTruncated')
+            + ' first=[' + cells.join(' | ') + ']';
+        })()
+        """;
+
     /// <summary>録画中の fMP4 の行（state に `recording` と `fragmented` の両方が出る）。</summary>
     private const string RowIsRecordingFragment = "s.indexOf('recording') >= 0 && s.indexOf('fragmented') >= 0";
 
@@ -399,6 +431,7 @@ public sealed class WebUiBrowserTests(PublishedApp app, ITestOutputHelper output
             await WaitForFirstRowAsync(browser, RowIsRecordingFragment, PlaybackBudget),
             "録画中のファイルが fragmented として一覧に出ませんでした: "
                 + await browser.EvaluateStringAsync(FirstRowState, Ct)
+                + Environment.NewLine + await browser.EvaluateStringAsync(ListingDump, Ct)
                 + Environment.NewLine + instance.DiagnosticDump());
 
         Assert.True(await browser.EvaluateBoolAsync(ClickFirstPlay, Ct), "一覧に行がありません。");
@@ -743,7 +776,12 @@ public sealed class WebUiBrowserTests(PublishedApp app, ITestOutputHelper output
             await WaitForFirstRowAsync(browser, RowIsRecordingFragment, PlaybackBudget),
             "録画中のファイルが fragmented として一覧に出ませんでした: "
                 + await browser.EvaluateStringAsync(FirstRowState, Ct)
+                + Environment.NewLine + await browser.EvaluateStringAsync(ListingDump, Ct)
                 + Environment.NewLine + instance.DiagnosticDump());
+
+        // **緑の run でも 1 度は流す。** 診断が緑の run の出力にも姿を残すので、
+        // 壊れた（空になった・形が変わった）ことに赤を待たずに気付ける。
+        output.WriteLine(await browser.EvaluateStringAsync(ListingDump, Ct));
 
         Assert.True(await browser.EvaluateBoolAsync(ClickFirstPlay, Ct), "一覧に行がありません。");
         Assert.True(
@@ -1026,8 +1064,10 @@ public sealed class WebUiBrowserTests(PublishedApp app, ITestOutputHelper output
 
         Assert.True(await browser.EvaluateBoolAsync(ClickShellControl("previewPlayer", "quality"), Ct),
             "プレビューのバーに画質メニューのボタンがありません。");
-        Assert.True(await browser.EvaluateBoolAsync(ClickMenuItem("previewPlayer", "quality", "dash"), Ct),
-            "画質メニューに DASH の項目がありません。");
+        // **`dash` という項目は無い。** DASH は 1 つの画質ではなく画質の族なので、
+        // 項目が名乗るのはサーバーが知っている id である ── 設定の 4 値そのままが `custom`。
+        Assert.True(await browser.EvaluateBoolAsync(ClickMenuItem("previewPlayer", "quality", "custom"), Ct),
+            "画質メニューに custom の項目がありません。");
 
         Assert.Equal("dash", await browser.EvaluateStringAsync("document.getElementById('previewMode').value", Ct));
         Assert.True(
@@ -1050,6 +1090,132 @@ public sealed class WebUiBrowserTests(PublishedApp app, ITestOutputHelper output
                 Ct),
             "プレビューを止めてもバーが動いているままです: "
             + await browser.EvaluateStringAsync(TextOf("previewStatus"), Ct));
+    }
+
+    /// <summary>画質の一覧がサーバーから届いたか（取得は投げっぱなしなので、押す前に待つ）。</summary>
+    private const string QualitiesLoaded = "PRA.player.previewQualityState() !== null";
+
+    /// <summary>
+    /// 配信中の Representation が、サーバーが答えた <paramref name="id"/> の解決値と一致するか。
+    /// <b>期待値はサーバーの数値そのもの</b> ── 解決の算術をテストへ写さない。
+    /// </summary>
+    private static string RepresentationMatches(string id) => $$"""
+        (function () {
+          var state = PRA.player.previewQualityState();
+          var offered = PRA.player.representations();
+          if (state === null || offered.length === 0) { return false; }
+          var preset = null;
+          for (var i = 0; i < state.qualities.length; i++) {
+            if (state.qualities[i].id === '{{id}}') { preset = state.qualities[i]; }
+          }
+          return preset !== null && offered[0].width === preset.width && offered[0].height === preset.height;
+        })()
+        """;
+
+    /// <summary>
+    /// <b>画質メニューでプリセットを選ぶと、配信物がその解像度になる。</b>
+    ///
+    /// <para>
+    /// <b>トークンで入る。</b> 切り替えはそのレコーダーの<b>全視聴者</b>に効くので
+    /// <c>Operator</c> 以上に限ってあり、ゲスト（＝<c>Viewer</c>）ではプリセットの項目が
+    /// 押せない ── ここを guest のまま書くと、押せないボタンを押して待つテストになる。
+    /// </para>
+    /// <para>
+    /// 判定は <b><c>Representation</c> の幅・高さがサーバーの答えと一致すること</b>で行う。
+    /// この機械のソース解像度は決め打ちにできず、プリセットの意味は「ソースに対する相対」
+    /// だからである（<c>DashPreviewTests</c> の同名の検査と同じ流儀）。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task TheLiveQualityMenuPicksAPresetAndTheRepresentationFollows()
+    {
+        Assert.SkipUnless(EdgeCdp.IsAvailable, EdgeCdp.UnavailableReason);
+
+        using var instance = AppInstance.Create(app, DashSettings(), configure: UseIsolatedRoot);
+        int port = WaitForPort(instance);
+
+        Assert.True(instance.WaitForActivityLogEvent("recorder.init ok", PageBudget),
+            "recorder.init ok が現れませんでした。" + Environment.NewLine + instance.DiagnosticDump());
+
+        using var client = CreateClient(port);
+        await using var browser = await EdgeCdp.LaunchAsync(Ct);
+
+        // `?token=` は Admin のセッションを配る入口（302 のあとに index.html が出る）。
+        await browser.NavigateAsync($"http://127.0.0.1:{port}/?token={Token}", PageBudget, Ct);
+        Assert.True(await browser.WaitUntilAsync($"!{IsHidden("mainSections")}", PageBudget, Ct), "画面が出ませんでした。");
+
+        Assert.True(
+            await browser.WaitUntilAsync("document.querySelectorAll('#recordersBody tr').length > 0", PageBudget, Ct),
+            "レコーダーの一覧が出ませんでした。");
+
+        try
+        {
+            // メニューは走っているプレビューの画質を差し替えるものなので、まず既定（録画画質）で開く。
+            Assert.True(await browser.EvaluateBoolAsync(ClickFirstPreview, Ct), "行に Preview のボタンがありません。");
+            Assert.True(
+                await browser.WaitUntilAsync($"{TextOf("previewStatus")}.indexOf('streaming') === 0", PageBudget, Ct),
+                "録画画質のプレビューが始まりませんでした: " + await browser.EvaluateStringAsync(TextOf("previewStatus"), Ct));
+
+            // 一覧の取得は投げっぱなしなので、届く前に開くとプリセットの項目がまだ無い。
+            Assert.True(await browser.WaitUntilAsync(QualitiesLoaded, PageBudget, Ct),
+                "画質の一覧が届きませんでした: " + await browser.EvaluateStringAsync(TextOf("previewStatus"), Ct));
+
+            Assert.True(await browser.EvaluateBoolAsync(ClickShellControl("previewPlayer", "quality"), Ct),
+                "プレビューのバーに画質メニューのボタンがありません。");
+            Assert.True(await browser.EvaluateBoolAsync(ClickMenuItem("previewPlayer", "quality", "360p"), Ct),
+                "画質メニューに 360p の項目がありません。");
+
+            // 切り替えは POST → モード切替の順なので、`#previewMode` は少し遅れて `dash` になる。
+            Assert.True(
+                await browser.WaitUntilAsync("document.getElementById('previewMode').value === 'dash'", PageBudget, Ct),
+                "プリセットを選んでも DASH へ切り替わりませんでした: "
+                + await browser.EvaluateStringAsync(TextOf("previewStatus"), Ct));
+
+            Assert.True(
+                await browser.WaitUntilAsync(RepresentationMatches("360p"), PlaybackBudget, Ct),
+                "配信物が 360p の解決値になりませんでした: "
+                + await browser.EvaluateStringAsync("JSON.stringify(PRA.player.representations())", Ct)
+                + " / " + await browser.EvaluateStringAsync("JSON.stringify(PRA.player.previewQualityState())", Ct));
+
+            // 状態表示は「いま配信しているもの」（manifest の `X-Dash-Quality`）を名乗る。
+            Assert.True(
+                await browser.WaitUntilAsync(
+                    $"{TextOf("previewStatus")}.indexOf('DASH: live (360p)') === 0", PlaybackBudget, Ct),
+                "状態表示が配信中の画質を名乗りません: "
+                + await browser.EvaluateStringAsync(TextOf("previewStatus"), Ct));
+
+            // 設定どおりへ戻す ── `custom` はクランプしないので、既定の 1280x720 がそのまま出る。
+            Assert.True(await browser.EvaluateBoolAsync(ClickShellControl("previewPlayer", "quality"), Ct),
+                "プレビューのバーに画質メニューのボタンがありません（2 度目）。");
+            Assert.True(await browser.EvaluateBoolAsync(ClickMenuItem("previewPlayer", "quality", "custom"), Ct),
+                "画質メニューに custom の項目がありません。");
+
+            Assert.True(
+                await browser.WaitUntilAsync(
+                    "PRA.player.representations().length > 0 && PRA.player.representations()[0].height === 720",
+                    PlaybackBudget,
+                    Ct),
+                "設定の高さ（720）へ戻りませんでした: "
+                + await browser.EvaluateStringAsync("JSON.stringify(PRA.player.representations())", Ct));
+
+            Assert.True(await browser.EvaluateBoolAsync(Click("stopPreview"), Ct), "Stop preview を押せませんでした。");
+            Assert.True(
+                await browser.WaitUntilAsync($"{TextOf("previewStatus")} === 'stopped'", PageBudget, Ct),
+                "Stop preview で配信が畳まれませんでした: "
+                + await browser.EvaluateStringAsync(TextOf("previewStatus"), Ct));
+        }
+        finally
+        {
+            // **override はプロセスに残る。** 画面が壊れている場合でも戻せるよう、
+            // 後始末は UI ではなく API から行う。
+            using var request = new HttpRequestMessage(HttpMethod.Post, "api/recorders/R1/preview/quality");
+            request.Headers.Add("Authorization", "Bearer " + Token);
+            request.Headers.Add("X-PRApp-Client", "1");
+            request.Content = new StringContent("{\"id\":\"custom\"}", Encoding.UTF8, "application/json");
+
+            using var response = await client.SendAsync(request, Ct);
+            output.WriteLine($"restore custom: {(int)response.StatusCode}");
+        }
     }
 
     /// <summary>
@@ -1198,6 +1364,7 @@ public sealed class WebUiBrowserTests(PublishedApp app, ITestOutputHelper output
             await WaitForFirstRowAsync(browser, RowIsRecordingFragment, PlaybackBudget),
             "録画中のファイルが fragmented として一覧に出ませんでした: "
                 + await browser.EvaluateStringAsync(FirstRowState, Ct)
+                + Environment.NewLine + await browser.EvaluateStringAsync(ListingDump, Ct)
                 + Environment.NewLine + instance.DiagnosticDump());
 
         Assert.True(await browser.EvaluateBoolAsync(ClickFirstPlay, Ct), "一覧に行がありません。");

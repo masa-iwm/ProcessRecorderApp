@@ -499,6 +499,10 @@ input[type="range"] {
 .player-bar .player-menu button:hover:not(:disabled) { background: var(--surface-2); }
 .player-bar .player-menu button[aria-checked="true"] { color: var(--brand); font-weight: 700; }
 
+/* An entry the server would refuse for this role. Drawn faintly rather than
+   removed: what is on offer should not change shape with who is looking. */
+.player-bar .player-menu button[disabled] { cursor: default; opacity: .5; }
+
 @media (max-width: 720px) {
   /* One row does not hold the bar at this width. The buttons, the clock and the
      slider add up to more than the wrapper, and the wrapper clips rather than

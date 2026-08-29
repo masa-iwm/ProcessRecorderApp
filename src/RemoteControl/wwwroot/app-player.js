@@ -15,6 +15,9 @@
   var describe = core.describe;
   var formatSize = core.formatSize;
   var showLogin = core.showLogin;
+  var getJson = core.getJson;
+  var send = core.send;
+  var allows = core.allows;
 
   // ---- follow-along playback of a recording (fragmented MP4 over MSE) ----
   //
@@ -956,6 +959,33 @@
   // so its `error` listener is attached once and routed through here.
   var previewOnFailure = null;
 
+  // What the server last said about this recorder's live quality: which id is
+  // selected, what the source looks like and what each id would resolve to. The
+  // widths and heights are **the server's arithmetic**, never recomputed here --
+  // a preset means "relative to the source", and only the supply side reads the caps.
+  var previewQualityState = null;
+
+  // The id the manifest last came back with (`X-Dash-Quality`). Selected and served
+  // are two different things: the mux is only rebuilt on the next sample, so for a
+  // few seconds after a switch the picture is still the previous quality.
+  var previewLiveQuality = null;
+
+  function previewQualityUrl(id, tail) {
+    return '/api/recorders/' + encodeURIComponent(id) + '/preview/' + tail;
+  }
+
+  // Read once per preview start. **Failure is swallowed on purpose**: the list is
+  // only what the menu offers, and an older server (or a guest whose read was
+  // refused) should leave the two mode entries working rather than put an error
+  // over a picture that is playing.
+  function loadPreviewQualities(id) {
+    return getJson(previewQualityUrl(id, 'qualities')).then(function (state) {
+      // The preview may have been stopped, or moved to another recorder, while
+      // this was in flight; the answer belongs to the recorder that was asked for.
+      if (previewTarget === id) { previewQualityState = state; }
+    }).catch(function () { /* the menu stays at the two modes */ });
+  }
+
   function previewSupported() {
     return typeof MediaSource !== 'undefined' && MediaSource.isTypeSupported(PREVIEW_MIME);
   }
@@ -989,8 +1019,11 @@
     releasePreviewUrl();
 
     // Nothing is on offer any more: keeping the last manifest's list would have the
-    // quality menu describe a stream that is not running.
+    // quality menu describe a stream that is not running. The quality state goes with
+    // it -- it is read per recorder, and `rebuild()` depends on it being fetched again.
     dashRepresentations = [];
+    previewQualityState = null;
+    previewLiveQuality = null;
 
     status($('previewStatus'), message === undefined ? '' : message, false);
   }
@@ -1009,6 +1042,8 @@
       return;
     }
     previewTarget = id;
+    // Not awaited: the picture must not wait on the menu's list.
+    loadPreviewQualities(id);
     status($('previewStatus'), 'connecting to ' + id + '...', false);
     connectPreview(id, previewGeneration);
   }
@@ -1269,6 +1304,8 @@
       return;
     }
     previewTarget = id;
+    // Not awaited (see `startPreview`).
+    loadPreviewQualities(id);
     status($('previewStatus'), DASH_STARTING_STATUS, false);
     openDashPreview(id, previewGeneration);
   }
@@ -1377,6 +1414,10 @@
       }).then(function (response) {
         if (!alive()) { return undefined; }
         if (response.ok) {
+          // Which quality is **actually** being served. Read from the manifest and
+          // not from the POST's answer: the switch only takes effect when the mux is
+          // rebuilt, and this is the first response that comes from the new one.
+          previewLiveQuality = response.headers.get('X-Dash-Quality');
           return response.text().then(function (body) {
             if (alive()) { readManifest(body); }
           });
@@ -1553,7 +1594,12 @@
           if (!alive()) { return; }
           enqueue(new Uint8Array(bytes));
           appended++;
-          status($('previewStatus'), 'DASH: live (' + appended + ')', false);
+          // The quality being served is worth more than the segment count once the
+          // server names it; the count is kept for servers that do not.
+          status(
+            $('previewStatus'),
+            'DASH: live (' + (previewLiveQuality === null ? appended : previewLiveQuality) + ')',
+            false);
         });
       }).catch(function (error) {
         if (alive() && error.name !== 'AbortError') { fail(error.message); }
@@ -1780,11 +1826,18 @@
       openMenu = null;
     }
 
-    function menuItem(menu, label, checked, onPick) {
+    // `disabled` is for an entry the server would refuse (a Viewer picking a quality
+    // that is written for every viewer of that recorder). It is drawn rather than
+    // dropped: a list that silently loses entries by role reads as a broken menu.
+    function menuItem(menu, label, checked, onPick, disabled) {
       var item = document.createElement('button');
       item.type = 'button';
       item.setAttribute('role', 'menuitemradio');
       item.setAttribute('aria-checked', checked ? 'true' : 'false');
+      if (disabled) {
+        item.disabled = true;
+        item.setAttribute('aria-disabled', 'true');
+      }
       item.textContent = label;
       item.addEventListener('click', function () {
         closeMenu();
@@ -1864,7 +1917,10 @@
     var qualityMenu = menuButton('quality', 'i-quality', 'Quality', true);
     qualityMenu.build = function (menu) {
       caps.qualities().forEach(function (quality) {
-        var item = menuItem(menu, quality.label, quality.current, function () { caps.onQuality(quality.id); });
+        var item = menuItem(
+          menu, quality.label, quality.current,
+          function () { caps.onQuality(quality.id); },
+          quality.disabled === true);
         item.dataset.quality = quality.id;
       });
     };
@@ -2169,29 +2225,90 @@
 
   // ---- what each of the two players can do ----
 
-  // The live preview's two qualities are the two the (hidden) selector already
-  // offers, read from its <option> elements so that the menu and the selector cannot
-  // drift apart -- the selector stays the one place the mode and its wording live.
+  /** The <option> text for one of the two modes (the selector owns the wording). */
+  function previewModeLabel(value) {
+    var select = $('previewMode');
+    for (var i = 0; i < select.options.length; i++) {
+      if (select.options[i].value === value) { return select.options[i].textContent; }
+    }
+    return value;
+  }
+
+  // The menu is "the recording's own stream" followed by everything the server says
+  // it can re-encode to. **There is no `dash` entry**: the DASH mode is not one
+  // quality but a family of them, and the id a menu entry carries is the id the
+  // server knows (`1080p`…`360p`, `custom`).
+  //
+  // Until the list has been read -- no preview running, or the read was refused --
+  // the two modes are offered as before, with `custom` standing for the DASH one.
   function previewQualities() {
     var select = $('previewMode');
-    var offered = [];
-    for (var i = 0; i < select.options.length; i++) {
-      offered.push({
-        id: select.options[i].value,
-        label: select.options[i].textContent,
-        current: select.options[i].value === select.value
-      });
+    var offered = [{
+      id: 'recording',
+      label: previewModeLabel('recording'),
+      current: select.value === 'recording'
+    }];
+
+    if (previewQualityState === null) {
+      offered.push({ id: 'custom', label: previewModeLabel('dash'), current: select.value === 'dash' });
+      return offered;
     }
+
+    // A Viewer may switch modes but may not write the selection, which is shared by
+    // every viewer of that recorder: everything but the current entry is unpickable.
+    var canWrite = allows('operator');
+    previewQualityState.qualities.forEach(function (quality) {
+      offered.push({
+        id: quality.id,
+        label: quality.id === 'custom'
+          ? 'Custom (' + quality.width + '×' + quality.height + ' ' + quality.fps + ' fps)'
+          : quality.label,
+        current: select.value === 'dash' && previewQualityState.current === quality.id,
+        disabled: !canWrite && previewQualityState.current !== quality.id
+      });
+    });
+
     return offered;
   }
 
-  // Writing the value is not enough: the handler that stops the running preview and
-  // starts the other mode is the selector's `change`, and a value set from script
+  // Writing the selector's value is not enough: the handler that stops the running
+  // preview and starts the other mode is its `change`, and a value set from script
   // does not raise it.
+  //
+  // **The POST comes first, the mode switch second.** The other order would build
+  // one mux at the old quality and throw it away a moment later, which costs a
+  // rebuild (2 to 4 seconds of black) for nothing.
   function choosePreviewQuality(id) {
     var select = $('previewMode');
-    select.value = id;
-    select.dispatchEvent(new Event('change'));
+    if (id === 'recording') {
+      select.value = id;
+      select.dispatchEvent(new Event('change'));
+      return;
+    }
+
+    // The preview may be stopped, or moved to another recorder, while the POST is in
+    // flight; both the answer and the mode switch that follows it belong to the
+    // recorder that was asked for.
+    var target = previewTarget;
+    var needsPost = target !== null && previewQualityState !== null
+      && previewQualityState.current !== id && allows('operator');
+
+    var written = needsPost
+      ? send('POST', previewQualityUrl(target, 'quality'), { id: id })
+        .then(function (state) {
+          if (previewTarget === target) { previewQualityState = state; }
+        })
+      : Promise.resolve();
+
+    written.then(function () {
+      if (previewTarget !== target) { return; }
+      if (select.value !== 'dash') {
+        select.value = 'dash';
+        select.dispatchEvent(new Event('change'));
+      }
+    }).catch(function (error) {
+      status($('previewStatus'), error.message, true);
+    });
   }
 
   // A recording is served as it was written; there is nothing to pick between, so the
@@ -2297,6 +2414,10 @@
     // What the manifest last offered. One entry today; the quality menu reads it once
     // the server publishes more than one.
     representations: function () { return dashRepresentations; },
+    // What the server last answered about the live quality (null until a preview has
+    // been started). Exposed for the E2E layer, which must not recompute the
+    // resolution arithmetic to check it -- the server's own numbers are the expectation.
+    previewQualityState: function () { return previewQualityState; },
     startFollow: startFollow,
     stopFollow: stopFollow,
     // Arbitrary seeking within the recording being followed. False when there is no

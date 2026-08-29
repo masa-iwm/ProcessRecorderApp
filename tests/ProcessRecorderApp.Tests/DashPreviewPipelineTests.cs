@@ -197,6 +197,29 @@ public sealed class DashPreviewPipelineTests
             StreamSource, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// <b>作り直しの判定は画質の指示も見る。</b> 解決後の 4 値だけを比べると、
+    /// <c>custom</c> と「たまたま同じ 4 値に解決されたプリセット」の切り替えが
+    /// 素通りする ── そのとき配信は変わらないのに、以後ソースの解像度が変わっても
+    /// プリセットとして解決し直されない。
+    ///
+    /// <para>
+    /// <b>ソーステキストとして見る。</b> 実行で確かめるには本物の GStreamer と
+    /// 録画スレッドが要り、L1 からは到達できない。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void TheRebuildCheckComparesTheQualityPresetAsWellAsTheFourValues()
+    {
+        string body = SourceMethodBody.Extract(StreamSource, "private Pipeline? Advance");
+
+        Assert.True(SourceMethodBody.ContainsCode(body, "_host.PreviewQualityPreset"),
+            "Advance が画質プリセットの指示を読んでいない。"
+            + "解決後の 4 値だけを比べると、同じ 4 値へ解決されるプリセットへの切り替えが素通りする。");
+        Assert.True(SourceMethodBody.ContainsCode(body, "engine.QualityId"),
+            "Advance が動いている mux の画質 id と比べていない。");
+    }
+
     /// <summary>コメント行を除いた出現回数。</summary>
     private static int CountCode(string body, string needle)
     {

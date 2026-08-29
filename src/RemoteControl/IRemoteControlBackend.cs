@@ -81,6 +81,36 @@ public interface IRemoteControlBackend
     /// </summary>
     Task<Components.DashPreviewSnapshot> GetDashPreviewSnapshotAsync(string id, CancellationToken ct);
 
+    /// <summary>
+    /// 1 レコーダーのライブ画質の姿（選べる項目・指示・実効値）を読む。
+    /// <b>配信エンジンの貸出を延ばさない</b>ので、これを呼んでも第 2 パイプラインは起きない。
+    ///
+    /// <para>
+    /// 失敗は <see cref="RemoteApiException"/>。理由が <c>"recorder not found"</c> なら 13、
+    /// それ以外（まだ動いていない）は 12 である。<b>レコーダーが初期化前でも成功する</b>
+    /// ── そのときは <c>source</c> と <c>effective</c> が無い姿を返す。
+    /// </para>
+    /// </summary>
+    Task<Components.PreviewQualityState> GetPreviewQualityAsync(string id, CancellationToken ct);
+
+    /// <summary>
+    /// 1 レコーダーのライブ画質を切り替える。<b>非永続</b>で、レコーダー単位・
+    /// 全視聴者共有・最後勝ちであり、アプリを終えると消える
+    /// （settings.json の <c>Preview*</c> は書き換えない）。
+    ///
+    /// <para>
+    /// <b><paramref name="qualityId"/> は検査済みの前提。</b>
+    /// <c>Components.PreviewQualityPresets.IsValidId</c> を通っていない値は
+    /// 実装側の <see cref="System.ArgumentException"/> になる ── 呼び出し側（経路）が
+    /// 400 で断るのが正しい。
+    /// </para>
+    /// <para>
+    /// 失敗は <see cref="GetPreviewQualityAsync"/> と同じ写像である。
+    /// </para>
+    /// </summary>
+    Task<Components.PreviewQualityState> SetPreviewQualityAsync(
+        string id, string qualityId, CancellationToken ct);
+
     // ---- 書き込み ----
     //
     // **CancellationToken を取らない。** 開始・停止・設定変更は、要求元が切っても

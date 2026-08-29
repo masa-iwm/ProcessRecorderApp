@@ -34,8 +34,29 @@ public sealed class DashPreviewTests(PublishedApp app, ITestOutputHelper output)
     /// <summary>製品が生成する形（Base64Url・43 文字）に合わせた固定トークン。</summary>
     private const string Token = "E2E-dash-preview-stream-token-0123456789-ab";
 
+    /// <summary>
+    /// 役割の差を見るケースの利用者。<b>パスワードは <see cref="RemoteUserSpec"/> の
+    /// 固定ハッシュに対応するもの</b>で、名前もハッシュも L2 の認証テストと同じ。
+    /// </summary>
+    private const string ViewerUser = "viewer";
+
+    /// <inheritdoc cref="ViewerUser"/>
+    private const string ViewerPassword = "pw-viewer";
+
+    /// <inheritdoc cref="ViewerUser"/>
+    private const string OperatorUser = "operator";
+
+    /// <inheritdoc cref="ViewerUser"/>
+    private const string OperatorPassword = "pw-operator";
+
     private const string ManifestPath = "api/recorders/R1/dash/manifest.mpd";
     private const string InitPath = "api/recorders/R1/dash/init.mp4";
+
+    private const string QualitiesPath = "api/recorders/R1/preview/qualities";
+    private const string QualityPath = "api/recorders/R1/preview/quality";
+
+    /// <summary>いま配信している画質の id（3 応答すべてに載る）。</summary>
+    private const string QualityHeader = "X-Dash-Quality";
 
     /// <summary>MPD の名前空間（<c>DashManifest.Build</c> が書くもの）。</summary>
     private static readonly XNamespace Mpd = "urn:mpeg:dash:schema:mpd:2011";
@@ -83,7 +104,12 @@ public sealed class DashPreviewTests(PublishedApp app, ITestOutputHelper output)
     /// <b>ゲスト読み取りを明示する</b> ── このクラスの主題は認証ではない。
     /// </summary>
     /// <param name="allowGuestRead">名乗っていない相手に読み取りを許すか。</param>
-    private static SettingsFile PreviewSettings(bool allowGuestRead = true)
+    /// <param name="withRoles">
+    /// <c>Viewer</c> と <c>Operator</c> の利用者を書くか。
+    /// <b>ゲストでは役割の差を見られない</b> ── 名乗っていない相手の書き込みは
+    /// 役割の手前で 401 になるので、403 を要求するケースには実在の利用者が要る。
+    /// </param>
+    private static SettingsFile PreviewSettings(bool allowGuestRead = true, bool withRoles = false)
     {
         var settings = new SettingsFile
         {
@@ -95,6 +121,13 @@ public sealed class DashPreviewTests(PublishedApp app, ITestOutputHelper output)
             RemoteControlAccessToken = Token,
             RemoteControlAllowGuestRead = allowGuestRead,
         };
+        if (withRoles)
+        {
+            settings.RemoteUsers.Add(new RemoteUserSpec(ViewerUser, RemoteUserSpec.ViewerPasswordHash, "Viewer"));
+            settings.RemoteUsers.Add(
+                new RemoteUserSpec(OperatorUser, RemoteUserSpec.OperatorPasswordHash, "Operator"));
+        }
+
         settings.AddRecorder("R1").EncodingProperties = SettingsFile.LargeEncodingProperties;
         return settings;
     }
@@ -129,9 +162,10 @@ public sealed class DashPreviewTests(PublishedApp app, ITestOutputHelper output)
     /// <b>初期化を待たずに引くと 503</b>（第 2 パイプラインは枝A のサンプルで起きる）。
     /// </summary>
     /// <param name="allowGuestRead"><inheritdoc cref="PreviewSettings" path="/param[@name='allowGuestRead']"/></param>
-    private (AppInstance Instance, int Port) StartReady(bool allowGuestRead = true)
+    /// <param name="withRoles"><inheritdoc cref="PreviewSettings" path="/param[@name='withRoles']"/></param>
+    private (AppInstance Instance, int Port) StartReady(bool allowGuestRead = true, bool withRoles = false)
     {
-        var instance = AppInstance.Create(app, PreviewSettings(allowGuestRead));
+        var instance = AppInstance.Create(app, PreviewSettings(allowGuestRead, withRoles));
         int port = WaitForPort(instance);
 
         Assert.True(instance.WaitForActivityLogEvent("recorder.init ok", EventBudget),
@@ -189,6 +223,8 @@ public sealed class DashPreviewTests(PublishedApp app, ITestOutputHelper output)
                 Assert.Equal("no-store", response.Headers.CacheControl?.ToString());
                 Assert.True(response.Headers.Contains("X-Dash-Generation"),
                     "200 の応答に X-Dash-Generation がありません。");
+                Assert.False(string.IsNullOrEmpty(QualityOf(response)),
+                    $"200 の応答に {QualityHeader} がありません。");
 
                 var mpd = XDocument.Parse(body);
                 Assert.Equal(
@@ -240,6 +276,8 @@ public sealed class DashPreviewTests(PublishedApp app, ITestOutputHelper output)
 
         Assert.True(response.Headers.Contains("X-Dash-Generation"),
             path + " の応答に X-Dash-Generation がありません。");
+        Assert.False(string.IsNullOrEmpty(QualityOf(response)),
+            path + $" の応答に {QualityHeader} がありません。");
         string served = response.Headers.GetValues("X-Dash-Generation").Single();
         Assert.True(
             int.TryParse(served, NumberStyles.None, CultureInfo.InvariantCulture, out int servedGeneration),
@@ -668,6 +706,296 @@ public sealed class DashPreviewTests(PublishedApp app, ITestOutputHelper output)
             using var response = await client.GetAsync(ManifestPath, Ct);
             output.WriteLine($"guest read off: {(int)response.StatusCode}");
             Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        }
+    }
+
+    // ---- (6) ライブ画質プリセット ----
+
+    /// <summary><see cref="QualityHeader"/> の値（付いていなければ null）。</summary>
+    private static string? QualityOf(HttpResponseMessage response)
+        => response.Headers.TryGetValues(QualityHeader, out var values) ? values.Single() : null;
+
+    /// <summary>名乗ってセッション Cookie を持ち帰る（役割が応答に出ることも確かめる）。</summary>
+    private async Task<string> LoginAsync(HttpClient client, string user, string password, string expectedRole)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Post, "api/login");
+        request.Headers.Add("X-PRApp-Client", "1");
+        request.Content = new StringContent(
+            $"{{\"user\":\"{user}\",\"password\":\"{password}\"}}", Encoding.UTF8, "application/json");
+
+        using var response = await client.SendAsync(request, Ct);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync(Ct));
+        Assert.Equal(expectedRole, body.RootElement.GetProperty("role").GetString());
+
+        return Assert.Single(response.Headers.GetValues("Set-Cookie")).Split(';')[0];
+    }
+
+    /// <summary>
+    /// セッションを載せた要求。<b>書き込みには <c>X-PRApp-Client</c> が要る</b>
+    /// ── 付け忘れると 403 が「役割が足りない」ではなく
+    /// 「クライアントヘッダーが要る」になり、見たいものと別の失敗が緑に見える。
+    /// </summary>
+    private static HttpRequestMessage AsSession(
+        HttpMethod method, string path, string cookie, string? json = null)
+    {
+        var request = new HttpRequestMessage(method, path);
+        request.Headers.Add("Cookie", cookie);
+        request.Headers.Add("X-PRApp-Client", "1");
+        if (json is not null)
+            request.Content = new StringContent(json, Encoding.UTF8, "application/json");
+        return request;
+    }
+
+    /// <summary>画質の姿を 1 つ読む（200 と <c>no-store</c> まで確かめる）。</summary>
+    private async Task<JsonElement> QualityStateAsync(HttpClient client, string cookie, string label)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, QualitiesPath);
+        request.Headers.Add("Cookie", cookie);
+
+        using var response = await client.SendAsync(request, Ct);
+        string text = await response.Content.ReadAsStringAsync(Ct);
+        output.WriteLine($"{label}: {(int)response.StatusCode} {text}");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("no-store", response.Headers.CacheControl?.ToString());
+
+        using var body = JsonDocument.Parse(text);
+        return body.RootElement.Clone();
+    }
+
+    /// <summary>
+    /// 画質を切り替える（<paramref name="cookie"/> の役割で）。応答の本体は GET と同じ形。
+    /// </summary>
+    private async Task SetQualityAsync(HttpClient client, string cookie, string id)
+    {
+        using var request = AsSession(HttpMethod.Post, QualityPath, cookie, $"{{\"id\":\"{id}\"}}");
+        using var response = await client.SendAsync(request, Ct);
+        string text = await response.Content.ReadAsStringAsync(Ct);
+        output.WriteLine($"set {id}: {(int)response.StatusCode} {text}");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("no-store", response.Headers.CacheControl?.ToString());
+
+        using var body = JsonDocument.Parse(text);
+        Assert.Equal(id, body.RootElement.GetProperty("current").GetString());
+    }
+
+    /// <summary>
+    /// <see cref="QualityHeader"/> が <paramref name="expected"/> になるまで manifest を引く。
+    ///
+    /// <para>
+    /// <b>引き続けるのが要点。</b> 切り替えは次のサンプルで mux を組み直すことで効くので、
+    /// 待っているあいだに引くのを止めると <c>lease expired</c> で畳まれ、
+    /// 何を観測したのか分からなくなる（<see cref="ChangingThePreviewSettingsMakesANewGeneration"/> と同じ）。
+    /// </para>
+    /// </summary>
+    private async Task<XDocument> WaitForServedQualityAsync(HttpClient client, string expected, string label)
+    {
+        var watch = Stopwatch.StartNew();
+        string last = "(1 度も 200 を読めていない)";
+
+        while (watch.Elapsed < SettingsBudget)
+        {
+            using var response = await client.GetAsync(ManifestPath, Ct);
+            if (response.StatusCode == HttpStatusCode.OK)
+            {
+                last = QualityOf(response) ?? "(ヘッダー無し)";
+                var mpd = XDocument.Parse(await response.Content.ReadAsStringAsync(Ct));
+                if (last == expected)
+                {
+                    var representation = RepresentationOf(mpd);
+                    output.WriteLine(
+                        $"{label}: {expected} after {watch.Elapsed.TotalSeconds:F1}s "
+                        + $"({representation.Attribute("width")!.Value}x{representation.Attribute("height")!.Value}, "
+                        + $"generation={GenerationOf(mpd)})");
+                    return mpd;
+                }
+            }
+
+            await Task.Delay(PollInterval, Ct);
+        }
+
+        Assert.Fail(
+            $"{label}: {SettingsBudget.TotalSeconds:F0} 秒以内に {QualityHeader} が '{expected}' に"
+            + $"なりませんでした（最後に見た値は '{last}'）。");
+        return null!;
+    }
+
+    /// <summary>
+    /// <b>プリセットの一覧が読め、切り替えると配信物の Representation がそれに従う。</b>
+    ///
+    /// <para>
+    /// <b>期待値はサーバーが答えた値そのものを使う</b> ── プリセットの意味は
+    /// 「ソースに対する相対」で、この機械のソース解像度は決め打ちにできない。
+    /// 幅も高さもリテラルで書くと、別の画面の機械で落ちるか、
+    /// あるいは<b>解決の算術を 2 か所に持つ</b>ことになる。
+    /// </para>
+    /// <para>
+    /// <b>読みは <c>Viewer</c>、書きは <c>Operator</c>。</b> 切り替えは
+    /// そのレコーダーの全視聴者に効くので、読み取りだけの役割には許さない。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task TheQualityEndpointsListPresetsAndSwitchTheRepresentation()
+    {
+        var (instance, port) = StartReady(withRoles: true);
+        using (instance)
+        {
+            using var client = CreateClient(port);
+
+            // **先に配信を起こす。** ソースの caps を読めていないと選択肢はソース非依存の
+            // 値になり、切り替えた後の Representation と突き合わせる意味が薄くなる。
+            await WaitForManifestAsync(client, StartBudget, "before-quality");
+
+            string viewer = await LoginAsync(client, ViewerUser, ViewerPassword, "Viewer");
+            string operatorSession = await LoginAsync(client, OperatorUser, OperatorPassword, "Operator");
+
+            try
+            {
+                var state = await QualityStateAsync(client, viewer, "viewer-get");
+                Assert.Equal("custom", state.GetProperty("current").GetString());
+
+                var qualities = state.GetProperty("qualities").EnumerateArray().ToArray();
+                Assert.True(2 <= qualities.Length,
+                    $"選択肢が {qualities.Length} 件しかありません（プリセット 1 つ ＋ custom が最小）。");
+
+                // 末尾は必ず custom（「設定どおりに配る」へ戻る道）。
+                Assert.Equal("custom", qualities[^1].GetProperty("id").GetString());
+                Assert.Equal("Custom", qualities[^1].GetProperty("label").GetString());
+
+                // 値の健全性は並びとは独立に見る。
+                foreach (var option in qualities[..^1])
+                {
+                    string id = option.GetProperty("id").GetString()!;
+                    Assert.Equal(id, option.GetProperty("label").GetString());
+                    foreach (string field in new[] { "width", "height", "fps", "bitrateKbps" })
+                    {
+                        Assert.True(0 < option.GetProperty(field).GetInt32(),
+                            $"{id} の {field} が 0 以下です: {option}");
+                    }
+                }
+
+                // プリセットは表の順で、ソースより高いものは出ない。
+                (string Id, int Height)[] order =
+                    [("1080p", 1080), ("720p", 720), ("480p", 480), ("360p", 360)];
+                string[] ids = qualities.Select(q => q.GetProperty("id").GetString()!).ToArray();
+
+                // source は常に在り、読めていないときだけ JSON の null。
+                var source = state.GetProperty("source");
+                if (source.ValueKind == JsonValueKind.Object)
+                {
+                    // **ソースが読めているなら期待列は一意に導ける。** 部分列の検査では
+                    // 「ソースより高いものは出ない」側を 1 つも縛れない。
+                    int height = source.GetProperty("height").GetInt32();
+                    int cap = height - (height % 2);
+
+                    var expected = order.Where(entry => entry.Height <= cap).Select(entry => entry.Id).ToList();
+                    if (expected.Count == 0) { expected.Add("360p"); }
+                    expected.Add("custom");
+
+                    Assert.Equal(expected, ids);
+                }
+                else
+                {
+                    // ソースが読めていないときは 4 つ全部が出る決まりだが、そう縛ると
+                    // 「読めていない」の中身に依存する ── 並びが表の順であることだけ見る。
+                    int next = 0;
+                    foreach (string id in ids[..^1])
+                    {
+                        int at = Array.FindIndex(order, entry => entry.Id == id);
+                        Assert.True(0 <= at && next <= at,
+                            "プリセットの並びが表の順ではありません: " + string.Join(", ", ids));
+                        next = at + 1;
+                    }
+                }
+
+                // 最小のプリセットは必ず残る（1 つも収まらなければ最小だけを出す規則）。
+                var preset = Assert.Single(qualities, q => q.GetProperty("id").GetString() == "360p");
+                int presetWidth = preset.GetProperty("width").GetInt32();
+                int presetHeight = preset.GetProperty("height").GetInt32();
+
+                // 読める役割でも書けない ── 403 は「役割が足りない」側であること。
+                using (var request = AsSession(HttpMethod.Post, QualityPath, viewer, "{\"id\":\"360p\"}"))
+                using (var response = await client.SendAsync(request, Ct))
+                {
+                    string text = await response.Content.ReadAsStringAsync(Ct);
+                    output.WriteLine($"viewer-post: {(int)response.StatusCode} {text}");
+                    Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+
+                    using var body = JsonDocument.Parse(text);
+                    Assert.Equal("insufficient role", body.RootElement.GetProperty("error").GetString());
+                }
+
+                // 知らない id と読めない本文は経路が断る（供給側へ渡さない）。
+                foreach ((string sent, string expected) in new[]
+                {
+                    ("{\"id\":\"bogus\"}", "unknown preview quality"),
+                    ("{}", "unknown preview quality"),
+                    ("not json", "invalid json body"),
+                })
+                {
+                    using var request = AsSession(HttpMethod.Post, QualityPath, operatorSession, sent);
+                    using var response = await client.SendAsync(request, Ct);
+                    string text = await response.Content.ReadAsStringAsync(Ct);
+                    output.WriteLine($"bad body {sent}: {(int)response.StatusCode} {text}");
+
+                    Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+                    using var body = JsonDocument.Parse(text);
+                    Assert.Equal(expected, body.RootElement.GetProperty("error").GetString());
+                }
+
+                // 対象が無ければ 404（供給側が答える ── 終了コード 13）。
+                using (var request = AsSession(
+                    HttpMethod.Post, "api/recorders/nope/preview/quality", operatorSession, "{\"id\":\"custom\"}"))
+                using (var response = await client.SendAsync(request, Ct))
+                {
+                    string text = await response.Content.ReadAsStringAsync(Ct);
+                    output.WriteLine($"unknown recorder: {(int)response.StatusCode} {text}");
+                    Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+
+                    using var body = JsonDocument.Parse(text);
+                    Assert.Equal(13, body.RootElement.GetProperty("exitCode").GetInt32());
+                }
+
+                // --- 切り替えが配信物に出る ---
+                await SetQualityAsync(client, operatorSession, "360p");
+
+                var served = await WaitForServedQualityAsync(client, "360p", "after-360p");
+                Assert.Equal(
+                    presetWidth.ToString(CultureInfo.InvariantCulture),
+                    RepresentationOf(served).Attribute("width")!.Value);
+                Assert.Equal(
+                    presetHeight.ToString(CultureInfo.InvariantCulture),
+                    RepresentationOf(served).Attribute("height")!.Value);
+
+                // --- custom へ戻すと設定の 4 値そのまま（クランプしない） ---
+                await SetQualityAsync(client, operatorSession, "custom");
+
+                var restored = await WaitForServedQualityAsync(client, "custom", "after-custom");
+                Assert.Equal("1280", RepresentationOf(restored).Attribute("width")!.Value);
+                Assert.Equal("720", RepresentationOf(restored).Attribute("height")!.Value);
+            }
+            finally
+            {
+                // **override はプロセスに残る**（settings.json には写らない代わりに、
+                // 消えるのはアプリの終了だけ）。途中で落ちても custom へ戻しておく。
+                //
+                // **戻しの失敗で元の失敗を上書きしない。** finally から例外を投げると
+                // 本文が置き換わり、何が落ちたのか読めなくなる。
+                try
+                {
+                    using var request = AsSession(
+                        HttpMethod.Post, QualityPath, operatorSession, "{\"id\":\"custom\"}");
+                    using var response = await client.SendAsync(request, Ct);
+                    output.WriteLine($"restore custom: {(int)response.StatusCode}");
+                }
+                catch (Exception error)
+                {
+                    output.WriteLine($"restore custom failed: {error}");
+                }
+            }
         }
     }
 }

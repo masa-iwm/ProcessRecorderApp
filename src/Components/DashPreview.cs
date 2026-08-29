@@ -34,6 +34,10 @@ public sealed record DashMediaSegment(ulong Time, ulong Duration, ReadOnlyMemory
 /// <param name="Height">符号化された高さ(px)。</param>
 /// <param name="Fps">符号化されたフレームレート(fps)。</param>
 /// <param name="BitrateKbps">エンコーダーへ指示したビットレート(kbit/sec)。</param>
+/// <param name="QualityId">
+/// この連続体を組んだときの画質 id（<see cref="PreviewQualityPresets.All"/> の id か
+/// <see cref="PreviewQualityPresets.Custom"/>）。<b>指示ではなく実際に動いているもの</b>。
+/// </param>
 /// <param name="AvailabilityStartTimeUtc">この連続体が始まった時刻（MPD の基準）。</param>
 /// <param name="PresentationTimeOffset">最初に確定したセグメントの <see cref="DashMediaSegment.Time"/>。</param>
 /// <param name="Segments">保持しているセグメント（古い順）。</param>
@@ -46,6 +50,7 @@ public sealed record DashPreviewSnapshot(
     int Height,
     int Fps,
     int BitrateKbps,
+    string QualityId,
     DateTimeOffset AvailabilityStartTimeUtc,
     ulong PresentationTimeOffset,
     IReadOnlyList<DashMediaSegment> Segments);
@@ -70,6 +75,49 @@ public interface IDashPreviewSource
     bool TryGetSnapshot(
         string target,
         [NotNullWhen(true)] out DashPreviewSnapshot? snapshot,
+        [NotNullWhen(false)] out string? reason);
+
+    /// <summary>
+    /// <paramref name="target"/> のライブ画質の姿を読む。対象の解決規則は
+    /// <see cref="TryGetSnapshot"/> と同じ。
+    ///
+    /// <para>
+    /// <b>貸出を延ばさない。</b> 見ていない相手の第 2 パイプラインを起こさずに
+    /// 選択肢だけを答えるための口である ── レコーダーが初期化前でも成功し、
+    /// <see cref="PreviewQualityState.Source"/> と
+    /// <see cref="PreviewQualityState.Effective"/> が <see langword="null"/> になる。
+    /// </para>
+    /// </summary>
+    /// <param name="target">インデックスまたはレコーダー名。</param>
+    /// <param name="state">成功したときの姿。</param>
+    /// <param name="reason">失敗理由（ログ用・英語）。対象が無いときだけ意味で分岐する。</param>
+    bool TryGetQuality(
+        string target,
+        [NotNullWhen(true)] out PreviewQualityState? state,
+        [NotNullWhen(false)] out string? reason);
+
+    /// <summary>
+    /// <paramref name="target"/> のライブ画質を切り替える。<b>非永続</b>で、レコーダー単位・
+    /// 全視聴者共有・最後勝ちであり、アプリを終えると消える。
+    ///
+    /// <para>
+    /// <b>貸出を延ばさない</b>（<see cref="TryGetQuality"/> と同じ）。反映は次のサンプルで
+    /// mux を組み直す形なので、戻り値の <see cref="PreviewQualityState.Effective"/> は
+    /// まだ古い連続体を指していることがある。
+    /// </para>
+    /// </summary>
+    /// <param name="target">インデックスまたはレコーダー名。</param>
+    /// <param name="qualityId">
+    /// <see cref="PreviewQualityPresets.All"/> の id か
+    /// <see cref="PreviewQualityPresets.Custom"/>。<b>検査済みの前提</b>で、
+    /// それ以外は <see cref="ArgumentException"/>。
+    /// </param>
+    /// <param name="state">成功したときの姿。</param>
+    /// <param name="reason">失敗理由（ログ用・英語）。</param>
+    bool TrySetQuality(
+        string target,
+        string qualityId,
+        [NotNullWhen(true)] out PreviewQualityState? state,
         [NotNullWhen(false)] out string? reason);
 }
 

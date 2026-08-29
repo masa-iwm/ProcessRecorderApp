@@ -35,6 +35,13 @@ internal interface IDashPreviewHost
 
     /// <summary>配信のビットレート(kbit/sec)。</summary>
     int PreviewBitrateKbps { get; }
+
+    /// <summary>
+    /// ライブ画質プリセットの id（<see cref="PreviewQualityPresets.All"/> の id）。
+    /// <see langword="null"/> ならカスタム＝上の 4 値をそのまま使う。
+    /// <b>4 値と同じく毎サンプル読み直す</b>。
+    /// </summary>
+    string? PreviewQualityPreset { get; }
 }
 
 /// <summary>
@@ -50,8 +57,11 @@ internal interface IDashPreviewHost
 /// ── 明示的な購読解除を持たない代わりに、これで第 2 パイプラインの寿命を有界にしている。
 /// </para>
 /// <para>
-/// <b>非配信時のコストは volatile の 1 回読みだけ。</b> <see cref="OnRawSample"/> の先頭で
-/// 抜けるので、誰も見ていないレコーダーの録画経路の費用はこの機能を足す前と同じである。
+/// <b>非配信時のコストはフィールドの読み 3 回だけ。</b> <see cref="OnRawSample"/> の
+/// 先頭で抜けるので、誰も見ていないレコーダーの録画経路には実質の費用が無い ──
+/// 内訳は plain な <see cref="_sourceKnown"/> が 1 回と、volatile な
+/// <see cref="_wantMux"/> ＋ <see cref="_mux"/> が 2 回である
+/// （caps の解析は寿命内で最初の 1 枚に 1 回だけ走る）。
 /// </para>
 /// <para>
 /// <b>スレッドは 3 種類ある。</b>
@@ -238,6 +248,13 @@ internal sealed partial class DashPreviewStream : IDisposable
     /// <summary>最後に <see cref="TryGetSnapshot"/> が呼ばれた時刻（<c>TickCount64</c>）。</summary>
     private long _lastTouchTicks;
 
+    /// <summary>
+    /// ソースの caps を一度でも読んだか。<b>触るのは枝A のスレッドだけ</b>なので
+    /// plain な <see langword="bool"/> でよい ── これが無いと、誰も見ていない
+    /// レコーダーで毎サンプル caps を解析することになる。
+    /// </summary>
+    private bool _sourceKnown;
+
     /// <summary>連続体の通し番号（<see cref="_muxLock"/> で増やす）。</summary>
     private int _generation;
 
@@ -251,6 +268,9 @@ internal sealed partial class DashPreviewStream : IDisposable
     private int _ringHeight;
     private int _ringFps;
     private int _ringBitrateKbps;
+    private string? _ringQualityId;
+    private PreviewSourceInfo _ringSource;
+    private bool _ringHasMux;
     private DateTimeOffset _ringAvailabilityStartUtc;
     private ulong _presentationTimeOffset;
     private bool _hasPresentationTimeOffset;
@@ -279,7 +299,9 @@ internal sealed partial class DashPreviewStream : IDisposable
         int width,
         int height,
         int fps,
-        int bitrateKbps)
+        int bitrateKbps,
+        string? qualityId,
+        PreviewSourceInfo source)
     {
         public Pipeline Pipeline { get; } = pipeline;
 
@@ -303,6 +325,18 @@ internal sealed partial class DashPreviewStream : IDisposable
         public int Fps { get; } = fps;
 
         public int BitrateKbps { get; } = bitrateKbps;
+
+        /// <summary>
+        /// この mux を組んだときの画質プリセットの id（null＝カスタム）。
+        /// <b>宿主の指示との比較にそのまま使う</b>ので、解決前の値を持つ。
+        /// </summary>
+        public string? QualityId { get; } = qualityId;
+
+        /// <summary>
+        /// この mux を組んだときに読めたソースの形。<b>解決し直しの入力</b>
+        /// ── 設定 4 値が変わっていなくても、プリセットの解決結果はこれに依存する。
+        /// </summary>
+        public PreviewSourceInfo Source { get; } = source;
 
         public Fmp4SegmentSplitter Splitter { get; } = new();
 
@@ -338,7 +372,30 @@ internal sealed partial class DashPreviewStream : IDisposable
     /// </summary>
     internal void OnRawSample(Sample sample)
     {
-        // **非配信時はここで終わる。** volatile の 1 回読みと参照の比較だけ。
+        // **ソースの形は最初の 1 枚で 1 回だけ読む。** 画質の選択肢はソースの高さで
+        // 決まるので、視聴が始まる前の <c>GET</c> にも答えられなければならない
+        // ── 判定はこのスレッドしか触らない plain な bool で、以後は素の読み 1 回になる。
+        if (!_sourceKnown)
+        {
+            // **読めなくても再挑戦しない。** 立てるのは try の前で、caps が読めない
+            // ソースなら次の 1 枚でも読めない ── 未知のまま（16:9 で組む）にして、
+            // 記録は寿命内で 1 行だけにする。
+            _sourceKnown = true;
+            try
+            {
+                var source = ReadSource(sample);
+                lock (_ringLock)
+                    _ringSource = source;
+            }
+            catch (Exception ex)
+            {
+                Components.ActivityLog.Error("dash.stream-error",
+                    $"recorder='{_host.Name}' reason={StopReason.StreamError} detail={ex.Message}");
+            }
+        }
+
+        // **非配信時はここで終わる。** volatile の読み 2 回と参照の比較だけ
+        // （配信中は短絡して _wantMux の 1 回で済む）。
         if (!_wantMux && Volatile.Read(ref _mux) is null)
             return;
 
@@ -419,11 +476,16 @@ internal sealed partial class DashPreviewStream : IDisposable
             return Teardown(StopReason.EncoderFailed);
         }
 
-        // 4 設定は毎サンプル読み直す（宿主から通知を受けない）。
-        if (engine.Width != _host.PreviewWidth
-            || engine.Height != _host.PreviewHeight
-            || engine.Fps != _host.PreviewFps
-            || engine.BitrateKbps != _host.PreviewBitrateKbps)
+        // 4 設定と画質プリセットは毎サンプル読み直す（宿主から通知を受けない）。
+        // **解決値と指示の両方を見る** ── プリセットが同じでも設定 4 値が変われば
+        // カスタムの配信は変わり、解決値が同じでも指示が変われば以後の再解決の基準が変わる。
+        string? preset = _host.PreviewQualityPreset;
+        var effective = ResolveEffective(preset, engine.Source);
+        if (engine.Width != effective.Width
+            || engine.Height != effective.Height
+            || engine.Fps != effective.Fps
+            || engine.BitrateKbps != effective.BitrateKbps
+            || !string.Equals(engine.QualityId, preset, StringComparison.Ordinal))
         {
             return Teardown(StopReason.SettingsChanged);
         }
@@ -455,10 +517,16 @@ internal sealed partial class DashPreviewStream : IDisposable
         if (_faultedEncoder)
             return;
 
-        int width = _host.PreviewWidth;
-        int height = _host.PreviewHeight;
-        int fps = _host.PreviewFps;
-        int bitrateKbps = _host.PreviewBitrateKbps;
+        // **ソースは mux ごとに読み直す。** プリセットの意味はソースに対する相対なので、
+        // ウィンドウの解像度が変わったあとは新しい形で解決しなければならない。
+        string? qualityId = _host.PreviewQualityPreset;
+        var source = ReadSource(sample);
+        var quality = ResolveEffective(qualityId, source);
+
+        int width = quality.Width;
+        int height = quality.Height;
+        int fps = quality.Fps;
+        int bitrateKbps = quality.BitrateKbps;
 
         if (NextCandidate(fps, bitrateKbps) is not { } encoder)
         {
@@ -493,7 +561,7 @@ internal sealed partial class DashPreviewStream : IDisposable
 
             engine = new MuxEngine(
                 pipeline, src, sink, negotiated.ToString(), encoder.FactoryName,
-                width, height, fps, bitrateKbps);
+                width, height, fps, bitrateKbps, qualityId, source);
 
             sink.SetSimpleCallbacks(onNewSample: s => OnMuxSample(engine, s));
 
@@ -537,6 +605,9 @@ internal sealed partial class DashPreviewStream : IDisposable
             _ringHeight = height;
             _ringFps = fps;
             _ringBitrateKbps = bitrateKbps;
+            _ringQualityId = qualityId;
+            _ringSource = source;
+            _ringHasMux = true;
             _ringAvailabilityStartUtc = startedAt;
         }
 
@@ -599,6 +670,48 @@ internal sealed partial class DashPreviewStream : IDisposable
     }
 
     /// <summary>
+    /// <paramref name="presetId"/> を <paramref name="source"/> に対して解決する。
+    /// <b>プリセットが無い（カスタム）か知らない id なら宿主の 4 値そのまま</b>
+    /// ── そこはクランプしない（設定側が既に丸めている）。
+    /// </summary>
+    private PreviewQuality ResolveEffective(string? presetId, PreviewSourceInfo source)
+    {
+        if (presetId is not null && PreviewQualityPresets.TryFind(presetId, out var preset))
+            return PreviewQualityPresets.Resolve(preset, source);
+
+        return new PreviewQuality(
+            _host.PreviewWidth, _host.PreviewHeight, _host.PreviewFps, _host.PreviewBitrateKbps);
+    }
+
+    /// <summary>
+    /// サンプルの caps からソースの形を読む。読めなければ既定（＝未知）を返す。
+    ///
+    /// <para>
+    /// <c>GetCaps</c> のラッパーは自前の参照を 1 本持ち、<c>GetStructure</c> は Boxed の
+    /// 所有コピーを返すので、<b>どちらも破棄する</b>。
+    /// </para>
+    /// </summary>
+    private static PreviewSourceInfo ReadSource(Sample sample)
+    {
+        using var caps = sample.GetCaps();
+        if (caps is null)
+            return default;
+
+        using var structure = caps.GetStructure(0);
+        if (!structure.GetInt("width", out int width) || !structure.GetInt("height", out int height))
+            return default;
+
+        int fps = 0;
+        if (structure.GetFraction("framerate", out int numerator, out int denominator)
+            && 0 < numerator && 0 < denominator)
+        {
+            fps = (int)Math.Round(numerator / (double)denominator, MidpointRounding.AwayFromZero);
+        }
+
+        return new PreviewSourceInfo(width, height, fps);
+    }
+
+    /// <summary>
     /// mux を退役させ、保持物を捨てる。<b><see cref="_muxLock"/> を保持したまま呼ぶこと。</b>
     /// 戻り値は<b>ロックの外で</b> <c>Null</c> → <c>Dispose</c> すべきパイプライン。
     ///
@@ -629,6 +742,11 @@ internal sealed partial class DashPreviewStream : IDisposable
             _timescale = 0;
             _presentationTimeOffset = 0;
             _hasPresentationTimeOffset = false;
+
+            // **ソースの形は残す。** 選択肢はそれで決まるので、mux が畳まれても
+            // 「何が選べるか」は答えられなければならない。
+            _ringHasMux = false;
+            _ringQualityId = null;
         }
 
         Components.ActivityLog.Info("dash.stream-stop", $"recorder='{_host.Name}' reason={reason}");
@@ -863,11 +981,44 @@ internal sealed partial class DashPreviewStream : IDisposable
             snapshot = new DashPreviewSnapshot(
                 _ringGeneration, init, _timescale, codecs,
                 _ringWidth, _ringHeight, _ringFps, _ringBitrateKbps,
+                _ringQualityId ?? PreviewQualityPresets.Custom,
                 _ringAvailabilityStartUtc, _presentationTimeOffset, (DashMediaSegment[])[.. _ring]);
         }
 
         reason = null;
         return true;
+    }
+
+    /// <summary>
+    /// ライブ画質の姿を 1 枚読む。<b>貸出を延ばさない</b>
+    /// ── 誰も見ていないレコーダーの第 2 パイプラインをこれで起こしてはいけない。
+    ///
+    /// <para>
+    /// <see cref="_muxLock"/> も取らない。読むのは <see cref="_ringLock"/> の下の値と、
+    /// 宿主のロックフリーな 4 値だけである。
+    /// </para>
+    /// </summary>
+    internal PreviewQualityState GetQualityState()
+    {
+        var custom = new PreviewQuality(
+            _host.PreviewWidth, _host.PreviewHeight, _host.PreviewFps, _host.PreviewBitrateKbps);
+
+        PreviewSourceInfo source;
+        bool hasMux;
+        string? effectiveId;
+        PreviewQuality effective;
+        lock (_ringLock)
+        {
+            source = _ringSource;
+            hasMux = _ringHasMux;
+            effectiveId = _ringQualityId ?? PreviewQualityPresets.Custom;
+            effective = new PreviewQuality(_ringWidth, _ringHeight, _ringFps, _ringBitrateKbps);
+        }
+
+        return PreviewQualityPresets.BuildState(
+            _host.PreviewQualityPreset, source, custom,
+            hasMux ? effectiveId : null,
+            hasMux ? effective : null);
     }
 
     // ---- 停止 ----

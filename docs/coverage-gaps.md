@@ -584,7 +584,8 @@ fragmented では全 `moof` の `trun` から尺・サンプル数・先頭サ�
 `PreviewBitrateKbps` を読むのは `DashPreviewStream`（第 2 パイプライン）**だけ**である。
 既存の `preview.mp4`（fMP4 / MSE）は録画済みの H.264 をそのまま包むので、
 **この 4 つを動かしてもそちらの配信物は 1 バイトも変わらない**。Web UI の画質切替で
-`dash` を選んだときだけ、この 4 つが効いた配信物が流れる。
+DASH 側を選び、**かつライブ画質が `custom` のときだけ**、この 4 つが効いた配信物が流れる
+（プリセットが選ばれているあいだは、そちらの解決値が配信物を決める）。
 
 **4 設定が効くことは L2 が見ている** ── `DashPreviewTests`
 （`ChangingThePreviewSettingsMakesANewGeneration`）が、配信中に幅と高さを PATCH すると
@@ -611,6 +612,25 @@ fragmented では全 `moof` の `trun` から尺・サンプル数・先頭サ�
   E2E で再現していない。** テストが踏むのは manifest が `starting` を返す側だけで、
   manifest を読めた直後にリングが空になる並びは作れていない ── クライアント側は
   どの要求で受けても manifest へ戻る形で防いである（`app-player.js` の `failUnlessStarting`）。
+
+### ライブ画質プリセットで残っている穴
+
+解決の算術（`PreviewQualityPresets`）は L1 が固定値で縛り、API の 3 面（役割・不正な id・
+切り替えが `Representation` と `X-Dash-Quality` に出ること）は L2 の
+`DashPreviewTests.TheQualityEndpointsListPresetsAndSwitchTheRepresentation` が、
+メニューからの選択は `WebUiBrowserTests.TheLiveQualityMenuPicksAPresetAndTheRepresentationFollows`
+が通す。残るのは次の 3 つ:
+
+- **GPU 系エンコーダーではプリセットの kbit/s が効かない。** `bitrate=` トークンを持たない候補では
+  `WithBitrateKbps` が素通しするので（下の節）、プリセットで選べるのは実質「解像度と fps」だけになる。
+  どの候補が採用されたかは `dash.stream-start` に出るが、**要求した kbit/s はそのまま記録される**
+  ので、ログを見ても効いたかどうかは分からない。
+- **複数の視聴者での「最後勝ち」と、他人の変更への追随は手動確認。** 状態はレコーダー単位で
+  全視聴者に共有され、変更は mux の作り直し → `Period@id` の変化 → 連続体の開き直しで伝わる。
+  E2E はブラウザを 1 枚しか開かないので、**2 枚目が自分で開き直すところは走っていない**。
+- **ソース解像度が実行中に変わったときの解き直しは手動確認。** プリセットの意味は
+  「ソースに対する相対」で、caps が変われば `caps changed` のあとに新しいソースで解き直される
+  ── これが要るのはウィンドウ キャプチャの大きさが変わる場合で、E2E のソースは大きさが変わらない。
 
 ### GPU 実機レポートが流すのは既定ビットレートの起動文字列だけ
 
@@ -794,7 +814,8 @@ CLI 側は `/` 入りのキーを受けるので、ここだけ受け付けな�
 **「通知が 1 度も来ない」保存先では一覧が更新されない**（要求のたびに呼ばれる `Rebind` が
 走査し直すのは、root が変わった回と、同じ root でまだ watcher が無くフォルダーが現れていた
 回だけである ── watcher が張れてしまえば、以後は通知が来るまで何もしない）。
-L1 は `Rebuild()` を直接呼ぶ経路と、ローカルでのデバウンス越しの通知の 2 つを見ている。
+L1 は `Rebuild()` を直接呼ぶ経路と、ローカルでのデバウンス越しの通知と、録画中の項目が
+一覧に在る間の自発的な張り直し（通知を待たない）の 3 つを見ている。
 
 ### 録画の開始理由（`trigger`）
 

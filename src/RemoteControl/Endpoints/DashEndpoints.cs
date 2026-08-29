@@ -53,6 +53,13 @@ internal static class DashEndpoints
     /// </summary>
     private const string GenerationHeader = "X-Dash-Generation";
 
+    /// <summary>
+    /// この連続体を組んだときのライブ画質の id（<c>custom</c> なら設定 4 値そのまま）。
+    /// <b>指示ではなく実際に配信しているもの</b>で、クライアントはこれで
+    /// 「切り替えが効いたか」を判定する。
+    /// </summary>
+    private const string QualityHeader = "X-Dash-Quality";
+
     public static void Map(WebApplication app, IRemoteControlBackend backend, RemoteAuth auth)
     {
         app.MapGet("/api/recorders/{id}/dash/{file}", async (HttpContext ctx) =>
@@ -79,6 +86,7 @@ internal static class DashEndpoints
             ctx.Response.Headers.CacheControl = "no-store";
             ctx.Response.Headers[GenerationHeader] =
                 snapshot.Generation.ToString(CultureInfo.InvariantCulture);
+            ctx.Response.Headers[QualityHeader] = snapshot.QualityId;
 
             if (kind == DashRouteKind.Manifest)
             {
