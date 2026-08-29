@@ -27,7 +27,13 @@ namespace ProcessRecorderApp.Components;
 /// <paramref name="EndTime"/> − <paramref name="StartTime"/>。
 /// メディアの尺そのものではなく、録画していた実時間である。
 /// </param>
-/// <param name="Trigger">開始理由。単発録画では <see langword="null"/>、常時録画では <c>continuous</c>。</param>
+/// <param name="Trigger">
+/// 開始理由。<c>manual</c>（UI の操作）、<c>uia:&lt;triggerId&gt;</c>（UIA トリガ。
+/// <c>&lt;triggerId&gt;</c> は定義の <c>Id</c> そのもの）、<c>remote</c>（HTTP API）、
+/// <c>cli</c>（<c>start-recording</c> / <c>start-recording-all</c>）、
+/// <c>continuous</c>（常時録画のセグメント。ローテーションと最終セグメントは区別しない）。
+/// 分からなければ <see langword="null"/>。
+/// </param>
 /// <param name="Width">映像の幅（caps 未確定なら <see langword="null"/>）。</param>
 /// <param name="Height">映像の高さ（同上）。</param>
 /// <param name="Fps">フレームレート（分数を割ったもの。<c>0/1</c> なら <see langword="null"/>）。</param>

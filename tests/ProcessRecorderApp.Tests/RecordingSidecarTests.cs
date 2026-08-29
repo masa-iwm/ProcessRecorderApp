@@ -61,6 +61,24 @@ public sealed class RecordingSidecarTests : IDisposable
         Assert.Equal(written.EndTime!.Value.UtcDateTime, read.EndTime!.Value.UtcDateTime);
     }
 
+    /// <summary>
+    /// UIA トリガの <c>trigger</c> は <c>uia:&lt;triggerId&gt;</c>。定義の <c>Id</c> は
+    /// 利用者が付ける自由な文字列なので、<b>接頭辞ごとそのまま往復すること</b>を固定する
+    /// （一覧はこの値を加工せずに出す）。
+    /// </summary>
+    [Fact]
+    public void TheTriggerRoundTripsWithItsPrefix()
+    {
+        string path = PathFor("uia.mp4.json");
+        var written = Sample() with { Trigger = "uia:abc" };
+
+        RecordingSidecar.Write(path, written);
+        var read = RecordingSidecar.TryRead(path);
+
+        Assert.NotNull(read);
+        Assert.Equal("uia:abc", read.Trigger);
+    }
+
     [Fact]
     public void TheJsonUsesCamelCaseNames()
     {

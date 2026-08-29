@@ -242,7 +242,7 @@ namespace ProcessRecorderApp.ViewModels
             try
             {
                 if (value)
-                    Model.Start();
+                    Model.Start(ManualTrigger);
                 else
                     Model.Stop();
             }
@@ -545,9 +545,24 @@ namespace ProcessRecorderApp.ViewModels
         public partial int ContinuousSegmentCount { get; private set; }
 
 
+        /// <summary>画面の操作から録画を開始する（<c>trigger</c> は <see cref="ManualTrigger"/>）。</summary>
+        /// <remarks>
+        /// <b>コマンドは引数を取らない形のまま置く。</b> PropertyGrid は
+        /// <c>Button.Command</c> へ直接束ねて <c>CommandParameter</c> を渡さないので、
+        /// <c>[RelayCommand]</c> に引数を持たせると <c>Execute(null)</c> が
+        /// <see cref="EventRecorder.Start"/> の引数検査で投げる。
+        /// </remarks>
         [property: Description("PropDesc_Rec_StartRecording")]
         [RelayCommand(CanExecute = nameof(CanStartRecording))]
-        public void StartRecording() => Model.Start();
+        private void StartRecording() => StartRecording(ManualTrigger);
+
+        /// <summary>録画を開始する。</summary>
+        /// <param name="trigger">開始理由（<see cref="EventRecorder.Start"/> に渡す値）。</param>
+        public void StartRecording(string trigger) => Model.Start(trigger);
+
+        /// <summary>画面の操作を出どころとする録画の <c>trigger</c>。</summary>
+        public const string ManualTrigger = "manual";
+
         /// <summary>
         /// 判定規則そのものは <see cref="RecordingCommandState"/>（純粋関数）にある
         /// ── この VM は L1 から参照できないため、規則をここに書くと誰も守れない。

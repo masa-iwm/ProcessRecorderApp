@@ -496,6 +496,22 @@ public partial class EventRecorder : ObservableObject, IDisposable
     /// </summary>
     volatile bool _resumeAfterRecovery;
 
+    /// <summary>
+    /// 録り直す本の開始理由（sidecar の <c>trigger</c>）。畳む録画の <see cref="_startTrigger"/> を
+    /// <c>_resumeAfterRecovery</c> を立てるのと同じ <c>_stateLock</c> の下で控える。
+    ///
+    /// <para>
+    /// <b>復帰は利用者の操作ではない。</b> 引き継がずに <c>manual</c> で置くと、
+    /// <c>uia:&lt;id&gt;</c> 起点の録画（停止まで <c>UiaTriggerService</c> が所有し続ける）が
+    /// 録り直した本の sidecar でだけ理由を偽る。
+    /// </para>
+    /// <para>
+    /// 読み書きは <c>_resumeAfterRecovery</c> と同じ 3 か所で降ろす
+    /// （止められたとき・録り直したとき・破棄されたとき）。
+    /// </para>
+    /// </summary>
+    private string? _resumeTrigger;
+
     [ObservableProperty]
     public partial bool IsAwaitingRecoveryResume { get; private set; }
 
@@ -3291,6 +3307,10 @@ public partial class EventRecorder : ObservableObject, IDisposable
                     if (_IsRecording && !_resumeAfterRecovery)
                     {
                         _resumeAfterRecovery = true;
+                        // 畳む録画の理由をここで控える（_IsRecording が真＝_startTrigger は非 null）。
+                        // 何周回っても控え直さないのは、上の !_resumeAfterRecovery が
+                        // 最初の 1 回だけ通すため ── 録り直しは畳んだ本の続きである。
+                        _resumeTrigger = _startTrigger;
                         IsAwaitingRecoveryResume = true;
                         Components.ActivityLog.Info("recorder.restart",
                             $"recorder='{Name}' the recording will be resumed once the pipeline is rebuilt");
@@ -3404,7 +3424,11 @@ public partial class EventRecorder : ObservableObject, IDisposable
                 $"recorder='{Name}' resuming the recording that the rebuild finalized");
             try
             {
-                Start();
+                // **理由は畳んだ本から引き継ぐ。** 復帰は利用者の操作ではないので、
+                // "manual" で置くと uia:<id> 起点の録画が sidecar でだけ理由を偽る
+                // （その録画は停止まで UiaTriggerService が所有し続ける）。
+                // 控えが無いのは _startTrigger を持たない経路だけなので "manual" へ落とす。
+                Start(_resumeTrigger ?? "manual");
             }
             catch (Exception ex)
             {
@@ -3425,6 +3449,7 @@ public partial class EventRecorder : ObservableObject, IDisposable
             return;
 
         _resumeAfterRecovery = false;
+        _resumeTrigger = null;
         IsAwaitingRecoveryResume = false;
         Components.ActivityLog.Info("recorder.restart",
             $"recorder='{Name}' not resuming the recording after the rebuild ({reason})");
@@ -3718,8 +3743,18 @@ public partial class EventRecorder : ObservableObject, IDisposable
             TemplateVariables,
             Environment.GetEnvironmentVariable);
 
-    public void Start()
+    /// <summary>
+    /// 録画を開始する。
+    /// </summary>
+    /// <param name="trigger">
+    /// 開始理由。sidecar の <c>trigger</c> にそのまま載る
+    /// （<c>manual</c> / <c>uia:&lt;triggerId&gt;</c> / <c>remote</c> / <c>cli</c>）。
+    /// 常時録画のセグメントは <c>continuous</c> で、この経路は通らない。
+    /// </param>
+    public void Start(string trigger)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(trigger);
+
         lock (_stateLock)
         {
             // 直前の停止がまだ排出中なら待つ。待たずに開始すると、排出して Null へ
@@ -3736,11 +3771,11 @@ public partial class EventRecorder : ObservableObject, IDisposable
                     $"recorder='{Name}' the previous stop is still draining; refused to start");
                 throw new InvalidOperationException("The previous stop is still draining.");
             }
-            StartCore();
+            StartCore(trigger);
         }
     }
 
-    private void StartCore()
+    private void StartCore(string trigger)
     {
         System.Diagnostics.Debug.Assert(Monitor.IsEntered(_stateLock), "StartCore must run under _stateLock");
 
@@ -3749,8 +3784,13 @@ public partial class EventRecorder : ObservableObject, IDisposable
         if (_IsRecording)
             throw new InvalidOperationException("Already started");
 
+        // **控えるのは可否の検査を通ってから。** 手前で書くと、録画中に届いた開始要求
+        // （「Already started」で弾く分）の理由が、走っている録画の sidecar に載る。
+        _startTrigger = trigger;
+
         // 録画が始まる＝復帰後に録り直す意図は満たされた。
         _resumeAfterRecovery = false;
+        _resumeTrigger = null;
         IsAwaitingRecoveryResume = false;
 
         // 新しい録画では前回の障害表示を消す（「今の状態」を表すプロパティなので）
@@ -3838,6 +3878,14 @@ public partial class EventRecorder : ObservableObject, IDisposable
 
     /// <summary><see cref="Start"/> の時刻（sidecar の <c>startTime</c>）。</summary>
     private DateTimeOffset _recordingStartedAtUtc;
+
+    /// <summary>
+    /// 走っている録画の開始理由（sidecar の <c>trigger</c>）。<see cref="StartCore"/> が控え、
+    /// 停止の終わりで <see langword="null"/> へ戻す（sidecar を置かなかった回も降ろす）。
+    /// 次の本の理由は <see cref="StartCore"/> が開始時に必ず上書きし、sidecar を書くのは
+    /// その後なので、<b>この null 化は「録画していない間は空である」を保つための防御</b>である。
+    /// </summary>
+    private string? _startTrigger;
 
     /// <summary>
     /// 常時録画のセグメントを最初に見た時刻（sidecar の <c>startTime</c>）。
@@ -4171,7 +4219,13 @@ public partial class EventRecorder : ObservableObject, IDisposable
             // 「開いて確かめなくてよい」と読んで録画中のものと区別できなくなる
             // （常時録画の OnContinuousSegmentFinalized と同じ規律）。
             if (result == "ok")
-                WriteSidecarInBackground(LastFilename, _recordingStartedAtUtc, DateTimeOffset.UtcNow, trigger: null);
+            {
+                WriteSidecarInBackground(
+                    LastFilename, _recordingStartedAtUtc, DateTimeOffset.UtcNow, trigger: _startTrigger);
+            }
+
+            // 理由は 1 本ぶんのもの。書いた後（sidecar を置かなかった回も）で降ろす。
+            _startTrigger = null;
         }
         catch
         {
@@ -4435,6 +4489,7 @@ public partial class EventRecorder : ObservableObject, IDisposable
         // 「録画中」を出したまま（ShowsAsRecording）になり、停止を押しても
         // CancelRecoveryResume が空振りするので二度と降りない。
         _resumeAfterRecovery = false;
+        _resumeTrigger = null;
         IsAwaitingRecoveryResume = false;
 
         if (!_disposedValue)

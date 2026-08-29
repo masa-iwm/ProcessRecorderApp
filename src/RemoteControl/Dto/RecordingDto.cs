@@ -32,6 +32,11 @@ namespace ProcessRecorderApp.RemoteControl;
 /// 録画したレコーダーの名前（ファイル名テンプレートの <c>{Name}</c> と同じ値）。
 /// 推定できなければ空文字。
 /// </param>
+/// <param name="Trigger">
+/// 開始理由（<c>manual</c> / <c>uia:&lt;triggerId&gt;</c> / <c>remote</c> / <c>cli</c> /
+/// <c>continuous</c>）。<b>sidecar からしか来ない</b>ので、録画中と
+/// sidecar の無いものは <see langword="null"/>。
+/// </param>
 /// <param name="DurationMs">
 /// 尺（ミリ秒）。<b><see langword="null"/> でありうる</b> ── 録画中・fragmented・
 /// <c>moov</c> が読めないものでは出ない（fragmented の総尺は
@@ -42,7 +47,8 @@ namespace ProcessRecorderApp.RemoteControl;
 /// <param name="HasThumbnail"><c>&lt;録画ファイル名&gt;.png</c> が並んでいる。</param>
 public sealed record RecordingFileDto(
     string Path, long Length, DateTime LastWriteTimeUtc, bool InProgress, bool Fragmented,
-    DateTime StartTimeUtc, string Recorder, long? DurationMs, int? Width, int? Height, bool HasThumbnail);
+    DateTime StartTimeUtc, string Recorder, string? Trigger, long? DurationMs, int? Width, int? Height,
+    bool HasThumbnail);
 
 /// <summary>
 /// 保存先の一覧。

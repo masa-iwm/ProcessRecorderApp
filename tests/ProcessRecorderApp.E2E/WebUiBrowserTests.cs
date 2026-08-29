@@ -1,4 +1,8 @@
 using System.Diagnostics;
+using System.Globalization;
+using System.Net;
+using System.Net.Http;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using Xunit;
 
@@ -1384,5 +1388,362 @@ public sealed class WebUiBrowserTests(PublishedApp app, ITestOutputHelper output
         Assert.False(await browser.EvaluateBoolAsync(PlayerStatusIsError, Ct),
             "2 度目のシークが失敗を出しました: " + await browser.EvaluateStringAsync(TextOf("playerStatus"), Ct));
         output.WriteLine("after the second seek: " + await browser.EvaluateStringAsync(BufferedRanges, Ct));
+    }
+
+    // ---- (7) 録画一覧のページ（カレンダー・絞り込み・自動更新） ----
+
+    /// <summary>
+    /// 一覧のページを見るケースの構成。<b>レコーダーは 2 台</b>で、録画するのは片方だけ
+    /// ── 絞り込みが「効いている」と言うには、外れる側が要る。
+    /// </summary>
+    private static SettingsFile ListingSettings()
+    {
+        var settings = RemoteBase(allowGuestRead: true);
+        settings.AddRecorder(UsedRecorder);
+        settings.AddRecorder(UnusedRecorder);
+        return settings;
+    }
+
+    private const string UsedRecorder = "R1";
+    private const string UnusedRecorder = "R2";
+
+    /// <summary>録画を回す時間（<c>mp4mux</c> が意味のある長さを書くのに足りる最小限）。</summary>
+    private static readonly TimeSpan RecordingWindow = TimeSpan.FromSeconds(2);
+
+    /// <summary>
+    /// sidecar が書かれ、索引を通って一覧へ出るまでの上限
+    /// （<c>RecordingDeliveryTests.SidecarBudget</c> と同じ性質のもの）。
+    /// </summary>
+    private static readonly TimeSpan SidecarBudget = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// <b>Refresh を押さずに</b>一覧が入れ替わるまでの上限。実測はおよそ 2 秒
+    /// （索引の 500ms デバウンス → SSE → 画面側の 1 秒デバウンス → 取得）。
+    /// </summary>
+    private static readonly TimeSpan AutoRefreshBudget = TimeSpan.FromSeconds(15);
+
+    private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(30);
+
+    private static HttpClient CreateClient(int port)
+        => new() { BaseAddress = new Uri($"http://127.0.0.1:{port}/"), Timeout = RequestTimeout };
+
+    /// <summary>
+    /// 書き込み要求を出す。<b>ここが「開始手段」そのものである</b> ── HTTP から始めた録画の
+    /// <c>trigger</c> は <c>remote</c> になり、それを一覧の Trigger 欄で確かめる。
+    /// </summary>
+    private static async Task PostAsync(HttpClient client, string path)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Post, path);
+        request.Headers.Add("Authorization", "Bearer " + Token);
+        request.Headers.Add("X-PRApp-Client", "1");
+
+        using var response = await client.SendAsync(request, Ct);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    /// <summary>HTTP から 1 本録って止める（<c>trigger</c> は <c>remote</c> になる）。</summary>
+    private static async Task RecordOverHttpAsync(HttpClient client)
+    {
+        await PostAsync(client, $"api/recorders/{UsedRecorder}/start");
+        await Task.Delay(RecordingWindow, Ct);
+        await PostAsync(client, $"api/recorders/{UsedRecorder}/stop");
+    }
+
+    /// <summary>録画のページへ移る（<c>hashchange</c> がルータとこのページの読み込みを回す）。</summary>
+    private const string GoToRecordings =
+        "(function () { location.hash = '#/recordings'; return true; })()";
+
+    private static string FirstRowCell(int index) => $$"""
+        (function () {
+          var rows = document.querySelectorAll('#recordingsBody tr');
+          return rows.length === 0 ? '' : rows[0].cells[{{index}}].textContent;
+        })()
+        """;
+
+    private const string RowCount = "document.querySelectorAll('#recordingsBody tr').length";
+
+    /// <summary>1 行目のサムネイルの <c>src</c>（<c>&lt;img class="thumb"&gt;</c> でなければ空）。</summary>
+    private const string FirstRowThumbnailSrc = """
+        (function () {
+          var rows = document.querySelectorAll('#recordingsBody tr');
+          if (rows.length === 0) { return ''; }
+          var image = rows[0].cells[0].getElementsByTagName('img')[0];
+          return image && image.className.indexOf('thumb') >= 0 ? image.getAttribute('src') : '';
+        })()
+        """;
+
+    private const string TableHeadings = """
+        (function () {
+          var cells = document.querySelectorAll('#recordingsTable thead th');
+          var out = [];
+          for (var i = 0; i < cells.length; i++) { out.push(cells[i].textContent); }
+          return out.join('|');
+        })()
+        """;
+
+    /// <summary>選ばれている日が、ブラウザの今日と同じ日付であること。</summary>
+    private const string SelectedDayIsToday = """
+        (function () {
+          var day = document.querySelector('#calendarGrid .calendar-day.selected');
+          if (day === null) { return false; }
+          var now = new Date();
+          var pad = function (value) { return value < 10 ? '0' + value : String(value); };
+          return day.dataset.date === now.getFullYear() + '-' + pad(now.getMonth() + 1) + '-' + pad(now.getDate());
+        })()
+        """;
+
+    /// <summary>選ばれている日のバッジの数字（バッジが無ければ 0）。</summary>
+    private const string SelectedDayBadge = """
+        (function () {
+          var badge = document.querySelector('#calendarGrid .calendar-day.selected .badge');
+          return badge === null ? 0 : Number(badge.textContent);
+        })()
+        """;
+
+    /// <summary>選ばれている日のセルが押せなくなっていること（その日に 1 件も無い）。</summary>
+    private const string SelectedDayIsDisabled = """
+        (function () {
+          var day = document.querySelector('#calendarGrid .calendar-day.selected');
+          return day !== null && day.disabled;
+        })()
+        """;
+
+    /// <summary>
+    /// 月のセルが 1 つ以上あって、そのすべてが押せないこと。
+    /// <b>0 件を真にしない</b> ── 描画に失敗した月と「録画が無い月」は別である。
+    /// </summary>
+    private const string EveryDayIsDisabled = """
+        (function () {
+          var days = document.querySelectorAll('#calendarGrid .calendar-day');
+          if (days.length === 0) { return false; }
+          for (var i = 0; i < days.length; i++) { if (!days[i].disabled) { return false; } }
+          return true;
+        })()
+        """;
+
+    /// <summary>絞り込みの <c>&lt;select&gt;</c> に <paramref name="name"/> を入れて <c>change</c> を出す。</summary>
+    private static string SelectRecorder(string name) => $$"""
+        (function () {
+          var select = document.getElementById('recordingsRecorder');
+          select.value = '{{name}}';
+          select.dispatchEvent(new Event('change'));
+          return select.value === '{{name}}';
+        })()
+        """;
+
+    /// <summary>設定に居る 2 台が絞り込みの選択肢に並んだか（先頭の「All recorders」を含めて 3 つ）。</summary>
+    private const string RecorderOptionsAreReady =
+        "document.getElementById('recordingsRecorder').options.length >= 3";
+
+    /// <summary>
+    /// 一覧を取り直しながら <paramref name="expression"/> が真になるまで待つ。
+    /// <see cref="WaitForFirstRowAsync"/> と同じ理由で<b>押した直後には読まない</b>。
+    /// </summary>
+    private static async Task<bool> WaitWithRefreshAsync(EdgeCdp browser, string expression, TimeSpan budget)
+    {
+        var deadline = Stopwatch.StartNew();
+        while (deadline.Elapsed < budget)
+        {
+            await browser.EvaluateBoolAsync(Click("loadRecordings"), Ct);
+            if (await browser.WaitUntilAsync(expression, TimeSpan.FromSeconds(2), Ct))
+                return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// 録画のページが<b>カレンダーで選ばれた 1 日ぶん</b>を出すこと ── 今日が選ばれ、
+    /// その日のバッジが件数を持ち、行にサムネイル・開始理由・状態が並ぶこと。
+    ///
+    /// <para>
+    /// <b>開始理由は開始した手段で決まる。</b> ここは HTTP から始めているので <c>remote</c>
+    /// で、CLI から始めたものは <c>cli</c> になる（<see cref="RecordingDeliveryTests"/> の担当）。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task TheRecordingsPageShowsTheCalendarAndTheDaysRecordings()
+    {
+        Assert.SkipUnless(EdgeCdp.IsAvailable, EdgeCdp.UnavailableReason);
+
+        using var instance = AppInstance.Create(app, ListingSettings(), configure: UseIsolatedRoot);
+        int port = WaitForPort(instance);
+        using var client = CreateClient(port);
+
+        await using var browser = await EdgeCdp.LaunchAsync(Ct);
+        await browser.NavigateAsync($"http://127.0.0.1:{port}/", PageBudget, Ct);
+        Assert.True(await browser.WaitUntilAsync($"!{IsHidden("mainSections")}", PageBudget, Ct), "画面が出ませんでした。");
+
+        await RecordOverHttpAsync(client);
+        await browser.EvaluateBoolAsync(GoToRecordings, Ct);
+
+        // **Refresh を押す前に**行が出ること。ページを開いた時点の取得だけで
+        // 一覧が埋まる形を固定する ── 先に押してしまうと、開いただけでは空のまま
+        // （日が決まらず 0 行）でも気付けない。
+        Assert.True(
+            await browser.WaitUntilAsync($"1 <= {RowCount}", AutoRefreshBudget, Ct),
+            $"Refresh を押さずに行が出ませんでした（{await browser.EvaluateNumberAsync(RowCount, Ct):F0} 行）: "
+                + instance.DiagnosticDump());
+
+        // Trigger 欄が埋まるのは sidecar が索引へ届いてから ── そこまで待てば、
+        // 同じ行の他の欄（尺・状態・サムネイル）も確定した値になっている。
+        Assert.True(
+            await WaitWithRefreshAsync(browser, $"{FirstRowCell(5)} === 'remote'", SidecarBudget),
+            "確定した録画の Trigger が remote になりませんでした: "
+                + await browser.EvaluateStringAsync(FirstRowCell(5), Ct)
+                + Environment.NewLine + instance.DiagnosticDump());
+
+        Assert.Equal(
+            "Recording|Size|Started|State|Duration|Trigger|",
+            await browser.EvaluateStringAsync(TableHeadings, Ct));
+
+        // カレンダー: 今月が出ていて、今日が選ばれ、その日の件数がバッジに出ていること。
+        string month = await browser.EvaluateStringAsync(TextOf("calendarMonth"), Ct);
+        output.WriteLine("calendar month: " + month);
+        Assert.Contains(DateTime.Now.Year.ToString(CultureInfo.InvariantCulture), month, StringComparison.Ordinal);
+        Assert.True(await browser.EvaluateBoolAsync(SelectedDayIsToday, Ct),
+            "今日が選ばれていません（選択日: " + await browser.EvaluateStringAsync(
+                "(function () { var d = document.querySelector('#calendarGrid .calendar-day.selected');"
+                + " return d === null ? '(none)' : d.dataset.date; })()", Ct) + "）。");
+        Assert.True(1 <= await browser.EvaluateNumberAsync(SelectedDayBadge, Ct), "今日のバッジに件数が出ていません。");
+
+        Assert.True(1 <= await browser.EvaluateNumberAsync(RowCount, Ct), "選んだ日の行がありません。");
+
+        // **サムネイルは sidecar とは別の道で来る**ので、Trigger が載ったことをもって
+        // PNG も在るとは言えない（撮るのはプレビュー枝、書くのはスレッドプール ──
+        // 排出の完了より早いことも遅いこともある）。ここは別に待つ。
+        Assert.True(
+            await WaitWithRefreshAsync(
+                browser, $"{FirstRowThumbnailSrc}.indexOf('/api/recording-thumbnails/') >= 0", SidecarBudget),
+            "1 行目にサムネイルが出ませんでした（src: "
+                + await browser.EvaluateStringAsync(FirstRowThumbnailSrc, Ct) + "）。");
+
+        // 状態欄は今までどおりの文字列のまま。**空は期待しない** ── 既定は fragmented
+        // なので、録画が終わっても `fragmented` は残る。
+        string state = await browser.EvaluateStringAsync(FirstRowState, Ct);
+        Assert.DoesNotContain("recording", state, StringComparison.Ordinal);
+        Assert.Contains("fragmented", state, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// レコーダーの絞り込みと月の移動が、<b>一覧とカレンダーの両方</b>を狭めること。
+    ///
+    /// <para>
+    /// 月を動かしても<b>行は残る</b>のが要点である ── 選んだ日は選んだままで、
+    /// 別の月を見ているあいだはその日に強調が付かないだけである。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task TheRecorderFilterAndTheMonthNavigationNarrowTheList()
+    {
+        Assert.SkipUnless(EdgeCdp.IsAvailable, EdgeCdp.UnavailableReason);
+
+        using var instance = AppInstance.Create(app, ListingSettings(), configure: UseIsolatedRoot);
+        int port = WaitForPort(instance);
+        using var client = CreateClient(port);
+
+        await using var browser = await EdgeCdp.LaunchAsync(Ct);
+        await browser.NavigateAsync($"http://127.0.0.1:{port}/", PageBudget, Ct);
+        Assert.True(await browser.WaitUntilAsync($"!{IsHidden("mainSections")}", PageBudget, Ct), "画面が出ませんでした。");
+
+        await RecordOverHttpAsync(client);
+        await browser.EvaluateBoolAsync(GoToRecordings, Ct);
+
+        Assert.True(await WaitWithRefreshAsync(browser, $"{RowCount} === 1", SidecarBudget),
+            $"録画が一覧に 1 行として出ませんでした（{await browser.EvaluateNumberAsync(RowCount, Ct):F0} 行）: "
+                + instance.DiagnosticDump());
+
+        // 選択肢は SSE の state から埋まるので、値を書く前に並んだことを確かめる。
+        Assert.True(await browser.WaitUntilAsync(RecorderOptionsAreReady, PageBudget, Ct),
+            "絞り込みにレコーダーが並びませんでした。");
+
+        string original = await browser.EvaluateStringAsync(TextOf("calendarMonth"), Ct);
+
+        // ---- 録画していないレコーダーへ絞る ----
+
+        Assert.True(await browser.EvaluateBoolAsync(SelectRecorder(UnusedRecorder), Ct), "絞り込みを変えられません。");
+        Assert.True(await browser.WaitUntilAsync($"{RowCount} === 0", PageBudget, Ct),
+            $"使っていないレコーダーで絞っても行が残っています（{await browser.EvaluateNumberAsync(RowCount, Ct):F0} 行）。");
+        Assert.False(await browser.EvaluateBoolAsync(IsAttributeHidden("recordingsEmpty"), Ct),
+            "行が無いのに「無い」と言っていません。");
+        Assert.True(await browser.EvaluateBoolAsync(SelectedDayIsDisabled, Ct),
+            "カレンダーが別のレコーダーの録画の日を数えたままです。");
+
+        // ---- 全部へ戻す ----
+
+        Assert.True(await browser.EvaluateBoolAsync(SelectRecorder(string.Empty), Ct), "絞り込みを戻せません。");
+        Assert.True(await browser.WaitUntilAsync($"{RowCount} === 1", PageBudget, Ct),
+            $"絞り込みを戻しても行が戻りません（{await browser.EvaluateNumberAsync(RowCount, Ct):F0} 行）。");
+        Assert.True(await browser.EvaluateBoolAsync(IsAttributeHidden("recordingsEmpty"), Ct),
+            "行が在るのに「無い」と言っています。");
+
+        // ---- 前の月へ（選んだ日はそのまま） ----
+
+        await browser.EvaluateBoolAsync(Click("calendarPrev"), Ct);
+        Assert.True(
+            await browser.WaitUntilAsync(
+                $"{TextOf("calendarMonth")} !== {JsonSerializer.Serialize(original)} && {EveryDayIsDisabled}",
+                PageBudget, Ct),
+            "前の月へ移りませんでした（" + await browser.EvaluateStringAsync(TextOf("calendarMonth"), Ct) + "）。");
+        Assert.Equal(1, await browser.EvaluateNumberAsync(RowCount, Ct));
+
+        // ---- 元の月へ ----
+
+        await browser.EvaluateBoolAsync(Click("calendarNext"), Ct);
+        Assert.True(
+            await browser.WaitUntilAsync(
+                $"{TextOf("calendarMonth")} === {JsonSerializer.Serialize(original)}", PageBudget, Ct),
+            "元の月へ戻りませんでした（" + await browser.EvaluateStringAsync(TextOf("calendarMonth"), Ct) + "）。");
+        Assert.True(await browser.EvaluateBoolAsync(SelectedDayIsToday, Ct), "戻った月で今日の強調が消えています。");
+    }
+
+    /// <summary>
+    /// <b>Refresh を押さずに</b>一覧が追いつくこと ── SSE の <c>recording</c> が
+    /// 「取り直す合図」として実際に配線されていること。
+    ///
+    /// <para>
+    /// ここでボタンを押してはいけない。押すと、自動で取り直しているのか
+    /// 押したから取り直したのかを見分けられなくなる。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task TheListRefreshesItselfWhenARecordingIsAdded()
+    {
+        Assert.SkipUnless(EdgeCdp.IsAvailable, EdgeCdp.UnavailableReason);
+
+        using var instance = AppInstance.Create(app, ListingSettings(), configure: UseIsolatedRoot);
+        int port = WaitForPort(instance);
+        using var client = CreateClient(port);
+
+        await using var browser = await EdgeCdp.LaunchAsync(Ct);
+        await browser.NavigateAsync($"http://127.0.0.1:{port}/", PageBudget, Ct);
+        Assert.True(await browser.WaitUntilAsync($"!{IsHidden("mainSections")}", PageBudget, Ct), "画面が出ませんでした。");
+
+        await RecordOverHttpAsync(client);
+        await browser.EvaluateBoolAsync(GoToRecordings, Ct);
+
+        Assert.True(await WaitWithRefreshAsync(browser, $"{RowCount} === 1", SidecarBudget),
+            $"1 本目が一覧に出ませんでした（{await browser.EvaluateNumberAsync(RowCount, Ct):F0} 行）: "
+                + instance.DiagnosticDump());
+
+        // ---- ここから先はボタンを押さない ----
+
+        await PostAsync(client, $"api/recorders/{UsedRecorder}/start");
+        Assert.True(await browser.WaitUntilAsync($"{RowCount} === 2", AutoRefreshBudget, Ct),
+            $"2 本目が自動で一覧に出ませんでした（{await browser.EvaluateNumberAsync(RowCount, Ct):F0} 行）: "
+                + instance.DiagnosticDump());
+
+        // 並びは開始時刻の降順なので、始めたばかりのものが 1 行目である。
+        Assert.Contains("recording", await browser.EvaluateStringAsync(FirstRowState, Ct), StringComparison.Ordinal);
+
+        await Task.Delay(RecordingWindow, Ct);
+        await PostAsync(client, $"api/recorders/{UsedRecorder}/stop");
+
+        Assert.True(
+            await browser.WaitUntilAsync(
+                $"(function () {{ var s = {FirstRowState}; return {RowIsFinishedFragment}; }})()",
+                AutoRefreshBudget, Ct),
+            "止めても一覧が自動で追いつきませんでした: " + await browser.EvaluateStringAsync(FirstRowState, Ct)
+                + Environment.NewLine + instance.DiagnosticDump());
     }
 }

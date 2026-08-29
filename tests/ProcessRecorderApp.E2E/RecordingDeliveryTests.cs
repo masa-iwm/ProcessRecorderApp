@@ -190,6 +190,10 @@ public sealed class RecordingDeliveryTests(PublishedApp app, ITestOutputHelper o
         Assert.True(live.GetProperty("inProgress").GetBoolean(),
             "録画中のファイルが inProgress で出ていない: " + live);
 
+        // **開始理由は sidecar からしか来ない。** その sidecar は排出が終わってから
+        // 書かれるので、録画中は誰が始めたかを一覧から言えない。
+        Assert.Equal(JsonValueKind.Null, live.GetProperty("trigger").ValueKind);
+
         string relativePath = live.GetProperty("path").GetString()!;
         Assert.DoesNotContain('\\', relativePath);
 
@@ -296,6 +300,10 @@ public sealed class RecordingDeliveryTests(PublishedApp app, ITestOutputHelper o
             Assert.Equal("R1", file.GetProperty("recorder").GetString());
             Assert.True(0 < file.GetProperty("durationMs").GetInt64(),
                 "sidecar の尺が一覧に載っていない: " + file);
+            // **開始理由は開始した手段そのもの。** ここは CLI（`start-recording-all`）で
+            // 開始しているので `cli` ── HTTP から始めたものは `remote` になる
+            // （<see cref="RemoteControlTests"/> の経路）。
+            Assert.Equal("cli", file.GetProperty("trigger").GetString());
         }
 
         // **サムネイルは sidecar とは別の道で来る。** 撮るのはファイル名が決まった直後の
@@ -345,6 +353,17 @@ public sealed class RecordingDeliveryTests(PublishedApp app, ITestOutputHelper o
 
         using (var none = await GetJsonAsync(client, "api/recordings?recorder=R9"))
             Assert.Equal(0, none.RootElement.GetProperty("total").GetInt32());
+
+        // **日ごとの件数も同じ絞り込みを受ける。** 受けないと、レコーダーを選んだ
+        // カレンダーが「別のレコーダーの録画がある日」を数えたままになる。
+        using (var mineByDay = await GetJsonAsync(client, "api/recording-days?recorder=R1"))
+        {
+            Assert.Equal(
+                2, mineByDay.RootElement.GetProperty("days").EnumerateArray().Sum(d => d.GetProperty("count").GetInt32()));
+        }
+
+        using (var noneByDay = await GetJsonAsync(client, "api/recording-days?recorder=R9"))
+            Assert.Empty(noneByDay.RootElement.GetProperty("days").EnumerateArray());
 
         // 日ごとの件数。**日付は返ってきた開始時刻から導く**（`UtcNow` から作ると
         // 日付をまたいだ瞬間に落ちる）。
@@ -991,6 +1010,8 @@ public sealed class RecordingDeliveryTests(PublishedApp app, ITestOutputHelper o
         output.WriteLine(finished.ToString());
         Assert.True(finished.GetProperty("fragmented").GetBoolean(),
             "確定したセグメントが fragmented として出ていない: " + finished);
+        // 常時録画のセグメントは、開始理由でイベント録画と区別できること。
+        Assert.Equal("continuous", finished.GetProperty("trigger").GetString());
 
         var (_, after) = await ListAsync(client);
         Assert.True(1 < after.Length, $"セグメントが切り替わっていない（{after.Length} 本）。");

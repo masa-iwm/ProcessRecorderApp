@@ -98,6 +98,9 @@ public class RecoveryResumeTests
     /// <b>1 行も実行せずに返る</b>。直後にこちらが開始するので、
     /// <b>利用者が止めた録画が戻ってくる</b>。
     /// </para>
+    /// <para>
+    /// 併せて<b>開始理由を畳んだ本から引き継ぐこと</b>も見る。復帰は利用者の操作ではない。
+    /// </para>
     /// </summary>
     [Fact]
     public void TheResume_IsAtomicAgainstAStop()
@@ -110,9 +113,13 @@ public class RecoveryResumeTests
             + "作り直しのあいだに届いた停止を追い越して録画を再開しうる。");
 
         int cleared = SourceMethodBody.IndexOfCode(body, "_resumeAfterRecovery = false;");
-        int started = SourceMethodBody.IndexOfCode(body, "Start();");
+        int started = SourceMethodBody.IndexOfCode(body, "Start(_resumeTrigger ?? \"manual\");");
         Assert.True(cleared >= 0, "録り直しの意図を降ろしていない。");
-        Assert.True(started >= 0, "録り直しが Start() を呼んでいない。");
+        Assert.True(started >= 0,
+            "録り直しが Start(_resumeTrigger ?? \"manual\") を呼んでいない。"
+            + Environment.NewLine
+            + "復帰は利用者の操作ではないので、畳んだ本の理由を引き継ぐこと"
+            + "── \"manual\" で置くと uia:<id> 起点の録画が sidecar でだけ理由を偽る。");
         Assert.True(guard < cleared && guard < started,
             "意図の検査・取り下げ・開始のどれかが _stateLock の外にある。"
             + "この 3 つは 1 つのロックの下で切れ目なく行うこと。");
@@ -124,7 +131,7 @@ public class RecoveryResumeTests
     [Fact]
     public void StartingARecording_ClearsThePendingResume()
     {
-        string body = SourceMethodBody.Extract(EventRecorderSource, "private void StartCore()");
+        string body = SourceMethodBody.Extract(EventRecorderSource, "private void StartCore(string trigger)");
 
         Assert.True(
             SourceMethodBody.ContainsCode(body, "_resumeAfterRecovery = false;"),

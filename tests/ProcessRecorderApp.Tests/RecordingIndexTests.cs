@@ -8,6 +8,7 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using System.Threading;
+using System.Threading.Tasks;
 using Xunit;
 
 namespace ProcessRecorderApp.Tests;
@@ -141,6 +142,7 @@ public sealed class RecordingIndexTests : IDisposable
 
         Assert.Equal("cam1", entry.Recorder);
         Assert.Equal(new DateTime(2026, 8, 28, 10, 15, 0, DateTimeKind.Utc), entry.StartTimeUtc);
+        Assert.Equal("continuous", entry.Trigger);
         Assert.Equal(60_000, entry.DurationMs);
         Assert.Equal(1920, entry.Width);
         Assert.Equal(1080, entry.Height);
@@ -162,6 +164,10 @@ public sealed class RecordingIndexTests : IDisposable
 
         Assert.Equal("cam1", entry.Recorder);
         Assert.Equal(expected, entry.StartTimeUtc);
+
+        // **開始理由は sidecar からしか来ない。** ファイル名には書かれていないので、
+        // ここで推定を足すと「録画中は null」という約束が崩れる。
+        Assert.Null(entry.Trigger);
     }
 
     [Fact]
@@ -363,15 +369,19 @@ public sealed class RecordingIndexTests : IDisposable
         var changes = new ConcurrentQueue<RecordingIndexChange>();
         index.Changed += changes.Enqueue;
 
+        Assert.Null(Single(index).Trigger);
+
         WriteSidecar(path, new RecordingSidecar(
             RecordingSidecar.CurrentVersion, "cam1",
             new DateTimeOffset(2026, 8, 28, 1, 15, 0, TimeSpan.Zero),
             new DateTimeOffset(2026, 8, 28, 1, 16, 0, TimeSpan.Zero),
-            60_000, null, 1280, 720, 30));
+            60_000, "remote", 1280, 720, 30));
         index.Rebuild();
 
+        // sidecar が後から現れる経路（録画の確定）で開始理由が付く。合図は 1 回だけ。
         Assert.Equal(RecordingIndexChangeKind.Updated, Assert.Single(changes).Kind);
         Assert.Equal(1280, Single(index).Width);
+        Assert.Equal("remote", Single(index).Trigger);
     }
 
     [Fact]
@@ -393,7 +403,7 @@ public sealed class RecordingIndexTests : IDisposable
     {
         // 差分の規則そのものを固定する（走査を挟まずに、前後の一覧だけで決まること）。
         var recording = new RecordingEntry(
-            "a.mp4", 100, DateTime.UnixEpoch, true, false, DateTime.UnixEpoch, "cam1", null, null, null, false);
+            "a.mp4", 100, DateTime.UnixEpoch, true, false, DateTime.UnixEpoch, "cam1", null, null, null, null, false);
         var completed = recording with { InProgress = false, Length = 200 };
 
         var changes = RecordingIndex.Diff(new[] { recording }, new[] { completed });
@@ -405,7 +415,7 @@ public sealed class RecordingIndexTests : IDisposable
     public void AGrowingSettledRecordingIsReportedAsAnUpdate()
     {
         var settled = new RecordingEntry(
-            "a.mp4", 100, DateTime.UnixEpoch, false, false, DateTime.UnixEpoch, "cam1", null, null, null, false);
+            "a.mp4", 100, DateTime.UnixEpoch, false, false, DateTime.UnixEpoch, "cam1", null, null, null, null, false);
 
         var changes = RecordingIndex.Diff(new[] { settled }, new[] { settled with { Length = 200 } });
 
@@ -418,7 +428,7 @@ public sealed class RecordingIndexTests : IDisposable
         // 録画中は作り直しのたびに長さが伸びる。ここで Updated を出すと、録画のあいだじゅう
         // デバウンスの間隔で通知が流れ続ける（購読側は合図として一覧を引き直す）。
         var recording = new RecordingEntry(
-            "a.mp4", 100, DateTime.UnixEpoch, true, false, DateTime.UnixEpoch, "cam1", null, null, null, false);
+            "a.mp4", 100, DateTime.UnixEpoch, true, false, DateTime.UnixEpoch, "cam1", null, null, null, null, false);
         var grown = recording with { Length = 200, LastWriteTimeUtc = DateTime.UnixEpoch.AddSeconds(1) };
 
         Assert.Empty(RecordingIndex.Diff(new[] { recording }, new[] { grown }));
@@ -698,24 +708,25 @@ public sealed class RecordingIndexTests : IDisposable
 
         // **書き終わるのを待たずに一覧へ出ること。** filesink は buffer-mode=unbuffered で
         // 毎バッファ書くので、通知が止むまで待つデバウンスだと録画が終わるまで一覧に出ない。
-        var elapsed = Stopwatch.StartNew();
-        TimeSpan? listedAt = null;
+        // **待つあいだも書き続ける** ── ここが検査の力そのもので、静かな時間を作らなければ
+        // 通知が止むまで待つ形は期限まで一度も発火できない。
+        // **見るのは飢餓だけで、出るまでの時間は測らない** ── タイマのコールバックも走査も
+        // スレッドプールなので、壁時計の上限は同時に走る他のテストの負荷で外れる。
+        var deadline = Stopwatch.StartNew();
+        bool listed = false;
 
-        while (elapsed.Elapsed < TimeSpan.FromSeconds(3))
+        while (!listed && deadline.Elapsed < TimeSpan.FromSeconds(20))
         {
             stream.WriteByte(0);
             stream.Flush(flushToDisk: true);
             Thread.Sleep(50);
 
-            if (listedAt is null && index.Snapshot().Any(e => e.RelativePath == name))
-                listedAt = elapsed.Elapsed;
+            listed = index.Snapshot().Any(e => e.RelativePath == name);
         }
 
-        Assert.True(listedAt is not null,
-            "書き込みが続いている 3 秒の間、一覧に一度も出なかった（作り直しが飢えている）。");
-        Assert.True(listedAt <= TimeSpan.FromSeconds(1.5),
-            $"一覧に出るまで {listedAt!.Value.TotalMilliseconds:F0}ms かかった"
-            + $"（デバウンスは {RecordingIndex.DebounceMilliseconds}ms）。");
+        Assert.True(listed,
+            $"書き込みが続いている 20 秒の間、一覧に一度も出なかった（作り直しが飢えている）。"
+            + $"デバウンスは {RecordingIndex.DebounceMilliseconds}ms。");
     }
 
     [Fact]
@@ -790,5 +801,54 @@ public sealed class RecordingIndexTests : IDisposable
 
         Assert.Equal(0, Volatile.Read(ref fired));
         Assert.Empty(index.Snapshot());
+    }
+
+    /// <summary>
+    /// 初回の構築の最中に、別のスレッドが同じ root で <c>Rebind</c> → <c>Snapshot</c> を呼ぶ。
+    /// <b>ここで空の一覧を返してはいけない。</b>
+    ///
+    /// <para>
+    /// 索引は空の root で作られ（<c>RemoteControlHost</c>）、最初に届いた要求が構築する。
+    /// <c>_root</c> と watcher は走査より先に決まるので、「同じ root で watcher が在る」
+    /// だけでロックを取らずに返してよいことにすると、構築の最中に来た要求が空を受け取る
+    /// ── 画面では「日別の件数は出ているのに一覧だけ 0 行」になる。
+    /// </para>
+    /// <para>
+    /// <b>走査そのものは長引かせず、走査の入り口で待たせる</b>（<c>BuildStarting</c>）──
+    /// 件数で時間を稼ぐ形は、機械が速いほど窓が縮んで何も検出しなくなる。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task AListingDuringTheFirstBuildWaitsForIt()
+    {
+        WriteRecording("20260828_101500_cam1.mp4");
+
+        // 製品と同じ形（空の root で作り、要求のたびに Rebind する）。
+        using var index = new RecordingIndex("");
+        using var building = new ManualResetEventSlim();
+        using var read = new ManualResetEventSlim();
+
+        // read は「後続の要求が一覧を読み終えた」印。速い経路を通れば即座に立ち、
+        // ロックを待つ形（＝直っている）なら立たないまま期限で抜けて走査へ進む。
+        index.BuildStarting = () =>
+        {
+            building.Set();
+            read.Wait(TimeSpan.FromSeconds(2));
+        };
+
+        var first = Task.Run(() => index.Rebind(_root), TestContext.Current.CancellationToken);
+
+        Assert.True(building.Wait(TimeSpan.FromSeconds(20), TestContext.Current.CancellationToken),
+            "初回の構築が始まらなかった");
+
+        index.Rebind(_root);
+        IReadOnlyList<RecordingEntry> snapshot = index.Snapshot();
+        read.Set();
+
+        // 期限を過ぎれば TimeoutException（構築が終わっていない）。
+        await first.WaitAsync(TimeSpan.FromSeconds(20), TestContext.Current.CancellationToken);
+
+        Assert.True(snapshot.Count == 1,
+            $"初回の構築の最中の要求が {snapshot.Count} 件の一覧を受け取った（構築の完了を待っていない）。");
     }
 }

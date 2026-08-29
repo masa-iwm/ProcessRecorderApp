@@ -70,6 +70,9 @@
     $('stopAll').disabled = !snapshot.canStopAll;
 
     settings.syncRecorderSelect();
+    // `state.recorderNames` was just rewritten, and the recordings filter is drawn
+    // from it. Nothing else on that page notices this event.
+    recordings.syncRecorderOptions();
   }
 
   function state(recorder) {
@@ -103,6 +106,11 @@
     events = new EventSource('/api/events');
     events.addEventListener('state', function (event) {
       renderRecorders(JSON.parse(event.data));
+    });
+    // The body of a `recording` event is only "something under the root changed".
+    // It is handed over as the signal it is; the list is read back from the API.
+    events.addEventListener('recording', function (event) {
+      recordings.onRecordingChanged(event);
     });
     // EventSource retries on its own and never says why it failed. An expired tab
     // would therefore reconnect forever, and every attempt writes another

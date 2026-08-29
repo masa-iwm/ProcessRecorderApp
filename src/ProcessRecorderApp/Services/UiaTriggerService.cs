@@ -354,6 +354,12 @@ public sealed partial class UiaTriggerService : IDisposable
         }
     }
 
+    /// <summary>
+    /// このトリガを出どころとする録画の <c>trigger</c>（sidecar に載る）。
+    /// <paramref name="triggerId"/> は定義の <c>Id</c> そのもの。
+    /// </summary>
+    private static string TriggerOf(string triggerId) => "uia:" + triggerId;
+
     private async Task ExecuteForAllAsync(string triggerId, TriggerActionRequest request, GstControllerViewModel controller)
     {
         if (request.Kind == TriggerActionKind.Start)
@@ -367,7 +373,7 @@ public sealed partial class UiaTriggerService : IDisposable
             }
             // 実際に開始するものをここで確定してから動かす（停止側の stopping と同じ形）
             var starting = controller.Recorders.Where(r => r.CanStartRecording).Select(r => r.Name).ToList();
-            controller.StartRecordingAll();
+            _ = controller.StartRecordingAllAndReport(TriggerOf(triggerId));
             ActivityLog.Info("trigger.start", $"id='{triggerId}' target=all");
             if (request.TracksCondition)
                 foreach (string name in starting)
@@ -409,7 +415,7 @@ public sealed partial class UiaTriggerService : IDisposable
                 ActivityLog.Info("trigger.action skip", $"id='{triggerId}' start '{recorder.Name}': not startable");
                 return;
             }
-            recorder.StartRecording();
+            recorder.StartRecording(TriggerOf(triggerId));
             ActivityLog.Info("trigger.start", $"id='{triggerId}' target='{recorder.Name}'");
             if (request.TracksCondition)
                 _autoStarted.Add((triggerId, recorder.Name));

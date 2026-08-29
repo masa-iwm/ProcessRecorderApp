@@ -144,8 +144,101 @@ main {
 
 .page { display: block; }
 
-/* One column in this wave; the class is where a second one goes later. */
+/* One column by default; a page that wants a sidebar names its own columns. */
 .page-grid { display: grid; gap: var(--space-4); grid-template-columns: 1fr; }
+
+/* The picker on the left decides what the table on the right holds, so the two are
+   one page rather than two stacked cards. */
+#pageRecordings { align-items: start; grid-template-columns: 18rem 1fr; }
+
+/* ---- calendar ---- */
+
+.calendar-head { align-items: center; display: flex; gap: var(--space-2); justify-content: space-between; }
+
+.calendar-grid { display: grid; gap: var(--space-1); grid-template-columns: repeat(7, 1fr); margin: var(--space-3) 0; }
+
+.calendar-weekday {
+  color: var(--fg-muted);
+  font-size: 0.8rem;
+  padding-bottom: var(--space-1);
+  text-align: center;
+}
+
+/* Square, so the month keeps its shape whatever the sidebar's width works out to.
+   An 18rem sidebar makes that square about 34px, which is too little to float a
+   count over the number without landing on it: the two are stacked instead, the
+   date above and the count below, and both are sized to fit that height. */
+.calendar-day {
+  aspect-ratio: 1;
+  flex-direction: column;
+  gap: 1px;
+  height: auto;
+  justify-content: center;
+  line-height: 1.1;
+  padding: 0;
+}
+
+.calendar-day.today { border-color: var(--brand); }
+
+.calendar-day.selected {
+  background: var(--brand);
+  border-color: var(--brand);
+  color: var(--brand-fg);
+  font-weight: 700;
+}
+
+/* A day with no recordings is disabled, and the shared rule already dims it. */
+.calendar-day:disabled { color: var(--fg-muted); }
+
+.calendar-number { font-size: 0.85rem; font-variant-numeric: tabular-nums; }
+
+/* Small enough that it reads as a count on the day rather than a second number. */
+.badge {
+  background: var(--surface-1);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 0.65rem;
+  line-height: 1.2;
+  min-width: 1.4em;
+  padding: 0 3px;
+  text-align: center;
+}
+
+.calendar-day.selected .badge { background: var(--brand-fg); color: var(--brand); }
+
+/* ---- recording rows ---- */
+
+.rec-name { display: flex; gap: var(--space-2); }
+
+.rec-file { word-break: break-all; }
+
+.muted { color: var(--fg-muted); font-size: 0.85rem; }
+
+/* The ratio, not the picture, is what gives the box its height: the images are
+   loaded lazily, so a box sized by its content would be 0 tall until the byte
+   arrives and would shove the row open when it did. `contain`, because the frames
+   are 16:9 but nothing enforces it, and a box that crops would hide what the frame
+   actually was. */
+.thumb {
+  aspect-ratio: 16 / 9;
+  background: var(--surface-2);
+  border-radius: var(--radius-sm);
+  flex: 0 0 auto;
+  height: auto;
+  object-fit: contain;
+  width: 96px;
+}
+
+.thumb-empty {
+  align-items: center;
+  color: var(--fg-muted);
+  display: flex;
+  justify-content: center;
+}
+
+.thumb-empty svg { height: 24px; width: 24px; }
+
+#recordingsBody tr.selected > td { background: var(--surface-2); }
 
 /* ---- tables ---- */
 
@@ -170,8 +263,22 @@ th, td {
 
 th { font-weight: 600; }
 
-/* Sizes and times line up column-wise instead of drifting with the glyph widths. */
-#recordingsBody td:nth-child(2), #recordingsBody td:nth-child(3) { font-variant-numeric: tabular-nums; }
+/* Sizes, times and durations line up column-wise instead of drifting with the
+   glyph widths. */
+#recordingsBody td:nth-child(2),
+#recordingsBody td:nth-child(3),
+#recordingsBody td:nth-child(5) { font-variant-numeric: tabular-nums; }
+
+/* Seven columns do not fit a narrow window, and the wrapper scrolls sideways for
+   exactly that. What must not happen is the head and the short columns spending
+   that scroll on themselves -- `word-break: break-all` above will otherwise split
+   "263.7 KiB" and "Duration" across two lines rather than let the table be wide.
+   The columns that can carry a long value (the name, the start time) still wrap. */
+#recordingsTable th,
+#recordingsTable td:nth-child(2),
+#recordingsTable td:nth-child(5),
+#recordingsTable td:nth-child(6),
+#recordingsTable td:nth-child(7) { white-space: nowrap; }
 
 /* ---- controls ---- */
 
@@ -419,4 +526,8 @@ input[type="range"] {
   th, td { font-size: 0.9rem; }
   .field { align-items: stretch; flex-direction: column; }
   .field > label { flex: 0 0 auto; }
+
+  /* An 18rem sidebar beside a table leaves neither of them room at this width, so
+     the picker goes above the list it filters (it is first in the document). */
+  #pageRecordings { grid-template-columns: 1fr; }
 }

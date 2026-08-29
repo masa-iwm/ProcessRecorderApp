@@ -136,11 +136,14 @@ internal sealed partial class RemoteControlBackend(DispatcherQueue dispatcherQue
     // **文言は CLI と同じリソースを引く。** 番号（終了コード）だけを揃えて文言を別に書くと、
     // 同じ失敗が呼び出し面ごとに違う説明で出る。
 
+    /// <summary>HTTP API を出どころとする録画の <c>trigger</c>（sidecar に載る）。</summary>
+    private const string RemoteTrigger = "remote";
+
     /// <inheritdoc/>
     public Task<RecorderActionResult> StartAsync(string id)
         => RunOnUiAsync(async () =>
         {
-            var result = await RecorderControlService.StartAsync(id);
+            var result = await RecorderControlService.StartAsync(id, RemoteTrigger);
             if (result.ExitCode != 0)
                 throw CommandFailure(result.ExitCode, id, result.RecorderName, start: true);
 
@@ -168,7 +171,7 @@ internal sealed partial class RemoteControlBackend(DispatcherQueue dispatcherQue
     public Task<RemoteControl.StartAllResult> StartAllAsync()
         => RunOnUiAsync(async () =>
         {
-            var result = await RecorderControlService.StartAllAsync();
+            var result = await RecorderControlService.StartAllAsync(RemoteTrigger);
             if (result.ExitCode != 0)
             {
                 throw new RemoteApiException(result.ExitCode, Localization.GetString(

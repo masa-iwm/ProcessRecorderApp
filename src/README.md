@@ -1900,7 +1900,7 @@ UI スレッドで走る。`TryEnqueue` が false なら `RemoteApiException(12,
 | PUT | `/api/variables/{key}` | `Operator`（**W**） | `{value, persist}`（`--set` / `--persist` / `--no-persist` と同義）。両方 null は 400 |
 | POST | `/api/ping` | `Viewer`（**W**） | 認証の疎通確認（`{"ok":true}`）。**書き込み扱い**なのでヘッダーの有無まで切り分けられる |
 | GET | `/api/events` | `Viewer` | SSE。`state` と `recording` と `ping`。**Cookie だけで通る**（`EventSource` はヘッダーを付けられない） |
-| GET | `/api/recordings` | `Viewer` | 録画ファイルの一覧（`root` / `total` / `hasMore` ＋ `files[]`。1 件は `path` / `length` / `lastWriteTimeUtc` / `inProgress` / `fragmented` / `startTimeUtc` / `recorder` / `durationMs` / `width` / `height` / `hasThumbnail`）。`?from=&to=&recorder=&limit=&offset=` |
+| GET | `/api/recordings` | `Viewer` | 録画ファイルの一覧（`root` / `total` / `hasMore` ＋ `files[]`。1 件は `path` / `length` / `lastWriteTimeUtc` / `inProgress` / `fragmented` / `startTimeUtc` / `recorder` / `trigger` / `durationMs` / `width` / `height` / `hasThumbnail`）。`?from=&to=&recorder=&limit=&offset=` |
 | GET | `/api/recording-days` | `Viewer` | 日付ごとの件数（`days[]`。1 件は `date`（`yyyy-MM-dd`）/ `count`）。`?from=&to=&recorder=&tz=` |
 | GET | `/api/recordings/{*path}` | `Viewer` | 1 ファイルの配信（Range 対応。`?download=1` で添付。応答に `X-In-Progress` と `X-Codecs`） |
 | GET | `/api/recording-fragments/{*path}` | `Viewer` | 1 ファイルの fragment 索引（`?from=<バイト位置>` で差分だけ）。`timescale` / `codecs` / `inProgress` / `initSize` / `nextOffset` / `totalDuration` ＋ `fragments[]`（1 件は `offset` / `size` / `time` / `duration` / `sync`）。fragmented でなければ 404 `not fragmented` |
@@ -2089,8 +2089,20 @@ flush する。応答ヘッダーは `text/event-stream; charset=utf-8` ＋ `Cac
 録画が排出を終えた時点で、録画エンジンが同じフォルダーへ `RecordingSidecar` を書く
 （`Components/RecordingSidecar.cs`。`version` / `recorder` / `startTime` / `endTime` /
 `durationMs` / `trigger` / `width` / `height` / `fps`）。常時録画は次のセグメントへ切り替わった
-通知で**前の**ファイルへ書く（`trigger` は `"continuous"`。単発は開始理由を持つ型が無いので
-`null`）。
+通知で**前の**ファイルへ書く。
+
+`trigger` は**開始理由**で、`EventRecorder.Start(string)` の必須引数として開始した側から渡る:
+
+| 値 | 出どころ |
+|---|---|
+| `manual` | UI のトグル・ボタン |
+| `uia:<triggerId>` | UIA トリガ（`<triggerId>` は定義の `Id` そのまま） |
+| `remote` | HTTP API（`POST /api/recorders/{id}/start` と `start-all`） |
+| `cli` | `start-recording` / `start-recording-all` |
+| `continuous` | 常時録画のセグメント（ローテーションと停止時の最終セグメントは区別しない） |
+
+**sidecar からしか来ない**ので、録画中の項目と sidecar の無いものでは一覧の `trigger` は
+`null` になる。索引は `trigger` を絞り込みには使わない（一覧が持つだけ）。
 
 **sidecar 在り＝確定済み（`moov` 書込済み）が不変条件である。** 単発は排出が `result=ok` で
 終わった本だけ、常時録画は `OnContinuousSegmentFinalized(ok: true)` の本だけに置く ──
@@ -2173,10 +2185,15 @@ sidecar の隣に PNG を 1 枚置く。一覧の `hasThumbnail` はこのファ
   その場で全走査するので、`Rebind` はスレッドプールへ逃がす（保存先は初回の録画で
   作られるため、設定した直後は張れない ── 拾い直さないと以後の変化が届かない）。
   同じ root で張れないまま（存在しない・権限が無い）なら走査もしない。
+  **最初の全走査が完成するまでは、一覧と日別件数の要求はその完成を待つ**（見ている root も
+  watcher も走査より先に決まるので、待たずに返すと構築中の要求が空の一覧を受け取る）。
+  完成した後は結果整合で、要求は最後に完成した一覧をそのまま読む。
 - 並びは **`startTimeUtc` の降順**（同時刻は相対パスの序数昇順）── `lastWriteTimeUtc` では、
   長い録画で「始まった順」と「書き終わった順」が食い違う。
 - `durationMs` は sidecar があればその値、無ければ非 fragmented の `mvhd` から読む。
   fragmented と録画中は `null`（総尺は `GET /api/recording-fragments/` が持つ）。
+- `trigger` は sidecar の値をそのまま運ぶ。sidecar が無ければ `null` ── 録画中は必ずそうなる。
+  後から sidecar が置かれた項目は `updated` として差分に出る。
 - 差分は `Changed`（`added` / `completed` / `removed` / `updated`）として SSE の
   `event: recording` へ流す。
 
@@ -2364,7 +2381,7 @@ appsrc name=src format=time block=false max-buffers=2 max-bytes=0 leaky-type=dow
 | `app.css` | `:root` のトークン（色・角丸・影・余白・書体）と全スタイル |
 | `app-core.js` | fetch の集約点（`getJson` / `send` / `describe`）、役割と権限、DOM ユーティリティ、ハッシュルーター、テーマ |
 | `app-player.js` | ライブプレビュー（chunked と DASH）と録画の追いかけ再生 |
-| `app-recordings.js` | 録画一覧の描画 |
+| `app-recordings.js` | 録画ページ（カレンダー・レコーダー絞り込み・一覧の描画） |
 | `app-settings.js` | レコーダー設定・ソース・アプリ設定・変数の 4 つのフォーム |
 | `app.js` | 起動、イベント配線、SSE の購読とレコーダー表の描画、ログイン／ログアウト |
 
@@ -2381,6 +2398,24 @@ appsrc name=src format=time block=false max-buffers=2 max-bytes=0 leaky-type=dow
 ページを移してもプレビューと再生は止まらない。ログインフォームの表示中もハッシュは保つので、
 入り直すと同じページへ戻る。`sourceSection` の Admin 限定の `hidden` はページの `hidden` とは
 独立である。
+
+**録画ページは左の選び手（カレンダーとレコーダー）と右の一覧の 2 段組**で、
+`#recordingsBody` が持つのは**選んだ 1 日ぶんの行だけ**である（「1 件も無い」と
+「1000 件で切った」は表の外の `#recordingsEmpty` / `#recordingsTruncated` が言う）。
+
+- カレンダーは `GET /api/recording-days` を**月単位**で引き、件数のある日にバッジを付け、
+  無い日は押せない。`tz` に載せるのは**クライアントの現在のオフセット**（`±hh:mm`）なので、
+  **夏時間をまたぐ月では境界が最大 1 時間ずれ得る**。週の並びは**日曜始まりで固定**する
+  （曜日の見出しの文言だけがロケール依存）。前月／翌月は月の件数を引き直すだけで、
+  **選んだ日は保つ** ── 別の月を見ているあいだは強調が付かないだけである。
+- 一覧は `GET /api/recordings?from=<選んだ日の 0 時>&to=<翌日の 0 時>&limit=1000`。
+  行はサムネイル（`GET /api/recording-thumbnails/`。無ければプレースホルダー）＋
+  ファイル名とレコーダー・サイズ・開始時刻・状態・尺・`trigger`・操作（Play / Download）。
+  日の境界は**そのローカル日の実オフセット付き**で送る（素の `yyyy-MM-dd` は UTC として読まれる）。
+- レコーダーの絞り込みは一覧と件数の**両方**に同じ値を渡す。空は「全部」で、
+  そのときはパラメータ自体を送らない。選択肢は設定のレコーダーと一覧に現れた名前の和集合。
+- SSE の `recording` は**取り直す合図**としてだけ使い、**1 秒のトレーリング デバウンス**で
+  一覧を引き直す。他のページを見ているあいだは印だけ付けて、`#/recordings` へ入った時に引く。
 
 配色はトップバーの `#themeToggle` で light ⇄ dark を切り替え、`<html data-theme>` へ反映して
 `localStorage['prapp.theme']` に保存する。**保存が無ければ属性を付けない** ── その場合は

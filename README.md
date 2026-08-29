@@ -268,6 +268,16 @@ between them does not stop a preview or a playback that is running. The button n
 switches the colour scheme between light and dark and remembers the choice in that browser;
 without a choice it follows the operating system.
 
+**The Recordings page.** A calendar on the left picks the day and a drop-down picks the recorder;
+the table on the right holds that day's recordings and nothing else. Days that have recordings
+carry the count as a badge, and the arrows move a month at a time without losing the day you
+picked. Each row shows a thumbnail taken at the start of the recording, the filename and the
+recorder, the size, the start time, the state, the length and **what started it** — by hand, by a
+UI trigger (with the trigger's id), from the browser, from the command line, or as a segment of a
+continuous recording. The start reason is written beside the recording when it finishes, so a
+recording that is still running does not show one yet. The list refreshes itself as recordings
+appear and finish; the Refresh button is there for when you would rather ask.
+
 **Player controls.** The preview and the recording playback share one control bar: skip by 10 or
 30 seconds, volume and full screen. Playback speed (0.5× to 2×) is offered for a recording only: a
 live picture is held at the live edge, so a raised rate would be given back at once. On a live

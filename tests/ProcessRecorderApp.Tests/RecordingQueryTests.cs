@@ -17,7 +17,7 @@ namespace ProcessRecorderApp.Tests;
 public sealed class RecordingQueryTests
 {
     private static RecordingEntry Entry(string path, string recorder, DateTime startUtc)
-        => new(path, 1024, startUtc, false, false, startUtc, recorder, 1000, 1920, 1080, false);
+        => new(path, 1024, startUtc, false, false, startUtc, recorder, "manual", 1000, 1920, 1080, false);
 
     private static DateTime Utc(int year, int month, int day, int hour, int minute)
         => new(year, month, day, hour, minute, 0, DateTimeKind.Utc);
@@ -101,6 +101,34 @@ public sealed class RecordingQueryTests
 
         Assert.Equal(new[] { "2026-08-27", "2026-08-28" }, days.Select(static d => d.Date).ToArray());
         Assert.Equal(new[] { 1, 2 }, days.Select(static d => d.Count).ToArray());
+    }
+
+    /// <summary>
+    /// カレンダーの件数はレコーダーの絞り込みを掛けた後で数える
+    /// （<c>/api/recording-days?recorder=</c> は <see cref="RecordingQuery.Filter"/> の結果を
+    /// <see cref="RecordingQuery.CountDays"/> へ渡す）。<b>数え方そのものは変えない</b>。
+    /// </summary>
+    [Fact]
+    public void TheDaysOfAnotherRecorderAreNotCounted()
+    {
+        var entries = Sample();
+
+        var cam2 = RecordingQuery.CountDays(
+            RecordingQuery.Filter(entries, null, null, "cam2"), TimeZoneInfo.Utc);
+
+        // cam2 は 08-28 の 1 本だけ。08-27（cam1）の日は出ない。
+        Assert.Equal(new[] { "2026-08-28" }, cam2.Select(static d => d.Date).ToArray());
+        Assert.Equal(new[] { 1 }, cam2.Select(static d => d.Count).ToArray());
+
+        // 使われていないレコーダーでは 1 日も出ない。
+        Assert.Empty(RecordingQuery.CountDays(
+            RecordingQuery.Filter(entries, null, null, "cam3"), TimeZoneInfo.Utc));
+
+        // 空文字は「省略」と同じ ── API は付いていないクエリを空文字として読む。
+        Assert.Equal(
+            RecordingQuery.CountDays(entries, TimeZoneInfo.Utc).Count,
+            RecordingQuery.CountDays(
+                RecordingQuery.Filter(entries, null, null, ""), TimeZoneInfo.Utc).Count);
     }
 
     [Fact]

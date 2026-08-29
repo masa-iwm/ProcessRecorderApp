@@ -272,7 +272,8 @@ internal static class RecordingEndpoints
     /// <para>
     /// <b>root の解決は要求ごとに行う。</b> 保存先は設定でいつでも変わり、
     /// 索引はそれを知る手立てを持たない ── <c>Rebind</c> は<b>同じ root で監視が
-    /// 張れているあいだは</b>ロックも取らずに返るので、毎回呼んで構わない。
+    /// 張れていて、初回の構築が終わっているあいだは</b>ロックも取らずに返るので、毎回呼んで構わない
+    /// （初回の構築中はその完了を待つ）。
     /// 監視が無いあいだは要求ごとに <c>Directory.Exists</c> を 1 回引く。
     /// </para>
     /// <para>
@@ -299,7 +300,7 @@ internal static class RecordingEndpoints
         => new(
             RemoteApiRules.ToUrlPath(entry.RelativePath),
             entry.Length, entry.LastWriteTimeUtc, entry.InProgress, entry.Fragmented,
-            entry.StartTimeUtc, entry.Recorder, entry.DurationMs,
+            entry.StartTimeUtc, entry.Recorder, entry.Trigger, entry.DurationMs,
             entry.Width, entry.Height, entry.HasThumbnail);
 
     /// <summary>

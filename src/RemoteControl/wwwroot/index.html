@@ -79,6 +79,12 @@
     <path d="M6 20v-7"/><path d="M6 9V4"/><path d="M12 20v-9"/><path d="M12 7V4"/><path d="M18 20v-5"/><path d="M18 11V4"/>
     <path d="M3.5 11h5"/><path d="M9.5 9h5"/><path d="M15.5 13h5"/>
   </symbol>
+  <!-- Stands in for a recording that has no thumbnail beside it. -->
+  <symbol id="i-image" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="3" y="5" width="18" height="14" rx="2"/>
+    <circle cx="8.5" cy="10" r="1.5"/>
+    <path d="M4 17l5-4.5 3.5 3 3-2.5L20 17"/>
+  </symbol>
 </svg>
 
 <header class="topbar">
@@ -138,7 +144,7 @@
     <table id="recordersTable">
       <thead>
         <tr>
-          <th>name</th><th>state</th><th>isRecording</th><th>lastFilename</th><th>health</th><th></th>
+          <th>Name</th><th>State</th><th>Recording</th><th>Last file</th><th>Health</th><th></th>
         </tr>
       </thead>
       <tbody id="recordersBody"></tbody>
@@ -166,11 +172,29 @@
 
 <div class="page page-grid" id="pageRecordings">
 
+<!-- Which recordings the table shows is decided entirely here: a day on the calendar
+     and a recorder. Both are built by app-recordings.js from `/api/recording-days`
+     and the recorder names, so the markup only reserves the boxes. -->
+<aside class="card" id="recordingsSidebar">
+  <div class="calendar" id="recordingsCalendar">
+    <div class="calendar-head">
+      <button type="button" class="icon-button" id="calendarPrev" aria-label="Previous month">&#x2039;</button>
+      <span id="calendarMonth" aria-live="polite"></span>
+      <button type="button" class="icon-button" id="calendarNext" aria-label="Next month">&#x203A;</button>
+    </div>
+    <div class="calendar-grid" id="calendarGrid" role="grid"></div>
+  </div>
+  <label class="field">Recorder
+    <select id="recordingsRecorder"><option value="">All recorders</option></select>
+  </label>
+</aside>
+
 <section id="recordingsSection" class="card">
   <h2>Recordings</h2>
   <p class="actions">
     <button type="button" id="loadRecordings">Refresh</button>
     <span id="recordingsRoot" class="status"></span>
+    <span id="recordingsDay" class="status"></span>
   </p>
   <p class="actions">
     <button type="button" id="stopPlayer" class="btn-danger">Stop</button>
@@ -180,11 +204,20 @@
        first append, and an element told not to preload never reaches `sourceopen`
        (nothing is appended, so play() is never called, so the load never starts).
        No `controls` either: app-player.js wraps the element in its own shell and
-       draws the bar, and the two sets of controls would sit on top of each other. -->
+       draws the bar, and the two sets of controls would sit on top of each other.
+       The `.player` shell around it is built by app-player.js, not written here. -->
   <video id="player"></video>
+  <!-- "Nothing here" and "there is more" are said outside the table body: the body
+       holds data rows and nothing else, so counting its rows counts recordings. -->
+  <p class="notice" id="recordingsEmpty" hidden>No recordings on this day.</p>
+  <p class="notice" id="recordingsTruncated" hidden>Showing the first 1000 recordings of this day.</p>
   <div class="table-wrap">
     <table id="recordingsTable">
-      <thead><tr><th>path</th><th>size</th><th>lastWrite</th><th>state</th><th></th></tr></thead>
+      <thead>
+        <tr>
+          <th>Recording</th><th>Size</th><th>Started</th><th>State</th><th>Duration</th><th>Trigger</th><th></th>
+        </tr>
+      </thead>
       <tbody id="recordingsBody"></tbody>
     </table>
   </div>
@@ -246,7 +279,7 @@
   </p>
   <div class="table-wrap">
     <table id="variablesTable">
-      <thead><tr><th>key</th><th>value</th><th>persistent</th></tr></thead>
+      <thead><tr><th>Key</th><th>Value</th><th>Persistent</th></tr></thead>
       <tbody id="variablesBody"></tbody>
     </table>
   </div>

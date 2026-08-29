@@ -237,7 +237,9 @@ internal static class RecorderControlService
     /// 個別レコーダの録画を開始する。<paramref name="target"/> は数値ならインデックス（0始まり）、
     /// それ以外はレコーダ名（規則は <see cref="RecorderCliRules.ResolveTargetIndex"/>）。
     /// </summary>
-    internal static async Task<StartResult> StartAsync(string target)
+    /// <param name="target">対象の指定（インデックスかレコーダ名）。</param>
+    /// <param name="trigger">開始理由（sidecar の <c>trigger</c>）。呼び出し面ごとに違う値を渡す。</param>
+    internal static async Task<StartResult> StartAsync(string target, string trigger)
     {
         var controller = await WaitForControllerAsync();
         if (controller is null)
@@ -251,7 +253,7 @@ internal static class RecorderControlService
         if (!recorder.CanStartRecording)
             return new StartResult(ActivationCommands.ExitCode_RecordingNotExecutable, recorder.Name, null);
 
-        recorder.StartRecording();
+        recorder.StartRecording(trigger);
 
         // 返すのは「実際に使われたファイルのパス」。-all 版と揃えるため、
         // 未展開の FilenameTemplate ではなく解決済みの LastFilename を返す。
@@ -292,7 +294,8 @@ internal static class RecorderControlService
     /// ── 単体の開始が同じ失敗で非 0 を返すのに、こちらだけ 0 を返すと
     /// バッチは「全部落ちた」を成功として通す。
     /// </summary>
-    internal static async Task<StartAllResult> StartAllAsync()
+    /// <param name="trigger">開始理由（sidecar の <c>trigger</c>）。呼び出し面ごとに違う値を渡す。</param>
+    internal static async Task<StartAllResult> StartAllAsync(string trigger)
     {
         var controller = await WaitForControllerAsync();
         if (controller is null)
@@ -301,7 +304,7 @@ internal static class RecorderControlService
         if (!controller.CanStartRecordingAll)
             return new StartAllResult(ActivationCommands.ExitCode_RecordingNotExecutable, [], []);
 
-        var started = controller.StartRecordingAllAndReport(out var failed);
+        var started = controller.StartRecordingAllAndReport(trigger, out var failed);
 
         return new StartAllResult(
             started.Count == 0 ? ActivationCommands.ExitCode_RecordingNotExecutable : 0,

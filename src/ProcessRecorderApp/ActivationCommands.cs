@@ -412,6 +412,12 @@ internal static class ActivationCommands
         };
 
     /// <summary>
+    /// CLI（<c>start-recording</c> / <c>start-recording-all</c>）を出どころとする録画の
+    /// <c>trigger</c>（sidecar に載る）。
+    /// </summary>
+    private const string CliTrigger = "cli";
+
+    /// <summary>
     /// 個別レコーダの録画開始／終了の結果（<see cref="RecorderControlService"/>）を
     /// <see cref="CommandOutcome"/> へ整形する。
     /// <paramref name="target"/> は失敗の文言（見つからなかった指定そのもの）に使う。
@@ -420,7 +426,7 @@ internal static class ActivationCommands
     {
         if (start)
         {
-            var result = await RecorderControlService.StartAsync(target);
+            var result = await RecorderControlService.StartAsync(target, CliTrigger);
             if (RecorderCommandFailure(result.ExitCode, target, result.RecorderName, start: true)
                 is CommandOutcome failure)
             {
@@ -630,7 +636,7 @@ internal static class ActivationCommands
         var startRecordingAllCommand = new Command("start-recording-all", Localization.GetString("Resources/Cli_StartAllDesc"));
         startRecordingAllCommand.SetAction(async (_, _) =>
         {
-            var result = await RecorderControlService.StartAllAsync();
+            var result = await RecorderControlService.StartAllAsync(CliTrigger);
             if (result.ExitCode == ExitCode_RecorderNotAvailable)
             {
                 setOutcome(RecorderNotAvailableFailure());

@@ -435,8 +435,13 @@ namespace ProcessRecorderApp.ViewModels
             SelectedRecorder = next;
         }
 
+        /// <summary>
+        /// 画面の操作から全レコーダの録画を開始する
+        /// （<c>trigger</c> は <see cref="GstEventRecorderViewModel.ManualTrigger"/>）。
+        /// </summary>
         [RelayCommand(CanExecute = nameof(CanStartRecordingAll))]
-        public void StartRecordingAll() => _ = StartRecordingAllAndReport();
+        private void StartRecordingAll()
+            => _ = StartRecordingAllAndReport(GstEventRecorderViewModel.ManualTrigger);
 
         /// <summary>
         /// 全レコーダの録画を開始し、<b>実際に開始できたもの</b>を返す。
@@ -445,17 +450,19 @@ namespace ProcessRecorderApp.ViewModels
         /// バッチがそれを今回の成果物として運ぶ（stop 側が「今回停止した分だけ」に
         /// 限っているのと同じ理由）。
         /// </summary>
-        public IReadOnlyList<GstEventRecorderViewModel> StartRecordingAllAndReport()
-            => StartRecordingAllAndReport(out _);
+        /// <param name="trigger">開始理由（<see cref="GstEventRecorderViewModel.StartRecording(string)"/> に渡す値）。</param>
+        public IReadOnlyList<GstEventRecorderViewModel> StartRecordingAllAndReport(string trigger)
+            => StartRecordingAllAndReport(trigger, out _);
 
-        /// <inheritdoc cref="StartRecordingAllAndReport()"/>
+        /// <inheritdoc cref="StartRecordingAllAndReport(string)"/>
+        /// <param name="trigger">開始理由（<see cref="GstEventRecorderViewModel.StartRecording(string)"/> に渡す値）。</param>
         /// <param name="failed">
         /// <b>開始できるはずだったのに例外で落ちたレコーダー</b>。
         /// 「既に録画中」など元から対象外だったものは含まない ── それは失敗ではなく、
         /// トリガ運用では日常であり、CLI の標準エラーへ出すと利用者が本物の失敗と区別できない。
         /// </param>
         public IReadOnlyList<GstEventRecorderViewModel> StartRecordingAllAndReport(
-            out IReadOnlyList<GstEventRecorderViewModel> failed)
+            string trigger, out IReadOnlyList<GstEventRecorderViewModel> failed)
         {
             var started = new List<GstEventRecorderViewModel>();
             var failures = new List<GstEventRecorderViewModel>();
@@ -465,7 +472,7 @@ namespace ProcessRecorderApp.ViewModels
                     continue;
                 try
                 {
-                    r.StartRecording();
+                    r.StartRecording(trigger);
                     started.Add(r);
                 }
                 catch (Exception)

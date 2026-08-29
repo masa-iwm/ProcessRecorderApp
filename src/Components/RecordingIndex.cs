@@ -19,6 +19,10 @@ namespace ProcessRecorderApp.Components;
 /// 録画開始時刻（UTC）。sidecar があればその値、無ければファイル名から推定した値。
 /// </param>
 /// <param name="Recorder">録画したレコーダーの名前。推定できなければ空文字。</param>
+/// <param name="Trigger">
+/// 開始理由（<see cref="RecordingSidecar.Trigger"/>）。<b>sidecar からしか来ない</b>ので、
+/// 録画中と sidecar の無いものは <see langword="null"/>。
+/// </param>
 /// <param name="DurationMs">
 /// 尺（ミリ秒）。sidecar があればその値、無ければ <c>moov</c> の <c>mvhd</c> から読んだ値。
 /// fragmented と録画中は <see langword="null"/>（総尺は <see cref="Fmp4FragmentIndex"/> が持つ）。
@@ -34,6 +38,7 @@ public sealed record RecordingEntry(
     bool Fragmented,
     DateTime StartTimeUtc,
     string Recorder,
+    string? Trigger,
     long? DurationMs,
     int? Width,
     int? Height,
@@ -143,10 +148,22 @@ public sealed partial class RecordingIndex : IDisposable
     private bool _disposed;
 
     /// <summary>
+    /// <see cref="Rebind"/> の走査に入る直前に呼ぶ。<b>L1 が「構築の最中」という窓を
+    /// 作るための口</b>（<see cref="Rebuild"/> と同じ用途で、製品の経路では誰も入れない）。
+    /// </summary>
+    internal Action? BuildStarting;
+
+    /// <summary>
     /// 今見ているフォルダー。<b>ロックの外から読む</b> ── <see cref="Rebind"/> は要求のたびに
     /// 呼ばれるので、作り直しの最中でも「同じ root なら何もしない」を待たずに返せること。
     /// </summary>
     private volatile string _root = string.Empty;
+
+    /// <summary>
+    /// 走査が 1 度でも完成した（<see cref="_snapshot"/> が「作った結果」である）。
+    /// <b>速い経路の条件。ロックの外から読む。</b>
+    /// </summary>
+    private volatile bool _built;
 
     /// <summary>
     /// <paramref name="root"/> を見る索引を作る。構築時の走査は<b>同期で</b>行う
@@ -192,7 +209,14 @@ public sealed partial class RecordingIndex : IDisposable
 
         // 速い経路。要求のたびに呼ばれるので、作り直しのロックを待たせない。
         // watcher が張れているならフォルダーの存在は確かめない（要求ごとの I/O を避ける）。
-        if (string.Equals(_root, normalized, StringComparison.OrdinalIgnoreCase)
+        //
+        // **最初の走査が完成するまでは通らない（_built）。** _root と watcher は走査より先に
+        // 決まるので、これが無いと、初回の走査を抱えたロックの下で進んでいる間に来た要求が
+        // 空の Snapshot を受け取る。ここでロックを待てば、待った側は完成した一覧を読む。
+        // 走査が一度も完成しない root（存在しない・権限が無い）では要求ごとにロックを取るが、
+        // その間は誰も長く保持しないので待たされない。
+        if (_built
+            && string.Equals(_root, normalized, StringComparison.OrdinalIgnoreCase)
             && (Volatile.Read(ref _watcher) is not null || !Directory.Exists(normalized)))
         {
             return;
@@ -218,12 +242,18 @@ public sealed partial class RecordingIndex : IDisposable
             if (sameRoot && _watcher is null)
                 return;
 
+            BuildStarting?.Invoke();
+
             _facts = new Dictionary<string, FileFacts>(StringComparer.Ordinal);
             _snapshot = Build(normalized, _facts);
 
             // 同期で作ったので、この世代が「適用済み」になる。走査中だった古い root の
             // 結果は root の照合で、同じ root の古い結果は世代の比較で落ちる。
             _appliedGeneration = ++_generation;
+
+            // 以後は速い経路を通してよい。**立てるのはここだけ** ── 走査せずに返る経路
+            // （見張れない root）で立てると、初回の走査の最中がまた素通りになる。
+            _built = true;
         }
     }
 
@@ -459,6 +489,7 @@ public sealed partial class RecordingIndex : IDisposable
                 cached.Fragmented,
                 cached.StartTimeUtc,
                 cached.Recorder,
+                cached.Trigger,
                 cached.DurationMs,
                 cached.Width,
                 cached.Height,
@@ -572,7 +603,8 @@ public sealed partial class RecordingIndex : IDisposable
         else
             startTimeUtc = lastWriteTimeUtc;
 
-        facts = new FileFacts(fragmented, durationMs, startTimeUtc, recorder, sidecar?.Width, sidecar?.Height);
+        facts = new FileFacts(
+            fragmented, durationMs, startTimeUtc, recorder, sidecar?.Trigger, sidecar?.Width, sidecar?.Height);
         return true;
     }
 
@@ -761,7 +793,8 @@ public sealed partial class RecordingIndex : IDisposable
 
     /// <summary>ファイルを開いて分かるぶん。<c>(パス, 長さ, 更新時刻)</c> ごとに覚えておく。</summary>
     private sealed record FileFacts(
-        bool Fragmented, long? DurationMs, DateTime StartTimeUtc, string Recorder, int? Width, int? Height);
+        bool Fragmented, long? DurationMs, DateTime StartTimeUtc, string Recorder, string? Trigger,
+        int? Width, int? Height);
 }
 
 /// <summary>
