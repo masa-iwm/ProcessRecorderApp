@@ -2026,7 +2026,7 @@ public partial class EventRecorder : ObservableObject, IDisposable
             owner.ContinuousSegmentCount = segmentCount;
         }
 
-        public void OnContinuousSegmentFinalized(string path, bool ok)
+        public void OnContinuousSegmentFinalized(string path, bool ok, ContinuousSegmentShape shape)
         {
             // 開始時刻は「そのファイルを初めて見た時刻」。取り出しと同時に消す。
             // **覚えが無ければ sidecar は書かない** ── 今の時刻で埋めると尺 0 の
@@ -2037,8 +2037,15 @@ public partial class EventRecorder : ObservableObject, IDisposable
             // **確定できた本だけに sidecar を置く。** sidecar が在ることは索引にとって
             // 「排出が終わっている＝開いて確かめなくてよい」の印なので、moov を書けなかった
             // ファイルに置くと録画中のものと区別が付かなくなる。
+            // **形は枝が報せたものを使う**（本線の `_caps*` を流用しない ── 常時録画は
+            // 別レート・別解像度で回りうるうえ、イベント録画を 1 度もしていない
+            // プロセスでは本線の観測値がそもそも空である）。
             if (ok)
-                owner.WriteSidecarInBackground(path, started, DateTimeOffset.UtcNow, ContinuousTrigger);
+            {
+                owner.WriteSidecarInBackground(
+                    path, started, DateTimeOffset.UtcNow, ContinuousTrigger,
+                    shape.Width, shape.Height, shape.Fps);
+            }
         }
 
         public void OnContinuousError(string message) => owner.ContinuousLastError = message;
@@ -4363,16 +4370,30 @@ public partial class EventRecorder : ObservableObject, IDisposable
     /// </summary>
     private void WriteSidecarInBackground(
         string? recordingPath, DateTimeOffset startTime, DateTimeOffset endTime, string? trigger)
+        => WriteSidecarInBackground(
+            recordingPath, startTime, endTime, trigger,
+            0 < _capsWidth ? _capsWidth : null,
+            0 < _capsHeight ? _capsHeight : null,
+            0 < _capsFramerateNumerator && 0 < _capsFramerateDenominator
+                ? _capsFramerateNumerator / (double)_capsFramerateDenominator
+                : null);
+
+    /// <summary>
+    /// 形（幅・高さ・fps）を明示して sidecar を書く。<b>常時録画のセグメントはこちらを使う</b>
+    /// ── 本線の観測値（<see cref="_capsWidth"/> 等）は<c>イベント録画</c>の枝でしか
+    /// 確定せず、常時枝は別レート・別解像度で回りうる。読めていない項目は
+    /// <see langword="null"/>（sidecar は空欄になる）。
+    /// </summary>
+    /// <inheritdoc cref="WriteSidecarInBackground(string?, DateTimeOffset, DateTimeOffset, string?)"/>
+    private void WriteSidecarInBackground(
+        string? recordingPath, DateTimeOffset startTime, DateTimeOffset endTime, string? trigger,
+        int? width, int? height, double? fps)
     {
         if (string.IsNullOrEmpty(recordingPath))
             return;
 
         string path = recordingPath;
         string recorder = Name;
-        int width = _capsWidth;
-        int height = _capsHeight;
-        int framerateNumerator = _capsFramerateNumerator;
-        int framerateDenominator = _capsFramerateDenominator;
 
         ThreadPool.QueueUserWorkItem(_ =>
         {
@@ -4394,11 +4415,9 @@ public partial class EventRecorder : ObservableObject, IDisposable
                     endTime,
                     durationMs < 0 ? null : durationMs,
                     trigger,
-                    0 < width ? width : null,
-                    0 < height ? height : null,
-                    0 < framerateNumerator && 0 < framerateDenominator
-                        ? framerateNumerator / (double)framerateDenominator
-                        : null));
+                    width,
+                    height,
+                    fps));
             }
             catch (Exception ex)
             {

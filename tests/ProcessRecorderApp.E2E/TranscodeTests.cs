@@ -41,6 +41,27 @@ public sealed class TranscodeTests(PublishedApp app, ITestOutputHelper output)
     /// <summary>変換を掛ける画質。ソース（320x240）より高いので<b>高さは 240 へ丸められる</b>。</summary>
     private const string Quality = "360p";
 
+    /// <summary>
+    /// ソースより高い fps を要求するプリセット（720p は 30fps）。
+    /// <see cref="Quality"/>（360p）は 15fps なので、上限 fps の欠陥には当たらない。
+    /// </summary>
+    private const string HighQuality = "720p";
+
+    /// <summary>常時録画のセグメントの長さ（製品の下限）。</summary>
+    private const int ContinuousSegmentSeconds = 5;
+
+    /// <summary>常時枝のフレームレート。<b>本線（15fps）とは別の値にする</b>。</summary>
+    private const int ContinuousFps = 5;
+
+    /// <summary>常時枝の幅。<b>本線（320x240）とは別の値にする</b>。</summary>
+    private const int ContinuousWidth = 160;
+
+    /// <inheritdoc cref="ContinuousWidth"/>
+    private const int ContinuousHeight = 120;
+
+    /// <summary>確定済みのセグメントが現れるまでの待ち（1 本ぶん＋切り替えと排出の余裕）。</summary>
+    private static readonly TimeSpan ContinuousBudget = TimeSpan.FromSeconds(60);
+
     /// <summary>枠が空いていない（<c>TranscodeReasons.Busy</c>／DASH と同じ文字列）。</summary>
     private const string BusyReason = "auxiliary encoder busy";
 
@@ -220,6 +241,23 @@ public sealed class TranscodeTests(PublishedApp app, ITestOutputHelper output)
         }
     }
 
+    /// <summary>
+    /// <c>transcode.*</c> の行を全部集める。<b>失敗の本文（503 <c>transcode start failed</c>）
+    /// だけでは真因が分からない</b> ── 真因は <c>transcode.error</c> の <c>src=</c> /
+    /// <c>detail=</c> と <c>transcode.start-failed</c> の <c>detail=</c> にしか出ない。
+    /// </summary>
+    private static string TranscodeDiagnostics(AppInstance instance)
+    {
+        var lines = instance.ReadActivityLog()
+            .Where(l => ActivityLogFile.EventNameOf(l) is { } name
+                && name.StartsWith("transcode.", StringComparison.Ordinal))
+            .ToList();
+
+        return lines.Count == 0
+            ? "transcode.* の行は 1 つもありません。"
+            : string.Join(Environment.NewLine, lines);
+    }
+
     /// <summary>ランタイムの解決・デコーダーの確認・変換の開始をログから抜き出す。</summary>
     private static string RuntimeDiagnostics(AppInstance instance)
     {
@@ -243,7 +281,8 @@ public sealed class TranscodeTests(PublishedApp app, ITestOutputHelper output)
     }
 
     /// <summary>一覧から、望む状態の 1 本目の相対パスを取る。</summary>
-    private async Task<JsonElement> WaitForRecordingAsync(HttpClient client, bool inProgress)
+    private async Task<JsonElement> WaitForRecordingAsync(
+        HttpClient client, bool inProgress, bool requireSidecar = false)
     {
         var deadline = Stopwatch.StartNew();
         string last = "(1 度も一覧を読めていない)";
@@ -257,18 +296,29 @@ public sealed class TranscodeTests(PublishedApp app, ITestOutputHelper output)
                 using var body = JsonDocument.Parse(last);
                 foreach (var file in body.RootElement.GetProperty("files").EnumerateArray())
                 {
-                    if (file.GetProperty("inProgress").GetBoolean() == inProgress)
+                    if (file.GetProperty("inProgress").GetBoolean() != inProgress)
+                        continue;
+
+                    // **sidecar は排出より後に置かれる。** 一覧へ inProgress=false で
+                    // 出た時点ではまだ無いことがあり、そのあいだ width / height は
+                    // 索引のフォールバック（null）になる ── 待たずに読むと
+                    // 「sidecar が読めていない」ではなく型違いで落ちる。
+                    if (requireSidecar
+                        && file.GetProperty("width").ValueKind == JsonValueKind.Null)
                     {
-                        output.WriteLine($"inProgress={inProgress}: {file}");
-                        return file.Clone();
+                        continue;
                     }
+
+                    output.WriteLine($"inProgress={inProgress}: {file}");
+                    return file.Clone();
                 }
             }
             await Task.Delay(TimeSpan.FromMilliseconds(500), Ct);
         }
 
         Assert.Fail(
-            $"inProgress={inProgress} の録画が {ListingBudget.TotalSeconds:F0} 秒以内に一覧へ出ませんでした。"
+            $"inProgress={inProgress}（sidecar 必須={requireSidecar}）の録画が "
+            + $"{ListingBudget.TotalSeconds:F0} 秒以内に一覧へ出ませんでした。"
             + $"最後の応答: {last}");
         return default;
     }
@@ -294,15 +344,18 @@ public sealed class TranscodeTests(PublishedApp app, ITestOutputHelper output)
             output.WriteLine($"stop={(int)stop.StatusCode}");
         }
 
-        var finished = await WaitForRecordingAsync(client, inProgress: false);
+        var finished = await WaitForRecordingAsync(client, inProgress: false, requireSidecar: true);
         Assert.Equal(SourceWidth, finished.GetProperty("width").GetInt32());
         Assert.Equal(SourceHeight, finished.GetProperty("height").GetInt32());
         return finished.GetProperty("path").GetString()!;
     }
 
     private static string TranscodePath(string recording, double start, string session)
+        => TranscodePath(recording, start, session, Quality);
+
+    private static string TranscodePath(string recording, double start, string session, string quality)
         => $"api/recording-transcode/{recording}"
-         + $"?start={start.ToString("0.###", CultureInfo.InvariantCulture)}&q={Quality}&session={session}";
+         + $"?start={start.ToString("0.###", CultureInfo.InvariantCulture)}&q={quality}&session={session}";
 
     /// <summary>
     /// 変換を 1 本開き、<b>ヘッダーで止める</b>。
@@ -639,5 +692,153 @@ public sealed class TranscodeTests(PublishedApp app, ITestOutputHelper output)
 
         // 引き継いだだけなので、枠は 1 つのまま埋まっている。
         await ExpectBusyAsync(await OpenAsync(client, recording, 0, "s2"), "s2");
+    }
+
+    // ---- (4) ソースの実 fps がプリセットより低い本 ----
+
+    /// <summary>
+    /// <b>要求した fps がファイルの実 fps を上回っても変換できること。</b>
+    ///
+    /// <para>
+    /// 出力の fps は上限として要求する（<c>framerate=[1/1,fps/1]</c>）。固定で要求すると
+    /// <c>videorate drop-only=true</c> が上げ方向を negotiate できず、失敗は capsfilter では
+    /// なく <c>qtdemux</c> → <c>h264parse</c> の delayed link に出る ── <c>qtdemux</c> が
+    /// <c>Internal data stream error.</c>（debug <c>streaming stopped, reason not-linked (-1)</c>）
+    /// を出したまま preroll せず、位置指定が受理されないまま 5 秒回って
+    /// 503 <c>transcode start failed</c> になる。
+    /// </para>
+    /// <para>
+    /// <b>2 通りとも実在の形である。</b> sidecar の無い本（sidecar 導入前の版が録ったもの・
+    /// 別の道具が置いたもの）はソース未知としてプリセットの生値（720p なら 30fps）が
+    /// 要求される。sidecar が在っても、実 fps が分数のカメラ（実測 <c>89/3</c>＝約 29.67）は
+    /// <c>fps</c> が整数へ丸められて 30 になり、やはり実 fps を上回る。
+    /// </para>
+    /// </summary>
+    [Theory]
+    [InlineData("15/1", true)]
+    [InlineData("89/3", false)]
+    public async Task ATranscodeAboveTheSourceFramerate_StillStreamsAFragmentedMp4(
+        string sourceFramerate, bool removeSidecar)
+    {
+        var settings = TranscodeSettings(limit: 2, recorders: 1);
+        settings.Recorders[0].SrcPipeline =
+            "videotestsrc is-live=true do-timestamp=true ! videoconvert ! "
+            + $"video/x-raw,format=I420,width={SourceWidth},height={SourceHeight},framerate={sourceFramerate}";
+
+        using var instance = AppInstance.Create(app, settings, configure: Configure);
+        int port = WaitForPort(instance);
+        using var client = CreateClient(port);
+
+        await AssertTranscodeIsAvailableAsync(client, instance);
+        string recording = await RecordOnceAsync(client);
+
+        if (removeSidecar)
+        {
+            foreach (string sidecar in Directory.GetFiles(instance.RecordingsDir, "*.mp4.json"))
+            {
+                File.Delete(sidecar);
+                output.WriteLine($"消した sidecar: {sidecar}");
+            }
+        }
+
+        using var response = await client.GetAsync(
+            TranscodePath(recording, 0, "s1", HighQuality), HttpCompletionOption.ResponseHeadersRead, Ct);
+
+        // 失敗の本文（503 transcode start failed）だけでは真因が分からないので、
+        // activity.log の transcode.* をそのまま添える。
+        Assert.True(
+            response.StatusCode == HttpStatusCode.OK,
+            $"{(int)response.StatusCode} {await response.Content.ReadAsStringAsync(Ct)}"
+                + Environment.NewLine + TranscodeDiagnostics(instance));
+
+        Assert.Equal(HighQuality, HeaderOf(response, "X-Transcode-Quality"));
+
+        var (stream, _) = await ReadAndProbeAsync(response, $"transcode {sourceFramerate}");
+        Assert.True(stream.StartsWithInitSegment, $"先頭が ftyp+moov ではありません: {stream}");
+        Assert.True(1 <= stream.MoofCount, $"fragment が 1 つも出ていません: {stream}");
+    }
+
+    // ---- (5) 常時録画のセグメント ----
+
+    /// <summary>
+    /// <b>常時録画のセグメントの sidecar には枝の実体が載り、そのセグメントが変換できること。</b>
+    ///
+    /// <para>
+    /// 常時枝は <c>ContinuousFramerate</c> / <c>ContinuousResolution</c> で本線とは別の
+    /// レート・別の解像度で回る。sidecar へ本線の観測値を写すと、<b>そのファイルには
+    /// 当たらない値</b>が載る ── しかもこのテストは<b>イベント録画を 1 度もしない</b>ので、
+    /// 本線の観測値はそもそも空のままである（＝ソース未知として 720p が 30fps で要求され、
+    /// 5fps のセグメントは変換できない）。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task AContinuousSegment_CarriesTheBranchShapeAndTranscodes()
+    {
+        var settings = TranscodeSettings(limit: 2, recorders: 1);
+        var recorder = settings.Recorders[0];
+        recorder.WithContinuous(ContinuousSegmentSeconds);
+        recorder.ContinuousFramerate = ContinuousFps + "/1";
+        recorder.ContinuousResolution = $"{ContinuousWidth}x{ContinuousHeight}";
+
+        using var instance = AppInstance.Create(app, settings, configure: Configure);
+        int port = WaitForPort(instance);
+        using var client = CreateClient(port);
+
+        await AssertTranscodeIsAvailableAsync(client, instance);
+
+        // 確定済みのセグメントが要る（書きかけの本は 409 recording in progress）。
+        // 確定の印は sidecar そのものなので、それが現れるまで待つ。
+        string segment = await WaitForFinalizedSegmentAsync(instance);
+
+        using var sidecar = JsonDocument.Parse(File.ReadAllText(segment + ".json"));
+        output.WriteLine(sidecar.RootElement.ToString());
+
+        Assert.Equal(ContinuousWidth, sidecar.RootElement.GetProperty("width").GetInt32());
+        Assert.Equal(ContinuousHeight, sidecar.RootElement.GetProperty("height").GetInt32());
+        Assert.InRange(sidecar.RootElement.GetProperty("fps").GetDouble(), ContinuousFps - 0.5, ContinuousFps + 0.5);
+        Assert.Equal("continuous", sidecar.RootElement.GetProperty("trigger").GetString());
+
+        using var response = await client.GetAsync(
+            TranscodePath(Path.GetFileName(segment), 0, "s1", HighQuality),
+            HttpCompletionOption.ResponseHeadersRead,
+            Ct);
+
+        Assert.True(
+            response.StatusCode == HttpStatusCode.OK,
+            $"{(int)response.StatusCode} {await response.Content.ReadAsStringAsync(Ct)}"
+                + Environment.NewLine + TranscodeDiagnostics(instance));
+
+        var (stream, _) = await ReadAndProbeAsync(response, "transcode continuous segment");
+        Assert.True(stream.StartsWithInitSegment, $"先頭が ftyp+moov ではありません: {stream}");
+        Assert.True(1 <= stream.MoofCount, $"fragment が 1 つも出ていません: {stream}");
+    }
+
+    /// <summary>
+    /// sidecar の付いた（＝確定済みの）常時録画セグメントが現れるまで待ち、その <c>.mp4</c> の
+    /// 絶対パスを返す。<b>最初の 1 本だけを見る</b> ── 後ろの本はまだ書きかけでありうる。
+    /// </summary>
+    private async Task<string> WaitForFinalizedSegmentAsync(AppInstance instance)
+    {
+        var deadline = Stopwatch.StartNew();
+        while (deadline.Elapsed < ContinuousBudget)
+        {
+            string[] segments = Directory.GetFiles(instance.RecordingsDir, "R1_c*.mp4");
+            Array.Sort(segments, StringComparer.Ordinal);
+            foreach (string segment in segments)
+            {
+                if (File.Exists(segment + ".json"))
+                {
+                    output.WriteLine($"確定済みのセグメント: {segment}");
+                    return segment;
+                }
+            }
+
+            await Task.Delay(TimeSpan.FromMilliseconds(500), Ct);
+        }
+
+        Assert.Fail(
+            $"確定済みの常時録画セグメントが {ContinuousBudget.TotalSeconds:F0} 秒以内に現れませんでした。"
+            + Environment.NewLine + instance.DiagnosticDump());
+        return "";
     }
 }

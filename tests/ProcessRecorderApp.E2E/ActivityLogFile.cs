@@ -107,6 +107,18 @@ public static class ActivityLogFile
         "dash.stream-stop",
         "dash.stream-error",
         "dash.leak",
+        // 録画トランスコード。**停止理由がそのままイベント名の後半になる**
+        // （`transcode.<理由>`・7 個。正本は `TranscodeSession.StopReasons`）。
+        // 既知イベントとして表に載せ、失敗の診断で名前引きできるようにする。
+        "transcode.start",
+        "transcode.error",
+        "transcode.leak",
+        "transcode.eos",
+        "transcode.client-closed",
+        "transcode.replaced",
+        "transcode.lease-expired",
+        "transcode.start-failed",
+        "transcode.shutdown",
         // デバイス到着の監視（復帰待ちのあいだだけプロバイダを started に保つ）と、
         // 観測した到着。到着で復帰の待ちを打ち切ったことは recorder.restart の
         // wake=device-arrival に出る。

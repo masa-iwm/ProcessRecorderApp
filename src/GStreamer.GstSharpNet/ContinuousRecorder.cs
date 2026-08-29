@@ -11,6 +11,49 @@ using STTask = System.Threading.Tasks.Task;
 namespace ProcessRecorderApp.GStreamer;
 
 /// <summary>
+/// セグメント 1 本の映像の形。<b>常時枝が実際に negotiate した caps から採る</b>
+/// ── 常時録画は <c>ContinuousFramerate</c> / <c>ContinuousResolution</c> で
+/// イベント録画の本線とは別のレート・別の解像度で回りうるので、本線の観測値を
+/// 流用すると sidecar に<b>そのファイルには当たらない値</b>が載る。
+/// 読めなかった項目は <see langword="null"/>（sidecar は空欄になる）。
+/// </summary>
+/// <param name="Width">映像の幅(px)。</param>
+/// <param name="Height">映像の高さ(px)。</param>
+/// <param name="Fps">フレームレート（分数を割ったもの）。</param>
+internal readonly record struct ContinuousSegmentShape(int? Width, int? Height, double? Fps)
+{
+    /// <summary>何も読めていない形。</summary>
+    public static ContinuousSegmentShape Unknown => default;
+
+    /// <summary>
+    /// negotiate 済みの caps から読み取る。<b>常時枝の終端は
+    /// <c>h264parse</c> の src なので、幅・高さ・フレームレートはそこに載っている</b>
+    /// （実測: <c>video/x-h264, …, width=(int)320, height=(int)240,
+    /// framerate=(fraction)5/1, …</c>）。
+    /// </summary>
+    public static ContinuousSegmentShape From(Caps? caps)
+    {
+        if (caps is null)
+            return Unknown;
+
+        // GetStructure(0) は所有するコピー（Boxed）を返すので解放する。
+        using var structure = caps.GetStructure(0);
+        if (structure is null)
+            return Unknown;
+
+        int? width = structure.GetInt("width", out int parsedWidth) && 0 < parsedWidth ? parsedWidth : null;
+        int? height = structure.GetInt("height", out int parsedHeight) && 0 < parsedHeight ? parsedHeight : null;
+        double? fps =
+            structure.GetFraction("framerate", out int numerator, out int denominator)
+            && 0 < numerator && 0 < denominator
+                ? numerator / (double)denominator
+                : null;
+
+        return new ContinuousSegmentShape(width, height, fps);
+    }
+}
+
+/// <summary>
 /// 常時録画エンジンが宿主（<see cref="EventRecorder"/>）へ結果を返すための最小の口。
 /// エンジンは <c>EventRecorder</c> の内部状態も <c>_stateLock</c> も知らない。
 /// </summary>
@@ -30,8 +73,10 @@ internal interface IContinuousRecorderHost
     /// <b>成功・失敗のどちらでも呼ぶ</b>ので、<paramref name="ok"/> が false のファイルは
     /// <c>moov</c> が書かれていない（＝再生できない）ことがある。
     /// 呼ぶのはスレッドプールのスレッドで、宿主のロックは何も持っていない。
+    /// <paramref name="shape"/> は<b>この枝が negotiate した形</b>
+    /// （本線の観測値ではない ── 別レート・別解像度で回りうる）。
     /// </summary>
-    void OnContinuousSegmentFinalized(string path, bool ok);
+    void OnContinuousSegmentFinalized(string path, bool ok, ContinuousSegmentShape shape);
 
     /// <summary>常時録画側だけで起きた障害を報告する（イベント録画の状態には触らない）。</summary>
     void OnContinuousError(string message);
@@ -171,6 +216,12 @@ internal sealed partial class ContinuousRecorder : IDisposable
 
         public System.Threading.Tasks.TaskCompletionSource<SegmentDrainResult> Drain { get; } =
             new(System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously);
+
+        /// <summary>
+        /// この 1 本の映像の形。<b>セグメントごとに持つ</b> ── 確定は非同期で次の
+        /// セグメントと重なるので、エンジン側の 1 つのフィールドに置くと取り違える。
+        /// </summary>
+        public ContinuousSegmentShape Shape { get; set; }
 
         /// <summary>バスの購読（<c>Dispose</c> が同期ハンドラを外す）。未購読なら null。</summary>
         public IDisposable? Subscription { get; set; }
@@ -482,6 +533,10 @@ internal sealed partial class ContinuousRecorder : IDisposable
             if (negotiated is not null)
                 src.SetCaps(negotiated);
 
+            // **sidecar に載せる形はここでしか採れない。** 枝の実体（別レート・別解像度）は
+            // この caps に出ており、本線の観測値とは別物である。
+            writer.Shape = ContinuousSegmentShape.From(negotiated);
+
             if (pipeline.SetState(State.Playing) == StateChangeReturn.Failure)
             {
                 throw new InvalidOperationException(
@@ -650,7 +705,7 @@ internal sealed partial class ContinuousRecorder : IDisposable
             // 例外はここで握る ── プールスレッドへ漏らすとプロセスごと落ちる。
             try
             {
-                _host.OnContinuousSegmentFinalized(path, result == "ok");
+                _host.OnContinuousSegmentFinalized(path, result == "ok", writer.Shape);
             }
             catch (Exception ex)
             {

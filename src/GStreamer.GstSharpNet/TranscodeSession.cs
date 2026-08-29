@@ -125,9 +125,21 @@ internal sealed class TranscodeSession
     /// CRITICAL を出して 0 バイトのまま固まる（実測）。
     /// </para>
     /// <para>
+    /// <b>出力の fps は上限で書く</b>（<c>framerate=[1/1,{fps}/1]</c>）。<c>videorate
+    /// drop-only=true</c> は落とすことしかできないので、<c>framerate={fps}/1</c> と固定すると
+    /// <b>実 fps がそれ未満のファイルを変換できない</b> ── 失敗は capsfilter ではなく
+    /// <c>qtdemux</c> → <c>h264parse</c> の delayed link に出て、<c>qtdemux</c> が
+    /// <c>Internal data stream error</c>（debug は <c>streaming stopped, reason not-linked
+    /// (-1)</c>）を出したまま preroll しない。sidecar の無い本と、実 fps が分数のカメラ
+    /// （実測 <c>89/3</c>＝約 29.67）がここに当たる。範囲にすると実 fps がそのまま通り、
+    /// 上回るときだけ落ちる。<b>上げ方向の複製（<c>drop-only</c> を外す）は採らない。</b>
+    /// </para>
+    /// <para>
     /// <c>videorate drop-only=true</c>・capsfilter の書式・<c>h264parse config-interval=-1</c>・
     /// <c>mp4mux fragment-mode=dash-or-mss</c> は
-    /// <see cref="DashPreviewStream.BuildPipeline"/> と同じ理由で同じもの。
+    /// <see cref="DashPreviewStream.BuildPipeline"/> と同じ理由で同じもの
+    /// （<b>fps を範囲で書くのはここだけ</b> ── ライブ配信の入力はソースの実 fps そのもので、
+    /// 落とせない上限は起こりえない）。
     /// <c>appsink</c> は <c>max-buffers=16 drop=false</c> ── <b>捨てない</b>ので、
     /// 引き手が遅ければ appsink が上流を止める（配信物に穴を開けない）。
     /// </para>
@@ -140,7 +152,7 @@ internal sealed class TranscodeSession
         => string.Create(CultureInfo.InvariantCulture,
             $"filesrc location=\"{filePath.Replace('\\', '/')}\" ! qtdemux name=demux ! "
             + $"h264parse ! {decoderLaunch} ! videoconvert ! videoscale ! videorate drop-only=true ! "
-            + $"video/x-raw,width={width},height={height},framerate={fps}/1,pixel-aspect-ratio=1/1 ! "
+            + $"video/x-raw,width={width},height={height},framerate=[1/1,{fps}/1],pixel-aspect-ratio=1/1 ! "
             + $"videoconvert ! {encoderLaunch} ! h264parse config-interval=-1 ! "
             + $"mp4mux name=mux fragment-duration={FragmentDurationMs} fragment-mode=dash-or-mss ! "
             + $"appsink name=sink sync=false async=false max-buffers=16 drop=false");
@@ -321,6 +333,15 @@ internal sealed class TranscodeSession
     /// <b>毎回 <see cref="Closed"/> を見て抜ける</b> ── <see cref="Close"/> は
     /// <c>SetState(Null)</c> をこのロックの外で行うので、見ないと畳まれた後の要素へ
     /// 5 秒ぶん <c>Seek</c> を送り続けることになる。
+    ///
+    /// <para>
+    /// <b><see cref="_error"/> も毎回見る。</b> preroll しないまま破綻したパイプライン
+    /// （リンクに失敗した <c>qtdemux</c> など）は seek を永久に受理しないので、
+    /// 見ないと <see cref="SeekTimeoutMs"/> を回り切るまで待ったうえで、
+    /// バスが既に報せている真因の代わりに「位置指定が受理されなかった」だけが残る。
+    /// 抜け方は打ち切りと同じ例外にする ── <see cref="Start"/> の <c>catch</c> が
+    /// <c>start-failed</c> の記録とパイプラインの後始末をまとめて行う唯一の場所である。
+    /// </para>
     /// </summary>
     /// <returns>受理されたら true、閉じられて降りたら false。</returns>
     private bool SeekToStart(Element demux)
@@ -333,6 +354,12 @@ internal sealed class TranscodeSession
         {
             if (Closed)
                 return false;
+
+            if (_error is { } failure)
+            {
+                throw new InvalidOperationException(
+                    "the transcode pipeline failed before it accepted the start position: " + failure);
+            }
 
             if (demux.Seek(1.0, Format.Time, Flags, SeekType.Set, startNs, SeekType.None, -1))
                 return true;
@@ -532,10 +559,23 @@ internal sealed class TranscodeSession
             if (message.Type != MessageType.Error)
                 return;
 
-            var (gerror, _) = message.ParseError();
-            _error ??= gerror.Message;
+            // **debug を捨てない。** 真因はそこにしか出ない ── qtdemux の
+            // `Internal data stream error.` は message だけ読むと原因が分からず、
+            // debug の `streaming stopped, reason not-linked (-1)` で初めてリンクの
+            // 失敗と分かる。
+            var (gerror, debug) = message.ParseError();
+
+            // 発信元は要素名で出す。**`encoder=` は出さない** ── 失敗の発信元が
+            // エンコーダーとは限らず（実測では qtdemux）、読み手をエンコーダーへ誘導する。
+            // 発信元のラッパーはインターンされた GObject なので Dispose しない。
+            string source = message.Src?.Name ?? "?";
+            string detail = string.IsNullOrEmpty(debug) ? gerror.Message : $"{gerror.Message}; {debug}";
+
+            // 組み立て中（位置指定の再試行）はこれを見て降りる（SeekToStart）ので、
+            // detail を丸ごと入れる ── start-failed の detail= がそのまま真因になる。
+            _error ??= detail;
             ActivityLog.Error("transcode.error",
-                $"session='{_open.SessionId}' encoder='{_encoderLaunch}' {gerror.Message}");
+                $"session='{_open.SessionId}' src='{source}' detail='{detail}'");
         }
         catch (Exception ex)
         {

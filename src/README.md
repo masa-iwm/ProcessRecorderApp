@@ -2103,6 +2103,14 @@ flush する。応答ヘッダーは `text/event-stream; charset=utf-8` ＋ `Cac
 `durationMs` / `trigger` / `width` / `height` / `fps`）。常時録画は次のセグメントへ切り替わった
 通知で**前の**ファイルへ書く。
 
+**`width` / `height` / `fps` の出どころは枝ごとに違う。** 単発（イベント録画）は本線の
+sink が negotiate した caps（`EventRecorder._caps*`）で、**常時録画のセグメントは常時枝が
+negotiate した caps**（`ContinuousSegmentShape`。セグメントを開いた時点のサンプルから採る）
+である ── 常時枝は `ContinuousFramerate` / `ContinuousResolution` で本線とは別のレート・
+別の解像度で回るので、本線の値を流用すると**そのファイルには当たらない値**が載る。しかも
+本線の値はイベント録画の枝でしか確定しないため、一度も録画していないプロセスでは空になる。
+読めなかった項目は `null`（sidecar は空欄）。
+
 `trigger` は**開始理由**で、`EventRecorder.Start(string)` の必須引数として開始した側から渡る:
 
 | 値 | 出どころ |
@@ -2340,6 +2348,10 @@ caps 変化のたびに解き直される:
 - fps ＝ `min(プリセットの fps, ソースの fps)`（ソース未知ならプリセットのまま。下限 1）
 - ビットレートは**縮めない**（小さく符号化した方が余裕が出るだけで、上限として害が無い）
 
+**GPU エンコーダーにはビットレートが効かない**（カタログの 4 種は `BitrateUnitPerKbps` が
+null ＝ 書き込む先が無い）。プリセットで実際に変わるのは解像度・fps・GOP だけである
+── 詳細は「録画トランスコード」の節。
+
 選択肢（`Offered`）は**ソースより高いプリセットを出さない**（拡大しても情報は増えず帯域だけ増える）。
 1 つも残らなければ最小（`360p`）だけを出し、末尾には必ず `custom` が付く。**`custom` は
 クランプしない** ── 設定した 4 値をそのまま配る道を常に残す。
@@ -2447,6 +2459,22 @@ E2E の `TranscodeTests` と `tools/Verify-Transcode.ps1 -GstBin … -H264Decode
 `RemoteAuxiliaryEncoderLimit`＝1〜8）で、レコーダーごとのライブ DASH（mux が在るあいだ 1 枠）と
 **同じ計数器を取り合う**。枠が取れなければどちらも `auxiliary encoder busy` で断られる。
 
+**出力の fps は上限として要求する**（capsfilter は `framerate=[1/1,<fps>/1]`）。
+`videorate drop-only=true` は落とすことしかできないので、`framerate=<fps>/1` と固定すると
+**実 fps がそれ未満のファイルを変換できない** ── 失敗は capsfilter ではなく
+`qtdemux` → `h264parse` の delayed link に出て、`qtdemux` が `Internal data stream error.`
+（debug は `streaming stopped, reason not-linked (-1)`）を出したまま preroll しないため、
+バスの ERROR を見た時点で `start-failed`（503）になる。当たるのは
+**sidecar の無い本**（ソース未知としてプリセットの生値が要求される）と、**実 fps が分数の
+カメラ**（実測 `89/3`＝約 29.67。sidecar の `fps` は整数へ丸められるので `min(プリセット,
+ソース)` が 30 になる）である。**上げ方向の複製（`drop-only` を外す）は採らない。**
+
+**GPU エンコーダーにはビットレートが効かない。** カタログの 4 種（`nvh264enc` /
+`qsvh264enc` / `d3d12h264enc` / `amfh264enc`）は `BitrateUnitPerKbps` が null で、
+`H264EncoderDef.WithBitrateKbps` が書き込む先を持たない ── プリセットで効くのは
+解像度・fps・GOP だけである（ライブ DASH でも同じ）。プロパティ名と単位は GPU 実機でしか
+確かめられないので、現状は**制約として記す**にとどめる。
+
 停止理由（ログイベント名 `transcode.<理由>`）:
 
 | 理由 | 起きる条件 |
@@ -2461,6 +2489,15 @@ E2E の `TranscodeTests` と `tools/Verify-Transcode.ps1 -GstBin … -H264Decode
 
 **理由はこの 7 個で全部である**（`TranscodeSession.StopReasons`）。例外の `Message` のような
 自由文は理由に入れず `detail=` へ出す。
+
+バスの ERROR は `transcode.error` へ `session='…' src='<発信元の要素名>' detail='<message>;
+<debug>'` の形で出す。**`encoder=` は出さない** ── 発信元がエンコーダーとは限らず（実測では
+`qtdemux`）、読み手をエンコーダーへ誘導する。**`debug` を落とさない**のは、`Internal data
+stream error.` のように message だけでは原因の分からない ERROR があるためで、
+真因（`reason not-linked (-1)`）は debug にしか出ない。この文字列は
+`transcode.start-failed` の `detail=` にもそのまま入る ── 位置指定の再試行は
+破綻を見た時点で降りる（preroll しないパイプラインは seek を永久に受理しないので、
+見ないと 5 秒待ったうえで真因が失われる）。
 
 #### HTTP
 
@@ -2982,7 +3019,7 @@ GPU テクスチャになるため**アクセシブルテキストが 1 つも�
 | `transcode.client-closed` | INFO | 同上 | 読み手が閉じたので畳んだ（切断・画質の切り替え・ページ遷移）。**枠はまだ返さない**（`GraceMs` の猶予に入る） |
 | `transcode.replaced` | INFO | 同上 | 同じ `session` の新しい要求（＝シーク）に置き換えられた。枠はそのまま引き継ぐ |
 | `transcode.lease-expired` | INFO | `TranscodeStreams` の失効タイマー（1 秒周期） | 読み手が閉じてから `TranscodeLimits.GraceMs` ＝ **10 秒**のあいだ同じ `session` が戻らなかったので枠を返した。**`transcode.client-closed` と対で数える**と、枠が漏れているかどうかが分かる |
-| `transcode.error` | ERROR ／ INFO | `TranscodeStreams.TryOpen` ／ `TranscodeSession` の `OnBusMessage` / `Close` | 組めなかった（候補のエンコーダーが無い・`Start()` が失敗した）／バスの ERROR ／畳むときの例外。**停止理由としての 1 行だけが INFO**（`Close` から出るもの）で、残りは ERROR。**録画は止めない**ので、ここが唯一の観測点になる |
+| `transcode.error` | ERROR ／ INFO | `TranscodeStreams.TryOpen` ／ `TranscodeSession` の `OnBusMessage` / `Close` | 組めなかった（候補のエンコーダーが無い・`Start()` が失敗した）／バスの ERROR（`src='<発信元の要素名>' detail='<message>; <debug>'`。**`encoder=` は出さない**）／畳むときの例外。**停止理由としての 1 行だけが INFO**（`Close` から出るもの）で、残りは ERROR。**録画は止めない**ので、ここが唯一の観測点になる |
 | `transcode.start-failed` | INFO | `TranscodeSession.Close` | 組み立てか位置指定（`qtdemux` への seek の再試行）に失敗して畳んだ（内訳は `detail=`） |
 | `transcode.shutdown` | INFO | `TranscodeStreams.CloseAll`（`Controller` の破棄） | アプリの終了で畳んだ。**猶予の途中の枠もここで返す** |
 | `transcode.leak` | WARN | `TranscodeSession.Close` | 読み取りが走ったままで `Monitor.TryEnter(_readLock)` が抜けず、パイプラインを解放せずに手放した（`dash.leak` / `preview.leak` と同じ規律 ── クラッシュ回避のための意図的なリーク） |
