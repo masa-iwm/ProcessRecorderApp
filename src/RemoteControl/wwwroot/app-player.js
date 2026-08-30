@@ -150,6 +150,20 @@
   // shape as the preview's).
   var followOnFailure = null;
 
+  // **The row was a snapshot; the follow is the only thing that watches it change.**
+  // `openRecording` copies `inProgress` once, and a recording opened while it was being
+  // written stays "in progress" to everything downstream -- the quality menu offers no
+  // preset for it, so a file that finished under the playback could not be transcoded
+  // until the row was opened again. Both halves of the follow see the transition (the
+  // media's `X-In-Progress` and the index's `inProgress`) and clear it here.
+  //
+  // **One direction only.** Nothing turns it back on: a file this page is playing does
+  // not start growing again, and the follow of the *next* file installs its own record.
+  function noteRecordingFinished(stillGrowing) {
+    if (stillGrowing || currentRecording === null) { return; }
+    currentRecording.inProgress = false;
+  }
+
   function releaseFollowUrl() {
     if (followUrl !== null) {
       URL.revokeObjectURL(followUrl);
@@ -354,6 +368,8 @@
       followIndex.totalDuration = body.totalDuration;
       followIndex.inProgress = body.inProgress;
     }
+
+    noteRecordingFinished(followIndex.inProgress);
 
     if (followIndexChanged !== null) { followIndexChanged(); }
     refreshSeekable();
@@ -565,6 +581,7 @@
 
         inProgress = response.headers.get('X-In-Progress') !== 'false';
         followInProgress = inProgress;
+        noteRecordingFinished(inProgress);
 
         // 416 = the file is no longer than what has already been read. The headers
         // still say whether it is going to grow, so this is where a finished
@@ -824,6 +841,7 @@
 
     inProgress = first.headers.get('X-In-Progress') !== 'false';
     followInProgress = inProgress;
+    noteRecordingFinished(inProgress);
     total = totalOf(first, 0);
     // The first body is read outside `request()`, so it needs the same catch:
     // a connection lost while it is being read otherwise rejects into nothing and
@@ -1015,6 +1033,24 @@
   var transcodeSeekAt = 0;
   var transcodeLatched = false;
 
+  // The quality picked from the menu while a phase was running, waiting beside the
+  // position the same way a seek does. **The menu is a seek as well** -- it asks for the
+  // playback to be built at the position it is at -- so a pick that arrives while the
+  // buffer is owned by a removal or a request cannot be acted on there and then: doing so
+  // would put a second request on the wire for media the buffer is still emptying of.
+  // **At most one**, and whoever ends the phase takes it.
+  var transcodePendingQuality = null;
+
+  // Takes that pick, or null when there is none (or when it is what is already being
+  // served, which is nothing to do). **The caller builds the playback again for it rather
+  // than reusing the buffer** -- another preset is another frame, and its media cannot be
+  // appended into what is there.
+  function takePendingQuality(current) {
+    var id = transcodePendingQuality;
+    transcodePendingQuality = null;
+    return id === null || id === current ? null : id;
+  }
+
   // Whether the playback that is being rebuilt was running. Read when the rebuild starts,
   // because by the time the first chunk of the answer lands the element has been emptied
   // and is paused whatever the user asked for.
@@ -1078,6 +1114,7 @@
     transcodeFlush = null;
     transcodePhase = null;
     transcodeLatched = false;
+    transcodePendingQuality = null;
     transcodeResume = true;
     transcodeSeekTarget = null;
   }
@@ -1088,10 +1125,21 @@
   // otherwise clear the phase a newer request is holding.
   function endTranscodeRequest() {
     transcodePhase = null;
-    if (!transcodeLatched) { return; }
-
+    var picked = takePendingQuality(transcodeQuality);
+    var at = transcodeLatched ? transcodeSeekAt : $('player').currentTime;
+    var latched = transcodeLatched;
     transcodeLatched = false;
-    if (transcodeActive) { restartTranscodeAt(transcodeSeekAt); }
+
+    // **A pick is honoured whatever became of the request.** It is the last thing the
+    // user asked for, and this request answering with a refusal (or not answering at all)
+    // is not a reason to drop it -- the refusal it earns is its own.
+    if (picked !== null) {
+      transcodeResume = true;
+      requestTranscode(picked, at, false);
+      return;
+    }
+
+    if (latched && transcodeActive) { restartTranscodeAt(at); }
   }
 
   // Where a seek that arrived while a request was on the wire wants to land, when that is
@@ -1170,6 +1218,18 @@
     var retarget = transcodeRetargetFor(start);
     transcodeLatched = false;
     transcodePhase = null;
+
+    // **A pick made while this was on its way supersedes it.** The answer in hand carries
+    // the frame that was asked for before, so none of it can serve the new preset: the
+    // body is dropped unread (which is what lets the server fold that pipeline) and the
+    // playback is built from a request for what was picked, at where the bar was left.
+    var picked = takePendingQuality(served);
+    if (picked !== null) {
+      controller.abort();
+      transcodeResume = true;
+      requestTranscode(picked, retarget !== null ? retarget : start, false);
+      return;
+    }
 
     // **A refusal, not a failure.** Nothing this page can do makes a codec the browser
     // will not decode playable, so the body is dropped unread -- which is what lets the
@@ -1281,6 +1341,17 @@
       // just left.
       var desired = transcodeLatched ? transcodeSeekAt : retarget;
       transcodeLatched = false;
+      // A quality picked while this buffer was being made is a different init segment,
+      // so this body is dropped unread and the pick is asked for afresh at the newest
+      // position -- leaving it pending here would let an older pick overwrite a newer one
+      // at the next place a pick is taken.
+      var picked = takePendingQuality(transcodeQuality);
+      if (picked !== null) {
+        controller.abort();
+        transcodeResume = true;
+        requestTranscode(picked, desired !== null ? desired : start, false);
+        return;
+      }
       var target = desired !== null && TRANSCODE_RETARGET_SECONDS < Math.abs(desired - start)
         ? desired
         : null;
@@ -1330,6 +1401,17 @@
       // latching: every `input` after the removal started wrote it, and this takes the
       // last one rather than the one the removal began for.
       transcodeLatched = false;
+
+      // A quality picked while the removal ran is taken here for the same reason the
+      // position is: this is the first moment the buffer can be told anything. It is not
+      // a seek within the playback but a new one, so the buffer is not reused.
+      var picked = takePendingQuality(transcodeQuality);
+      if (picked !== null) {
+        transcodeResume = true;
+        requestTranscode(picked, transcodeSeekAt, false);
+        return;
+      }
+
       try {
         transcodeBuffer.timestampOffset = transcodeSeekAt;
       } catch (error) {
@@ -3165,6 +3247,17 @@
       openOriginal(at);
       return;
     }
+    // **The same shortcut a seek takes.** While a phase is running the buffer belongs to
+    // the removal or the request that owns it, and asking here would overwrite the phase
+    // they are waiting on -- the removal's `updateend` would then be read as an ordinary
+    // append's. The pick waits beside the position, and the end of the phase takes both.
+    if (transcodePhase !== null) {
+      transcodeSeekAt = at;
+      transcodeLatched = true;
+      transcodePendingQuality = id;
+      return;
+    }
+
     // Picking a quality is asking to watch it, the same as opening a row: the playback
     // that is built for it starts. (A seek is the other case -- see `restartTranscodeAt`.)
     transcodeResume = true;

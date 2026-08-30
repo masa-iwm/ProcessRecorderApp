@@ -2465,6 +2465,12 @@ E2E の `TranscodeTests` と `tools/Verify-Transcode.ps1 -GstBin … -H264Decode
 `RemoteAuxiliaryEncoderLimit`＝1〜8）で、レコーダーごとのライブ DASH（mux が在るあいだ 1 枠）と
 **同じ計数器を取り合う**。枠が取れなければどちらも `auxiliary encoder busy` で断られる。
 
+**空いた枠は待っている DASH が先に取る。** 断られた DASH は録画のサンプルが来るたびに
+`TryAcquire` を試し直すのに対し、トランスコードの要求は「SSE で空きを知った利用者が押す」
+経路なので、`lease-expired` や他の DASH の解放で空いた枠は構造的に DASH が先に握る。
+**永久に飢えることは無い** ── 待っている DASH の貸出も最後の snapshot から
+`DashPreviewLimits.LeaseMs`（10 秒）で落ちるので、誰も見ていない DASH は枠を返す。
+
 **出力の fps は上限として要求する**（capsfilter は `framerate=[1/1,<fps>/1]`）。
 `videorate drop-only=true` は落とすことしかできないので、`framerate=<fps>/1` と固定すると
 **実 fps がそれ未満のファイルを変換できない** ── 失敗は capsfilter ではなく

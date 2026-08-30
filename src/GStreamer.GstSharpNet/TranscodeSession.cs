@@ -222,8 +222,12 @@ internal sealed class TranscodeSession
     /// <summary>破綻の内容（無事なら null）。</summary>
     public string? Error => _error;
 
-    /// <summary><see cref="Close"/> 済みか。</summary>
-    private bool Closed => Volatile.Read(ref _closed) != 0;
+    /// <summary>
+    /// <see cref="Close"/> 済みか。<b><see cref="Start"/> の後に外から見る</b>
+    /// ── 組み立ての最中に同じ <c>session</c> の次の要求へ置き換えられると、
+    /// <see cref="Error"/> は null のまま畳まれたパイプラインが残る。
+    /// </summary>
+    internal bool Closed => Volatile.Read(ref _closed) != 0;
 
     /// <summary>
     /// もう続きが来ないか。<b>2 つの判定を掛け合わせる。</b>

@@ -95,16 +95,18 @@ fMP4 の配信（`GET /api/recorders/{id}/preview.mp4`）を、発行物へ本�
 > **同梱ランタイムの上では変換の経路は依然として 1 行も走らない**（同梱物としての true 経路は
 > `tools/Verify-Transcode.ps1`）。
 > **GPU の在る機械で `openh264dec` が無ければ `TranscodeTests` の 6 件と
-> `WebUiBrowserTests` の変換の 2 件は落ちる** ── その場合は
+> `WebUiBrowserTests` の変換の 3 件は落ちる** ── その場合は
 > `PROCESSRECORDERAPP_E2E_H264_DECODER` にその機械のデコーダー（`d3d11h264dec` など）を置く。
 
-`WebUiBrowserTests` は同じ前提で**ブラウザ側**を見る 2 件を持つ ──
+`WebUiBrowserTests` は同じ前提で**ブラウザ側**を見る 3 件を持つ ──
 `TheRecordingQualityMenuTranscodesAndKeepsThePositionAcrossQualities`（画質メニューが変換再生へ
 切り替わり、取り込んでいない位置へのシークがパイプラインを作り直し、元のままへ戻しても位置が
 残ること、そして**要求が飛んでいる最中にページを離れても枠を返すこと**）と
 `TheRecordingQualityMenuShowsBusyWhileAnotherSessionHoldsTheSlot`（他人が枠を握っているあいだ
-項目が `(busy)` で無効になり、手放せば戻ること）。**変換を MSE へ流し込む形を実行するのは
-この 2 件だけである。**
+項目が `(busy)` で無効になり、手放せば戻ること）、
+`TheRecordingQualityMenuOffersPresetsOnceTheFollowedRecordingFinishes`（録画中に開いた本が
+完了すると、開き直さなくても画質メニューにプリセットが出ること）。**変換を MSE へ流し込む形を
+実行するのは前の 2 件だけである。**
 
 **上書きを置かないインスタンスでは false の経路しか走らない。** 変換にはハードウェア H.264
 デコーダーが要り、同梱ランタイムにソフトウェアの H.264 デコーダーは無いので、開発機と CI では

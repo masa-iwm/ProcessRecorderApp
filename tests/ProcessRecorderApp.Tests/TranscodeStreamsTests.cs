@@ -1,3 +1,5 @@
+using System;
+using System.IO;
 using ProcessRecorderApp.Components;
 using ProcessRecorderApp.GStreamer;
 using Xunit;
@@ -92,5 +94,45 @@ public sealed class TranscodeStreamsTests
         Assert.Null(reader);
         Assert.Equal(TranscodeReasons.Unavailable, reason);
         Assert.Equal(0, slots.InUse);
+    }
+
+    private static string TranscodeStreamsSource()
+        => File.ReadAllText(RepositoryFiles.At("src", "GStreamer.GstSharpNet", "TranscodeStreams.cs"));
+
+    /// <summary>
+    /// <b><c>Start()</c> の後の関門が「破綻」だけでなく「畳まれた」も見ること。</b>
+    ///
+    /// <para>
+    /// 同じ <c>session</c> の次の要求（＝シーク）は、走っている側を
+    /// <c>CloseAsReplaced</c> で畳んでから自分を組む ── それが<b>先の
+    /// <c>Start()</c> の最中に</b>起きると、<c>SeekToStart</c> は <c>Closed</c> を見て
+    /// 降りるので <c>Error</c> は null のままになる。閉じを見ないと、そこで
+    /// <c>transcode.start</c> を記録したうえ<b>畳んだ session の reader</b>を
+    /// 200 で返すことになる（読めるものは何も無い）。
+    /// </para>
+    /// <para>
+    /// <b>順序まで固定する。</b> 検査が <c>transcode.start</c> の記録より後ろにあっては
+    /// 記録が残ってしまうので、<c>Start()</c> と記録の<b>あいだ</b>に在ることを見る。
+    /// この経路は能力 true でしか通らず（<c>ResolveEncoder</c> がネイティブへ降りる）、
+    /// 競合そのものを L1 で起こす手立ても無いので、ここで縛れるのはソースの形である。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void TheGateAfterStartLooksAtClosedAsWellAsError()
+    {
+        string source = TranscodeStreamsSource();
+
+        int start = source.IndexOf("session.Start();", StringComparison.Ordinal);
+        int gate = source.IndexOf("session.Error is not null || session.Closed", StringComparison.Ordinal);
+        int logged = source.IndexOf("ActivityLog.Info(\"transcode.start\"", StringComparison.Ordinal);
+
+        Assert.True(0 <= start, "TranscodeStreams.cs に session.Start(); がありません。");
+        Assert.True(
+            0 <= gate,
+            "Start() の後の関門が Closed を見ていません（置き換えられた session の reader が返る）。");
+        Assert.True(0 <= logged, "TranscodeStreams.cs に transcode.start の記録がありません。");
+        Assert.True(
+            start < gate && gate < logged,
+            $"関門が Start() と transcode.start のあいだにありません（start={start} gate={gate} log={logged}）。");
     }
 }

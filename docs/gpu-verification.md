@@ -230,23 +230,14 @@ GPU 実機でしか切り分けられない。
 GPU 実機に**発行物一式**（`dotnet publish -p:PublishProfile=win-x64-aot` の出力）とこのリポジトリの `tools/` を持ち込み、PowerShell で:
 
 ```powershell
-# 1. まずハーネス自身を確かめる（GPU 不要・1分程度）。ケースは 4 件（下の「緑にならない」を先に読む）。
+# 1. まずハーネス自身を確かめる（GPU 不要・1分程度）。ケースは 4 件。
 .\tools\Verify-HighResolution.ps1 -SmokeTest -PublishDir <発行ディレクトリ>
 
 # 2. 本番。19 ケース（`-CameraName` を渡すと 27 ケース）。既定の録画窓 4 秒＋常時録画の待ちで 30 分程度（概算）。
 .\tools\Verify-HighResolution.ps1 -PublishDir <発行ディレクトリ> -MonitorIndex 1
 ```
 
-> **現在このスクリプトは緑にならない ── fragmented（既定）の本の尺を読めない。**
-> `Test-Mp4` は `moov` の `mvhd` の duration を読むが、fragmented MP4 のそれは 0 であり、
-> `FragmentedOutput` の既定は `true` である（スクリプトはこの設定を書かない）。
-> そのため録画自体は正常でも `duration = 0s` になって尺の判定に落ち、
-> **`-SmokeTest` は 4 件中 3 件が、本番も録画するケースが全部 FAILED になる**
-> （開発機で実測。sidecar の `durationMs` は 4769 で、MP4 は 832KB の正常な本）。
-> `event fps` も同じ理由で `n/a` になる。**この状態で GPU 機へ持ち込むと、製品と無関係な理由で
-> 赤が返る。** 直すなら `Test-Mp4` を `sidx` / `tfdt` からも尺を採れるようにするか、
-> ケースの settings に `FragmentedOutput=false` を書くかのどちらかである。
-
+- 尺は `moov` の `mvhd` から採り、それが 0 のとき（fragmented MP4 ── `FragmentedOutput` の既定）は sidecar `<ファイル>.mp4.json` の `durationMs` を使う。どちらも無く `moof` が 1 つ以上あれば `fragmented (n moof)` として尺は判定しない（`event fps` も同じ理由で `n/a` になる）。
 - 冒頭の `Fixed build : YES` と `Continuous : YES` を必ず確認する。どちらかが NO なら、それ以降の結果は無意味（古いバイナリ）。
 - 終了コード 0 なら全ケース期待どおり。1 なら `FAILED cases: N` と作業ディレクトリのパスが出るので、そのディレクトリごと持ち帰る（`activity.log` と `debug.log` が入っている）。
 - レポートは `high-resolution-report.md`。全ケース OK のときは `%TEMP%` にコピーして作業ディレクトリを消すので、**レポートだけ持ち帰れば足りる**。

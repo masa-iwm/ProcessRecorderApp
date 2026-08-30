@@ -130,9 +130,15 @@ internal sealed partial class TranscodeStreams : ITranscodeSource, IDisposable
 
         session.Start();
 
-        if (session.Error is not null)
+        // **閉じも見る。** 同じ session の次の要求が、この Start の最中に
+        // CloseAsReplaced を掛けてくることがある ── そのとき Start は SeekToStart が
+        // Closed を見て降りるので、Error は null のまま「畳んだ session の reader」を
+        // 返してしまう（そして transcode.start を記録する）。**畳まれていたら断る。**
+        // 記録は足さない ── 置き換えた側が transcode.replaced を出している。
+        if (session.Error is not null || session.Closed)
         {
             // **失敗しても枠は猶予へ戻す。** すぐ返すと、同じ相手の再試行が他人に枠を取られる。
+            // 置き換えられていた場合は Forget が何もしない（枠は置き換えた側のもの）。
             // **記録はここでは足さない** ── 内訳（file= と例外の文言）は
             // TranscodeSession.Start が transcode.start-failed の detail= へ 1 行で出している。
             Forget(session);

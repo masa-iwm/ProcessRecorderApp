@@ -1893,6 +1893,100 @@ public sealed class WebUiBrowserTests(PublishedApp app, ITestOutputHelper output
     }
 
     /// <summary>
+    /// 追いかけ再生で開いた本の構成（fMP4・変換が成立するランタイム・枠 1 つ）。
+    /// </summary>
+    private static SettingsFile FragmentedTranscodeSettings()
+    {
+        var settings = RemoteBase(allowGuestRead: true);
+        settings.FragmentedOutput = true;
+        settings.RemoteAuxiliaryEncoderLimit = 1;
+        settings.AddRecorder("R1");
+        return settings;
+    }
+
+    /// <summary>
+    /// 録画中に開いた本の画質メニュー。<b>高さは 0 のまま</b> ── 高さは sidecar から来るので、
+    /// 録画中の行を開いた時点では入っておらず、行を開き直さない限り入らない。高さが分からない
+    /// 本にはプリセットを全部並べる（サーバーが実 caps に対して解決し直す）。
+    /// </summary>
+    private const string QualityMenuOfferedForUnknownHeight =
+        "original=Original [checked], 1080p=1080p, 720p=720p, 480p=480p, 360p=360p";
+
+    /// <summary>
+    /// <b>録画中に開いた本が完了したら、画質メニューにプリセットが出ること。</b>
+    ///
+    /// <para>
+    /// 変換できるのは完成した本だけなので、録画中に開いた再生のメニューは
+    /// <b>元のまま 1 つ</b>で、項目が 1 つのメニューは描かれない。問題はその後で、
+    /// 開いた行の <c>inProgress</c> を 1 度写したきりにすると、<b>停止しても</b>
+    /// メニューは出ないままになる ── 利用者から見ると「この本だけ画質を選べない」形で、
+    /// 一覧へ戻って開き直すまで直らない。
+    /// </para>
+    /// <para>
+    /// 追いかけ再生は伸びが止まったことを自分で観測している（<c>X-In-Progress</c> と
+    /// 索引の <c>inProgress</c>）ので、<b>開いたままでも</b>メニューは出る。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task TheRecordingQualityMenuOffersPresetsOnceTheFollowedRecordingFinishes()
+    {
+        Assert.SkipUnless(EdgeCdp.IsAvailable, EdgeCdp.UnavailableReason);
+
+        using var instance = AppInstance.Create(
+            app, FragmentedTranscodeSettings(), configure: UseSoftwareDecoder);
+        int port = WaitForPort(instance);
+        using var client = CreateAuthorizedClient(port);
+
+        await AssertTranscodeIsAvailableAsync(client, instance);
+
+        await using var browser = await EdgeCdp.LaunchAsync(Ct);
+        await browser.NavigateAsync($"http://127.0.0.1:{port}/", PageBudget, Ct);
+        Assert.True(await browser.WaitUntilAsync($"!{IsHidden("mainSections")}", PageBudget, Ct), "画面が出ませんでした。");
+        Assert.True(await browser.EvaluateBoolAsync(GoToRecordings, Ct), "録画のページへ移れませんでした。");
+
+        Assert.Equal(0, instance.Run("start-recording-all").ExitCode);
+
+        Assert.True(
+            await WaitForFirstRowAsync(browser, RowIsRecordingFragment, PlaybackBudget),
+            "録画中のファイルが fragmented として一覧に出ませんでした: "
+                + await browser.EvaluateStringAsync(FirstRowState, Ct)
+                + Environment.NewLine + await browser.EvaluateStringAsync(ListingDump, Ct)
+                + Environment.NewLine + instance.DiagnosticDump());
+
+        Assert.True(await browser.EvaluateBoolAsync(ClickFirstPlay, Ct), "一覧に行がありません。");
+        Assert.True(
+            await browser.WaitUntilAsync($"0.5 < {PlayerTime}", PlaybackBudget, Ct),
+            "録画中の追いかけ再生が始まりませんでした: " + await browser.EvaluateStringAsync(TextOf("playerStatus"), Ct));
+
+        // 録画中は元のまま 1 つきり ── メニューそのものが描かれない。
+        // **この断定が先に立たないと、下の緑は「最初から出ていた」ことしか語らない。**
+        Assert.True(
+            await browser.EvaluateBoolAsync(QualityMenuHidden, Ct),
+            "録画中の本に画質メニューが出ています: " + await browser.EvaluateStringAsync(QualityMenuDump, Ct));
+
+        // 停止するまで少し録っておく（完了後の再生に進む余地を残すため）。
+        await Task.Delay(TimeSpan.FromSeconds(6), Ct);
+        Assert.Equal(0, instance.Run("stop-recording-all").ExitCode);
+
+        Assert.True(
+            await browser.WaitUntilAsync(
+                $"{TextOf("playerStatus")}.indexOf('complete') === 0", PlaybackBudget, Ct),
+            "停止しても complete になりませんでした: " + await browser.EvaluateStringAsync(TextOf("playerStatus"), Ct));
+
+        // ---- ここが本題 ----
+
+        Assert.True(
+            await browser.WaitUntilAsync($"{QualityMenuHidden} === false", PlaybackBudget, Ct),
+            "完了しても画質メニューが出ません（開いた行の inProgress が写したままになっている）: "
+                + await browser.EvaluateStringAsync(CapabilitiesDump, Ct));
+
+        Assert.Equal(
+            QualityMenuOfferedForUnknownHeight,
+            await WaitForQualityMenuAsync(browser, QualityMenuOfferedForUnknownHeight, SlotBudget));
+        await CloseQualityMenuAsync(browser);
+    }
+
+    /// <summary>
     /// <b>バーの「+10s」が実際に位置を 10 秒進め、速度メニューが <c>playbackRate</c> を変える。</b>
     ///
     /// <para>
@@ -2859,7 +2953,8 @@ public sealed class WebUiBrowserTests(PublishedApp app, ITestOutputHelper output
 
     /// <summary>
     /// <b>sidecar が届いたことで</b>一覧が自動で描き直されること ── SSE の
-    /// <c>updated</c>（内容が変わった）が「取り直す合図」として実際に配線されていること。
+    /// <c>completed</c>／<c>updated</c>（索引の 500ms デバウンスで 1 回に纏まり得る）が
+    /// 「取り直す合図」として実際に配線されていること。
     ///
     /// <para>
     /// <b>Refresh を押さない。</b> 行そのものは録画を始めた時点（<c>added</c>）で出るので、

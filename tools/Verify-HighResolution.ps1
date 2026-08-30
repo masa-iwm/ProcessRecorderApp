@@ -307,6 +307,7 @@ function Test-Mp4 {
         $res = [pscustomobject]@{
             HasFtyp = $false; HasMoov = $false; HasMdat = $false
             HasAvc1 = $false; DurationSec = $null; FrameCount = $null; EffectiveFps = $null
+            MoofCount = 0; DurationSource = 'moov'
         }
 
         while ($fs.Position -lt $fs.Length - 8) {
@@ -321,6 +322,7 @@ function Test-Mp4 {
             switch ($type) {
                 'ftyp' { $res.HasFtyp = $true }
                 'mdat' { $res.HasMdat = $true }
+                'moof' { $res.MoofCount = $res.MoofCount + 1 }
                 'moov' {
                     $res.HasMoov = $true
                     $null = $br.ReadBytes(4)
@@ -361,8 +363,56 @@ function Test-Mp4 {
             }
             $fs.Position = $start + $size
         }
+
+        # A fragmented MP4 -- which FragmentedOutput (default true) produces -- has a zero
+        # mvhd duration: the length lives in the fragments and the moov is never rewritten.
+        # Prefer the sidecar the app writes beside the recording (<file>.mp4.json), and
+        # where there is none, report the length as unknown rather than calling a good
+        # recording zero-length.
+        if (-not ($res.DurationSec -gt 0)) {
+            $res.DurationSource = 'unknown'
+            $sidecar = $Path + '.json'
+            if (Test-Path $sidecar) {
+                try {
+                    $meta = [IO.File]::ReadAllText($sidecar, [Text.Encoding]::UTF8) | ConvertFrom-Json
+                    if ($meta.durationMs -gt 0) {
+                        $res.DurationSec = [math]::Round($meta.durationMs / 1000, 3)
+                        $res.DurationSource = 'sidecar'
+                    }
+                } catch {
+                    # Unreadable sidecar = no sidecar. The moof count below is the answer.
+                }
+            }
+            if (($res.DurationSource -ne 'sidecar') -and ($res.MoofCount -ge 1)) {
+                $res.DurationSource = 'fragmented'
+            }
+        }
+
         return $res
     } finally { $fs.Dispose() }
+}
+
+# Whether the length check is satisfied. FRAGMENTED WITHOUT A SIDECAR IS NOT A FAILURE:
+# there is no length to read, and the structural checks above already say the file is a
+# real MP4 with an H.264 track. Only a non-fragmented file with no length fails here.
+function Test-Mp4Duration {
+    param($Probe)
+
+    if ($null -eq $Probe) { return $false }
+    return ($Probe.DurationSec -gt 0) -or ($Probe.DurationSource -eq 'fragmented')
+}
+
+# How the length reads in the console line and the report table.
+function Format-Mp4Duration {
+    param($Probe)
+
+    if ($null -eq $Probe) { return 'n/a' }
+    if ($Probe.DurationSec -gt 0) {
+        if ($Probe.DurationSource -eq 'sidecar') { return ('{0}s (sidecar)' -f $Probe.DurationSec) }
+        return ('{0}s' -f $Probe.DurationSec)
+    }
+    if ($Probe.DurationSource -eq 'fragmented') { return ('fragmented ({0} moof)' -f $Probe.MoofCount) }
+    return 'n/a'
 }
 
 function Get-ActivityLines {
@@ -807,7 +857,7 @@ function Invoke-Case {
     $contClosed = @($contFiles | Select-Object -First ([Math]::Max(0, $contFiles.Count - 1)))
     $contBad    = @($contClosed | Where-Object {
         $p = Test-Mp4 $_.FullName
-        -not ($p.HasFtyp -and $p.HasMoov -and $p.HasMdat -and $p.HasAvc1 -and $p.DurationSec -gt 0)
+        -not ($p.HasFtyp -and $p.HasMoov -and $p.HasMdat -and $p.HasAvc1 -and (Test-Mp4Duration $p))
     })
     $contInitOk   = @(Get-ActivityLines 'recorder\.continuous-init ok')
     $contInitFail = @(Get-ActivityLines 'recorder\.continuous-init fail')
@@ -821,7 +871,7 @@ function Invoke-Case {
         $ok = ($start.ExitCode -eq 0) -and ($stop.ExitCode -eq 0) -and
               ($initOk.Count -eq $expectedRecorders) -and ($initFail.Count -eq 0) -and ($stalled.Count -eq 0) -and
               ($null -ne $probe) -and $probe.HasFtyp -and $probe.HasMoov -and $probe.HasMdat -and
-              $probe.HasAvc1 -and ($probe.DurationSec -gt 0)
+              $probe.HasAvc1 -and (Test-Mp4Duration $probe)
 
         # The continuous half is judged separately so a failure says which one broke:
         # the event recording above, or the always-on branch here.
@@ -847,6 +897,7 @@ function Invoke-Case {
         Stalled     = $stalled.Count
         Mp4Bytes    = if ($mp4) { $mp4.Length } else { 0 }
         DurationSec = if ($probe) { $probe.DurationSec } else { $null }
+        DurationText = Format-Mp4Duration $probe
         FrameCount  = if ($probe) { $probe.FrameCount } else { $null }
         EffectiveFps = if ($probe) { $probe.EffectiveFps } else { $null }
         ValidMp4    = if ($probe) { $probe.HasFtyp -and $probe.HasMoov -and $probe.HasMdat -and $probe.HasAvc1 } else { $false }
@@ -882,9 +933,8 @@ foreach ($case in $cases) {
     Write-Host "== $($case.Name)"
     $r = Invoke-Case -Case $case
 
-    Write-Host ("   exit start/stop = {0}/{1}   selected = {2}   duration = {3}s   -> {4}" -f `
-        $r.StartExit, $r.StopExit, $r.Selected,
-        $(if ($null -ne $r.DurationSec) { $r.DurationSec } else { 'n/a' }),
+    Write-Host ("   exit start/stop = {0}/{1}   selected = {2}   duration = {3}   -> {4}" -f `
+        $r.StartExit, $r.StopExit, $r.Selected, $r.DurationText,
         $(if ($r.Ok) { 'OK' } else { 'FAILED' }))
 
     if ($r.Stalled -gt 0 -and $case.ExpectStall) {
@@ -918,7 +968,11 @@ $null = $sb.AppendLine("- Recording window per case: ${RecordSeconds}s")
 $null = $sb.AppendLine()
 $null = $sb.AppendLine('A case counts as OK only if all of these hold: start and stop both exit 0, exactly one')
 $null = $sb.AppendLine('`recorder.init ok` and no `recorder.init fail`, no "never reached PLAYING" anywhere, and a')
-$null = $sb.AppendLine('structurally valid MP4 with a non-zero duration.')
+$null = $sb.AppendLine('structurally valid MP4 whose duration is not zero. The duration comes from the moov, or,')
+$null = $sb.AppendLine('when that is zero (a fragmented MP4 -- the product default), from the sidecar')
+$null = $sb.AppendLine('`<file>.mp4.json`. With neither, a file carrying `moof` boxes reads as')
+$null = $sb.AppendLine('`fragmented (n moof)` and its length is not judged; `event fps` is `n/a` for the same')
+$null = $sb.AppendLine('reason (the moov of a fragmented file counts no samples).')
 $null = $sb.AppendLine()
 $null = $sb.AppendLine("Continuous rows add: exactly one ``recorder.continuous-init ok`` and no ``... fail``, at least")
 $null = $sb.AppendLine("$($ContinuousMinSegments - 1) CLOSED segment(s) out of the $ContinuousMinSegments asked for, every closed segment structurally")
@@ -931,9 +985,9 @@ $null = $sb.AppendLine('|---|---|---|---|---|---|---|---|---|---|')
 foreach ($r in $results) {
     $seg = if ($r.Continuous) { '{0} ({1}/{2})' -f $r.ContSegments, $r.ContClosed, $r.ContBad } else { '-' }
     $fps = if ($null -ne $r.EffectiveFps) { '{0} ({1}f)' -f $r.EffectiveFps, $r.FrameCount } else { 'n/a' }
-    $null = $sb.AppendLine(('| {0} | {1}/{2} | `{3}` | {4}/{5} | {6} | {7} | {8}s | {9} | {10} | {11} |' -f `
+    $null = $sb.AppendLine(('| {0} | {1}/{2} | `{3}` | {4}/{5} | {6} | {7} | {8} | {9} | {10} | {11} |' -f `
         $r.Case, $r.StartExit, $r.StopExit, $r.Selected, $r.InitOk, $r.InitFail, $r.Stalled,
-        $(if ($r.ValidMp4) { 'valid' } else { 'INVALID' }), $r.DurationSec, $fps, $seg,
+        $(if ($r.ValidMp4) { 'valid' } else { 'INVALID' }), $r.DurationText, $fps, $seg,
         $(if ($r.Ok) { 'OK' } else { '**FAILED**' })))
 }
 
@@ -985,7 +1039,7 @@ if ($dots.Count -eq 0) {
 Set-Content -Path $reportPath -Value $sb.ToString() -Encoding utf8
 
 Write-Host '---------------------------------------------------------------'
-$results | Format-Table Case, StartExit, StopExit, InitOk, InitFail, Stalled, DurationSec, Ok -AutoSize
+$results | Format-Table Case, StartExit, StopExit, InitOk, InitFail, Stalled, DurationText, Ok -AutoSize
 if ($script:lastCaseName) {
     $safe = ($script:lastCaseName -replace '[^A-Za-z0-9]+', '-').Trim('-')
     if ($safe.Length -gt 60) { $safe = $safe.Substring(0, 60) }
