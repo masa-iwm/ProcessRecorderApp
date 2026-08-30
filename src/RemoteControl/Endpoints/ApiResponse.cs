@@ -41,15 +41,19 @@ internal static class ApiResponse
     /// 「エンジンがまだ使えない」（12）のときだけ <c>Retry-After</c> を付ける
     /// ── 待てば直る唯一の失敗だからである。
     /// <paramref name="filename"/> は停止が残したファイル（16 / 17 のときだけ）。
+    /// <paramref name="retryAfterSeconds"/> はその秒数の上書き
+    /// （UI スレッドが塞がっている 12 は待つ理由が違うので短い）。
     /// </summary>
     public static Task WriteExitCodeErrorAsync(
-        HttpContext ctx, int exitCode, string message, string? filename = null)
+        HttpContext ctx, int exitCode, string message, string? filename = null,
+        int? retryAfterSeconds = null)
     {
         int status = RemoteApiRules.HttpStatusFor(exitCode);
         if (status == 503)
         {
             ctx.Response.Headers.RetryAfter =
-                RemoteApiRules.RetryAfterSecondsWhenNotReady.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                (retryAfterSeconds ?? RemoteApiRules.RetryAfterSecondsWhenNotReady)
+                    .ToString(System.Globalization.CultureInfo.InvariantCulture);
         }
         return WriteErrorAsync(ctx, status, exitCode, message, filename);
     }

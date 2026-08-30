@@ -1758,6 +1758,12 @@ WinUI アプリ側にある）の `RunOnUiAsync` で、`DispatcherQueue.TryEnque
 **`RunContinuationsAsynchronously` は必須** ── 無いと HTTP 側の継続（直列化と送信）が
 UI スレッドで走る。`TryEnqueue` が false なら `RemoteApiException(12, "ui thread unavailable")`
 ＝ 503。UI スレッドから返す値はすべて不変 DTO へ写してから境界を越える。
+**UI スレッドへ乗るまでに 30 秒の期限がある**（`UiThreadEntryDeadline`）── 超えると
+`RemoteApiException(12, "ui thread busy")` ＝ 503 ＋ `Retry-After: 2`
+（`RemoteApiRules.RetryAfterSecondsWhenUiThreadBusy`）。**測るのは「乗るまで」であって
+「終わるまで」ではない** ── 停止は `MaxAdvisedStopFinalizeTimeoutMs`（50 秒）まで正当に掛かるので、
+全体へ掛けると正常に遅い停止を「塞がっている」と偽って断ることになる。
+降りても UI 側の実行は取り消さない（`DispatcherQueue` に取り消しは無い）。捨てるのは待つ側だけである。
 
 サーバーの寿命は `Services/RemoteControlService`（アプリの起動時に `Start`、
 `AppWindow.Destroying` で `Dispose`）。再起動を要する設定 6 キー（待ち受け 3 ＋ トークン ＋ `RemoteUsers` ＋
@@ -1992,7 +1998,7 @@ UI スレッドで走る。`TryEnqueue` が false なら `RemoteApiException(12,
 | `0` | 200 | 成功 |
 | `4` | 400 | 引数・本文が不正。HTTP 層だけで起きる失敗（401 / 403 / 未知の経路の 404 / パスの拒否）もこの番号を使う（`ApiResponse.HttpLayerExitCode`。`public const int` にすると `DocumentationDriftTests` が終了コード表への掲載を要求してしまうので `internal`） |
 | `10` | 500 | 既定の失敗 |
-| `12` | 503 | レコーダー／エンジンが未準備。**`Retry-After: 5` を付ける唯一の枝**（`RemoteApiRules.RetryAfterSecondsWhenNotReady`） |
+| `12` | 503 | レコーダー／エンジンが未準備。**`Retry-After` を付ける唯一の枝**。既定は 5（`RemoteApiRules.RetryAfterSecondsWhenNotReady`）で、UI スレッドへ乗れなかった `ui thread busy` だけ 2（`RetryAfterSecondsWhenUiThreadBusy`。`RemoteApiException.RetryAfterSeconds` で上書きする） |
 | `11` / `13` | 404 | 変数が未定義／レコーダーが見つからない |
 | `14` | 409 | いまは実行できない操作 |
 | `15` | 200 | 健全でないレコーダーがある ── **処理そのものは成功**なので本文で表現する |

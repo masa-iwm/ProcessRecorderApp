@@ -2313,7 +2313,7 @@ public sealed class WebUiBrowserTests(PublishedApp app, ITestOutputHelper output
             await browser.WaitUntilAsync($"0.5 < {PlayerTime}", PlaybackBudget, Ct),
             "追いかけ再生が始まりませんでした: " + await browser.EvaluateStringAsync(TextOf("playerStatus"), Ct));
 
-        // 索引が届くまではバーは表示だけ（波 2 の挙動）。
+        // 索引が届くまではシークバーは表示だけで、操作はできない。
         Assert.True(
             await browser.WaitUntilAsync(SeekBarIsEnabled, PlaybackBudget, Ct),
             "索引が届かずシークバーが操作できないままです: "
@@ -2511,6 +2511,30 @@ public sealed class WebUiBrowserTests(PublishedApp app, ITestOutputHelper output
         settings.AddRecorder(UnusedRecorder);
         return settings;
     }
+
+    /// <summary>
+    /// <see cref="ListingSettings"/> と同じ 2 台に<b>製品既定のファイル名テンプレート</b>を
+    /// 与えたもの。
+    ///
+    /// <para>
+    /// <b>ハーネスの既定（<c>{Name}_{Now:HHmmssfff}.mp4</c>）ではレコーダー絞り込みの
+    /// 半分が無検査になる。</b> sidecar の無い行（＝録画中の行）のレコーダー名は
+    /// <c>RecordingIndex.FilenamePattern</c>（<c>yyyyMMdd_HHmmss_&lt;名前&gt;.mp4</c>）
+    /// でしか決まらず、ハーネスの形はこれに当たらないので名前が空になる。
+    /// そこだけを見るこのケースに限って製品既定を入れる
+    /// （<b>ハーネスの既定は変えない</b> ── ms 精度は同一秒の衝突を避けるためにある）。
+    /// </para>
+    /// </summary>
+    private static SettingsFile ProductTemplateListingSettings()
+    {
+        var settings = RemoteBase(allowGuestRead: true);
+        settings.AddRecorder(UsedRecorder).FilenameTemplate = ProductFilenameTemplate;
+        settings.AddRecorder(UnusedRecorder).FilenameTemplate = ProductFilenameTemplate;
+        return settings;
+    }
+
+    /// <summary>製品既定のファイル名テンプレート（<c>EventRecorder.FilenameTemplate</c> の既定）。</summary>
+    private const string ProductFilenameTemplate = "{Now:yyyyMMdd_HHmmss}_{Name}.mp4";
 
     private const string UsedRecorder = "R1";
     private const string UnusedRecorder = "R2";
@@ -2740,13 +2764,19 @@ public sealed class WebUiBrowserTests(PublishedApp app, ITestOutputHelper output
     /// 月を動かしても<b>行は残る</b>のが要点である ── 選んだ日は選んだままで、
     /// 別の月を見ているあいだはその日に強調が付かないだけである。
     /// </para>
+    /// <para>
+    /// <b>最後に録画中の行へも絞り込みを掛ける。</b> sidecar がまだ無い行のレコーダー名は
+    /// ファイル名からしか決まらないので、ここだけ製品既定のテンプレートで走らせる
+    /// （<see cref="ProductTemplateListingSettings"/>）。
+    /// </para>
     /// </summary>
     [Fact]
     public async Task TheRecorderFilterAndTheMonthNavigationNarrowTheList()
     {
         Assert.SkipUnless(EdgeCdp.IsAvailable, EdgeCdp.UnavailableReason);
 
-        using var instance = AppInstance.Create(app, ListingSettings(), configure: UseIsolatedRoot);
+        using var instance = AppInstance.Create(
+            app, ProductTemplateListingSettings(), configure: UseIsolatedRoot);
         int port = WaitForPort(instance);
         using var client = CreateClient(port);
 
@@ -2803,6 +2833,72 @@ public sealed class WebUiBrowserTests(PublishedApp app, ITestOutputHelper output
                 $"{TextOf("calendarMonth")} === {JsonSerializer.Serialize(original)}", PageBudget, Ct),
             "元の月へ戻りませんでした（" + await browser.EvaluateStringAsync(TextOf("calendarMonth"), Ct) + "）。");
         Assert.True(await browser.EvaluateBoolAsync(SelectedDayIsToday, Ct), "戻った月で今日の強調が消えています。");
+
+        // ---- 録画中の行にも絞り込みが効くこと ----
+        //
+        // sidecar はまだ書かれていないので、この行のレコーダー名はファイル名からしか
+        // 決まらない（製品既定のテンプレートで走らせている理由）。
+
+        await PostAsync(client, $"api/recorders/{UsedRecorder}/start");
+        Assert.True(await WaitWithRefreshAsync(browser, $"{RowCount} === 2", SidecarBudget),
+            $"録画中の行が出ませんでした（{await browser.EvaluateNumberAsync(RowCount, Ct):F0} 行）: "
+                + instance.DiagnosticDump());
+        Assert.Contains("recording", await browser.EvaluateStringAsync(FirstRowState, Ct), StringComparison.Ordinal);
+
+        Assert.True(await browser.EvaluateBoolAsync(SelectRecorder(UnusedRecorder), Ct), "絞り込みを変えられません。");
+        Assert.True(await browser.WaitUntilAsync($"{RowCount} === 0", PageBudget, Ct),
+            $"録画中の行が別のレコーダーの絞り込みに残っています（{await browser.EvaluateNumberAsync(RowCount, Ct):F0} 行）。");
+
+        Assert.True(await browser.EvaluateBoolAsync(SelectRecorder(UsedRecorder), Ct), "絞り込みを変えられません。");
+        Assert.True(await browser.WaitUntilAsync($"{RowCount} === 2", PageBudget, Ct),
+            $"録画中の行が自分のレコーダーの絞り込みから落ちています（{await browser.EvaluateNumberAsync(RowCount, Ct):F0} 行）: "
+                + instance.DiagnosticDump());
+
+        await PostAsync(client, $"api/recorders/{UsedRecorder}/stop");
+    }
+
+    /// <summary>
+    /// <b>sidecar が届いたことで</b>一覧が自動で描き直されること ── SSE の
+    /// <c>updated</c>（内容が変わった）が「取り直す合図」として実際に配線されていること。
+    ///
+    /// <para>
+    /// <b>Refresh を押さない。</b> 行そのものは録画を始めた時点（<c>added</c>）で出るので、
+    /// ここで見るのは<b>その後に埋まる欄</b>である ── <c>Trigger</c> は sidecar からしか
+    /// 来ないので、録画中は空欄で、確定してから <c>remote</c> になる。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task TheListFillsInTheTriggerWithoutARefreshWhenTheSidecarArrives()
+    {
+        Assert.SkipUnless(EdgeCdp.IsAvailable, EdgeCdp.UnavailableReason);
+
+        using var instance = AppInstance.Create(app, ListingSettings(), configure: UseIsolatedRoot);
+        int port = WaitForPort(instance);
+        using var client = CreateClient(port);
+
+        await using var browser = await EdgeCdp.LaunchAsync(Ct);
+        await browser.NavigateAsync($"http://127.0.0.1:{port}/", PageBudget, Ct);
+        Assert.True(await browser.WaitUntilAsync($"!{IsHidden("mainSections")}", PageBudget, Ct), "画面が出ませんでした。");
+
+        await browser.EvaluateBoolAsync(GoToRecordings, Ct);
+        await PostAsync(client, $"api/recorders/{UsedRecorder}/start");
+
+        // 行が出るところまでは押してよい（見たいのはこの先である）。
+        Assert.True(await WaitWithRefreshAsync(browser, $"{RowCount} === 1", SidecarBudget),
+            $"録画中の行が出ませんでした（{await browser.EvaluateNumberAsync(RowCount, Ct):F0} 行）: "
+                + instance.DiagnosticDump());
+        Assert.NotEqual("remote", await browser.EvaluateStringAsync(FirstRowCell(5), Ct));
+
+        // ---- ここから先はボタンを押さない ----
+
+        await Task.Delay(RecordingWindow, Ct);
+        await PostAsync(client, $"api/recorders/{UsedRecorder}/stop");
+
+        Assert.True(
+            await browser.WaitUntilAsync($"{FirstRowCell(5)} === 'remote'", SidecarBudget, Ct),
+            "sidecar が届いても Trigger 欄が自動で埋まりませんでした（"
+                + await browser.EvaluateStringAsync(FirstRowCell(5), Ct) + "）: "
+                + instance.DiagnosticDump());
     }
 
     /// <summary>

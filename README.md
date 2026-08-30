@@ -147,7 +147,8 @@ goes away.
   `OutputDirectory` is resolved against that same folder, and a template that is already an
   absolute path ignores the setting entirely.
 - A finished recording gets a small **sidecar file** beside it — `<name>.mp4.json`, holding the
-  recorder name, the start and end time, the duration and the video size — together with a
+  recorder name, the start and end time, the duration, the video size and the **trigger** that
+  started it (`manual`, `uia:<id>`, `remote`, `cli` or `continuous`) — together with a
   `<name>.mp4.png` thumbnail taken near the trigger moment. Both are written on a best-effort
   basis: if they cannot be written the recording is unaffected, and the listing still shows the
   same recording without them.
@@ -332,8 +333,10 @@ settings — is switched from there too; entries your role may not write are sho
   them open permanently — one for the state stream, one for the preview.
 - The preview allows **4 viewers per recorder and 8 in total**; past that the request is refused
   with `503`.
-- A recording that is still being written can be **downloaded but not played** — an MP4 only
-  becomes playable once its index has been written at the end of the recording.
+- A recording that is still being written can be **followed while it is written** as long as it is
+  **fragmented** (the default): the page plays it through Media Source Extensions and keeps up with
+  the tail. With `FragmentedOutput` turned off the file can only be **downloaded, not played** —
+  a non-fragmented MP4 becomes playable only once its index has been written at the end.
 - Deleting recordings, `HEAD` requests, HTTPS and mDNS are not supported. The browsers this is
   built for are **Chrome and Edge on a PC**.
 

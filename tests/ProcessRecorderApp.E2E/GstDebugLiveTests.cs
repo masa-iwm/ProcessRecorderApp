@@ -59,7 +59,7 @@ public sealed class GstDebugLiveTests(PublishedApp app)
     /// <para>
     /// 経路は「外部で settings.json を書き換え → 再読み込み」。UI へ直接打ち込む経路より
     /// 安定していて、かつ <c>Reload()</c> でも反映されることまで同時に押さえられる
-    /// （以前は <c>GstDebug</c> は再読み込みで<b>効かない</b>値だった）。
+    /// （<c>GstDebug</c> は<b>再起動を要さない</b>設定であり、再読み込みで効く）。
     /// </para>
     /// <para>
     /// しきい値を <c>basesrc:5</c> に絞っているのは、常時稼働の sink パイプラインの

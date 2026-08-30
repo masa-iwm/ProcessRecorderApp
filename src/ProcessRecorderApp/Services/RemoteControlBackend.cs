@@ -44,6 +44,22 @@ internal sealed partial class RemoteControlBackend(DispatcherQueue dispatcherQue
     /// </summary>
     private const int NotAvailableExitCode = 12;
 
+    /// <summary>
+    /// UI スレッドに<b>乗るまで</b>に許す時間。超えたら要求を降ろして 503 を返す。
+    ///
+    /// <para>
+    /// <b>測るのは「乗るまで」であって「終わるまで」ではない。</b> 停止は
+    /// <c>EventRecorder.MaxAdvisedStopFinalizeTimeoutMs</c>（50 秒）まで正当に掛かるので、
+    /// 全体に期限を掛けると<b>正常に遅い停止</b>を「UI スレッドが塞がっている」と
+    /// 偽って断ることになる。乗れなかったことだけがこの本文の主張である。
+    /// </para>
+    /// <para>
+    /// 30 秒なのは、E2E の負荷時に実測 5.9 秒の往復があるため ── 10 秒台では
+    /// 正常な混雑で 503 を作ってしまう。
+    /// </para>
+    /// </summary>
+    private static readonly TimeSpan UiThreadEntryDeadline = TimeSpan.FromSeconds(30);
+
     private readonly DispatcherQueue _dispatcherQueue = dispatcherQueue;
 
     /// <summary>
@@ -55,17 +71,27 @@ internal sealed partial class RemoteControlBackend(DispatcherQueue dispatcherQue
     /// 「応答しないサーバー」になる）。
     /// </para>
     /// <para>
+    /// <b>乗れないまま <see cref="UiThreadEntryDeadline"/> を過ぎたら降りる</b> ──
+    /// 503 ＋ <c>Retry-After: 2</c> ＋ 本文 <c>ui thread busy</c>。
+    /// <b>UI 側の継続は取り消さない</b>（<see cref="DispatcherQueue"/> に取り消しは無く、
+    /// 途中まで進んだ操作を捨てる手も無い）。捨てるのは結果を待つ側だけである。
+    /// そのぶん、後から立つ例外を誰も見ないままにしないよう観測だけ付けておく
+    /// （付けないと <c>TaskScheduler.UnobservedTaskException</c> へ落ちる）。
+    /// </para>
+    /// <para>
     /// <see cref="TaskCreationOptions.RunContinuationsAsynchronously"/> は必須 ──
     /// 付けないと、待っている HTTP 側の継続が<b>UI スレッド上で</b>走り、
     /// 応答の直列化と送信で UI が塞がる。
     /// </para>
     /// </summary>
-    private Task<T> RunOnUiAsync<T>(Func<Task<T>> work)
+    private async Task<T> RunOnUiAsync<T>(Func<Task<T>> work)
     {
         var completion = new TaskCompletionSource<T>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
         bool enqueued = _dispatcherQueue.TryEnqueue(async () =>
         {
+            entered.TrySetResult();
             try
             {
                 completion.TrySetResult(await work());
@@ -79,7 +105,23 @@ internal sealed partial class RemoteControlBackend(DispatcherQueue dispatcherQue
         if (!enqueued)
             throw new RemoteApiException(NotAvailableExitCode, "ui thread unavailable");
 
-        return completion.Task;
+        using (var entryDeadline = new CancellationTokenSource())
+        {
+            Task delay = Task.Delay(UiThreadEntryDeadline, entryDeadline.Token);
+            if (await Task.WhenAny(entered.Task, delay) == delay)
+            {
+                _ = completion.Task.ContinueWith(
+                    static t => _ = t.Exception, TaskContinuationOptions.OnlyOnFaulted);
+                throw new RemoteApiException(NotAvailableExitCode, "ui thread busy")
+                {
+                    RetryAfterSeconds = RemoteApiRules.RetryAfterSecondsWhenUiThreadBusy,
+                };
+            }
+
+            entryDeadline.Cancel();
+        }
+
+        return await completion.Task;
     }
 
     /// <inheritdoc/>

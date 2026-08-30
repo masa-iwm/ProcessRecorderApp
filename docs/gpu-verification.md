@@ -73,7 +73,7 @@ GPU 無しで再現できる根拠: `d3d12testsrc ! video/x-raw(memory:D3D12Memo
 
 守っている不変条件: プレビュー分岐の `queue` が既定の `max-size-bytes`（10485760）のままだと、このバイト上限は高解像度で「フレーム数の上限」に化ける ── queue は上限を超えていても1件目は必ず受け取るので、1 フレームが 5242880 バイト（上限の半分）を超えると常に 1 フレームしか保持できない。NV12/I420（幅×高さ×1.5 バイト）では約 3.5Mpx ＝ 2560x1440 以上がこの領域で、1440p の 1 フレーム（約 5.5MB）は上限 10MB を下回るのに該当し、4K（約 12.4MB）は上限そのものも超える。PAUSED 中はプレビュー appsink が preroll でブロックしているので queue は排出されず、満杯の queue が tee を塞ぎ、エンコーダーが枯渇し、録画 appsink が preroll せず、パイプラインは PLAYING に到達しない ── 循環待ち。対策は2点で、(1) プレビュー queue を leaky かつバイト・時間無制限にする、(2) 初期化は `SetState` の ASYNC 返答を成功扱いせず実際に PLAYING へ達するのを待つ。
 
-ケースは11件。前半6件は上記の循環待ちの回帰検証: 4K 画面キャプチャ構成（`d3d12screencapturesrc monitor-index=<n>`・`qsvh264enc rate-control=icq icq-quality=30 gop-size=60`・`BufferDuration=10000`）、`d3d12testsrc` による解像度スイープ（320x240 / 1920x1080 / 2560x1440 / 3840x2160 ── 1920x1080 以下は閾値未満、2560x1440 以上が「1 フレーム ＞ 5242880 バイト」の循環待ちの領域。スクリプト自身もこの式で各行に注記を付ける）、4K での自動選択（停止した候補が受理されず棄却され、次の候補が試されること）。スイープが `d3d12screencapturesrc` ではなく `d3d12testsrc` なのは、結果をその機械のモニタ構成に依存させないため。エンコーダー行はカタログと `EncoderCatalogScriptSyncTests` で結び付けてあり、カタログを変えるとテストが落ちてこの行の更新判断を迫る。
+ケースは19件（`-CameraName` を渡すと 27 件）。前半6件は上記の循環待ちの回帰検証: 4K 画面キャプチャ構成（`d3d12screencapturesrc monitor-index=<n>`・`qsvh264enc rate-control=icq icq-quality=30 gop-size=60`・`BufferDuration=10000`）、`d3d12testsrc` による解像度スイープ（320x240 / 1920x1080 / 2560x1440 / 3840x2160 ── 1920x1080 以下は閾値未満、2560x1440 以上が「1 フレーム ＞ 5242880 バイト」の循環待ちの領域。スクリプト自身もこの式で各行に注記を付ける）、4K での自動選択（停止した候補が受理されず棄却され、次の候補が試されること）。スイープが `d3d12screencapturesrc` ではなく `d3d12testsrc` なのは、結果をその機械のモニタ構成に依存させないため。エンコーダー行はカタログと `EncoderCatalogScriptSyncTests` で結び付けてあり、カタログを変えるとテストが落ちてこの行の更新判断を迫る。
 
 ### 常時録画の 5 件（`tee` の枝が 3 本になったぶん）
 
@@ -97,7 +97,7 @@ GPU 無しで再現できる根拠: `d3d12testsrc ! video/x-raw(memory:D3D12Memo
 
 `-SmokeTest` は GPU の無い機械で「スクリプト自身」を検証するモードで、本件の回帰検証にはならない。緑の経路（`videotestsrc`）と赤の経路（`identity drop-probability=1.0` ── caps は通してバッファだけ捨てるので、リンクと状態遷移は成功するのに PLAYING へ達しない）の両方を回す。緑だけを回しても、停止を検出できないスクリプトは緑になるため。赤側の合格条件は「`never reached PLAYING` が 1 件以上・`recorder.init fail` がちょうど 1 件・`recorder.init ok` が 0 件」── CLI の終了コードは記録されるだけで、この判定には入らない。
 
-パラメータ: `-PublishDir` / `-WorkDir` / `-RecordSeconds`（既定 4）/ `-MonitorIndex`（既定 1。製品側の `monitor-index` の既定は `0` なので、モニタが1台の機械では既定のまま流すと画面キャプチャのケースが範囲外の index になる ── 実機のモニタ構成に合わせて指定する）/ `-SmokeTest` / `-KeepWorkDir`。
+パラメータ: `-PublishDir` / `-WorkDir` / `-RecordSeconds`（既定 4）/ `-MonitorIndex`（既定 1。製品側の `monitor-index` の既定は `0` なので、モニタが1台の機械では既定のまま流すと画面キャプチャのケースが範囲外の index になる ── 実機のモニタ構成に合わせて指定する）/ `-CaseFilter`（ケース名に当てる正規表現。当たった行だけ流す ── 往復のたびに全行を流さずに済む。例 `-CaseFilter '^fps4'`）/ `-CameraName`（実カメラの 8 行を足す。空＝既定なら飛ばす）/ `-SmokeTest` / `-KeepWorkDir`。
 
 
 ### 本線のフレームレートが落ちる件の 3 件
@@ -230,12 +230,22 @@ GPU 実機でしか切り分けられない。
 GPU 実機に**発行物一式**（`dotnet publish -p:PublishProfile=win-x64-aot` の出力）とこのリポジトリの `tools/` を持ち込み、PowerShell で:
 
 ```powershell
-# 1. まずハーネス自身を確かめる（GPU 不要・1分程度）。3 件すべて OK で終了コード 0 になること。
+# 1. まずハーネス自身を確かめる（GPU 不要・1分程度）。ケースは 4 件（下の「緑にならない」を先に読む）。
 .\tools\Verify-HighResolution.ps1 -SmokeTest -PublishDir <発行ディレクトリ>
 
-# 2. 本番。11 ケース。既定の録画窓 4 秒＋常時録画の待ちで 10〜15 分程度。
+# 2. 本番。19 ケース（`-CameraName` を渡すと 27 ケース）。既定の録画窓 4 秒＋常時録画の待ちで 30 分程度（概算）。
 .\tools\Verify-HighResolution.ps1 -PublishDir <発行ディレクトリ> -MonitorIndex 1
 ```
+
+> **現在このスクリプトは緑にならない ── fragmented（既定）の本の尺を読めない。**
+> `Test-Mp4` は `moov` の `mvhd` の duration を読むが、fragmented MP4 のそれは 0 であり、
+> `FragmentedOutput` の既定は `true` である（スクリプトはこの設定を書かない）。
+> そのため録画自体は正常でも `duration = 0s` になって尺の判定に落ち、
+> **`-SmokeTest` は 4 件中 3 件が、本番も録画するケースが全部 FAILED になる**
+> （開発機で実測。sidecar の `durationMs` は 4769 で、MP4 は 832KB の正常な本）。
+> `event fps` も同じ理由で `n/a` になる。**この状態で GPU 機へ持ち込むと、製品と無関係な理由で
+> 赤が返る。** 直すなら `Test-Mp4` を `sidx` / `tfdt` からも尺を採れるようにするか、
+> ケースの settings に `FragmentedOutput=false` を書くかのどちらかである。
 
 - 冒頭の `Fixed build : YES` と `Continuous : YES` を必ず確認する。どちらかが NO なら、それ以降の結果は無意味（古いバイナリ）。
 - 終了コード 0 なら全ケース期待どおり。1 なら `FAILED cases: N` と作業ディレクトリのパスが出るので、そのディレクトリごと持ち帰る（`activity.log` と `debug.log` が入っている）。
@@ -331,6 +341,7 @@ MinGW 版で流したもの。
 - **VC++ 再頒布可能パッケージが無い機械での MSVC 版 ── 未検証。** 実機検証を流した機械には CRT が在ったので、この前提が欠けたときの挙動は観測できていない（`docs/coverage-gaps.md` を参照）。
 - `amfh264enc`（AMD）── AMD GPU の機械が無く未検証（MinGW 版・MSVC 版のどちらでも同じ。実機のレポートでは両方とも `missing=[amfh264enc,openh264enc,x264enc]`）。AMD 機で `tools/Verify-GpuEncoders.ps1` を1回流せばケースは自動生成される。カタログに実在しない名前を書いても例外も警告も出ずに候補から黙って消え、録画は他候補で成立してしまうため、「録画できている」ことは名前が正しい証拠にならない ── レポート冒頭の `All H.264 encoders gst-inspect reports` 行に `amfh264enc` が載り、専用ケースが OK になっていることまで確認する。確認済みのプロパティをカタログへ足すときは `EncoderCatalogScriptSyncTests` が落ちてスクリプト側の一覧の追随を迫るので、一緒に直す。
 - （解決済み）`nvd3d11h264enc` のメモリ交渉 ── `tools/Verify-NvD3d11Memory.ps1` を NVIDIA 実機で流して決着した。sink caps は `video/x-raw(memory:D3D11Memory)` と素の `video/x-raw` だけで **D3D12Memory は受けない**（download は必須）。一方で、`video/x-raw(memory:SystemMemory)` の capsfilter を外すと **`d3d12download` の src もエンコーダーの sink も `memory:D3D11Memory` で折り合う** ── つまり CPU 往復を強いていたのはこちらの capsfilter であり、現行の形は `d3d12download ! videoconvert !` にしてある（`videoconvert` の caps は `video/x-raw(ANY)` なので交渉を妨げない）。**この形で NVIDIA/Intel 実機の全ケースが OK であることまで確認済み** ── `nvd3d11h264enc` / `nvh264enc` / `nvautogpuh264enc` の専用ケースがいずれも選ばれ、`retries` 0 で有効な MP4 を出す。
-- **DASH プレビューの第 2 パイプラインを実 GPU のエンコーダー候補で流すこと ── 未検証（手動）。** L2 の `DashPreviewTests` が通すのは、その機械で `EncoderCatalog` の先頭に来た候補 1 つだけである。GPU 機では Web UI の画質切替を `dash` にして絵が出ること、`activity.log` の `dash.stream-start` の `encoder=` が期待した GPU 候補になっていること、`dash.stream-error` が出ていないことを 1 度目で確かめる。
-- **同梱ランタイムでの録画トランスコード ── 未検証。** `-GstBin` を渡さない `tools/Verify-Transcode.ps1` を GPU 実機で流し、6 ケースすべてが OK になること（レポートの `H.264 decoder the app found` が期待したデコーダーであること）を確かめる。開発機で `-GstBin` ＋ `-H264Decoder openh264dec` を渡した走行は**外のランタイムについての結果**であって、これの代わりにはならない。**スクリプトが触らないもの**: ブラウザからの 2 倍速再生と、複数のクライアントが同時に別々の録画を変換する形 ── どちらも Web UI を 2 枚開いて手で見る。画質メニューの `(busy)` 表示と、握っている側が手放せば戻ることは L2 `WebUiBrowserTests.TheRecordingQualityMenuShowsBusyWhileAnotherSessionHoldsTheSlot` が自動で見る。
+- **DASH プレビューの第 2 パイプラインを実 GPU のエンコーダー候補で流すこと ── 未検証（手動）。** L2 の `DashPreviewTests` が通すのは、その機械で `EncoderCatalog` の先頭に来た候補 1 つだけである。GPU 機では Web UI の画質切替を `dash` にして絵が出ること、`activity.log` の `dash.stream-start` の `encoder=` が期待した GPU 候補になっていること、`dash.stream-error` が出ていないことを 1 度目で確かめる。**追従の滑らかさも手動である** ── L2 `WebUiBrowserTests` が数えるのは `videotestsrc` ＋ その機械の先頭候補で出た `waiting`（バッファ切れの停止）の回数だけで、GPU のエンコーダーが実際に出すセグメントで測ったものではない。GPU 機では絵を 30 秒ほど見て、止まりが増えていかないことを目で確かめる。**ライブ画質プリセット（1080p / 720p / 480p / 360p ＋ カスタム）の切替はこのスクリプトの対象外**（ケースは録画経路しか作らない）── 切替そのものは L2 が見るが、GPU のエンコーダーで流したことは一度も無い。
+- **プリセットのビットレートが GPU エンコーダーに効かないこと ── 現在の制約（直していない）。** カタログの GPU 4 種（`nvh264enc` / `qsvh264enc` / `d3d12h264enc` / `amfh264enc`）は `BitrateUnitPerKbps` が null なので `WithBitrateKbps` が素通しし、**ライブ DASH でも録画トランスコードでも効くのは GOP だけ**である。プロパティ名と単位（kbit/sec か bit/sec か）は GPU 実機で `gst-inspect-1.0.exe <要素名>` を叩かないと確かめられないので、カタログへ足すのは実機で確認してからにする。効いていないことはログからは分からない（`dash.stream-start` の `kbps=` は設定から読んだ要求値）。
+- **同梱ランタイムでの録画トランスコード ── 未検証。** `-GstBin` を渡さない `tools/Verify-Transcode.ps1` を GPU 実機で流し、6 ケースすべてが OK になること（レポートの `H.264 decoder the app found` が期待したデコーダーであること）を確かめる。開発機で `-GstBin` ＋ `-H264Decoder openh264dec` を渡した走行は**外のランタイムについての結果**であって、これの代わりにはならない。**スクリプトが触らないもの**: **sidecar（`.mp4.json`）の無い古い本**と**常時録画のセグメント**の変換（録画プレイヤーの画質メニューで 4 プリセットを順に選び、どれも絵が出ること。出力 fps は上限（`framerate=[1/1,fps/1]`）なので、実 fps がプリセット未満の本でも通る。落ちたら `activity.log` の `transcode.error` の `src=` と `detail=` を持ち帰る）、ブラウザからの 2 倍速再生と、複数のクライアントが同時に別々の録画を変換する形 ── どちらも Web UI を 2 枚開いて手で見る。画質メニューの `(busy)` 表示と、握っている側が手放せば戻ることは L2 `WebUiBrowserTests.TheRecordingQualityMenuShowsBusyWhileAnotherSessionHoldsTheSlot` が自動で見る。
 - スクリプトは実在する要素からしかケースを作らないため、無い要素は黙って検証されない（走らなかったことは FAILED としては現れない）。意図した要素が本当に検証されたかは、レポートのケース一覧と冒頭の `All H.264 encoders gst-inspect reports` 行で確認する（どちらもレポート内にあり、手で `gst-inspect` を叩く必要はない）。

@@ -9,7 +9,7 @@ README 記載の契約の大半は UI 自動化(UIA)を使わずに検証でき�
 | L2 E2E | `ProcessRecorderApp.E2E` | 発行済み exe を起動し CLI + 生成MP4 + activity.log を検証 | 録画の中核契約・終了コード・変数・永続化・常駐/多重起動 |
 | L3 GUI | `ProcessRecorderApp.E2E` | FlaUI (UIA3) | GUI でしか触れない操作：プロパティ編集・画面切替・トレイ格納・正常終了パス・レコーダー管理・パイプライン編集ダイアログ・**表示言語の強制** |
 | L4 ローカライズ | `ProcessRecorderApp.Tests` | `.resw` / README をファイルとして直接検証 ＋ L3 で言語強制 | en-US / ja-JP のキー整合・書式整合・参照キー実在・README 言語対・フォールバック |
-| L2 ブラウザ | `ProcessRecorderApp.E2E` | headless Edge ＋ DevTools プロトコル（自前。`msedge` 不在なら Skip） | Web UI（`app.js`）でしか触れないもの：ログイン画面への切り替え・ゲストの取り消し・MSE の追いかけ再生・変換再生の画質切替 |
+| L2 ブラウザ | `ProcessRecorderApp.E2E` | headless Edge ＋ DevTools プロトコル（自前。`msedge` 不在なら Skip） | Web UI（`wwwroot` 配下の JS 一式）でしか触れないもの：ログイン画面への切り替え・ゲストの取り消し・MSE の追いかけ再生・変換再生の画質切替 |
 
 > **この文書や docs/ でコードを指すときは、行番号ではなく型名・メソッド名で書くこと。**
 > 行番号は次の編集で腐るうえ、**腐ったことが目に見えない**。
@@ -56,7 +56,7 @@ L2 は発行物を外から叩くので、**先に publish が要る**（発行�
 ブラウザ E2E（`WebUiBrowserTests`）も同じプロジェクトに入っている。**ブラウザ自動化の
 パッケージは足していない** ── BCL の `ClientWebSocket` とシステムの `msedge.exe` だけで
 DevTools プロトコルを話す（`EdgeCdp`）。プロファイルは 1 起動につき 1 つの一時ディレクトリなので、
-「古い `app.js` がキャッシュに残っていた」という結末が起こりえない。**Edge が入っていない環境では
+「古い JS（`wwwroot` 配下の一式）がキャッシュに残っていた」という結末が起こりえない。**Edge が入っていない環境では
 Skip する**ので、緑だから走ったとは限らない ── 実行結果の skip 件数を見ること。
 
 プレビュー配信も同じプロジェクトが見る。`PreviewStreamTests` は録画済みの H.264 をそのまま包む
@@ -72,7 +72,10 @@ fMP4 の配信（`GET /api/recorders/{id}/preview.mp4`）を、発行物へ本�
 `TranscodeTests` は録画トランスコードの**成立する側**を見る ── 変換された本文が
 `ftyp`+`moov` に続く `moof`/`mdat` であること、要求した位置から始まること、高さがソースへ
 丸められること、ライブ DASH と 1 つの補助エンコーダー枠を取り合うこと、同じ `session` での
-シークが枠を引き継ぐこと。
+シークが枠を引き継ぐこと。加えて**プリセットの fps がソースの実 fps を上回る本**が通ること
+（ソース `15/1` で **sidecar を消したもの**、ソース `89/3` で sidecar 有りの 2 通り）と、
+**常時録画のセグメント**（枝を 160×120・5fps にし、720p を要求したもの）の sidecar が枝の実体を持ち、
+そのセグメントが変換できること。
 
 > **前提: ソフトウェアの H.264 デコーダーを持つ GStreamer が要る。** 製品のデコーダー候補は
 > ハードウェアだけなので、GPU の無い機械では `SoftwareDecoderRuntime` が
@@ -91,7 +94,7 @@ fMP4 の配信（`GET /api/recorders/{id}/preview.mp4`）を、発行物へ本�
 > ── 失敗の本文に `bin` と名指しと `gst.runtime` / `gst.decoders` / `transcode.start` の行が入る。
 > **同梱ランタイムの上では変換の経路は依然として 1 行も走らない**（同梱物としての true 経路は
 > `tools/Verify-Transcode.ps1`）。
-> **GPU の在る機械で `openh264dec` が無ければ `TranscodeTests` の 3 件と
+> **GPU の在る機械で `openh264dec` が無ければ `TranscodeTests` の 6 件と
 > `WebUiBrowserTests` の変換の 2 件は落ちる** ── その場合は
 > `PROCESSRECORDERAPP_E2E_H264_DECODER` にその機械のデコーダー（`d3d11h264dec` など）を置く。
 
@@ -127,18 +130,18 @@ fMP4 の配信（`GET /api/recorders/{id}/preview.mp4`）を、発行物へ本�
 （3 を書き、9 への PATCH が 8 に丸められること）と
 `DashPreviewTests.TheLiveDashHoldsOneAuxiliaryEncoderPerRecorder`
 （1 を書き、レコーダー 2 台で 2 台目が 409 `auxiliary encoder busy` になること）。
-`TranscodeTests` は 3 件のうち 2 件が 1 を書く（変換とライブ DASH の取り合い・シークの引き継ぎ）。
+`TranscodeTests` は 6 件のうち 2 件が 1 を書く（変換とライブ DASH の取り合い・シークの引き継ぎ）。
 `WebUiBrowserTests` の変換の 2 件も 1 を書く（離脱で枠が返ること・`(busy)` の表示）。
 
 トランスコードまわりだけを回すときのフィルタと**実測の選択件数**
-（`TranscodeTests` 3 件＋`RemoteControlTests` 42 件＋`DashPreviewTests` 7 件＝**52 件**・約 5 分半）:
+（`TranscodeTests` 6 件＋`RemoteControlTests` 42 件＋`DashPreviewTests` 7 件＝**55 件**・約 6 分）:
 
 ```powershell
 dotnet test tests/ProcessRecorderApp.E2E -c Release `
   --filter "FullyQualifiedName~TranscodeTests|FullyQualifiedName~RemoteControlTests|FullyQualifiedName~DashPreviewTests"
 ```
 
-リモート操作まわりだけを回すときのフィルタと**実測の選択件数**（この 4 クラスで 74 件・約 12 分）:
+リモート操作まわりだけを回すときのフィルタと**実測の選択件数**（この 4 クラスで 76 件・約 12 分）:
 
 ```powershell
 dotnet test tests/ProcessRecorderApp.E2E -c Release `

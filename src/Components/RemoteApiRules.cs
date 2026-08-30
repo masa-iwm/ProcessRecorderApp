@@ -61,6 +61,13 @@ public static class RemoteApiRules
     public const int RetryAfterSecondsWhenNotReady = 5;
 
     /// <summary>
+    /// UI スレッドへ乗れないまま期限が切れたとき（同じ終了コード 12）に返す
+    /// <c>Retry-After</c> の秒数。<b>「まだ使えない」より短い</b> ── 塞いでいるのは
+    /// 実行中の 1 操作で、待つ相手はエンジンの初期化ではないからである。
+    /// </summary>
+    public const int RetryAfterSecondsWhenUiThreadBusy = 2;
+
+    /// <summary>
     /// アクセストークンの照合。<b>一致した文字数で時間が変わらない比較</b>を使う。
     /// どちらかが null か空なら false（トークン未設定のときに空文字で通ってしまわないため）。
     /// 長さ違いは <see cref="CryptographicOperations.FixedTimeEquals"/> の仕様どおり false。

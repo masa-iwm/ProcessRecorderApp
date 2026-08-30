@@ -116,7 +116,8 @@ public sealed class RemoteControlHost : IAsyncDisposable
             {
                 if (ctx.Response.HasStarted)
                     return;
-                await ApiResponse.WriteExitCodeErrorAsync(ctx, ex.ExitCode, ex.Message, ex.Filename);
+                await ApiResponse.WriteExitCodeErrorAsync(
+                    ctx, ex.ExitCode, ex.Message, ex.Filename, ex.RetryAfterSeconds);
             }
             catch (BadHttpRequestException)
             {

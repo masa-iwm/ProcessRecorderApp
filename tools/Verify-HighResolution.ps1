@@ -69,10 +69,10 @@ param(
     # the case: a soak that quietly stopped short would otherwise look identical to one
     # that succeeded.
     [int]$ContinuousWaitSeconds = 45,
-    # 実物のカメラで測る行を足す（例: 'HD Pro Webcam C920'）。空なら飛ばす。
+    # Add rows measured with a real camera (e.g. 'HD Pro Webcam C920'). Empty skips them.
     [string]$CameraName = '',
-    # 一部の行だけ流す正規表現（例: -CaseFilter '^fps4'）。往復のたびに全行を
-    # 流すと 15 分かかるので、切り分けの続きだけを回すために使う。
+    # Regex over the case name; only matching rows run (e.g. -CaseFilter '^fps4'). A full
+    # run takes about 15 minutes, so this is how the next step of an investigation is re-run alone.
     [string]$CaseFilter = '',
     [switch]$SmokeTest,
     [switch]$KeepWorkDir
@@ -149,7 +149,7 @@ $env:PROCESSRECORDERAPP_KEY_PREFIX = 'PraHiRes_' + [guid]::NewGuid().ToString('N
 
 $recDir = Join-Path $WorkDir 'rec'
 $dotDir = Join-Path $WorkDir 'dot'
-# ケースごとのログの退避先。**最後のケースのぶんだけ残る**のを避けるため。
+# Where each case's logs are copied. Without this only the LAST case's logs survive.
 $logDir = Join-Path $WorkDir 'logs'
 $null = New-Item -ItemType Directory -Force $recDir
 $null = New-Item -ItemType Directory -Force $dotDir
@@ -228,11 +228,11 @@ function Write-Settings {
         [bool]$Continuous = $false,     # second, always-on recording on a third tee branch
         [string]$ContinuousFramerate = '',
         [string]$ContinuousResolution = '',
-        [string]$ContinuousEnc = '',   # 空なら自動選択（EncoderCatalog の先頭）
+        [string]$ContinuousEnc = '',   # empty => automatic selection (head of EncoderCatalog)
         [int]$ContinuousSegmentSeconds = 5,
-        [string]$SecondSrc = '',        # 空でなければ2台目のレコーダーを足す
+        [string]$SecondSrc = '',        # non-empty => add a second recorder
         [string]$SecondType = '',
-        [string]$GstDebug = ''        # GStreamer 側のログ（例: videorate:5）
+        [string]$GstDebug = ''        # GStreamer-side logging (e.g. videorate:5)
     )
 
     $encProp   = if ([string]::IsNullOrEmpty($EncodingProperties)) { 'null' } else { '"' + $EncodingProperties + '"' }
@@ -244,17 +244,17 @@ function Write-Settings {
     # template keeps them apart by name so the two can be counted separately.
     $contTmpl  = ($recDir -replace '\\', '\\') + '\\{Name}_c{Segment}.mp4'
     $contFlag  = if ($Continuous) { 'true' } else { 'false' }
-    # 常時録画側のエンコーダーを名指しできるようにする ── 自動選択だと本線が
-    # qsvh264enc でも常時側は d3d12h264enc になり、**別のエンジンなので競合を試験できない**。
+    # The continuous-branch encoder must be nameable: with automatic selection the branch
+    # lands on d3d12h264enc even when the event line is qsvh264enc, and TWO DIFFERENT ENGINES CANNOT CONTEND.
     $contEnc   = if ([string]::IsNullOrEmpty($ContinuousEnc)) { 'null' } else { '"' + $ContinuousEnc + '"' }
 
-    # settings.json は文字列連結で組み立てているので、SrcPipeline に " が入る場合
-    # （mfvideosrc device-name="..." など）は JSON として壊れないよう自分で逃がす。
+    # settings.json is built by string concatenation, so a SrcPipeline containing " (for
+    # example mfvideosrc device-name="...") has to be escaped here or the JSON breaks.
     function ConvertTo-JsonString([string]$value) { return ($value -replace '\\', '\\' -replace '"', '\"') }
 
-    # 1台ぶんのレコーダー定義。**2台同時**を試験できるようにここだけ関数にしてある
-    # ── 報告された構成はカメラと画面キャプチャの2台が同時に常時録画しており、
-    # 1台での測定はその条件を再現していない。
+    # One recorder definition. This is a function so that TWO recorders can be tested
+    # -- the reported setup has a camera and a screen capture recording continuously at the
+    # same time, and a single-recorder measurement does not reproduce that condition.
     function New-RecorderJson([string]$name, [string]$type, [string]$src) {
         return @"
     {
@@ -346,9 +346,9 @@ function Test-Mp4 {
                     $fs.Position = $start + 8
                     $moov = $br.ReadBytes([int]($size - 8))
                     $res.HasAvc1 = [System.Text.Encoding]::ASCII.GetString($moov).Contains('avcC')
-                    # stsz の sample_count = フレーム数。duration と合わせて実効 fps を出す。
-                    # **交渉された caps の framerate ではなく、実際に入ったフレーム数で見る**
-                    # ── 本線が落ちる現象は caps 上は 30/1 のままで起きる。
+                    # stsz sample_count = frame count; with duration it gives the effective fps.
+                    # READ THE FRAME COUNT, NOT THE NEGOTIATED CAPS FRAMERATE -- the event line
+                    # drops while the caps still read 30/1.
                     $txt = [System.Text.Encoding]::ASCII.GetString($moov)
                     $ix = $txt.IndexOf('stsz')
                     if ($ix -ge 0 -and ($ix + 16) -lt $moov.Length) {
@@ -388,11 +388,11 @@ $reportedSrc = "d3d12screencapturesrc monitor-index=$MonitorIndex show-cursor=tr
 # that test and forces a decision here rather than drifting silently.
 $reportedEnc = 'qsvh264enc rate-control=icq icq-quality=30 gop-size=60'
 
-# 常時録画の枝を 5fps で回す行用。**手動指定はそのまま使われる**ので、
-# 製品側の「フレームレートから 2 秒で逆算」は効かない。$reportedEnc（既定 30fps 基準の
-# gop-size=60）をそのまま渡すと 5fps では 12 秒間隔になり、セグメントの分割は
-# キーフレームでしか行えないので 5 秒の設定が 10 秒へ伸びる（実測。continuous.overshoot）。
-# 枝のレートに合わせてここで固定する。
+# For the rows that run the continuous branch at 5fps. A HAND-WRITTEN ENCODER STRING IS USED
+# AS IS, so the product's "two seconds derived from the framerate" does not apply. Passing
+# $reportedEnc (gop-size=60, which is 30fps based) gives a 12-second keyframe interval at 5fps,
+# and a segment can only be split on a keyframe, so a 5-second setting stretches to 10
+# (measured; continuous.overshoot). Pin the GOP to the branch rate here instead.
 $reportedContinuousEnc = 'qsvh264enc rate-control=icq icq-quality=30 gop-size=10'
 
 $cases = New-Object System.Collections.Generic.List[object]
@@ -434,16 +434,16 @@ if ($SmokeTest) {
         Src  = 'videotestsrc is-live=true do-timestamp=true ! videoconvert ! video/x-raw,format=I420,width=320,height=240,framerate=15/1'
         Enc  = $null; Buffer = 3000
         Continuous = $true; ContinuousFramerate = '5/1'
-        # 常時側エンコーダーの名指しとケースごとの録画秒数も、ここで一度通しておく
-        # （手書きするなら GOP を固定すること ── key-int-max がこれ）。
+        # Naming the continuous encoder and the per-case duration are exercised here too
+        # (when writing one by hand, pin the GOP -- key-int-max is that knob).
         ContinuousEnc = 'x264enc tune=zerolatency bitrate=800 speed-preset=ultrafast key-int-max=15'
         Seconds = 6
         Note = 'harness self-check of the continuous half -- segment checks, named continuous encoder, per-case duration'
         ExpectStall = $false
     })
-    # 2台目のレコーダーと、SrcPipeline に " が入る場合の JSON 逃がしも自己検証する
-    # ── どちらも実機のカメラ構成でしか使わないので、ここで通しておかないと
-    # 実機で初めて壊れているのが分かる（往復が1回無駄になる）。
+    # A second recorder, and the JSON escaping of a SrcPipeline containing ", are self-checked
+    # here as well -- both are only used with a real camera setup, so without this row a
+    # breakage would first appear on the real machine and waste a round trip.
     $cases.Add([pscustomobject]@{
         Name = 'smoke: TWO recorders and a quoted SrcPipeline'
         Type = 'System'
@@ -451,7 +451,7 @@ if ($SmokeTest) {
         Enc  = $null; Buffer = 3000
         SecondSrc = 'videotestsrc is-live=true do-timestamp=true ! videoconvert ! video/x-raw,format=I420,width=320,height=240,framerate=15/1'
         SecondType = 'System'
-        # GstDebug のケース上書きもここで通しておく（実機でしか使わない経路のため）。
+        # The per-case GstDebug override runs here too (it is only used on real hardware).
         GstDebug = 'videotestsrc:5'
         Note = 'harness self-check: the JSON escaping and the second recorder'
         ExpectStall = $false
@@ -479,10 +479,10 @@ foreach ($wh in @('320x240', '1920x1080', '2560x1440', '3840x2160')) {
     })
 }
 
-# 本線のフレームレートが落ちる件の切り分け。**3 行の差は常時録画の設定だけ**で、
-# ソースもイベント側のエンコーダーも同じ。実効 fps（stsz のフレーム数 / duration）を
-# 突き合わせる ── **交渉された caps は 3 行とも 30/1 のまま**なので caps では分からない。
-# 開発機（GPU 無し）では videorate の有無で差が出ないことを実測済み。GPU が要る。
+# Isolating the event-framerate drop. THE THREE ROWS DIFFER ONLY IN THE CONTINUOUS SETTINGS;
+# source and event encoder are identical. Compare the effective fps (stsz frame count divided
+# by duration) -- THE NEGOTIATED CAPS READ 30/1 ON ALL THREE ROWS, so caps cannot tell them apart.
+# On a GPU-less dev machine videorate makes no difference (measured). This needs a GPU.
 $fpsSrc = 'd3d12testsrc is-live=true do-timestamp=true ! video/x-raw(memory:D3D12Memory), format=NV12, width=1920, height=1080, framerate=30/1'
 $cases.Add([pscustomobject]@{
     Name = 'fps: 1920x1080@30, continuous OFF (baseline)'
@@ -502,12 +502,12 @@ $cases.Add([pscustomobject]@{
     Note = 'the reported configuration -- the event MP4 came out at about 12fps'
 })
 
-# 1 巡目（上の 3 行）は d3d12testsrc ＋ 常時側エンコーダー自動選択で、3 行とも 30fps だった
-# ── videorate だけでは本線は落ちない。報告された構成との差は 2 つしか残っていない:
-#   (a) ソースがシステムメモリ（mfvideosrc）で、製品が d3d12upload を挟む
-#   (b) 常時側も qsvh264enc（自動選択だと d3d12h264enc になり、**別のエンジンなので競合しない**）
-# 以下は **1 行ごとに 1 要因だけ**変える。落ちた行の直前との差が原因である。
-# 短い窓では出ない可能性があるので、この組だけ録画窓を伸ばす。
+# The three rows above (d3d12testsrc + automatic continuous encoder) all measured 30fps, so
+# videorate alone does not drop the event line. Two differences from the reported setup remain:
+#   (a) the source is system memory (mfvideosrc) and the product inserts d3d12upload
+#   (b) the continuous branch is qsvh264enc too (automatic selection picks d3d12h264enc,
+#       a different engine, which does not contend). Each row below changes EXACTLY ONE FACTOR,
+# so the difference from the preceding row is the cause. Widen the window for this group only.
 $fpsSrcD3d12 = 'd3d12testsrc is-live=true do-timestamp=true ! video/x-raw(memory:D3D12Memory), format=NV12, width=1920, height=1080, framerate=30/1'
 $fpsSrcSystem = 'videotestsrc is-live=true do-timestamp=true ! videoconvert ! video/x-raw, format=NV12, width=1920, height=1080, framerate=30/1'
 $fpsSeconds = 20
@@ -545,12 +545,12 @@ $cases.Add([pscustomobject]@{
     Note = 'the same but with the framerate limit off -- the reported working case'
 })
 
-# 3 巡目。2 巡目までで **合成ソースでは何をやっても 30fps のまま**だった
-# （アップロード経路・QSV 2 セッション・videorate・20 秒窓のどれも再現しない）。
-# 報告された構成に残る差は 2 つ:
-#   (a) ソースが実物のカメラ（mfvideosrc。MJPEG を MF が展開している）
-#   (b) **レコーダーが 2 台同時**で、どちらも常時録画が有効（＝ 4 セッション）
-# -CameraName を渡したときだけ走る（そのカメラが無い機械では飛ばす）。
+# Synthetic sources stay at 30fps whatever is done to them (upload path, two QSV sessions,
+# videorate, a 20-second window -- none of them reproduce it). Two differences from the
+# reported setup are left:
+#   (a) the source is a real camera (mfvideosrc; MF is decoding MJPEG)
+#   (b) TWO RECORDERS AT ONCE, both with continuous recording on (= four sessions)
+# These run only when -CameraName is given (skipped on a machine without that camera).
 if (-not [string]::IsNullOrEmpty($CameraName)) {
     $camSrc = "mfvideosrc device-name=`"$CameraName`" ! video/x-raw, format=NV12, width=1920, height=1080, framerate=30/1"
     $camSeconds = 20
@@ -573,12 +573,12 @@ if (-not [string]::IsNullOrEmpty($CameraName)) {
         ContinuousEnc = $reportedContinuousEnc
         Note = 'the reported FAILING case -- one recorder only'
     })
-    # **この行だけ ContinuousResolution を付けない。** 常時録画の設定は全レコーダー共通で、
-    # 2 台目の画面キャプチャは caps に width/height を持たない ── 製品は仕様どおり
-    # 上書きを捨てて recorder.continuous-init fail を出すので（src/README.md）、
-    # このハーネスの合格条件（fail が 0 件）に必ず引っかかる。
-    # この行が見たいのは拡縮ではなく**同時 4 セッション**なので、上書きは外す。
-    # 拡縮を見る行は上の 1 台構成（caps を固定したカメラ）が受け持つ。
+    # THIS ROW ALONE LEAVES ContinuousResolution OFF. The continuous settings are shared by
+    # every recorder, and the second recorder (screen capture) has no width/height in its caps
+    # -- the product drops the override and writes recorder.continuous-init fail (src/README.md),
+    # which this harness always counts as a failure (fail must be 0). What this row is for is
+    # FOUR SIMULTANEOUS SESSIONS, not scaling, so the override is left off. Scaling is covered
+    # by the single-recorder rows above (a camera with fixed caps).
     $cases.Add([pscustomobject]@{
         Name = "fps3: camera + screen capture (TWO recorders), both continuous 5fps"
         Type = 'D3d12'; Src = $camSrc; Enc = $reportedEnc; Buffer = 3000; Seconds = $camSeconds
@@ -588,13 +588,13 @@ if (-not [string]::IsNullOrEmpty($CameraName)) {
         Note = 'the full reported setup -- four encoder sessions at once (event x2 + continuous x2). event fps is R1 (the camera)'
     })
 
-    # 4 巡目。drop-only=true でも直らなかった（11.9 -> 12.4fps）ので、
-    # 「videorate が前のバッファを保持してプールを掴む」という仮説は外れ。
-    # 次に切り分けるのは **videorate の存在そのものか、レートを下げることか**。
-    #   30/1 = ソースと同じ  -> videorate は入るが変換しない
-    #   15/1 = 半分          -> 落ち幅がレート比に追随するか
-    #   5/1 かつ縮小なし      -> スケーラーが噛んでいないか
-    # 最後の 1 行は GStreamer 側のログを採る（videorate の drop と queue の詰まり）。
+    # drop-only=true did not fix it (11.9 -> 12.4fps), so "videorate holds the previous buffer
+    # and keeps hold of the pool" is out. What is left to separate is whether videorate merely
+    # BEING PRESENT matters, or LOWERING THE RATE does:
+    #   30/1 = same as the source -> videorate is present but converts nothing
+    #   15/1 = half               -> does the loss track the ratio?
+    #   5/1 with no downscale     -> is the scaler involved?
+    # The last row collects GStreamer-side logs (videorate drops and queue-full messages).
     $camSeconds4 = 20
     foreach ($r in @('30/1', '15/1')) {
         $cases.Add([pscustomobject]@{
@@ -711,9 +711,9 @@ function Invoke-Case {
     Stop-AllWorkers
     Get-ChildItem $recDir -Filter *.mp4 -ErrorAction SilentlyContinue | Remove-Item -Force
 
-    # **前のケースのログを消す前に退避する。** ケースごとに activity.log / debug.log を
-    # 消して回るので、退避しないと**最後のケースのぶんしか残らない** ── GST_DEBUG を
-    # 採ったケースのログが後続のケースに上書きされて、往復が1回無駄になる。
+    # COPY THE PREVIOUS CASE'S LOGS BEFORE DELETING THEM. activity.log / debug.log are cleared
+    # per case, so without the copy ONLY THE LAST CASE SURVIVES -- the logs of the case that
+    # collected GST_DEBUG would be overwritten by later cases and the round trip wasted.
     if ($script:lastCaseName) {
         $safe = ($script:lastCaseName -replace '[^A-Za-z0-9]+', '-').Trim('-')
         if ($safe.Length -gt 60) { $safe = $safe.Substring(0, 60) }
@@ -728,7 +728,7 @@ function Invoke-Case {
     Remove-Item (Join-Path $WorkDir 'debug.log')    -Force -ErrorAction SilentlyContinue
 
     $isContinuous = [bool]$Case.Continuous
-    # 2台目を足したケースでは init の署名も2件出る。1件固定で判定すると必ず赤になる。
+    # A case with a second recorder emits the init signature twice. Requiring exactly one always fails.
     $expectedRecorders = if ([string]::IsNullOrEmpty([string]$Case.SecondSrc)) { 1 } else { 2 }
     Write-Settings -RecorderType $Case.Type -SrcPipeline $Case.Src `
                    -EncodingProperties $Case.Enc -BufferDuration $Case.Buffer `
@@ -752,7 +752,7 @@ function Invoke-Case {
     Start-Sleep -Seconds 3
 
     $start = Invoke-Cli 'start-recording-all'
-    # 短い窓では出ない現象があるので、ケース側で伸ばせるようにする。
+    # Some effects do not show in a short window, so a case can widen it.
     $seconds = if ($Case.Seconds) { [int]$Case.Seconds } else { $RecordSeconds }
     Start-Sleep -Seconds $seconds
     $stop = Invoke-Cli 'stop-recording-all'
@@ -797,7 +797,7 @@ function Invoke-Case {
     # apart by name (the continuous template ends in _c<segment>.mp4).
     $contFiles = @(Get-ChildItem $recDir -Filter 'R1_c*.mp4' -ErrorAction SilentlyContinue |
                    Sort-Object CreationTimeUtc)
-    # **R1 に限定する** ── 2台目のレコーダーが居ると R2_*.mp4 を掴んで fps を取り違える。
+    # LIMIT TO R1 -- with a second recorder present, R2_*.mp4 would be picked up and the fps misread.
     $mp4   = Get-ChildItem $recDir -Filter 'R1_*.mp4' -ErrorAction SilentlyContinue |
              Where-Object { $_.Name -notlike 'R1_c*' } | Select-Object -First 1
     $probe = if ($mp4) { Test-Mp4 $mp4.FullName } else { $null }
@@ -872,7 +872,7 @@ if ($CaseFilter) {
     $kept = @($cases | Where-Object { $_.Name -match $CaseFilter })
     $cases = New-Object System.Collections.Generic.List[object]
     $kept | ForEach-Object { $cases.Add($_) }
-    # **選んだ件数を必ず出す。** 0 件でも走り切って緑に見えるのが一番危ない。
+    # ALWAYS PRINT THE SELECTED COUNT. Selecting zero rows and still finishing green is the worst outcome.
     Write-Host "CaseFilter '$CaseFilter' selected $($cases.Count) of $before case(s)."
     if ($cases.Count -eq 0) { Write-Host 'Nothing to run.'; exit 1 }
     Write-Host ''

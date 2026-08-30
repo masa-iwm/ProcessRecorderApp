@@ -239,4 +239,11 @@ public sealed class RemoteApiException(int exitCode, string message) : Exception
     /// 応答本文の <c>ErrorDto.Filename</c> になる。
     /// </summary>
     public string? Filename { get; init; }
+
+    /// <summary>
+    /// 503 に付ける <c>Retry-After</c> の秒数の上書き。<see langword="null"/> なら
+    /// <c>RemoteApiRules.RetryAfterSecondsWhenNotReady</c>。同じ終了コード 12 でも
+    /// 待つ理由が違う失敗（UI スレッドが塞がっている）で短い値を返すためにある。
+    /// </summary>
+    public int? RetryAfterSeconds { get; init; }
 }

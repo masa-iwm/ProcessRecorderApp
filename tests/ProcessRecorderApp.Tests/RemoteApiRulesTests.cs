@@ -49,6 +49,56 @@ public sealed class RemoteApiRulesTests
     public void TheRetryAfterHintIsPositive()
         => Assert.True(RemoteApiRules.RetryAfterSecondsWhenNotReady > 0);
 
+    /// <summary>
+    /// UI スレッドが塞がっているときの <c>Retry-After</c> は正で、
+    /// <b>「エンジンがまだ使えない」より短い</b>こと ── 同じ終了コード 12 でも
+    /// 待つ相手が違う（初期化ではなく実行中の 1 操作）。
+    /// </summary>
+    [Fact]
+    public void TheUiThreadBusyHintIsShorterThanTheNotReadyHint()
+    {
+        Assert.True(RemoteApiRules.RetryAfterSecondsWhenUiThreadBusy > 0);
+        Assert.True(
+            RemoteApiRules.RetryAfterSecondsWhenUiThreadBusy
+                < RemoteApiRules.RetryAfterSecondsWhenNotReady);
+    }
+
+    /// <summary>
+    /// <c>RemoteControlBackend.RunOnUiAsync</c> が<b>UI スレッドへ乗るまで</b>に
+    /// 期限を持ち、超過を 12 ＋ <c>ui thread busy</c> ＋ 短い <c>Retry-After</c> で
+    /// 断ること。
+    ///
+    /// <para>
+    /// <b>ソーステキストで固定するしかない。</b> <c>RemoteControlBackend</c> は
+    /// WinUI アプリ側の型で、L1 からは参照できない（<c>DispatcherQueue</c> を持つ）。
+    /// </para>
+    /// <para>
+    /// <b>期限は「終わるまで」に掛けてはいけない。</b> 停止は
+    /// <c>EventRecorder.MaxAdvisedStopFinalizeTimeoutMs</c>（50 秒）まで正当に掛かるので、
+    /// 全体へ掛けると正常に遅い停止を「塞がっている」と偽って断る。
+    /// ここでは待つ対象が「乗ったこと」であることまで見る。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void TheBackendGivesUpWhenItCannotGetOntoTheUiThread()
+    {
+        string source = File.ReadAllText(
+            RepositoryFiles.At("src", "ProcessRecorderApp", "Services", "RemoteControlBackend.cs"));
+
+        Assert.Contains("UiThreadEntryDeadline = TimeSpan.FromSeconds(30)", source, StringComparison.Ordinal);
+        Assert.Contains("\"ui thread busy\"", source, StringComparison.Ordinal);
+        Assert.Contains(
+            "RetryAfterSeconds = RemoteApiRules.RetryAfterSecondsWhenUiThreadBusy",
+            source, StringComparison.Ordinal);
+
+        // 待っているのは「乗ったこと」であって「終わったこと」ではない。
+        Assert.Contains("Task.WhenAny(entered.Task, delay)", source, StringComparison.Ordinal);
+        Assert.Contains("entered.TrySetResult();", source, StringComparison.Ordinal);
+
+        // 降りたあとに立つ例外を誰も見ないままにしない。
+        Assert.Contains("TaskContinuationOptions.OnlyOnFaulted", source, StringComparison.Ordinal);
+    }
+
     [Theory]
     [InlineData(null, "token", false)]
     [InlineData("token", null, false)]
