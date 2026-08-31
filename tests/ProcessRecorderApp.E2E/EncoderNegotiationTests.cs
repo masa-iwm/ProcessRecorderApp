@@ -1,5 +1,8 @@
 using System.Diagnostics;
 using System.Drawing;
+using System.Net;
+using System.Net.Http;
+using System.Text.RegularExpressions;
 using Xunit;
 
 namespace ProcessRecorderApp.E2E;
@@ -34,12 +37,25 @@ namespace ProcessRecorderApp.E2E;
 public sealed class EncoderNegotiationTests(PublishedApp app, ITestOutputHelper output)
 {
     [Fact]
-    public void ASourceFormatTheEncoderCannotTake_IsConvertedInsteadOfFailingToLink()
+    public async Task ASourceFormatTheEncoderCannotTake_IsConvertedInsteadOfFailingToLink()
     {
-        var settings = new SettingsFile();
+        // **サムネイルは利用者と同じ面（HTTP）で読む**ので、リモート操作を開けておく
+        // ── 配信 root は `OutputDirectory` なので、隔離ディレクトリへ向けないと
+        // 発行ディレクトリが root になり、録ったものに手が届かない。
+        var settings = new SettingsFile
+        {
+            RemoteControlEnabled = true,
+            RemoteControlBindAddress = "127.0.0.1",
+            RemoteControlPort = 0,
+            RemoteControlAccessToken = Token,
+            // このテストの主題は認証ではない。読み取りにも役割が要るので、
+            // ゲスト読み取りを明示して未認証で読む（認証は RemoteControlTests が見る）。
+            RemoteControlAllowGuestRead = true,
+        };
         settings.AddRecorder("R1").SrcPipeline = SettingsFile.UnconvertibleFormatVideoTestSrc;
 
-        using var instance = AppInstance.Create(app, settings);
+        using var instance = AppInstance.Create(
+            app, settings, configure: i => i.Settings.OutputDirectory = i.RecordingsDir);
 
         var log = instance.ReadActivityLog();
 
@@ -78,10 +94,29 @@ public sealed class EncoderNegotiationTests(PublishedApp app, ITestOutputHelper 
         Assert.True(File.Exists(thumbnail), "BGRA のフレームからサムネイルが書かれていない: " + thumbnail);
         output.WriteLine($"{thumbnail}: {new FileInfo(thumbnail).Length} bytes");
 
-        // **ファイルが在ることは「撮れた」ことではない。** 4 バイト系の並びやオフセットを
+        // **画素は利用者と同じ口（HTTP）から取る。** ディスクの有無を先に待つのは、
+        // 「撮れていない」（このテストの主題）と「配れていない」
+        // （RecordingDeliveryTests の主題）を取り違えないためで、
+        // 在ることが分かってから引けば要求は 1 回で足りる。
+        // 要求に載せるのは**本体 mp4 の相対パス**（`.png` はサーバーが足す）。
+        int port = WaitForPort(instance);
+        using var client = CreateClient(port);
+
+        byte[] png;
+        using (var response = await client.GetAsync(
+                   "api/recording-thumbnails/" + Uri.EscapeDataString(Path.GetFileName(file)), Ct))
+        {
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            Assert.Equal("image/png", response.Content.Headers.ContentType?.MediaType);
+            png = await response.Content.ReadAsByteArrayAsync(Ct);
+        }
+
+        output.WriteLine($"{png.Length} bytes over HTTP");
+
+        // **配られたことは「撮れた」ことではない。** 4 バイト系の並びやオフセットを
         // 取り違えても PNG は書けてしまうので、独立した復号器（System.Drawing）で読み返し、
-        // 大きさと「1 色ではないこと」まで見る（PNG は File.Move で現れるので途中の姿は無い）。
-        using (var stream = new MemoryStream(File.ReadAllBytes(thumbnail)))
+        // 大きさと「1 色ではないこと」まで見る。
+        using (var stream = new MemoryStream(png))
         using (var bitmap = new Bitmap(stream))
         {
             output.WriteLine($"{bitmap.Width}x{bitmap.Height} {bitmap.PixelFormat}");
@@ -108,4 +143,47 @@ public sealed class EncoderNegotiationTests(PublishedApp app, ITestOutputHelper 
 
     /// <summary>サムネイルが書かれるまでの上限（撮るのも書くのも録画の外側）。</summary>
     private static readonly TimeSpan ThumbnailBudget = TimeSpan.FromSeconds(20);
+
+    /// <summary>製品が生成する形（Base64Url・43 文字）に合わせた固定トークン。</summary>
+    private const string Token = "E2E-encoder-negotiation-token-0123456789-abc";
+
+    private static readonly TimeSpan StartBudget = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(30);
+
+    private static CancellationToken Ct => TestContext.Current.CancellationToken;
+
+    private static readonly Regex BindPattern = new(@"\bbind=([0-9.]+):(\d+)\b", RegexOptions.Compiled);
+
+    /// <summary><c>activity.log</c> の <c>remote.start</c> から実ポートを読む。</summary>
+    private int WaitForPort(AppInstance instance)
+    {
+        var deadline = Stopwatch.StartNew();
+        while (deadline.Elapsed < StartBudget)
+        {
+            foreach (string line in ActivityLogFile.Events(instance.ReadActivityLog(), "remote.start"))
+            {
+                var match = BindPattern.Match(ActivityLogFile.DetailOf(line));
+                if (match.Success)
+                {
+                    output.WriteLine(line);
+                    return int.Parse(match.Groups[2].Value);
+                }
+            }
+            Thread.Sleep(200);
+        }
+
+        Assert.Fail(
+            $"remote.start が {StartBudget.TotalSeconds:F0} 秒以内に現れませんでした。"
+            + Environment.NewLine
+            + string.Join(Environment.NewLine, ActivityLogFile.Events(instance.ReadActivityLog(), "remote.error"))
+            + Environment.NewLine + instance.DiagnosticDump());
+        return 0;
+    }
+
+    private static HttpClient CreateClient(int port) =>
+        new(new HttpClientHandler { UseCookies = false, AllowAutoRedirect = false })
+        {
+            BaseAddress = new Uri($"http://127.0.0.1:{port}/"),
+            Timeout = RequestTimeout,
+        };
 }

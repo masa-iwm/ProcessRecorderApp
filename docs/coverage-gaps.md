@@ -988,8 +988,5 @@ meta を持たない）。**meta の枝は L2 `ThumbnailLayoutTests` が通す**
   問題になる形（同時変換の上限は補助エンコーダー枠が縛る）は測っていない。
 - **`RecordingIndex` の差分列挙。** 通知のたびに木を歩き直して全再構築する
   （`carried` で読み直しだけは省く）。**大量のファイルがある保存先での費用は測っていない。**
-- **BGRA のサムネイル検査を HTTP 経由にすること。** L2 `EncoderNegotiationTests` は
-  ディスクの `<録画>.mp4.png` を直接読む。`GET /api/recording-thumbnails/…` が同じ画素を
-  返すことは別の経路（一覧の E2E が `src` の形だけを見る）でしか触れていない。
 - **`QuotaExceededError` の注入**（`SourceBuffer` が満杯になった経路）── 上の
   「リモート操作のブラウザ側（録画の追いかけ再生）」に同じ。ブラウザ側に注入点が無い。
