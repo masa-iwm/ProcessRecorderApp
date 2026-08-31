@@ -108,7 +108,9 @@ GPU 無しで再現できる根拠: `d3d12testsrc ! video/x-raw(memory:D3D12Memo
 
 **交渉された caps では分からない。** 実測した `.dot` では本線・プレビューとも `30/1` のままで、
 落ちているのは実際に入ったフレーム数の方である。そこでレポートには
-**`event fps` の列**（`stsz` のフレーム数 ÷ `mvhd` の duration）を出す。
+**`event fps` の列**（フレーム数 ÷ 尺）を出す。フレーム数は `moov` の `stsz` から採り、
+fragmented MP4（`FragmentedOutput` の既定）のように `moov` が 0 本しか数えていないときは
+`moof` → `traf` → `trun` の `sample_count` を合算する。尺は `mvhd`、それが 0 なら sidecar。
 
 3 件は**常時録画の設定だけが違う**（ソースもイベント側のエンコーダーも同じ）:
 
@@ -237,7 +239,8 @@ GPU 実機に**発行物一式**（`dotnet publish -p:PublishProfile=win-x64-aot
 .\tools\Verify-HighResolution.ps1 -PublishDir <発行ディレクトリ> -MonitorIndex 1
 ```
 
-- 尺は `moov` の `mvhd` から採り、それが 0 のとき（fragmented MP4 ── `FragmentedOutput` の既定）は sidecar `<ファイル>.mp4.json` の `durationMs` を使う。どちらも無く `moof` が 1 つ以上あれば `fragmented (n moof)` として尺は判定しない（`event fps` も同じ理由で `n/a` になる）。
+- 尺は `moov` の `mvhd` から採り、それが 0 のとき（fragmented MP4 ── `FragmentedOutput` の既定）は sidecar `<ファイル>.mp4.json` の `durationMs` を使う。どちらも無く `moof` が 1 つ以上あれば `fragmented (n moof)` として尺は判定しない。
+- `event fps` は**フレーム数 ÷ その尺**。フレーム数は `moov` の `stsz` から採り、fragmented MP4 のように `moov` が 0 本しか数えていないときは `moof` → `traf` → `trun` の `sample_count` を合算する。`n/a` になるのは**尺が無いとき、すなわち sidecar の無い fragmented MP4 だけ**（旧版が書いた録画物）。
 - 冒頭の `Fixed build : YES` と `Continuous : YES` を必ず確認する。どちらかが NO なら、それ以降の結果は無意味（古いバイナリ）。
 - 終了コード 0 なら全ケース期待どおり。1 なら `FAILED cases: N` と作業ディレクトリのパスが出るので、そのディレクトリごと持ち帰る（`activity.log` と `debug.log` が入っている）。
 - レポートは `high-resolution-report.md`。全ケース OK のときは `%TEMP%` にコピーして作業ディレクトリを消すので、**レポートだけ持ち帰れば足りる**。

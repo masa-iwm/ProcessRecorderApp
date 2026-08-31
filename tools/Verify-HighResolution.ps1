@@ -295,6 +295,49 @@ $recorders
     Set-Content -Path (Join-Path $WorkDir 'settings.json') -Value $json -Encoding utf8
 }
 
+# Sum of the sample counts of every 'trun' inside one 'moof'. A fragmented MP4 counts NO
+# samples in the moov (its stsz sample_count is 0), so the fragments are the only place the
+# frame count exists -- and without it the 'event fps' column, which is the whole point of
+# the fps rows, reads n/a for every file the product writes by default.
+#
+# The boxes are WALKED (moof -> traf -> trun), not searched for as text: the four bytes
+# 'trun' can occur anywhere inside sample data, and a false hit would read four arbitrary
+# bytes as a sample count and inflate the total by millions.
+function Get-TrunSampleCount {
+    param([byte[]]$Bytes, [int]$Offset, [int]$End)
+
+    $total = 0
+    $pos = $Offset
+    while ($pos + 8 -le $End) {
+        $size = ([uint32]$Bytes[$pos] -shl 24) -bor ([uint32]$Bytes[$pos+1] -shl 16) -bor ([uint32]$Bytes[$pos+2] -shl 8) -bor [uint32]$Bytes[$pos+3]
+        $type = [System.Text.Encoding]::ASCII.GetString($Bytes, $pos + 4, 4)
+        $header = 8
+        if ($size -eq 1) {
+            # 64-bit size. Only the low 32 bits are read: no moof is 4GB, and reading the
+            # high word would only matter for a file this probe could not walk anyway.
+            if ($pos + 16 -gt $End) { break }
+            $size = ([uint32]$Bytes[$pos+12] -shl 24) -bor ([uint32]$Bytes[$pos+13] -shl 16) -bor ([uint32]$Bytes[$pos+14] -shl 8) -bor [uint32]$Bytes[$pos+15]
+            $header = 16
+        }
+        # A short or overlong box means the fragment is truncated (the segment that was
+        # still open when the workers were killed). Stop rather than walk off the array.
+        if ($size -lt $header -or ($pos + $size) -gt $End) { break }
+
+        if ($type -eq 'traf') {
+            $total = $total + (Get-TrunSampleCount -Bytes $Bytes -Offset ($pos + $header) -End ($pos + $size))
+        }
+        elseif ($type -eq 'trun') {
+            # trun: size(4) type(4) version(1) flags(3) sample_count(4)
+            $c = $pos + $header + 4
+            if (($c + 4) -le $End) {
+                $total = $total + (([uint32]$Bytes[$c] -shl 24) -bor ([uint32]$Bytes[$c+1] -shl 16) -bor ([uint32]$Bytes[$c+2] -shl 8) -bor [uint32]$Bytes[$c+3])
+            }
+        }
+        $pos = $pos + $size
+    }
+    return $total
+}
+
 # Minimal ISO-BMFF probe. Deliberately dependency-free: gst-discoverer needs a working
 # plugin path and an extra process, and this only has to answer "is it a real MP4 with an
 # H.264 track, and how long is it".
@@ -307,8 +350,12 @@ function Test-Mp4 {
         $res = [pscustomobject]@{
             HasFtyp = $false; HasMoov = $false; HasMdat = $false
             HasAvc1 = $false; DurationSec = $null; FrameCount = $null; EffectiveFps = $null
-            MoofCount = 0; DurationSource = 'moov'
+            MoofCount = 0; DurationSource = 'moov'; FrameCountSource = $null
         }
+
+        # Frames counted in the fragments. Kept apart from $res.FrameCount so the moov
+        # stays the preferred source and this is only fallen back to below.
+        $fragmentSamples = 0
 
         while ($fs.Position -lt $fs.Length - 8) {
             $start = $fs.Position
@@ -316,13 +363,20 @@ function Test-Mp4 {
             if ($b.Length -lt 4) { break }
             $size = ([uint32]$b[0] -shl 24) -bor ([uint32]$b[1] -shl 16) -bor ([uint32]$b[2] -shl 8) -bor [uint32]$b[3]
             $type = [System.Text.Encoding]::ASCII.GetString($br.ReadBytes(4))
-            if ($size -eq 1) { $size = [int64]$br.ReadUInt64() }
-            if ($size -lt 8) { break }
+            $hdr = 8
+            if ($size -eq 1) { $size = [int64]$br.ReadUInt64(); $hdr = 16 }
+            if ($size -lt $hdr) { break }
 
             switch ($type) {
                 'ftyp' { $res.HasFtyp = $true }
                 'mdat' { $res.HasMdat = $true }
-                'moof' { $res.MoofCount = $res.MoofCount + 1 }
+                'moof' {
+                    $res.MoofCount = $res.MoofCount + 1
+                    # Read the whole moof (a few hundred bytes) and count its samples.
+                    $fs.Position = $start + $hdr
+                    $moof = $br.ReadBytes([int]($size - $hdr))
+                    $fragmentSamples = $fragmentSamples + (Get-TrunSampleCount -Bytes $moof -Offset 0 -End $moof.Length)
+                }
                 'moov' {
                     $res.HasMoov = $true
                     $null = $br.ReadBytes(4)
@@ -357,7 +411,15 @@ function Test-Mp4 {
                         # stsz: size(4) type(4) ver+flags(4) sample_size(4) sample_count(4)
                         $c = $ix + 12
                         $res.FrameCount = ([uint32]$moov[$c] -shl 24) -bor ([uint32]$moov[$c+1] -shl 16) -bor ([uint32]$moov[$c+2] -shl 8) -bor [uint32]$moov[$c+3]
-                        if ($res.DurationSec -gt 0) { $res.EffectiveFps = [math]::Round($res.FrameCount / $res.DurationSec, 1) }
+                        # ONLY when the moov actually counts samples. A fragmented file has
+                        # stsz sample_count = 0, and computing 0/duration here would leave a
+                        # non-null EffectiveFps of 0 that the fragment count below could no
+                        # longer replace -- the report would read '0 (0f)' instead of the
+                        # real rate.
+                        if ($res.FrameCount -gt 0) {
+                            $res.FrameCountSource = 'stsz'
+                            if ($res.DurationSec -gt 0) { $res.EffectiveFps = [math]::Round($res.FrameCount / $res.DurationSec, 1) }
+                        }
                     }
                 }
             }
@@ -386,6 +448,19 @@ function Test-Mp4 {
             if (($res.DurationSource -ne 'sidecar') -and ($res.MoofCount -ge 1)) {
                 $res.DurationSource = 'fragmented'
             }
+        }
+
+        # The frame count of a fragmented file. The moov of such a file counts no samples,
+        # so without this the 'event fps' column -- the only way to see the event line
+        # dropping frames while the negotiated caps still read 30/1 -- is n/a for every
+        # recording the product writes with FragmentedOutput on (the default).
+        if (-not ($res.FrameCount -gt 0) -and ($fragmentSamples -gt 0)) {
+            $res.FrameCount = $fragmentSamples
+            $res.FrameCountSource = 'trun'
+            # The length comes from the sidecar here (the mvhd of a fragmented file is 0),
+            # so a recording written by an older build -- one with no sidecar -- still has
+            # no rate to report, only a frame count.
+            if ($res.DurationSec -gt 0) { $res.EffectiveFps = [math]::Round($res.FrameCount / $res.DurationSec, 1) }
         }
 
         return $res
@@ -971,8 +1046,12 @@ $null = $sb.AppendLine('`recorder.init ok` and no `recorder.init fail`, no "neve
 $null = $sb.AppendLine('structurally valid MP4 whose duration is not zero. The duration comes from the moov, or,')
 $null = $sb.AppendLine('when that is zero (a fragmented MP4 -- the product default), from the sidecar')
 $null = $sb.AppendLine('`<file>.mp4.json`. With neither, a file carrying `moof` boxes reads as')
-$null = $sb.AppendLine('`fragmented (n moof)` and its length is not judged; `event fps` is `n/a` for the same')
-$null = $sb.AppendLine('reason (the moov of a fragmented file counts no samples).')
+$null = $sb.AppendLine('`fragmented (n moof)` and its length is not judged.')
+$null = $sb.AppendLine()
+$null = $sb.AppendLine('`event fps` is the frame count divided by that length. The count comes from the moov')
+$null = $sb.AppendLine('(`stsz` sample_count) and, for a fragmented file whose moov counts no samples, from the')
+$null = $sb.AppendLine('fragments themselves (`moof` -> `traf` -> `trun` sample_count, summed). It reads `n/a`')
+$null = $sb.AppendLine('only when there is no length to divide by -- a fragmented file with no sidecar.')
 $null = $sb.AppendLine()
 $null = $sb.AppendLine("Continuous rows add: exactly one ``recorder.continuous-init ok`` and no ``... fail``, at least")
 $null = $sb.AppendLine("$($ContinuousMinSegments - 1) CLOSED segment(s) out of the $ContinuousMinSegments asked for, every closed segment structurally")
