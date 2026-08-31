@@ -936,10 +936,15 @@ sidecar と一覧の `trigger` のうち、**自動で通るのは `remote` / `c
   （撮れない側には倒れないので、ログにも一覧にも異常は出ない）。
   L1 が見るのは「渡されたレイアウトどおりに読むこと」と「収まらないレイアウトを
   撮らないこと」まで（L1 は GStreamer を初期化しない層である）。`ReadFrameLayout`
-  そのものは E2E のサムネイルのたびに走るが、**通るのは caps（`GstVideoInfo`）の枝だけ**
-  である ── `appsink` は `GstVideoMeta` を要求しないので `videotestsrc` の buffer は
-  meta を持たない。**meta の枝と、食い違う meta を撮らない判断
-  （`reason=video-meta-mismatch`）は、どの層でも走らない**。
+  そのものは E2E のサムネイルのたびに走るが、**自動で通るのは caps（`GstVideoInfo`）の
+  枝だけ**である ── `appsink` は `GstVideoMeta` を要求しないので `videotestsrc` の buffer は
+  meta を持たない。**meta の枝は GPU の無い機でも手で確かめられる。** WARP
+  （Microsoft Basic Render Driver）でも
+  `d3d12upload ! d3d12convert ! video/x-raw(memory:D3D12Memory),format=NV12 ! d3d12download ! video/x-raw(memory:SystemMemory)`
+  は動き、`d3d12convert` を通った buffer には `GstVideoMeta` が付く（stride は幅 1920 で
+  2048・幅 640 で 1024、**最終行は stride まで埋まっていない**）。`d3d12convert` を挟まない
+  と meta は付かず既定レイアウトになる。**この確認は自動テスト（E2E）には載せていない。**
+  食い違う meta を撮らない判断（`reason=video-meta-mismatch`）は、どの層でも走らない。
   どの枝を通ったかは `thumbnail.written` の `source=`（`meta` / `caps` / `default`）に出るので、
   実機のログからは断定できる
 

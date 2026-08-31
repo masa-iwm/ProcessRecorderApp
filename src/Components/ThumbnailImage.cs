@@ -59,9 +59,10 @@ public sealed record ThumbnailImage(int Width, int Height, byte[] Rgb24)
     /// <c>gst_video_info_set_format</c> の既定レイアウト</b>を使う。
     /// </para>
     /// <para>
-    /// <b>読む位置は必ず <paramref name="frame"/> の中に収める。</b> 平面ごとの
-    /// <c>offset + stride × 読む行数</c> が長さを超えるもの、stride が 1 行の画素に
-    /// 足りないもの、負の値が混じるものは、すべて <see langword="false"/>。
+    /// <b>読む位置は必ず <paramref name="frame"/> の中に収める。</b> 平面ごとに
+    /// <b>最終行は行バイト数まで</b>で、<c>offset + stride × (読む行数 − 1) + 行バイト数</c>
+    /// が長さを超えるもの、stride が 1 行の画素に足りないもの、負の値が混じるものは、
+    /// すべて <see langword="false"/>。
     /// </para>
     /// <para>
     /// <b>YUV → RGB は BT.709 limited range 固定。</b> caps の <c>colorimetry</c> は読まない。
@@ -195,7 +196,11 @@ public sealed record ThumbnailImage(int Width, int Height, byte[] Rgb24)
         /// <summary>V を含む平面の先頭からのオフセット。</summary>
         public int OffsetV { get; init; }
 
-        /// <summary>このレイアウトで読む位置が収まっていなければならないバイト数。</summary>
+        /// <summary>
+        /// このレイアウトで読む位置が収まっていなければならないバイト数
+        /// （平面ごとの <c>offset + stride × (行数 − 1) + 行バイト数</c> の最大）。
+        /// <b>最終行は行バイト数まで</b>で、その後ろの padding は要求しない。
+        /// </summary>
         public long RequiredBytes { get; init; }
     }
 
@@ -284,8 +289,16 @@ public sealed record ThumbnailImage(int Width, int Height, byte[] Rgb24)
         return minStride <= stride && 0 <= offset;
     }
 
-    /// <summary>平面 1 つが要る長さ（<c>int</c> で溢れないよう <c>long</c> で数える）。</summary>
-    private static long Required(int offset, int stride, int rows) => offset + ((long)stride * rows);
+    /// <summary>
+    /// 平面 1 つが要る長さ（<c>int</c> で溢れないよう <c>long</c> で数える）。
+    /// <b>最終行は行バイト数まで</b>で、その後ろの stride のパディングは要求しない
+    /// ── 最終行を stride まで埋めない buffer（D3D12 の copyable footprint）がある。
+    /// <paramref name="rowBytes"/> は読み手が実際に読む 1 行のバイト数
+    /// （<see cref="TryPlane"/> へ渡す最小 stride と同じ値）。<paramref name="rows"/> は
+    /// 1 以上（呼ぶ前に <c>height</c> の正が確かめてある）。
+    /// </summary>
+    private static long Required(int offset, int stride, int rows, int rowBytes)
+        => offset + ((long)stride * (rows - 1)) + rowBytes;
 
     private static bool TryRgb(
         int width, int height, int pixelBytes, int r, int g, int b,
@@ -294,7 +307,8 @@ public sealed record ThumbnailImage(int Width, int Height, byte[] Rgb24)
         layout = default;
 
         int defaultStride = pixelBytes == 4 ? width * 4 : RoundUp4(width * 3);
-        if (!TryPlane(0, defaultStride, 0, width * pixelBytes, strides, offsets,
+        int rowBytes = width * pixelBytes;
+        if (!TryPlane(0, defaultStride, 0, rowBytes, strides, offsets,
                 out int stride, out int offset))
             return false;
 
@@ -307,7 +321,7 @@ public sealed record ThumbnailImage(int Width, int Height, byte[] Rgb24)
             OffsetR = r,
             OffsetG = g,
             OffsetB = b,
-            RequiredBytes = Required(offset, stride, height),
+            RequiredBytes = Required(offset, stride, height, rowBytes),
         };
 
         return true;
@@ -320,7 +334,8 @@ public sealed record ThumbnailImage(int Width, int Height, byte[] Rgb24)
         layout = default;
 
         // 端の画素も 2 画素 4 バイトの組で持つので、1 行の最小は RU2(width)×2。
-        if (!TryPlane(0, RoundUp4(width * 2), 0, RoundUp2(width) * 2, strides, offsets,
+        int rowBytes = RoundUp2(width) * 2;
+        if (!TryPlane(0, RoundUp4(width * 2), 0, rowBytes, strides, offsets,
                 out int stride, out int offset))
             return false;
 
@@ -333,7 +348,7 @@ public sealed record ThumbnailImage(int Width, int Height, byte[] Rgb24)
             OffsetY = y,
             OffsetU = u,
             OffsetV = v,
-            RequiredBytes = Required(offset, stride, height),
+            RequiredBytes = Required(offset, stride, height, rowBytes),
         };
 
         return true;
@@ -351,8 +366,9 @@ public sealed record ThumbnailImage(int Width, int Height, byte[] Rgb24)
             return false;
 
         // クロマの 1 行は RU2(width) バイト（U と V が 1 バイトおきに交互）。
+        int chromaRowBytes = RoundUp2(width);
         int chromaRows = RoundUp2(height) / 2;
-        if (!TryPlane(1, defaultStride, defaultStride * RoundUp2(height), RoundUp2(width),
+        if (!TryPlane(1, defaultStride, defaultStride * RoundUp2(height), chromaRowBytes,
                 strides, offsets, out int chromaStride, out int chromaOffset))
             return false;
 
@@ -366,8 +382,8 @@ public sealed record ThumbnailImage(int Width, int Height, byte[] Rgb24)
             OffsetU = chromaOffset + u,
             OffsetV = chromaOffset + v,
             RequiredBytes = Math.Max(
-                Required(offset, stride, height),
-                Required(chromaOffset, chromaStride, chromaRows)),
+                Required(offset, stride, height, width),
+                Required(chromaOffset, chromaStride, chromaRows, chromaRowBytes)),
         };
 
         return true;
@@ -413,10 +429,10 @@ public sealed record ThumbnailImage(int Width, int Height, byte[] Rgb24)
             OffsetU = offsetU,
             OffsetV = offsetV,
             RequiredBytes = Math.Max(
-                Required(offset, stride, height),
+                Required(offset, stride, height, width),
                 Math.Max(
-                    Required(offsetU, strideU, chromaRows),
-                    Required(offsetV, strideV, chromaRows))),
+                    Required(offsetU, strideU, chromaRows, minChromaStride),
+                    Required(offsetV, strideV, chromaRows, minChromaStride))),
         };
 
         return true;

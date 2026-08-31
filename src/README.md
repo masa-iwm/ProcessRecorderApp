@@ -2183,8 +2183,9 @@ sidecar の隣に PNG を 1 枚置く。一覧の `hasThumbnail` はこのファ
   `width*4`、それ以外は 4 バイト境界へ切り上げ、平面は Y の直後に UV）に落ちる。
   **`GstVideoInfo` が表せるのは既定レイアウトだけ**なので、meta を持たないパディング
   入りの buffer は依然として絵が斜めにずれる
-- **読む位置は必ず buffer の中に収める。** 平面ごとの `offset + stride × 行数` が
-  map した長さを超えるもの・1 行の画素に足りない stride・負の stride は撮らない
+- **読む位置は必ず buffer の中に収める。** 平面ごとに、最終行は行バイト数まで
+  （`offset + stride × (行数 − 1) + 行バイト数`）が map した長さに収まらないもの・
+  1 行の画素に足りない stride・負の stride は撮らない
   （`thumbnail.unsupported reason=layout`）
 - **caps と食い違う `GstVideoMeta` は既定レイアウトで代替しない。** 形式・寸法・平面数の
   どれかが違う meta と、写せない値を持つ meta は撮らない

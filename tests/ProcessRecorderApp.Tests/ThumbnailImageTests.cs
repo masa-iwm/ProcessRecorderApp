@@ -819,6 +819,95 @@ public sealed class ThumbnailImageTests
         AssertPixel(image, 96, 4, 255, 255, 255);
     }
 
+    // ---- 最終行が stride まで埋まっていない buffer ----
+
+    /// <summary>
+    /// <b><c>d3d12download</c> が出す NV12 の実レイアウト。</b> 1920x1080・
+    /// 平面ごとの stride 2048・クロマの offset 2211840 で、最終行が stride まで
+    /// 埋まっていない buffer（実長 3,317,632 ＝ 2211840 ＋ 2048×539 ＋ 1920）を
+    /// そのまま撮れること。読み手が触る最大位置＋1 がちょうどこの長さである。
+    /// </summary>
+    [Fact]
+    public void AnNv12FrameWhoseLastRowIsNotPaddedToTheStrideIsAccepted()
+    {
+        byte[] frame = SemiPlanar420WithLayout(
+            1920, 1080, uFirst: true, lumaStride: 2048, chromaStride: 2048,
+            lumaOffset: 0, chromaOffset: 2211840, (x, _) => RedThenWhite(x, 1920));
+
+        Assert.True(ThumbnailImage.TryCreate(
+            frame.AsSpan(0, 3317632), "NV12", 1920, 1080, 1920, [2048, 2048], [0, 2211840],
+            out ThumbnailImage? image));
+        Assert.NotNull(image);
+        Assert.Equal(1920, image.Width);
+        Assert.Equal(1080, image.Height);
+
+        AssertPixel(image, 0, 0, 255, 0, 0);
+        AssertPixel(image, 1919, 1079, 255, 255, 255);
+    }
+
+    /// <summary>
+    /// 上の buffer が 1 バイト短ければ撮らない ── 緩めたのは「最終行の後ろの
+    /// パディング」だけで、最終行そのものは全部読めなければならない。
+    /// </summary>
+    [Fact]
+    public void AnNv12FrameOneByteShorterThanItsLastRowIsRejected()
+    {
+        byte[] frame = SemiPlanar420WithLayout(
+            1920, 1080, uFirst: true, lumaStride: 2048, chromaStride: 2048,
+            lumaOffset: 0, chromaOffset: 2211840, (x, _) => RedThenWhite(x, 1920));
+
+        Assert.False(ThumbnailImage.TryCreate(
+            frame.AsSpan(0, 3317631), "NV12", 1920, 1080, 1920, [2048, 2048], [0, 2211840],
+            out ThumbnailImage? image));
+        Assert.Null(image);
+    }
+
+    /// <summary>
+    /// <b>4:2:0 planar の最終行 unpadded。</b> V 平面の最終行の行バイト数まで
+    /// （120 ＋ 6×3 ＋ 4 ＝ 142）でちょうど足り、141 では足りないこと。
+    /// </summary>
+    [Fact]
+    public void APlanarFrameThatEndsAtItsLastRowIsAcceptedAndOneByteShorterIsNot()
+    {
+        byte[] frame = Planar420WithLayout(
+            8, 8, lumaStride: 12, uStride: 6, vStride: 6, lumaOffset: 0, uOffset: 96, vOffset: 120,
+            (x, _) => RedThenWhite(x, 8));
+
+        Assert.True(ThumbnailImage.TryCreate(
+            frame.AsSpan(0, 142), "I420", 8, 8, 320, [12, 6, 6], [0, 96, 120],
+            out ThumbnailImage? image));
+        Assert.NotNull(image);
+        AssertPixel(image, 0, 0, 255, 0, 0);
+        AssertPixel(image, 7, 7, 255, 255, 255);
+
+        Assert.False(ThumbnailImage.TryCreate(
+            frame.AsSpan(0, 141), "I420", 8, 8, 320, [12, 6, 6], [0, 96, 120],
+            out ThumbnailImage? tooShort));
+        Assert.Null(tooShort);
+    }
+
+    /// <summary>
+    /// <b>packed（4 バイト系）の最終行 unpadded。</b> 幅 8・stride 40 なら
+    /// 40×7 ＋ 32 ＝ 312 でちょうど足り、311 では足りないこと。
+    /// </summary>
+    [Fact]
+    public void AFourByteFrameThatEndsAtItsLastRowIsAcceptedAndOneByteShorterIsNot()
+    {
+        byte[] frame = BgraWithLayout(
+            8, 8, stride: 40, offset: 0,
+            (x, _) => x < 4 ? ((byte)255, (byte)0, (byte)0) : ((byte)0, (byte)0, (byte)255));
+
+        Assert.True(ThumbnailImage.TryCreate(
+            frame.AsSpan(0, 312), "BGRA", 8, 8, 320, [40], [0], out ThumbnailImage? image));
+        Assert.NotNull(image);
+        AssertPixel(image, 0, 0, 255, 0, 0);
+        AssertPixel(image, 7, 7, 0, 0, 255);
+
+        Assert.False(ThumbnailImage.TryCreate(
+            frame.AsSpan(0, 311), "BGRA", 8, 8, 320, [40], [0], out ThumbnailImage? tooShort));
+        Assert.Null(tooShort);
+    }
+
     /// <summary>
     /// 既定レイアウトの多重定義は、同じ値を書き下したレイアウトと同じ絵になる
     /// （既定は「レイアウトを渡さない」だけで、別の経路ではない）。
@@ -842,8 +931,8 @@ public sealed class ThumbnailImageTests
     /// 負の値・平面の数のどれが欠けても false。
     /// </summary>
     [Theory]
-    // 最終行が 1 バイト足りない。
-    [InlineData("BGRA", 511, new[] { 64 }, new[] { 0 })]
+    // 最終行が 1 バイト足りない（8 行目の 32 バイトまでで 64×7＋32＝480 要る）。
+    [InlineData("BGRA", 479, new[] { 64 }, new[] { 0 })]
     // 1 行の画素（8×4＝32 バイト）に足りない stride。
     [InlineData("BGRA", 4096, new[] { 31 }, new[] { 0 })]
     // 負の stride（下から上へ並ぶ buffer）は扱わない。
