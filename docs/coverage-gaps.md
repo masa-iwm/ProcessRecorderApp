@@ -930,11 +930,11 @@ sidecar と一覧の `trigger` のうち、**自動で通るのは `remote` / `c
 
 ### サムネイルの画素形式とレイアウト
 
-`Components/ThumbnailImage.cs` が受ける画素形式のうち、**自動で通るのは `I420` と `BGRA`
-（＋ `BGRA` と同じ分岐の `BGRx`）だけ**である（どちらも `videotestsrc` の E2E ── 既定のソースが
-`I420`、`SettingsFile.UnconvertibleFormatVideoTestSrc` が `BGRA`）。残りは手動確認になる。
+`Components/ThumbnailImage.cs` が受ける画素形式のうち、**自動で通るのは `I420` / `BGRA`
+（＋ `BGRA` と同じ分岐の `BGRx`）/ `NV12` だけ**である（前 2 つは `videotestsrc` の E2E ──
+既定のソースが `I420`、`SettingsFile.UnconvertibleFormatVideoTestSrc` が `BGRA`。`NV12` は
+L2 `ThumbnailLayoutTests` の D3d12 経路）。残りは手動確認になる。
 
-- `NV12` ── D3D12 経路（`d3d12download` の後）とカメラの多くがこれを流す
 - `YUY2` / `UYVY` / `NV21` / `YV12` / `RGB` / `BGR` と、4 バイト系のうち `BGRA` と `BGRx` を除いたもの
   （`BGRx` は `BGRA` と同じ分岐を通るので、`BGRA` の E2E で一緒に通っている）
 - **`GstVideoMeta` を持たない、パディング入りの buffer。** レイアウト（平面ごとの
@@ -942,24 +942,27 @@ sidecar と一覧の `trigger` のうち、**自動で通るのは `remote` / `c
   それも無ければ既定レイアウトに落ちる（`EventRecorder.ReadFrameLayout`）。
   **`GstVideoInfo` が表せるのは既定レイアウトだけ**なので、meta を持たない buffer が
   別の stride で来ると、長さが足りる限り**絵が斜めにずれたまま撮れてしまう**
-  （撮れない側には倒れないので、ログにも一覧にも異常は出ない）。
+  （撮れない側には倒れないので、ログにも一覧にも異常は出ない）。**この形を自動で作る
+  構成は持っていない**ので、ここは無検査のまま残る。
   L1 が見るのは「渡されたレイアウトどおりに読むこと」と「収まらないレイアウトを
-  撮らないこと」まで（L1 は GStreamer を初期化しない層である）。`ReadFrameLayout`
-  そのものは E2E のサムネイルのたびに走るが、**自動で通るのは caps（`GstVideoInfo`）の
-  枝だけ**である ── `appsink` は `GstVideoMeta` を要求しないので `videotestsrc` の buffer は
-  meta を持たない。**meta の枝は GPU の無い機でも手で確かめられる。** WARP
-  （Microsoft Basic Render Driver）でも
-  `d3d12upload ! d3d12convert ! video/x-raw(memory:D3D12Memory),format=NV12 ! d3d12download ! video/x-raw(memory:SystemMemory)`
-  は動き、`d3d12convert` を通った buffer には `GstVideoMeta` が付く（stride は幅 1920 で
-  2048・幅 640 で 1024、**最終行は stride まで埋まっていない**）。`d3d12convert` を挟まない
-  と meta は付かず既定レイアウトになる。**この確認は自動テスト（E2E）には載せていない。**
-  食い違う meta を撮らない判断（`reason=video-meta-mismatch`）は、どの層でも走らない。
-  どの枝を通ったかは `thumbnail.written` の `source=`（`meta` / `caps` / `default`）に出るので、
-  実機のログからは断定できる
+  撮らないこと」まで（L1 は GStreamer を初期化しない層である）。
+- **食い違う meta を撮らない判断（`reason=video-meta-mismatch`）は、どの層でも走らない。**
+
+`ReadFrameLayout` の 3 つの枝のうち、caps（`GstVideoInfo`）の枝は `videotestsrc` の E2E が
+サムネイルのたびに通る（`appsink` は `GstVideoMeta` を要求しないので、あちらの buffer は
+meta を持たない）。**meta の枝は L2 `ThumbnailLayoutTests` が通す** ── WARP
+（Microsoft Basic Render Driver）でも
+`d3d12upload ! d3d12convert ! video/x-raw(memory:D3D12Memory),format=NV12 ! d3d12download ! video/x-raw(memory:SystemMemory)`
+は動き、`d3d12convert` を通った buffer には `GstVideoMeta` が付く（stride は幅 1920 で
+2048・幅 640 で 1024、**最終行は stride まで埋まっていない**）。`d3d12convert` を挟まない
+と meta は付かず既定レイアウトになる。どの枝を通ったかは `thumbnail.written` の
+`source=`（`meta` / `caps` / `default`）に出る。
 
 手動確認: そのソースで 1 本録り、`<録画ファイル名>.mp4.png` を画像として開いて、
-色と形が録画の中身と一致していることを目で見る。撮れていない場合は activity.log の
-`thumbnail.unsupported` / `thumbnail.capture failed` / `thumbnail.write failed` を見る。
+色と形が録画の中身と一致していることを目で見る。撮れていない場合は
+`thumbnail.unsupported` / `thumbnail.capture failed` / `thumbnail.write failed` を見る
+── **これらは activity.log には出ない。** `DebugLogEx` は GStreamer の `myapp` カテゴリへ
+書くので、`GstDebug` を `myapp:5` にして `DebugLogFile` の方を読むこと。
 
 色は **BT.709 limited range 固定**で、`pixel-aspect-ratio` は見ない ── BT.601 のソースでの
 わずかな色ずれと、非正方画素のソースでの縦横比の狂いは、どちらも仕様どおりであって

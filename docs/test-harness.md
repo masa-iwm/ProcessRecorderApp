@@ -43,6 +43,7 @@ L2 の主な対象範囲:
 | `StatusCommandTests` | `status` サブコマンド（録画の開始/停止が列に映ること・不健全なレコーダーで専用の終了コードと対象名が標準エラーに出ること） |
 | `EncoderNegotiationTests` | ソースの画素形式がエンコーダーの受け付ける形式と違っても録画できること |
 | `HighResolutionTests` | 高解像度でもパイプラインが動き出すこと（プレビュー枝の queue 満杯によるデッドロックの回帰） |
+| `ThumbnailLayoutTests` | パディングの入った buffer から歪んでいないサムネイルが撮れること（`D3d12` 経路。`thumbnail.written source=meta` と画素の両方を見る。`thumbnail.*` は `activity.log` ではなく `myapp` カテゴリ＝`DebugLogFile` に出る） |
 
 `ResidentWorkerTests` の「エンジンが作り直されないこと」を、エンジンがページ寿命に依存しないことの回帰テストと読まないこと（その退行が観測できない理由は L3 の節の末尾を参照）。
 
