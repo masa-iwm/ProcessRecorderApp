@@ -16,6 +16,11 @@ namespace ProcessRecorderApp.Tests;
 /// <b>合成フレームは既定レイアウトで作る。</b> stride のパディングには別の値を詰めて、
 /// 実装がそこを画素として読んでいないことを確かめる。
 /// </para>
+/// <para>
+/// <b>平面ごとの stride / offset を渡す多重定義は、それ用の合成フレームで見る</b>
+/// （<c>*WithStride</c> / <c>*WithLayout</c>）。パディングを本当に踏んでいることは、
+/// 同じバイト列を既定レイアウトで読んだときに絵が壊れることで固定する。
+/// </para>
 /// </summary>
 public sealed class ThumbnailImageTests
 {
@@ -36,6 +41,24 @@ public sealed class ThumbnailImageTests
         AssertNear(r, image.Rgb24[at], "R", x, y);
         AssertNear(g, image.Rgb24[at + 1], "G", x, y);
         AssertNear(b, image.Rgb24[at + 2], "B", x, y);
+    }
+
+    /// <summary>
+    /// その画素が期待色**では無い**こと（stride を取り違えた読みが、絵として成り立たない
+    /// ことを固定する側）。3 チャンネルのどれか 1 つでも許容の外にあればよい。
+    /// </summary>
+    private static void AssertNotPixel(ThumbnailImage image, int x, int y, byte r, byte g, byte b)
+    {
+        int at = (((y * image.Width) + x) * 3);
+        byte actualR = image.Rgb24[at];
+        byte actualG = image.Rgb24[at + 1];
+        byte actualB = image.Rgb24[at + 2];
+
+        Assert.True(
+            Math.Abs(r - actualR) > Tolerance
+            || Math.Abs(g - actualG) > Tolerance
+            || Math.Abs(b - actualB) > Tolerance,
+            $"({x},{y}) は {r},{g},{b} 以外のはずが {actualR},{actualG},{actualB} だった。");
     }
 
     private static void AssertNear(byte expected, byte actual, string channel, int x, int y)
@@ -378,6 +401,523 @@ public sealed class ThumbnailImageTests
         Assert.Equal(3, image.Height);
         AssertPixel(image, 4, 2, 255, 255, 255);
     }
+
+    // ---- 平面ごとの stride / offset ----
+
+    /// <summary>4 バイト系を任意の stride / offset で詰める（隙間と行末の余りは 0xA5）。</summary>
+    private static byte[] BgraWithLayout(
+        int width, int height, int stride, int offset,
+        Func<int, int, (byte R, byte G, byte B)> color)
+    {
+        var frame = new byte[offset + (stride * height)];
+        Array.Fill(frame, (byte)0xA5);
+
+        for (int y = 0; y < height; y++)
+        {
+            for (int x = 0; x < width; x++)
+            {
+                (byte r, byte g, byte b) = color(x, y);
+                int at = offset + (y * stride) + (x * 4);
+                frame[at] = b;
+                frame[at + 1] = g;
+                frame[at + 2] = r;
+                frame[at + 3] = 255;
+            }
+        }
+
+        return frame;
+    }
+
+    /// <summary>3 バイト系を任意の stride / offset で詰める（隙間は 0xA5）。</summary>
+    private static byte[] RgbWithLayout(
+        int width, int height, int stride, int offset,
+        Func<int, int, (byte R, byte G, byte B)> color)
+    {
+        var frame = new byte[offset + (stride * height)];
+        Array.Fill(frame, (byte)0xA5);
+
+        for (int y = 0; y < height; y++)
+        {
+            for (int x = 0; x < width; x++)
+            {
+                (byte r, byte g, byte b) = color(x, y);
+                int at = offset + (y * stride) + (x * 3);
+                frame[at] = r;
+                frame[at + 1] = g;
+                frame[at + 2] = b;
+            }
+        }
+
+        return frame;
+    }
+
+    /// <summary>YUY2 / UYVY を任意の stride / offset で詰める（隙間は 0xA5）。</summary>
+    private static byte[] Packed422WithLayout(
+        int width, int height, bool yFirst, int stride, int offset,
+        Func<int, int, (byte Y, byte U, byte V)> color)
+    {
+        var frame = new byte[offset + (stride * height)];
+        Array.Fill(frame, (byte)0xA5);
+
+        for (int y = 0; y < height; y++)
+        {
+            for (int x = 0; x < width; x++)
+            {
+                (byte luma, byte u, byte v) = color(x, y);
+                int row = offset + (y * stride);
+                frame[row + (x * 2) + (yFirst ? 0 : 1)] = luma;
+
+                if (x % 2 != 0)
+                    continue;
+
+                int pair = row + ((x / 2) * 4);
+                frame[pair + (yFirst ? 1 : 0)] = u;
+                frame[pair + (yFirst ? 3 : 2)] = v;
+            }
+        }
+
+        return frame;
+    }
+
+    /// <summary>NV12 / NV21 を任意の stride / offset で詰める（隙間は 0xA5）。</summary>
+    private static byte[] SemiPlanar420WithLayout(
+        int width, int height, bool uFirst, int lumaStride, int chromaStride,
+        int lumaOffset, int chromaOffset, Func<int, int, (byte Y, byte U, byte V)> color)
+    {
+        int chromaRows = RoundUp2(height) / 2;
+        var frame = new byte[Math.Max(
+            lumaOffset + (lumaStride * height),
+            chromaOffset + (chromaStride * chromaRows))];
+        Array.Fill(frame, (byte)0xA5);
+
+        for (int y = 0; y < height; y++)
+        {
+            for (int x = 0; x < width; x++)
+            {
+                (byte luma, byte u, byte v) = color(x, y);
+                frame[lumaOffset + (y * lumaStride) + x] = luma;
+
+                if (x % 2 != 0 || y % 2 != 0)
+                    continue;
+
+                int at = chromaOffset + ((y / 2) * chromaStride) + ((x / 2) * 2);
+                frame[at + (uFirst ? 0 : 1)] = u;
+                frame[at + (uFirst ? 1 : 0)] = v;
+            }
+        }
+
+        return frame;
+    }
+
+    /// <summary>I420 / YV12 を任意の stride / offset で詰める（隙間は 0xA5）。</summary>
+    private static byte[] Planar420WithLayout(
+        int width, int height, int lumaStride, int uStride, int vStride,
+        int lumaOffset, int uOffset, int vOffset, Func<int, int, (byte Y, byte U, byte V)> color)
+    {
+        int chromaRows = RoundUp2(height) / 2;
+        var frame = new byte[Math.Max(
+            lumaOffset + (lumaStride * height),
+            Math.Max(
+                uOffset + (uStride * chromaRows),
+                vOffset + (vStride * chromaRows)))];
+        Array.Fill(frame, (byte)0xA5);
+
+        for (int y = 0; y < height; y++)
+        {
+            for (int x = 0; x < width; x++)
+            {
+                (byte luma, byte u, byte v) = color(x, y);
+                frame[lumaOffset + (y * lumaStride) + x] = luma;
+
+                if (x % 2 != 0 || y % 2 != 0)
+                    continue;
+
+                frame[uOffset + ((y / 2) * uStride) + (x / 2)] = u;
+                frame[vOffset + ((y / 2) * vStride) + (x / 2)] = v;
+            }
+        }
+
+        return frame;
+    }
+
+    /// <summary>
+    /// <b>stride にパディングのある 4 バイト系。</b> 幅 96（既定なら 384 バイト）を
+    /// stride 512 で詰めたものを、渡したレイアウトどおりに読むこと。
+    /// </summary>
+    [Fact]
+    public void APaddedFourByteFrameIsReadWithTheGivenStride()
+    {
+        byte[] frame = BgraWithLayout(96, 8, 512, 0,
+            (x, _) => x < 48 ? ((byte)255, (byte)0, (byte)0) : ((byte)0, (byte)0, (byte)255));
+
+        Assert.True(ThumbnailImage.TryCreate(
+            frame, "BGRA", 96, 8, 320, [512], [0], out ThumbnailImage? image));
+        Assert.NotNull(image);
+        Assert.Equal(96, image.Width);
+        Assert.Equal(8, image.Height);
+
+        AssertPixel(image, 0, 0, 255, 0, 0);
+        AssertPixel(image, 0, 7, 255, 0, 0);
+        AssertPixel(image, 95, 0, 0, 0, 255);
+        AssertPixel(image, 95, 7, 0, 0, 255);
+    }
+
+    /// <summary>
+    /// <b>同じバイト列を既定レイアウトで読むと絵にならない</b> ── パディングを
+    /// 本当に踏んでいることを固定する（踏んでいなければ上のテストは無検査になる）。
+    /// 2 行目の先頭は、既定の stride 384 では 1 行目の行末のパディング（0xA5）に当たる。
+    /// </summary>
+    [Fact]
+    public void TheDefaultLayoutReadsThePaddingOfAPaddedFourByteFrame()
+    {
+        byte[] frame = BgraWithLayout(96, 8, 512, 0,
+            (x, _) => x < 48 ? ((byte)255, (byte)0, (byte)0) : ((byte)0, (byte)0, (byte)255));
+
+        Assert.True(ThumbnailImage.TryCreate(frame, "BGRA", 96, 8, 320, out ThumbnailImage? image));
+        Assert.NotNull(image);
+
+        AssertPixel(image, 0, 0, 255, 0, 0);
+        AssertPixel(image, 0, 1, 0xA5, 0xA5, 0xA5);
+    }
+
+    /// <summary>
+    /// <b>フレームの先頭が buffer の先頭とは限らない。</b> offset を無視すると、
+    /// 頭の 1024 バイト（0xA5 で埋めてある）を画素として読むことになる。
+    /// </summary>
+    [Fact]
+    public void AFourByteFrameIsReadFromTheGivenOffset()
+    {
+        byte[] frame = BgraWithLayout(96, 8, 512, 1024,
+            (x, _) => x < 48 ? ((byte)255, (byte)0, (byte)0) : ((byte)0, (byte)0, (byte)255));
+
+        Assert.True(ThumbnailImage.TryCreate(
+            frame, "BGRA", 96, 8, 320, [512], [1024], out ThumbnailImage? image));
+        Assert.NotNull(image);
+
+        AssertPixel(image, 0, 0, 255, 0, 0);
+        AssertPixel(image, 0, 7, 255, 0, 0);
+        AssertPixel(image, 95, 0, 0, 0, 255);
+        AssertPixel(image, 95, 7, 0, 0, 255);
+    }
+
+    /// <summary>
+    /// <b>3 バイト系のパディングと offset。</b> 既定は stride 16・offset 0 なので、
+    /// どちらを無視しても 0xA5 の埋め草か隣の行を読むことになる。
+    /// </summary>
+    [Fact]
+    public void APaddedThreeByteFrameIsReadWithTheGivenStrideAndOffset()
+    {
+        byte[] frame = RgbWithLayout(5, 3, 64, 32, (x, y) => ((byte)(x * 10), (byte)(y * 20), (byte)200));
+
+        Assert.True(ThumbnailImage.TryCreate(
+            frame, "RGB", 5, 3, 320, [64], [32], out ThumbnailImage? image));
+        Assert.NotNull(image);
+        Assert.Equal(5, image.Width);
+        Assert.Equal(3, image.Height);
+
+        for (int y = 0; y < 3; y++)
+        {
+            for (int x = 0; x < 5; x++)
+                AssertPixel(image, x, y, (byte)(x * 10), (byte)(y * 20), 200);
+        }
+    }
+
+    /// <summary>
+    /// <b>packed YUV のパディングと offset。</b> 既定は stride 16・offset 0。
+    /// </summary>
+    [Fact]
+    public void APaddedPackedYuvFrameIsReadWithTheGivenStrideAndOffset()
+    {
+        byte[] frame = Packed422WithLayout(8, 4, yFirst: true, 40, 100, (x, _) => RedThenWhite(x, 8));
+
+        Assert.True(ThumbnailImage.TryCreate(
+            frame, "YUY2", 8, 4, 320, [40], [100], out ThumbnailImage? image));
+        Assert.NotNull(image);
+        Assert.Equal(8, image.Width);
+        Assert.Equal(4, image.Height);
+
+        AssertPixel(image, 0, 0, 255, 0, 0);
+        AssertPixel(image, 3, 3, 255, 0, 0);
+        AssertPixel(image, 4, 0, 255, 255, 255);
+        AssertPixel(image, 7, 3, 255, 255, 255);
+    }
+
+    /// <summary>
+    /// <b>平面ごとに stride も offset も違う 4:2:0 planar。</b> Y の直後にクロマが
+    /// 続かない（平面のあいだに隙間がある）並びでも、渡したとおりに読むこと。
+    /// </summary>
+    [Fact]
+    public void APaddedPlanarFrameIsReadWithTheGivenStridesAndOffsets()
+    {
+        byte[] frame = Planar420WithLayout(
+            8, 8, lumaStride: 16, uStride: 8, vStride: 8, lumaOffset: 0, uOffset: 200, vOffset: 300,
+            (x, _) => RedThenWhite(x, 8));
+
+        Assert.True(ThumbnailImage.TryCreate(
+            frame, "I420", 8, 8, 320, [16, 8, 8], [0, 200, 300], out ThumbnailImage? image));
+        Assert.NotNull(image);
+        Assert.Equal(8, image.Width);
+        Assert.Equal(8, image.Height);
+
+        AssertPixel(image, 0, 0, 255, 0, 0);
+        AssertPixel(image, 3, 7, 255, 0, 0);
+        AssertPixel(image, 4, 0, 255, 255, 255);
+        AssertPixel(image, 7, 7, 255, 255, 255);
+    }
+
+    /// <summary>
+    /// <b>U と V で stride が違う 4:2:0 planar。</b> V の平面だけパディングが広い並びでも、
+    /// 平面ごとの stride で読むこと（片方の stride をもう片方に流用しない）。
+    /// </summary>
+    [Fact]
+    public void APlanarFrameWithUnequalChromaStridesIsReadWithEachPlanesStride()
+    {
+        byte[] frame = Planar420WithLayout(
+            8, 8, lumaStride: 16, uStride: 8, vStride: 12, lumaOffset: 0, uOffset: 200, vOffset: 300,
+            (x, _) => RedThenWhite(x, 8));
+
+        Assert.True(ThumbnailImage.TryCreate(
+            frame, "I420", 8, 8, 320, [16, 8, 12], [0, 200, 300], out ThumbnailImage? image));
+        Assert.NotNull(image);
+        Assert.Equal(8, image.Width);
+        Assert.Equal(8, image.Height);
+
+        AssertPixel(image, 0, 0, 255, 0, 0);
+        AssertPixel(image, 3, 7, 255, 0, 0);
+        AssertPixel(image, 4, 0, 255, 255, 255);
+        AssertPixel(image, 7, 7, 255, 255, 255);
+    }
+
+    /// <summary>
+    /// <b>U の stride を V に流用すると V がパディングに当たる</b> ── 上のテストが
+    /// 「U と V の stride を取り違えても通る」無検査にならないことを固定する。
+    /// V を stride 8 で読むと クロマ 2 行目の先頭は 300+8=308 で、V の 1 行目の行末
+    /// パディング（304..311 = 0xA5。実際の 2 行目は 312）に当たる。
+    /// </summary>
+    [Fact]
+    public void ReusingTheUStrideForVReadsThePaddingOfAPlanarFrame()
+    {
+        byte[] frame = Planar420WithLayout(
+            8, 8, lumaStride: 16, uStride: 8, vStride: 12, lumaOffset: 0, uOffset: 200, vOffset: 300,
+            (x, _) => RedThenWhite(x, 8));
+
+        Assert.True(ThumbnailImage.TryCreate(
+            frame, "I420", 8, 8, 320, [16, 8, 8], [0, 200, 300], out ThumbnailImage? image));
+        Assert.NotNull(image);
+
+        // クロマの 1 行目（y=0,1）はどちらの stride でも同じ位置なので、崩れるのは y≥2。
+        AssertPixel(image, 0, 0, 255, 0, 0);
+        AssertNotPixel(image, 0, 2, 255, 0, 0);
+    }
+
+    /// <summary>
+    /// <b>YV12 は平面 1 が V・平面 2 が U</b> ── offset を入れ替えて渡しても、
+    /// U と V が入れ替わらないこと。
+    /// </summary>
+    [Fact]
+    public void APaddedYv12FrameReadsItsChromaPlanesInTheRightOrder()
+    {
+        byte[] frame = Planar420WithLayout(
+            8, 8, lumaStride: 16, uStride: 8, vStride: 8, lumaOffset: 0, uOffset: 300, vOffset: 200,
+            (x, _) => RedThenWhite(x, 8));
+
+        Assert.True(ThumbnailImage.TryCreate(
+            frame, "YV12", 8, 8, 320, [16, 8, 8], [0, 200, 300], out ThumbnailImage? image));
+        Assert.NotNull(image);
+
+        AssertPixel(image, 0, 0, 255, 0, 0);
+        AssertPixel(image, 7, 7, 255, 255, 255);
+    }
+
+    /// <summary>
+    /// <b>平面ごとに stride も offset も違う 4:2:0 semi-planar。</b>
+    /// </summary>
+    [Fact]
+    public void APaddedSemiPlanarFrameIsReadWithTheGivenStridesAndOffsets()
+    {
+        byte[] frame = SemiPlanar420WithLayout(
+            8, 8, uFirst: true, lumaStride: 20, chromaStride: 20, lumaOffset: 0, chromaOffset: 200,
+            (x, _) => RedThenWhite(x, 8));
+
+        Assert.True(ThumbnailImage.TryCreate(
+            frame, "NV12", 8, 8, 320, [20, 20], [0, 200], out ThumbnailImage? image));
+        Assert.NotNull(image);
+
+        AssertPixel(image, 0, 0, 255, 0, 0);
+        AssertPixel(image, 3, 7, 255, 0, 0);
+        AssertPixel(image, 4, 0, 255, 255, 255);
+        AssertPixel(image, 7, 7, 255, 255, 255);
+    }
+
+    /// <summary>
+    /// <b>輝度とクロマで stride が違う 4:2:0 semi-planar。</b> クロマの平面だけ
+    /// パディングが広い並びでも、平面ごとの stride で読むこと
+    /// （平面 0 の stride をクロマに流用しない）。
+    /// </summary>
+    [Fact]
+    public void ASemiPlanarFrameWithAWiderChromaStrideIsReadWithEachPlanesStride()
+    {
+        byte[] frame = SemiPlanar420WithLayout(
+            8, 8, uFirst: true, lumaStride: 20, chromaStride: 24, lumaOffset: 0, chromaOffset: 200,
+            (x, _) => RedThenWhite(x, 8));
+
+        Assert.True(ThumbnailImage.TryCreate(
+            frame, "NV12", 8, 8, 320, [20, 24], [0, 200], out ThumbnailImage? image));
+        Assert.NotNull(image);
+        Assert.Equal(8, image.Width);
+        Assert.Equal(8, image.Height);
+
+        AssertPixel(image, 0, 0, 255, 0, 0);
+        AssertPixel(image, 3, 7, 255, 0, 0);
+        AssertPixel(image, 4, 0, 255, 255, 255);
+        AssertPixel(image, 7, 7, 255, 255, 255);
+    }
+
+    /// <summary>
+    /// <b>輝度の stride をクロマに流用するとパディングに当たる</b> ── 上のテストが
+    /// 「平面 0 の stride で両方を読んでも通る」無検査にならないことを固定する。
+    /// クロマを stride 20 で読むと 2 行目の先頭は 200+20=220 で、クロマ 1 行目の行末
+    /// パディング（208..223 = 0xA5。実際の 2 行目は 224）に当たる。
+    /// </summary>
+    [Fact]
+    public void ReusingTheLumaStrideForChromaReadsThePaddingOfASemiPlanarFrame()
+    {
+        byte[] frame = SemiPlanar420WithLayout(
+            8, 8, uFirst: true, lumaStride: 20, chromaStride: 24, lumaOffset: 0, chromaOffset: 200,
+            (x, _) => RedThenWhite(x, 8));
+
+        Assert.True(ThumbnailImage.TryCreate(
+            frame, "NV12", 8, 8, 320, [20, 20], [0, 200], out ThumbnailImage? image));
+        Assert.NotNull(image);
+
+        // クロマの 1 行目（y=0,1）はどちらの stride でも同じ位置なので、崩れるのは y≥2。
+        AssertPixel(image, 0, 0, 255, 0, 0);
+        AssertNotPixel(image, 0, 2, 255, 0, 0);
+    }
+
+    /// <summary>
+    /// <b>幅も高さも奇数の 4:2:0 を、既定とは違う stride / offset で。</b>
+    /// 既定なら Y は stride 100・offset 0、クロマは stride 52・offset 600 / 756 なので、
+    /// stride と offset のどちらを無視しても平面のどこか別の場所を読むことになる。
+    /// </summary>
+    [Fact]
+    public void AnOddSizedPlanarFrameIsReadWithTheGivenStridesAndOffsets()
+    {
+        byte[] frame = Planar420WithLayout(
+            97, 5, lumaStride: 128, uStride: 72, vStride: 72, lumaOffset: 256, uOffset: 1024, vOffset: 2048,
+            (x, _) => RedThenWhite(x, 97));
+
+        Assert.True(ThumbnailImage.TryCreate(
+            frame, "I420", 97, 5, 320, [128, 72, 72], [256, 1024, 2048], out ThumbnailImage? image));
+        Assert.NotNull(image);
+        Assert.Equal(97, image.Width);
+        Assert.Equal(5, image.Height);
+
+        AssertPixel(image, 0, 0, 255, 0, 0);
+        AssertPixel(image, 47, 4, 255, 0, 0);
+        AssertPixel(image, 48, 0, 255, 255, 255);
+        AssertPixel(image, 96, 4, 255, 255, 255);
+    }
+
+    /// <summary>
+    /// 既定レイアウトの多重定義は、同じ値を書き下したレイアウトと同じ絵になる
+    /// （既定は「レイアウトを渡さない」だけで、別の経路ではない）。
+    /// </summary>
+    [Fact]
+    public void TheDefaultLayoutAgreesWithTheSameLayoutSpelledOut()
+    {
+        byte[] frame = Planar420(8, 8, uFirst: true, (x, _) => RedThenWhite(x, 8));
+
+        Assert.True(ThumbnailImage.TryCreate(frame, "I420", 8, 8, 320, out ThumbnailImage? assumed));
+        Assert.True(ThumbnailImage.TryCreate(
+            frame, "I420", 8, 8, 320, [8, 4, 4], [0, 64, 80], out ThumbnailImage? given));
+        Assert.NotNull(assumed);
+        Assert.NotNull(given);
+
+        Assert.Equal(assumed.Rgb24, given.Rgb24);
+    }
+
+    /// <summary>
+    /// <b>読む位置が buffer を出るレイアウトは撮らない。</b> 長さ・stride の下限・
+    /// 負の値・平面の数のどれが欠けても false。
+    /// </summary>
+    [Theory]
+    // 最終行が 1 バイト足りない。
+    [InlineData("BGRA", 511, new[] { 64 }, new[] { 0 })]
+    // 1 行の画素（8×4＝32 バイト）に足りない stride。
+    [InlineData("BGRA", 4096, new[] { 31 }, new[] { 0 })]
+    // 負の stride（下から上へ並ぶ buffer）は扱わない。
+    [InlineData("BGRA", 4096, new[] { -32 }, new[] { 0 })]
+    // offset が負。
+    [InlineData("BGRA", 4096, new[] { 32 }, new[] { -1 })]
+    // 平面が足りない（I420 は 3 平面）。
+    [InlineData("I420", 4096, new[] { 8, 4 }, new[] { 0, 64 })]
+    // クロマ平面が buffer の外へ出る。
+    [InlineData("I420", 100, new[] { 8, 4, 4 }, new[] { 0, 64, 4000 })]
+    public void ALayoutThatDoesNotFitTheFrameIsRejected(
+        string format, int length, int[] strides, int[] offsets)
+    {
+        var frame = new byte[length];
+
+        Assert.False(ThumbnailImage.TryCreate(
+            frame, format, 8, 8, 320, strides, offsets, out ThumbnailImage? image));
+        Assert.Null(image);
+    }
+
+    /// <summary>
+    /// <see cref="ThumbnailImage.PlaneCount"/> は実装が読む平面の数と一致する
+    /// ── 1 つ少ないレイアウトは必ず拒まれる（**片方だけ動かすと、呼び出し側が
+    /// 埋める数が足りないまま既定レイアウトへ落ちる**）。
+    /// </summary>
+    [Theory]
+    [InlineData("BGRA")]
+    [InlineData("RGB")]
+    [InlineData("YUY2")]
+    [InlineData("NV12")]
+    [InlineData("NV21")]
+    [InlineData("I420")]
+    [InlineData("YV12")]
+    public void ThePlaneCountIsTheNumberOfPlanesTheLayoutNeeds(string format)
+    {
+        int planes = ThumbnailImage.PlaneCount(format);
+        Assert.InRange(planes, 1, 3);
+
+        // どの形式でも収まる、十分に広いレイアウト。
+        int[] strides = [32, 16, 16];
+        int[] offsets = [0, 1024, 2048];
+        var frame = new byte[8192];
+
+        Assert.True(ThumbnailImage.TryCreate(
+            frame, format, 8, 8, 320, strides.AsSpan(0, planes), offsets.AsSpan(0, planes),
+            out ThumbnailImage? image));
+        Assert.NotNull(image);
+
+        // 最後の平面だけ壊す ── 実装がそこまで読んでいなければ、これが通ってしまう。
+        int[] broken = [.. strides.AsSpan(0, planes)];
+        broken[planes - 1] = 0;
+
+        Assert.False(ThumbnailImage.TryCreate(
+            frame, format, 8, 8, 320, broken, offsets.AsSpan(0, planes),
+            out ThumbnailImage? unreadable));
+        Assert.Null(unreadable);
+
+        // 1 つ少ない span も拒む（空の span だけが「既定レイアウト」の合図）。
+        if (1 < planes)
+        {
+            Assert.False(ThumbnailImage.TryCreate(
+                frame, format, 8, 8, 320,
+                strides.AsSpan(0, planes - 1), offsets.AsSpan(0, planes - 1),
+                out ThumbnailImage? missing));
+            Assert.Null(missing);
+        }
+    }
+
+    [Theory]
+    [InlineData("GRAY8")]
+    [InlineData("Y444")]
+    [InlineData("")]
+    public void AnUnsupportedFormatHasNoPlanes(string format)
+        => Assert.Equal(0, ThumbnailImage.PlaneCount(format));
 
     // ---- 寸法と拒否 ----
 

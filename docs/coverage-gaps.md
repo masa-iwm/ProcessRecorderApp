@@ -928,10 +928,20 @@ sidecar と一覧の `trigger` のうち、**自動で通るのは `remote` / `c
 - `NV12` ── D3D12 経路（`d3d12download` の後）とカメラの多くがこれを流す
 - `YUY2` / `UYVY` / `NV21` / `YV12` / `RGB` / `BGR` と、4 バイト系のうち `BGRA` と `BGRx` を除いたもの
   （`BGRx` は `BGRA` と同じ分岐を通るので、`BGRA` の E2E で一緒に通っている）
-- **stride にパディングのある buffer。** GstSharp.Net は `VideoInfo` の `Stride` / `Offset` を
-  公開していないので、`gst_video_info_set_format` の既定レイアウトを仮定して読んでいる。
-  ソースがそれと違う stride で来ると、長さが足りる限り**絵が斜めにずれたまま撮れてしまう**
-  （撮れない側には倒れないので、ログにも一覧にも異常は出ない）
+- **`GstVideoMeta` を持たない、パディング入りの buffer。** レイアウト（平面ごとの
+  stride / offset）は buffer の `GstVideoMeta` から読み、無ければ caps の `GstVideoInfo`、
+  それも無ければ既定レイアウトに落ちる（`EventRecorder.ReadFrameLayout`）。
+  **`GstVideoInfo` が表せるのは既定レイアウトだけ**なので、meta を持たない buffer が
+  別の stride で来ると、長さが足りる限り**絵が斜めにずれたまま撮れてしまう**
+  （撮れない側には倒れないので、ログにも一覧にも異常は出ない）。
+  L1 が見るのは「渡されたレイアウトどおりに読むこと」と「収まらないレイアウトを
+  撮らないこと」まで（L1 は GStreamer を初期化しない層である）。`ReadFrameLayout`
+  そのものは E2E のサムネイルのたびに走るが、**通るのは caps（`GstVideoInfo`）の枝だけ**
+  である ── `appsink` は `GstVideoMeta` を要求しないので `videotestsrc` の buffer は
+  meta を持たない。**meta の枝と、食い違う meta を撮らない判断
+  （`reason=video-meta-mismatch`）は、どの層でも走らない**。
+  どの枝を通ったかは `thumbnail.written` の `source=`（`meta` / `caps` / `default`）に出るので、
+  実機のログからは断定できる
 
 手動確認: そのソースで 1 本録り、`<録画ファイル名>.mp4.png` を画像として開いて、
 色と形が録画の中身と一致していることを目で見る。撮れていない場合は activity.log の

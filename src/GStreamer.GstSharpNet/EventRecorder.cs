@@ -2,6 +2,7 @@
 using Gst;
 using GstApp = Gst.App;
 using GstBase = Gst.Base;
+using GstVideo = Gst.Video;
 using GObject = Gst.GObject;
 using System;
 using System.Collections.Concurrent;
@@ -4430,6 +4431,11 @@ public partial class EventRecorder : ObservableObject, IDisposable
     private const int ThumbnailMaxWidth = 320;
 
     /// <summary>
+    /// レイアウトを読む平面の数の上限（対応する形式のうち最も多い <c>I420</c> / <c>YV12</c> の 3）。
+    /// </summary>
+    private const int ThumbnailMaxPlanes = 3;
+
+    /// <summary>
     /// 溜まっているサムネイルの要求を、いま届いたプレビュー枝のフレーム 1 枚で満たす。
     ///
     /// <para>
@@ -4437,9 +4443,9 @@ public partial class EventRecorder : ObservableObject, IDisposable
     /// （生バイト列を持ち出して複製しない）。書き込みだけをスレッドプールへ逃がす。
     /// </para>
     /// <para>
-    /// <b>best-effort。</b> caps が読めない・対応しない画素形式は要求を捨てて
-    /// ログ 1 行で終わる（リトライしない ── 次のフレームでも結果は同じ）。
-    /// 例外はすべてここで握る（録画へ波及させない）。
+    /// <b>best-effort。</b> caps が読めない・対応しない画素形式・読む位置が buffer に
+    /// 収まらないレイアウトは、要求を捨ててログ 1 行で終わる（リトライしない ──
+    /// 次のフレームでも結果は同じ）。例外はすべてここで握る（録画へ波及させない）。
     /// </para>
     /// </summary>
     private void CaptureThumbnail(Sample sample)
@@ -4449,27 +4455,30 @@ public partial class EventRecorder : ObservableObject, IDisposable
             string? format;
             int width;
             int height;
+            Components.ThumbnailImage? image;
+            FrameLayoutSource source;
 
             // Caps は MiniObject、GetStructure(0) は Boxed の所有コピー ── どちらも解放する。
+            // **caps は buffer を読み終えるまで生かす** ── レイアウトを引く VideoInfo は
+            // これから作る。
             using (var caps = sample.GetCaps())
             {
-                using var structure = caps?.GetStructure(0);
-                format = structure?.GetString("format");
-
-                if (structure is null
-                    || format is null
-                    || !structure.GetInt("width", out width)
-                    || !structure.GetInt("height", out height))
+                using (var structure = caps?.GetStructure(0))
                 {
-                    DropThumbnailRequests();
-                    Log(DebugLevel.Warning, "thumbnail.capture no caps");
-                    return;
-                }
-            }
+                    format = structure?.GetString("format");
 
-            Components.ThumbnailImage? image;
-            using (var buffer = sample.GetBuffer())
-            {
+                    if (structure is null
+                        || format is null
+                        || !structure.GetInt("width", out width)
+                        || !structure.GetInt("height", out height))
+                    {
+                        DropThumbnailRequests();
+                        Log(DebugLevel.Warning, "thumbnail.capture no caps");
+                        return;
+                    }
+                }
+
+                using var buffer = sample.GetBuffer();
                 if (buffer is null)
                 {
                     DropThumbnailRequests();
@@ -4477,19 +4486,45 @@ public partial class EventRecorder : ObservableObject, IDisposable
                     return;
                 }
 
+                Span<int> strides = stackalloc int[ThumbnailMaxPlanes];
+                Span<int> offsets = stackalloc int[ThumbnailMaxPlanes];
+                source = ReadFrameLayout(
+                    buffer, caps, format, width, height, strides, offsets, out int planes);
+
+                // **食い違う meta は既定レイアウトで代替しない。** 実際とは違う並びで
+                // 読んだ絵を、異常の見えないまま撮ってしまう。
+                if (source == FrameLayoutSource.UnusableMeta)
+                {
+                    DropThumbnailRequests();
+                    Log(DebugLevel.Warning,
+                        $"thumbnail.unsupported format={format} {width}x{height} reason=video-meta-mismatch");
+                    return;
+                }
+
                 using var map = buffer.Map(MapFlags.Read);
                 if (!Components.ThumbnailImage.TryCreate(
-                        map.Span, format, width, height, ThumbnailMaxWidth, out image)
+                        map.Span, format, width, height, ThumbnailMaxWidth,
+                        strides[..planes], offsets[..planes], out image)
                     || image is null)
                 {
                     DropThumbnailRequests();
-                    Log(DebugLevel.Warning, $"thumbnail.unsupported format={format} {width}x{height}");
+                    Log(DebugLevel.Warning,
+                        $"thumbnail.unsupported format={format} {width}x{height} reason=layout source={source} planes={planes} length={map.Span.Length}");
                     return;
                 }
             }
 
             // 1 枚を全員で共有する（不変な record なので複製は要らない）。
             Components.ThumbnailImage picture = image;
+
+            // **どの枝でレイアウトを読んだかをログに残す** ── 実機のログから
+            // meta / caps / 既定のどれを通ったかを断定できるようにする。
+            string layoutSource = source switch
+            {
+                FrameLayoutSource.Meta => "meta",
+                FrameLayoutSource.Caps => "caps",
+                _ => "default",
+            };
 
             while (_thumbnailRequests.TryDequeue(out string? path))
             {
@@ -4501,7 +4536,7 @@ public partial class EventRecorder : ObservableObject, IDisposable
                     try
                     {
                         Components.RecordingSidecar.WriteThumbnail(target, picture);
-                        Log(DebugLevel.Debug, $"thumbnail.written path={target}");
+                        Log(DebugLevel.Debug, $"thumbnail.written path={target} source={layoutSource}");
                     }
                     catch (Exception ex)
                     {
@@ -4517,6 +4552,121 @@ public partial class EventRecorder : ObservableObject, IDisposable
             DropThumbnailRequests();
             Log(DebugLevel.Warning, $"thumbnail.capture failed: {ex.Message}");
         }
+    }
+
+    /// <summary>レイアウトをどこから読んだか。</summary>
+    internal enum FrameLayoutSource
+    {
+        /// <summary>どちらからも読めなかった ── 呼び出し側の既定レイアウトに委ねる。</summary>
+        Default,
+
+        /// <summary>buffer の <c>GstVideoMeta</c>（パディングを表せる唯一の出どころ）。</summary>
+        Meta,
+
+        /// <summary>caps の <c>GstVideoInfo</c>（＝既定レイアウトを書き下したもの）。</summary>
+        Caps,
+
+        /// <summary>meta は在るが caps と食い違う・扱えない ── <b>撮らない</b>。</summary>
+        UnusableMeta,
+    }
+
+    /// <summary>
+    /// フレームの実レイアウト（平面ごとの stride と先頭オフセット）を読む。
+    ///
+    /// <para>
+    /// <b>正本は buffer に付いた <c>GstVideoMeta</c>。</b> パディングの入った buffer で
+    /// 実際の並びを持っているのはこれだけである（借り物なので解放しない）。
+    /// <b>meta が在るのに読めなければ <see cref="FrameLayoutSource.UnusableMeta"/></b> ──
+    /// 既定レイアウトで代替すると、実際とは違う並びで読んだ絵を、異常の見えないまま撮る。
+    /// </para>
+    /// <para>
+    /// meta が無ければ caps から <c>GstVideoInfo</c> を作る ── <b>そちらは既定レイアウトしか
+    /// 表さない</b>ので、meta を持たないパディング入り buffer は依然として斜めにずれる。
+    /// それも作れなければ <see cref="FrameLayoutSource.Default"/>。
+    /// </para>
+    /// </summary>
+    /// <param name="buffer">レイアウトを読む buffer。</param>
+    /// <param name="caps">同じ sample の caps（<c>GstVideoInfo</c> の元）。</param>
+    /// <param name="format">caps の <c>format</c> 文字列。</param>
+    /// <param name="width">caps の幅。</param>
+    /// <param name="height">caps の高さ。</param>
+    /// <param name="strides">平面ごとの 1 行のバイト数の書き込み先。</param>
+    /// <param name="offsets">平面ごとの先頭オフセットの書き込み先。</param>
+    /// <param name="planes">埋めた平面の数。<b>読めなかったときは 0</b>。</param>
+    /// <returns>レイアウトの出どころ。</returns>
+    internal static FrameLayoutSource ReadFrameLayout(
+        Gst.Buffer buffer, Caps? caps, string format, int width, int height,
+        Span<int> strides, Span<int> offsets, out int planes)
+    {
+        planes = Components.ThumbnailImage.PlaneCount(format);
+        if (planes <= 0 || strides.Length < planes || offsets.Length < planes)
+        {
+            planes = 0;
+            return FrameLayoutSource.Default;
+        }
+
+        // buffer が持っている meta（借り物 ── 解放しない）。
+        GstVideo.VideoMeta? meta = GstVideo.VideoGlobal.BufferGetVideoMeta(buffer);
+        if (meta is not null)
+        {
+            if (meta.Format != GstVideo.VideoFormatExtensions.FromString(format)
+                || meta.Width != (uint)width
+                || meta.Height != (uint)height
+                || meta.NPlanes != (uint)planes)
+            {
+                planes = 0;
+                return FrameLayoutSource.UnusableMeta;
+            }
+
+            GstVideo.VideoMeta.StrideArray metaStrides = meta.Stride;
+            GstVideo.VideoMeta.OffsetArray metaOffsets = meta.Offset;
+
+            if (!TryCopyLayout(metaStrides, metaOffsets, planes, strides, offsets))
+            {
+                planes = 0;
+                return FrameLayoutSource.UnusableMeta;
+            }
+
+            return FrameLayoutSource.Meta;
+        }
+
+        if (caps is not null)
+        {
+            // VideoInfo は Boxed で、所有するのは作らせた側。**元が同じ caps なので寸法は
+            // 必ず一致する** ── 照合するのは平面ごとの値が写せるかどうかだけ。
+            using GstVideo.VideoInfo? info = GstVideo.VideoInfo.NewFromCaps(caps);
+            if (info is not null)
+            {
+                GstVideo.VideoInfo.StrideArray infoStrides = info.Stride;
+                GstVideo.VideoInfo.OffsetArray infoOffsets = info.Offset;
+
+                if (TryCopyLayout(infoStrides, infoOffsets, planes, strides, offsets))
+                    return FrameLayoutSource.Caps;
+            }
+        }
+
+        planes = 0;
+        return FrameLayoutSource.Default;
+    }
+
+    /// <summary>
+    /// 平面ごとの stride / offset を写す。<b>負の stride（下から上へ並ぶ buffer）と
+    /// <c>int</c> に収まらない offset は写さない</b> ── どちらもここでは扱えない。
+    /// </summary>
+    private static bool TryCopyLayout(
+        ReadOnlySpan<int> sourceStrides, ReadOnlySpan<nuint> sourceOffsets, int planes,
+        Span<int> strides, Span<int> offsets)
+    {
+        for (int plane = 0; plane < planes; plane++)
+        {
+            if (sourceStrides[plane] <= 0 || (nuint)int.MaxValue < sourceOffsets[plane])
+                return false;
+
+            strides[plane] = sourceStrides[plane];
+            offsets[plane] = (int)sourceOffsets[plane];
+        }
+
+        return true;
     }
 
     /// <summary>撮れないと分かった要求を捨てる（次のフレームで撮り直さない）。</summary>

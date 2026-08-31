@@ -37,7 +37,7 @@
 | コマンドライン解析 | **System.CommandLine 2.0.10**（MIT License）による解析（後述） |
 | 常駐ワーカーでの処理失敗をランチャーの終了コードで識別 | 名前付き **EventWaitHandle** + **MemoryMappedFile** による結果通知（後述） |
 | Variables 画面のキー/値グリッド | **WinUI.TableView 1.4.1**（MIT License） |
-| 録画・プレビューエンジン | **GstSharp.Net**（`GstSharp.Net` / `GstSharp.Net.App` / `GstSharp.Net.Base` 1.28.1、GStreamer の .NET バインディング。nuget.org から取得する。後述「パッケージの取得元」） |
+| 録画・プレビューエンジン | **GstSharp.Net**（`GstSharp.Net` / `GstSharp.Net.App` / `GstSharp.Net.Base` / `GstSharp.Net.Video` 1.28.4、GStreamer の .NET バインディング。nuget.org から取得する。後述「パッケージの取得元」） |
 | en-US / ja-JP ローカライズ（OS表示言語に自動追従） | MRT Core（`.resw` + `resources.pri`）+ `x:Uid` + `Components/Localization.cs`（後述） |
 
 ---
@@ -2165,8 +2165,10 @@ sidecar の隣に PNG を 1 枚置く。一覧の `hasThumbnail` はこのファ
   本体の `.mp4` のパスで、`.png` を足すのはその後。root の外・拡張子違い・**root と PNG の間や
   PNG 自身のリパースポイント**は 400、無い・開けないは 404）
 
-生成は**純マネージド**（`Components/ThumbnailImage.cs` と `Components/PngWriter.cs`。
-追加パッケージもネイティブ要素も無く、パイプラインの記述には触らない）。
+変換・縮小・PNG 化は**純マネージド**（`Components/ThumbnailImage.cs` と
+`Components/PngWriter.cs`。ネイティブ要素も追加のデコードも無く、パイプラインの記述には
+触らない）。**平面ごとの stride / offset だけは buffer と caps から読む**
+（`GstSharp.Net.Video` の `GstVideoMeta` / `GstVideoInfo`。後述）。
 
 - 幅は**最大 320px**。ソースがそれ以下なら等倍で、高さは縦横比を保って四捨五入（最小 1）。
   **`pixel-aspect-ratio` は見ない**ので、非正方画素のソースでは横に伸び縮みして見える
@@ -2175,10 +2177,19 @@ sidecar の隣に PNG を 1 枚置く。一覧の `hasThumbnail` はこのファ
   BT.601 のソースでは色がわずかにずれる
 - 対応する画素形式は `BGRA BGRx RGBA RGBx ARGB xRGB ABGR xBGR` / `RGB BGR` /
   `YUY2 UYVY` / `NV12 NV21` / `I420 YV12`。それ以外は 1 行ログを残して撮らない
-- **stride は仮定している。** GstSharp.Net は `VideoInfo` の `Stride` / `Offset` を公開して
-  いないので、`gst_video_info_set_format` の既定レイアウト（4 バイト系は `width*4`、
-  それ以外は 4 バイト境界へ切り上げ、平面は Y の直後に UV）を仮定して読む。
-  buffer が別の stride で来ると絵が斜めにずれる ── 長さが足りない場合だけは検出して撮らない
+- **stride と offset は buffer から読む。** 正本は buffer に付いた `GstVideoMeta`
+  （`EventRecorder.ReadFrameLayout`）で、無ければ caps から作った `GstVideoInfo`、
+  それも作れなければ `gst_video_info_set_format` の既定レイアウト（4 バイト系は
+  `width*4`、それ以外は 4 バイト境界へ切り上げ、平面は Y の直後に UV）に落ちる。
+  **`GstVideoInfo` が表せるのは既定レイアウトだけ**なので、meta を持たないパディング
+  入りの buffer は依然として絵が斜めにずれる
+- **読む位置は必ず buffer の中に収める。** 平面ごとの `offset + stride × 行数` が
+  map した長さを超えるもの・1 行の画素に足りない stride・負の stride は撮らない
+  （`thumbnail.unsupported reason=layout`）
+- **caps と食い違う `GstVideoMeta` は既定レイアウトで代替しない。** 形式・寸法・平面数の
+  どれかが違う meta と、写せない値を持つ meta は撮らない
+  （`thumbnail.unsupported reason=video-meta-mismatch`）── 代替すると、実際とは違う
+  並びで読んだ絵を、異常の見えないまま撮ることになる
 
 #### 一覧の源はメモリの索引（`Components/RecordingIndex.cs`）
 
@@ -3481,8 +3492,8 @@ error APPX0002: Task 'WinAppSdkExpandPriContent' failed. Could not find file
 - 振り分けの正本は `packageSourceMapping` で、**パッケージ版の集中管理（次項）では
   マッピングが無いと `NU1507` になる**。`GstSharp.Net*` は `*` と別に書いてあるが、
   取得元を明示して残すためのもので解決結果は変わらない。
-- `GstSharp.Net*` は prerelease なので、版は `Directory.Packages.props` に明示する
-  （`--prerelease` 無しの `dotnet add package` では拾われない）。
+- `GstSharp.Net*` の 4 つ（本体・`.App`・`.Base`・`.Video`）は同じ版で揃える
+  ── 版は `Directory.Packages.props` に明示する（次項）。
 
 ### パッケージ版の集中管理
 
