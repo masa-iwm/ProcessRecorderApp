@@ -136,6 +136,48 @@ public sealed class WebUiBrowserTests(PublishedApp app, ITestOutputHelper output
     private static string Click(string id)
         => $"(function () {{ document.getElementById('{id}').click(); return true; }})()";
 
+    /// <summary>
+    /// 不変カルチャで書式化する。<b>測った値は環境の言語で小数点が変わらない形で残す</b>
+    /// ── 出力は較正のデータとして読み直されるものであり、貼り付けた先で数として通らなくなる。
+    /// </summary>
+    private static string Inv(FormattableString text) => text.ToString(CultureInfo.InvariantCulture);
+
+    /// <summary>
+    /// いま <c>/api/me</c> を叩いたら返る HTTP の status（文字列）。
+    /// <b>失敗も文字列にして返す</b> ── ここで例外を投げると、これを呼んでいる当の失敗の
+    /// 診断が例外に置き換わって消える。
+    /// <b>自前で 5 秒に切る</b>のも同じ理由で、応答が返らない相手だと評価そのものが
+    /// CDP のコマンドの期限まで塞がり、診断が例外へ化ける。
+    /// </summary>
+    private const string FetchApiMeStatus = """
+        fetch('/api/me', { credentials: 'same-origin', signal: AbortSignal.timeout(5000) })
+          .then(function (response) { return String(response.status); })
+          .catch(function (error) { return 'fetch failed: ' + error; })
+        """;
+
+    /// <summary>
+    /// 本体（<c>mainSections</c>）が出るまで待ち、<b>出なかったときは画面の側の事実を添えて落とす</b>。
+    ///
+    /// <para>
+    /// 画面は <c>/api/me</c> の 1 つの答えから組み立てられ、失敗はすべてログイン画面へ倒れる
+    /// ── だから「出なかった」だけでは、名乗りが要ると言われたのか、要求そのものが
+    /// 落ちたのかが区別できない。見るのは 3 つ: <c>loginSection</c> が出ているか・
+    /// <c>loginError</c> の本文・<b>いま同じ要求を出したら返る status</b>。
+    /// </para>
+    /// </summary>
+    private async Task WaitForMainSectionsAsync(EdgeCdp browser)
+    {
+        if (await browser.WaitUntilAsync($"!{IsHidden("mainSections")}", PageBudget, Ct)) { return; }
+
+        bool loginHidden = await browser.EvaluateBoolAsync(IsHidden("loginSection"), Ct);
+        string loginError = await browser.EvaluateStringAsync(TextOf("loginError"), Ct);
+        string me = await browser.EvaluateStringAsync(FetchApiMeStatus, Ct);
+        Assert.Fail(
+            Inv($"画面が {PageBudget.TotalSeconds:F0} 秒以内に出ませんでした")
+            + Inv($"（loginSection={(loginHidden ? "hidden" : "visible")}")
+            + Inv($"; loginError='{loginError}'; GET /api/me -> {me}）。"));
+    }
+
     /// <summary>一覧の 1 行目の「Play」を押す（隔離 root には録画物が 1 本しか無い）。</summary>
     private const string ClickFirstPlay = """
         (function () {
@@ -423,7 +465,7 @@ public sealed class WebUiBrowserTests(PublishedApp app, ITestOutputHelper output
 
         await using var browser = await EdgeCdp.LaunchAsync(Ct);
         await browser.NavigateAsync($"http://127.0.0.1:{port}/", PageBudget, Ct);
-        Assert.True(await browser.WaitUntilAsync($"!{IsHidden("mainSections")}", PageBudget, Ct), "画面が出ませんでした。");
+        await WaitForMainSectionsAsync(browser);
 
         Assert.Equal(0, instance.Run("start-recording-all").ExitCode);
 
@@ -694,7 +736,7 @@ public sealed class WebUiBrowserTests(PublishedApp app, ITestOutputHelper output
 
         await using var browser = await EdgeCdp.LaunchAsync(Ct);
         await browser.NavigateAsync($"http://127.0.0.1:{port}/", PageBudget, Ct);
-        Assert.True(await browser.WaitUntilAsync($"!{IsHidden("mainSections")}", PageBudget, Ct), "画面が出ませんでした。");
+        await WaitForMainSectionsAsync(browser);
 
         Assert.True(
             await WaitForFirstRowAsync(browser, RowIsFinishedFragment, PlaybackBudget),
@@ -768,7 +810,7 @@ public sealed class WebUiBrowserTests(PublishedApp app, ITestOutputHelper output
 
         await using var browser = await EdgeCdp.LaunchAsync(Ct);
         await browser.NavigateAsync($"http://127.0.0.1:{port}/", PageBudget, Ct);
-        Assert.True(await browser.WaitUntilAsync($"!{IsHidden("mainSections")}", PageBudget, Ct), "画面が出ませんでした。");
+        await WaitForMainSectionsAsync(browser);
 
         Assert.Equal(0, instance.Run("start-recording-all").ExitCode);
 
@@ -888,7 +930,7 @@ public sealed class WebUiBrowserTests(PublishedApp app, ITestOutputHelper output
 
         await using var browser = await EdgeCdp.LaunchAsync(Ct);
         await browser.NavigateAsync($"http://127.0.0.1:{port}/", PageBudget, Ct);
-        Assert.True(await browser.WaitUntilAsync($"!{IsHidden("mainSections")}", PageBudget, Ct), "画面が出ませんでした。");
+        await WaitForMainSectionsAsync(browser);
 
         Assert.True(
             await browser.WaitUntilAsync("document.querySelectorAll('#recordersBody tr').length > 0", PageBudget, Ct),
@@ -955,16 +997,23 @@ public sealed class WebUiBrowserTests(PublishedApp app, ITestOutputHelper output
     private const int DashSmoothnessSeconds = 12;
 
     /// <summary>
-    /// join のぶんの停止が出切るまでの秒数。<b>ここまでの停止は数に入れない</b>
-    /// ── 空のリングへ join する 2〜3 回は実測でここまでに出る。
+    /// <b>停止を数える末尾の標本数。</b> join の停止はこの手前に落ちる ── 空のリングへ
+    /// join する 2〜3 回は前半に出る。<b>時刻で切らずに末尾で切る</b>のは、定常へ入る時刻が
+    /// 機械によって前後するためで、見るのは「最後まで定常だったか」である。
+    /// <b><see cref="DashSmoothnessSeconds"/> より小さく保つこと</b>
+    /// ── 増分の基準はこの窓の 1 つ手前の標本である。
     /// </summary>
-    private const int DashJoinSeconds = 4;
+    private const int DashSteadySamples = 5;
 
     /// <summary>
-    /// 「余裕が育った」と見なす秒数。<b>ライブ端の 0.5 秒手前へ寄せ続ける形では届かない</b>
-    /// ── そこでの余裕は寄せ先＋append のジッタで、実測 0.80 秒が上限だった。
+    /// <b>一度は届かなければならないライブ端の余裕（全標本の最大）。</b>
+    /// ライブ端の 0.5 秒手前へ寄せ続ける形では届かない ── そこでの余裕は寄せ先＋append の
+    /// ジッタで頭打ちになる（実測の上限 1.05 秒）。届く側の実測の下限は 1.26 秒で、
+    /// 閾値はその間から採ってある。
+    /// <b>余裕は末尾では見ない</b> ── 寄せは前へしか跳べないので終わりの値はドリフトのぶん
+    /// だけ振れる（実測 0.58〜1.98）。
     /// </summary>
-    private const double DashGrownCushionSeconds = 1.0;
+    private const double DashPeakCushionSeconds = 1.2;
 
     /// <summary>
     /// <b>DASH プレビューがライブ端の手前で止まり続けないこと。</b>
@@ -977,9 +1026,10 @@ public sealed class WebUiBrowserTests(PublishedApp app, ITestOutputHelper output
     /// 遅れが開いてまた寄せる、の周期。余裕は 0.5 秒に張り付き、<c>waiting</c> が数秒ごとに増える。
     /// </para>
     /// <para>
-    /// 断定は 3 つ ── <b>進み</b>（止まっていない）・<b>join を除いた停止の回数</b>
-    /// （定常で止まっていない）・<b>余裕が一度は育つこと</b>（ライブ端に貼り付いていない）。
-    /// 1 秒ごとの余裕は <c>output</c> へ出す（赤のときはこの列が機構そのものを示す）。
+    /// 断定は 3 つ ── <b>進み</b>（止まっていない）・<b>末尾 5 標本での停止の増分</b>
+    /// （定常で止まっていない）・<b>全標本のどこかで余裕が閾値に届くこと</b>
+    /// （ライブ端に貼り付いていない）。<b>12 標本の軌跡は合否に関わらず 1 行で
+    /// <c>output</c> へ出す</b> ── 緑の run も較正のデータになる。
     /// </para>
     /// </summary>
     [Fact]
@@ -995,7 +1045,7 @@ public sealed class WebUiBrowserTests(PublishedApp app, ITestOutputHelper output
 
         await using var browser = await EdgeCdp.LaunchAsync(Ct);
         await browser.NavigateAsync($"http://127.0.0.1:{port}/", PageBudget, Ct);
-        Assert.True(await browser.WaitUntilAsync($"!{IsHidden("mainSections")}", PageBudget, Ct), "画面が出ませんでした。");
+        await WaitForMainSectionsAsync(browser);
 
         Assert.True(
             await browser.WaitUntilAsync("document.querySelectorAll('#recordersBody tr').length > 0", PageBudget, Ct),
@@ -1011,49 +1061,59 @@ public sealed class WebUiBrowserTests(PublishedApp app, ITestOutputHelper output
             "DASH の配信が始まりませんでした: " + await browser.EvaluateStringAsync(TextOf("previewStatus"), Ct));
 
         double before = await browser.EvaluateNumberAsync(PreviewTime, Ct);
-        double cushion = -1;
-        double peak = -1;
-        double waitingAfterJoin = 0;
+        double[] cushions = new double[DashSmoothnessSeconds];
+        double[] stalls = new double[DashSmoothnessSeconds];
         for (int second = 1; second <= DashSmoothnessSeconds; second++)
         {
             await Task.Delay(TimeSpan.FromSeconds(1), Ct);
-            cushion = await browser.EvaluateNumberAsync(PreviewCushion, Ct);
+            cushions[second - 1] = await browser.EvaluateNumberAsync(PreviewCushion, Ct);
             double position = await browser.EvaluateNumberAsync(PreviewTime, Ct);
-            double stalls = await browser.EvaluateNumberAsync(PreviewWaitingCount, Ct);
-            peak = Math.Max(peak, cushion);
-            if (second == DashJoinSeconds) { waitingAfterJoin = stalls; }
+            stalls[second - 1] = await browser.EvaluateNumberAsync(PreviewWaitingCount, Ct);
             output.WriteLine(
-                $"dash smoothness t+{second,2}s: currentTime={position:F2}s cushion={cushion:F2}s waiting={stalls:F0}");
+                Inv($"dash smoothness t+{second,2}s: currentTime={position:F2}s ")
+                + Inv($"cushion={cushions[second - 1]:F2}s waiting={stalls[second - 1]:F0}"));
         }
 
         double after = await browser.EvaluateNumberAsync(PreviewTime, Ct);
-        double waiting = await browser.EvaluateNumberAsync(PreviewWaitingCount, Ct);
         string state = await browser.EvaluateStringAsync(TextOf("previewStatus"), Ct);
+
+        // 停止を数える末尾の窓。増分はその**手前の標本**を基準に取るので、窓ぶんの秒に
+        // 起きた停止がすべて入る。`DashSteadySamples` は `DashSmoothnessSeconds` より
+        // 小さいので `tail` は 1 以上（0 以下だと基準の添字が負になる）。
+        Assert.True(0 < DashSmoothnessSeconds - DashSteadySamples,
+            Inv($"末尾の窓（{DashSteadySamples}）が標本数（{DashSmoothnessSeconds}）以上です ── 基準の標本が取れません。"));
+        int tail = DashSmoothnessSeconds - DashSteadySamples;
+        double tailWaiting = stalls[DashSmoothnessSeconds - 1] - stalls[tail - 1];
+        double peakCushion = cushions.Max();
+
+        // **軌跡は合否に関わらず出す。** 緑の run も閾値を較正するためのデータである。
+        string trace = string.Join(" ", Enumerable.Range(0, DashSmoothnessSeconds).Select(
+            i => Inv($"t+{i + 1}:{cushions[i]:F2}/{stalls[i]:F0}")));
+        output.WriteLine(Inv($"dash smoothness trace (cushion/waiting): {trace}"));
         output.WriteLine(
-            $"dash smoothness: {before:F2}s -> {after:F2}s (+{after - before:F2}s), "
-            + $"waiting={waiting:F0} (+{waiting - waitingAfterJoin:F0} after join), "
-            + $"cushion={cushion:F2}s (peak {peak:F2}s), status='{state}'");
+            Inv($"dash smoothness: {before:F2}s -> {after:F2}s (+{after - before:F2}s), ")
+            + Inv($"last {DashSteadySamples} samples: waiting +{tailWaiting:F0}, ")
+            + Inv($"peak cushion {peakCushion:F2}s, status='{state}'"));
 
         Assert.True(10 <= after - before,
-            $"{DashSmoothnessSeconds} 秒のあいだに再生位置が {after - before:F2} 秒しか進みませんでした（status='{state}'）。");
+            Inv($"{DashSmoothnessSeconds} 秒のあいだに再生位置が {after - before:F2} 秒しか進みませんでした（status='{state}'）。"));
 
-        // **停止の総数では見ない ── join のぶんを除いて数える。** リースは要求されて
+        // **停止の総数では見ない ── 末尾の 5 標本だけを見る。** リースは要求されて
         // 初めて第 2 パイプラインを起こすので、最初の視聴者が居合わせるリングは必ず空に近く、
         // そこでは必ず何度か止まる ── `play()` そのもので 1 回、そこから余裕を育てるのにもう 1 回
         //（生きた配信では生産レート＝再生レートなので、余裕は**止まっている間にしか増えない**）。
-        // その 2〜3 回は実測で `DashJoinSeconds` までに出切るので、**それ以降の増分**だけを見る。
-        // 寄せすぎて周期的に止まる形は、その区間でも止まり続ける（旧の実測で +3）。
-        Assert.True(waiting - waitingAfterJoin <= 1,
-            $"t+{DashJoinSeconds} 秒以降にバッファ切れの停止が {waiting - waitingAfterJoin:F0} 回ありました（1 回まで）── "
-            + $"ライブ端に寄せすぎています（status='{state}'）。");
+        // その 2〜3 回は前半に出るので、**定常へ入ったあとの増分**だけを見る。
+        // 寄せすぎて周期的に止まる形は、末尾でも止まり続ける。
+        Assert.True(tailWaiting <= 1,
+            Inv($"末尾 {DashSteadySamples} 標本でバッファ切れの停止が {tailWaiting:F0} 回ありました（1 回まで）── ")
+            + Inv($"ライブ端に寄せすぎています（status='{state}'; {trace}）。"));
 
-        // **終わりの余裕では見ない。** 寄せは前へしか跳ばないので余裕を足せず、12 秒後の値は
-        // 落ち着いた再生でもドリフトのぶんだけ振れる（実測 0.58〜1.98）。見るのは
-        // **一度でもここまで育ったか**で、寄せすぎている側は 0.5 秒へ引き戻され続けるので
-        // 構造的にここへ届かない（実測の最大 0.80 秒）。
-        Assert.True(DashGrownCushionSeconds <= peak,
-            $"ライブ端の余裕が一度も {DashGrownCushionSeconds} 秒を超えませんでした（最大 {peak:F2} 秒）── "
-            + $"ライブ端に張り付いています（status='{state}'）。");
+        // **余裕は全標本の最大で見る。** 終わりの値も末尾の窓も、寄せが前へしか跳べない
+        // せいでドリフトのぶんだけ振れる ── 落ち着いた再生でも下がって終わる。
+        // 寄せすぎている側は 0.5 秒へ引き戻され続けるので、どの標本もここへ届かない。
+        Assert.True(DashPeakCushionSeconds <= peakCushion,
+            Inv($"ライブ端の余裕が一度も {DashPeakCushionSeconds} 秒に届きませんでした（最大 {peakCushion:F2} 秒）── ")
+            + Inv($"ライブ端に張り付いています（status='{state}'; {trace}）。"));
 
         Assert.True(await browser.EvaluateBoolAsync(Click("stopPreview"), Ct), "Stop preview を押せませんでした。");
         Assert.True(
@@ -1137,9 +1197,7 @@ public sealed class WebUiBrowserTests(PublishedApp app, ITestOutputHelper output
 
         await using var browser = await EdgeCdp.LaunchAsync(Ct);
         await browser.NavigateAsync($"http://127.0.0.1:{port}/", PageBudget, Ct);
-        Assert.True(
-            await browser.WaitUntilAsync($"!{IsHidden("mainSections")}", PageBudget, Ct),
-            "画面が出ませんでした。");
+        await WaitForMainSectionsAsync(browser);
 
         Assert.Equal(0, instance.Run("start-recording-all").ExitCode);
         await Task.Delay(TimeSpan.FromSeconds(5), Ct);
@@ -1626,7 +1684,7 @@ public sealed class WebUiBrowserTests(PublishedApp app, ITestOutputHelper output
 
         await using var browser = await EdgeCdp.LaunchAsync(Ct);
         await browser.NavigateAsync($"http://127.0.0.1:{port}/", PageBudget, Ct);
-        Assert.True(await browser.WaitUntilAsync($"!{IsHidden("mainSections")}", PageBudget, Ct), "画面が出ませんでした。");
+        await WaitForMainSectionsAsync(browser);
 
         // **録画のページへ移っておく。** 起動時の経路はライブなので、ここを踏まないと
         // 最後の `#/live` への遷移が `hashchange` を起こさない。
@@ -1817,7 +1875,7 @@ public sealed class WebUiBrowserTests(PublishedApp app, ITestOutputHelper output
 
         await using var browser = await EdgeCdp.LaunchAsync(Ct);
         await browser.NavigateAsync($"http://127.0.0.1:{port}/", PageBudget, Ct);
-        Assert.True(await browser.WaitUntilAsync($"!{IsHidden("mainSections")}", PageBudget, Ct), "画面が出ませんでした。");
+        await WaitForMainSectionsAsync(browser);
 
         Assert.Equal(0, instance.Run("start-recording-all").ExitCode);
         await Task.Delay(TranscodeClipTime, Ct);
@@ -1941,7 +1999,7 @@ public sealed class WebUiBrowserTests(PublishedApp app, ITestOutputHelper output
 
         await using var browser = await EdgeCdp.LaunchAsync(Ct);
         await browser.NavigateAsync($"http://127.0.0.1:{port}/", PageBudget, Ct);
-        Assert.True(await browser.WaitUntilAsync($"!{IsHidden("mainSections")}", PageBudget, Ct), "画面が出ませんでした。");
+        await WaitForMainSectionsAsync(browser);
         Assert.True(await browser.EvaluateBoolAsync(GoToRecordings, Ct), "録画のページへ移れませんでした。");
 
         Assert.Equal(0, instance.Run("start-recording-all").ExitCode);
@@ -2019,7 +2077,7 @@ public sealed class WebUiBrowserTests(PublishedApp app, ITestOutputHelper output
 
         await using var browser = await EdgeCdp.LaunchAsync(Ct);
         await browser.NavigateAsync($"http://127.0.0.1:{port}/", PageBudget, Ct);
-        Assert.True(await browser.WaitUntilAsync($"!{IsHidden("mainSections")}", PageBudget, Ct), "画面が出ませんでした。");
+        await WaitForMainSectionsAsync(browser);
 
         Assert.Equal(0, instance.Run("start-recording-all").ExitCode);
         await Task.Delay(ClipRecordingTime, Ct);
@@ -2085,7 +2143,7 @@ public sealed class WebUiBrowserTests(PublishedApp app, ITestOutputHelper output
 
         await using var browser = await EdgeCdp.LaunchAsync(Ct);
         await browser.NavigateAsync($"http://127.0.0.1:{port}/", PageBudget, Ct);
-        Assert.True(await browser.WaitUntilAsync($"!{IsHidden("mainSections")}", PageBudget, Ct), "画面が出ませんでした。");
+        await WaitForMainSectionsAsync(browser);
 
         Assert.True(
             await browser.WaitUntilAsync("document.querySelectorAll('#recordersBody tr').length > 0", PageBudget, Ct),
@@ -2177,7 +2235,7 @@ public sealed class WebUiBrowserTests(PublishedApp app, ITestOutputHelper output
 
         // `?token=` は Admin のセッションを配る入口（302 のあとに index.html が出る）。
         await browser.NavigateAsync($"http://127.0.0.1:{port}/?token={Token}", PageBudget, Ct);
-        Assert.True(await browser.WaitUntilAsync($"!{IsHidden("mainSections")}", PageBudget, Ct), "画面が出ませんでした。");
+        await WaitForMainSectionsAsync(browser);
 
         Assert.True(
             await browser.WaitUntilAsync("document.querySelectorAll('#recordersBody tr').length > 0", PageBudget, Ct),
@@ -2267,7 +2325,7 @@ public sealed class WebUiBrowserTests(PublishedApp app, ITestOutputHelper output
 
         await using var browser = await EdgeCdp.LaunchAsync(Ct);
         await browser.NavigateAsync($"http://127.0.0.1:{port}/", PageBudget, Ct);
-        Assert.True(await browser.WaitUntilAsync($"!{IsHidden("mainSections")}", PageBudget, Ct), "画面が出ませんでした。");
+        await WaitForMainSectionsAsync(browser);
 
         Assert.False(
             await browser.EvaluateBoolAsync("document.getElementById('player').hasAttribute('controls')", Ct),
@@ -2391,7 +2449,7 @@ public sealed class WebUiBrowserTests(PublishedApp app, ITestOutputHelper output
 
         await using var browser = await EdgeCdp.LaunchAsync(Ct);
         await browser.NavigateAsync($"http://127.0.0.1:{port}/", PageBudget, Ct);
-        Assert.True(await browser.WaitUntilAsync($"!{IsHidden("mainSections")}", PageBudget, Ct), "画面が出ませんでした。");
+        await WaitForMainSectionsAsync(browser);
 
         Assert.Equal(0, instance.Run("start-recording-all").ExitCode);
 
@@ -2530,7 +2588,7 @@ public sealed class WebUiBrowserTests(PublishedApp app, ITestOutputHelper output
 
         await using var browser = await EdgeCdp.LaunchAsync(Ct);
         await browser.NavigateAsync($"http://127.0.0.1:{port}/", PageBudget, Ct);
-        Assert.True(await browser.WaitUntilAsync($"!{IsHidden("mainSections")}", PageBudget, Ct), "画面が出ませんでした。");
+        await WaitForMainSectionsAsync(browser);
 
         Assert.True(
             await WaitForFirstRowAsync(browser, RowIsFinishedFragment, PlaybackBudget),
@@ -2798,7 +2856,7 @@ public sealed class WebUiBrowserTests(PublishedApp app, ITestOutputHelper output
 
         await using var browser = await EdgeCdp.LaunchAsync(Ct);
         await browser.NavigateAsync($"http://127.0.0.1:{port}/", PageBudget, Ct);
-        Assert.True(await browser.WaitUntilAsync($"!{IsHidden("mainSections")}", PageBudget, Ct), "画面が出ませんでした。");
+        await WaitForMainSectionsAsync(browser);
 
         await RecordOverHttpAsync(client);
         await browser.EvaluateBoolAsync(GoToRecordings, Ct);
@@ -2876,7 +2934,7 @@ public sealed class WebUiBrowserTests(PublishedApp app, ITestOutputHelper output
 
         await using var browser = await EdgeCdp.LaunchAsync(Ct);
         await browser.NavigateAsync($"http://127.0.0.1:{port}/", PageBudget, Ct);
-        Assert.True(await browser.WaitUntilAsync($"!{IsHidden("mainSections")}", PageBudget, Ct), "画面が出ませんでした。");
+        await WaitForMainSectionsAsync(browser);
 
         await RecordOverHttpAsync(client);
         await browser.EvaluateBoolAsync(GoToRecordings, Ct);
@@ -2973,7 +3031,7 @@ public sealed class WebUiBrowserTests(PublishedApp app, ITestOutputHelper output
 
         await using var browser = await EdgeCdp.LaunchAsync(Ct);
         await browser.NavigateAsync($"http://127.0.0.1:{port}/", PageBudget, Ct);
-        Assert.True(await browser.WaitUntilAsync($"!{IsHidden("mainSections")}", PageBudget, Ct), "画面が出ませんでした。");
+        await WaitForMainSectionsAsync(browser);
 
         await browser.EvaluateBoolAsync(GoToRecordings, Ct);
         await PostAsync(client, $"api/recorders/{UsedRecorder}/start");
@@ -3016,7 +3074,7 @@ public sealed class WebUiBrowserTests(PublishedApp app, ITestOutputHelper output
 
         await using var browser = await EdgeCdp.LaunchAsync(Ct);
         await browser.NavigateAsync($"http://127.0.0.1:{port}/", PageBudget, Ct);
-        Assert.True(await browser.WaitUntilAsync($"!{IsHidden("mainSections")}", PageBudget, Ct), "画面が出ませんでした。");
+        await WaitForMainSectionsAsync(browser);
 
         await RecordOverHttpAsync(client);
         await browser.EvaluateBoolAsync(GoToRecordings, Ct);
