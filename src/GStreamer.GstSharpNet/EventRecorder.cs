@@ -4508,8 +4508,18 @@ public partial class EventRecorder : ObservableObject, IDisposable
                     || image is null)
                 {
                     DropThumbnailRequests();
+
+                    // **長さで説明できる失敗は分ける。** buffer が短いだけ（レイアウト
+                    // 自体は扱える）のと、扱えない stride / offset とでは、見る先が違う。
+                    bool tooShort = Components.ThumbnailImage.TryGetRequiredBytes(
+                            format, width, height, strides[..planes], offsets[..planes],
+                            out long required)
+                        && map.Span.Length < required;
+
                     Log(DebugLevel.Warning,
-                        $"thumbnail.unsupported format={format} {width}x{height} reason=layout source={source} planes={planes} length={map.Span.Length}");
+                        $"thumbnail.unsupported format={format} {width}x{height} "
+                        + (tooShort ? $"reason=buffer-too-short required={required} " : "reason=layout ")
+                        + $"source={source} planes={planes} length={map.Span.Length}");
                     return;
                 }
             }
@@ -4555,7 +4565,7 @@ public partial class EventRecorder : ObservableObject, IDisposable
     }
 
     /// <summary>レイアウトをどこから読んだか。</summary>
-    internal enum FrameLayoutSource
+    private enum FrameLayoutSource
     {
         /// <summary>どちらからも読めなかった ── 呼び出し側の既定レイアウトに委ねる。</summary>
         Default,
@@ -4594,7 +4604,7 @@ public partial class EventRecorder : ObservableObject, IDisposable
     /// <param name="offsets">平面ごとの先頭オフセットの書き込み先。</param>
     /// <param name="planes">埋めた平面の数。<b>読めなかったときは 0</b>。</param>
     /// <returns>レイアウトの出どころ。</returns>
-    internal static FrameLayoutSource ReadFrameLayout(
+    private static FrameLayoutSource ReadFrameLayout(
         Gst.Buffer buffer, Caps? caps, string format, int width, int height,
         Span<int> strides, Span<int> offsets, out int planes)
     {

@@ -120,6 +120,33 @@ public sealed record ThumbnailImage(int Width, int Height, byte[] Rgb24)
     }
 
     /// <summary>
+    /// そのレイアウトで読む位置が収まっていなければならないバイト数
+    /// （<c>offset + stride × (行数 − 1) + 行バイト数</c> の平面ごとの最大）。
+    ///
+    /// <para>
+    /// <b>撮れなかった理由を「buffer が短い」と「扱えないレイアウト」に分けるための口。</b>
+    /// 引数は <see cref="TryCreate(ReadOnlySpan{byte}, string, int, int, int, ReadOnlySpan{int}, ReadOnlySpan{int}, out ThumbnailImage?)"/>
+    /// から <c>frame</c> と <c>maxWidth</c>（長さと出力の大きさ）を除いたもので、
+    /// <see langword="false"/> は「対応しない形式・扱えない stride / offset」
+    /// （＝長さでは説明できない失敗）を意味する。
+    /// </para>
+    /// </summary>
+    /// <returns>必要長を出せたか。</returns>
+    public static bool TryGetRequiredBytes(
+        string format, int width, int height,
+        ReadOnlySpan<int> strides, ReadOnlySpan<int> offsets, out long required)
+    {
+        required = 0;
+
+        if (width <= 0 || height <= 0
+            || !TryDescribe(format, width, height, strides, offsets, out Layout layout))
+            return false;
+
+        required = layout.RequiredBytes;
+        return true;
+    }
+
+    /// <summary>
     /// 出力画素 <paramref name="index"/> が覆うソースの区間 <c>[start, end)</c>。
     /// <b>空の区間は作らない</b>（丸めで潰れたら 1 画素へ広げる）。
     /// </summary>

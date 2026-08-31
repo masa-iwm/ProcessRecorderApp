@@ -1,5 +1,10 @@
 using ProcessRecorderApp.Components;
+using ProcessRecorderApp.GStreamer;
 using System;
+using System.IO;
+using System.Linq;
+using System.Reflection;
+using System.Text.RegularExpressions;
 using Xunit;
 
 namespace ProcessRecorderApp.Tests;
@@ -1007,6 +1012,45 @@ public sealed class ThumbnailImageTests
     [InlineData("")]
     public void AnUnsupportedFormatHasNoPlanes(string format)
         => Assert.Equal(0, ThumbnailImage.PlaneCount(format));
+
+    /// <summary>
+    /// <c>EventRecorder.ThumbnailMaxPlanes</c>（レイアウトを受ける span の長さ）は
+    /// <see cref="ThumbnailImage.PlaneCount"/> が返しうる最大（<b>3</b>）と一致する。
+    ///
+    /// <para>
+    /// <b>形式は <c>PlaneCount</c> の switch から取り出す</b> ── 平面のより多い形式を
+    /// 足したときに、この検査が自動で当たるようにする。span が足りないと
+    /// <c>ReadFrameLayout</c> は実レイアウトを読めないまま既定レイアウトへ落ち、
+    /// <b>絵は撮れてしまう</b>（斜行するだけで、ログにも一覧にも異常が出ない）。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void TheLayoutSpansHoldEveryPlaneAFormatCanNeed()
+    {
+        string source = File.ReadAllText(
+            RepositoryFiles.At("src", "Components", "ThumbnailImage.cs"));
+        int at = source.IndexOf("public static int PlaneCount(", StringComparison.Ordinal);
+        Assert.True(0 <= at, "PlaneCount の switch が見つからない。");
+
+        string body = source[at..source.IndexOf("};", at, StringComparison.Ordinal)];
+
+        // アンダースコア入りの形式名（`A420_10LE` 等）も拾う ── 落とすと、その形式が
+        // 黙って列挙から漏れる。
+        MatchCollection formats = Regex.Matches(body, "\"([A-Za-z0-9_]+)\"");
+
+        // **件数も断定する。** 部分的にしか拾えていない正規表現は、並びの偶然で
+        // 最大が合ってしまい、値の検査だけでは赤にならない。
+        Assert.Equal(16, formats.Count);
+
+        int max = formats.Max(m => ThumbnailImage.PlaneCount(m.Groups[1].Value));
+
+        Assert.Equal(3, max);
+
+        FieldInfo? span = typeof(EventRecorder).GetField(
+            "ThumbnailMaxPlanes", BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(span);
+        Assert.Equal(max, (int)span!.GetRawConstantValue()!);
+    }
 
     // ---- 寸法と拒否 ----
 

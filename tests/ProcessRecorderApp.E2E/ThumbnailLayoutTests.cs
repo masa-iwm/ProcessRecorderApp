@@ -22,7 +22,7 @@ namespace ProcessRecorderApp.E2E;
 /// <b>幅 640 に対し stride 1024</b>・<b>最終行は stride まで埋めない</b>
 /// （実測: 640x480 の 1 フレームは <b>736,896 バイト</b>）。既定レイアウト（stride ＝ 幅）の
 /// 必要長は <b>460,800 バイト</b>で<b>収まってしまう</b>ので、
-/// <c>thumbnail.unsupported reason=layout</c> にはならず、
+/// <c>thumbnail.unsupported reason=buffer-too-short</c> にはならず、
 /// <b>1 行あたり 384 バイトずつずれた絵が、異常の見えないまま撮れる</b>
 /// （同じ buffer を <c>rawvideoparse</c> で既定レイアウトとして読ませて確認済み ──
 /// 縞は完全に崩れ、白も青も残らない）。したがって<b>画素まで見ないと退行を検出できない</b>。
