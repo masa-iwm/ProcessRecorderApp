@@ -993,8 +993,17 @@ public sealed class WebUiBrowserTests(PublishedApp app, ITestOutputHelper output
         })()
         """;
 
-    /// <summary>滑らかさを測る秒数（1 秒ごとに 1 標本）。</summary>
-    private const int DashSmoothnessSeconds = 12;
+    /// <summary>
+    /// 滑らかさを測る秒数（1 秒ごとに 1 標本）。<b>定常への遷移が末尾の窓へ入らない長さが要る</b>
+    /// ── 遷移そのものが停止を伴うので、窓に掛かると「定常で止まっている」ことにされる。
+    /// 遅い機械では遷移が t+9 まで来る（それまで余裕 0.9 秒前後・停止ゼロ、遷移で 1.9 秒台へ跳ねる）。
+    /// </summary>
+    private const int DashSmoothnessSeconds = 18;
+
+    /// <summary>
+    /// この秒数は進んでいること。<b>観測の秒数に比例させる</b>（止まっていないことの断定）。
+    /// </summary>
+    private const int DashMinimumAdvanceSeconds = 15;
 
     /// <summary>
     /// <b>停止を数える末尾の標本数。</b> join の停止はこの手前に落ちる ── 空のリングへ
@@ -1028,7 +1037,7 @@ public sealed class WebUiBrowserTests(PublishedApp app, ITestOutputHelper output
     /// <para>
     /// 断定は 3 つ ── <b>進み</b>（止まっていない）・<b>末尾 5 標本での停止の増分</b>
     /// （定常で止まっていない）・<b>全標本のどこかで余裕が閾値に届くこと</b>
-    /// （ライブ端に貼り付いていない）。<b>12 標本の軌跡は合否に関わらず 1 行で
+    /// （ライブ端に貼り付いていない）。<b>18 標本の軌跡は合否に関わらず 1 行で
     /// <c>output</c> へ出す</b> ── 緑の run も較正のデータになる。
     /// </para>
     /// </summary>
@@ -1095,8 +1104,9 @@ public sealed class WebUiBrowserTests(PublishedApp app, ITestOutputHelper output
             + Inv($"last {DashSteadySamples} samples: waiting +{tailWaiting:F0}, ")
             + Inv($"peak cushion {peakCushion:F2}s, status='{state}'"));
 
-        Assert.True(10 <= after - before,
-            Inv($"{DashSmoothnessSeconds} 秒のあいだに再生位置が {after - before:F2} 秒しか進みませんでした（status='{state}'）。"));
+        Assert.True(DashMinimumAdvanceSeconds <= after - before,
+            Inv($"{DashSmoothnessSeconds} 秒のあいだに再生位置が {after - before:F2} 秒しか進みませんでした")
+            + Inv($"（{DashMinimumAdvanceSeconds} 秒以上進むこと。status='{state}'）。"));
 
         // **停止の総数では見ない ── 末尾の 5 標本だけを見る。** リースは要求されて
         // 初めて第 2 パイプラインを起こすので、最初の視聴者が居合わせるリングは必ず空に近く、
