@@ -503,22 +503,24 @@ function Get-ActivityLines {
 # layout, which is why the sweep below uses d3d12testsrc instead.
 $reportedSrc = "d3d12screencapturesrc monitor-index=$MonitorIndex show-cursor=true ! video/x-raw(memory:D3D12Memory), framerate=15/1"
 
-# This is the encoder line exactly as it appeared in the field report, and it is used for
-# the sweep too so that only the resolution differs between rows.
+# This is EncoderCatalog's qsv launch string, used for the reported 4K configuration and for
+# the sweep too, so that only the resolution differs between rows.
 #
-# It happens to equal EncoderCatalog's qsv launch string today, and that is not a
-# coincidence worth losing: if the catalog changes and this does not, the sweep quietly
-# starts verifying a configuration the product no longer produces, and still reports green.
-# EncoderCatalogScriptSyncTests pins the two together, so a deliberate catalog change fails
-# that test and forces a decision here rather than drifting silently.
-$reportedEnc = 'qsvh264enc rate-control=icq icq-quality=30 gop-size=60'
+# The two must stay equal: if the catalog changes and this does not, the sweep quietly starts
+# verifying a configuration the product no longer produces, and still reports green.
+# EncoderCatalogScriptSyncTests pins them together, so a deliberate catalog change fails that
+# test and forces a decision here rather than drifting silently.
+#
+# What this script measures (the ring buffer's cyclic wait above the per-frame threshold) does
+# not depend on the encoder's rate control, so following the catalog is safe here.
+$reportedEnc = 'qsvh264enc rate-control=cbr bitrate=2000 gop-size=60'
 
 # For the rows that run the continuous branch at 5fps. A HAND-WRITTEN ENCODER STRING IS USED
 # AS IS, so the product's "two seconds derived from the framerate" does not apply. Passing
 # $reportedEnc (gop-size=60, which is 30fps based) gives a 12-second keyframe interval at 5fps,
 # and a segment can only be split on a keyframe, so a 5-second setting stretches to 10
 # (measured; continuous.overshoot). Pin the GOP to the branch rate here instead.
-$reportedContinuousEnc = 'qsvh264enc rate-control=icq icq-quality=30 gop-size=10'
+$reportedContinuousEnc = 'qsvh264enc rate-control=cbr bitrate=2000 gop-size=10'
 
 $cases = New-Object System.Collections.Generic.List[object]
 
@@ -585,9 +587,11 @@ if ($SmokeTest) {
 else {
 
 $cases.Add([pscustomobject]@{
-    Name = "REPORTED: 4K screen capture, monitor-index=$MonitorIndex, qsvh264enc icq"
+    Name = "REPORTED: 4K screen capture, monitor-index=$MonitorIndex, qsvh264enc cbr"
     Type = 'D3d12'; Src = $reportedSrc; Enc = $reportedEnc; Buffer = 10000
-    Note = 'the exact configuration from the report (settings, encoder line and BufferDuration all as received)'
+    Note = 'the reported configuration: source, monitor index and BufferDuration as received.' +
+           ' The encoder line follows EncoderCatalog (pinned by EncoderCatalogScriptSyncTests), so it is' +
+           ' what the product builds today, not the string the report carried.'
 })
 
 # Resolution sweep. Everything except width/height is identical, so a difference between
@@ -596,7 +600,7 @@ $cases.Add([pscustomobject]@{
 foreach ($wh in @('320x240', '1920x1080', '2560x1440', '3840x2160')) {
     $parts = $wh.Split('x')
     $cases.Add([pscustomobject]@{
-        Name = "sweep: d3d12testsrc $wh, qsvh264enc icq"
+        Name = "sweep: d3d12testsrc $wh, qsvh264enc cbr"
         Type = 'D3d12'
         Src  = "d3d12testsrc is-live=true do-timestamp=true ! video/x-raw(memory:D3D12Memory), format=NV12, width=$($parts[0]), height=$($parts[1]), framerate=15/1"
         Enc  = $reportedEnc; Buffer = 3000

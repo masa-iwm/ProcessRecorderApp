@@ -209,11 +209,13 @@ public class EncoderCatalogScriptSyncTests
     }
 
     /// <summary>
-    /// <b><c>Verify-HighResolution.ps1</c> のエンコーダー行がカタログと一致すること。</b>
+    /// <b><c>Verify-HighResolution.ps1</c> のエンコーダー行 2 本（イベントと常時枝）が
+    /// カタログと一致すること。</b>
     ///
     /// <para>
-    /// あのスクリプトは<b>実機の報告に出ていた起動文字列をそのまま</b>持っており、
-    /// 解像度スイープにも同じ文字列を使う（行の間で解像度だけが違うようにするため）。
+    /// あのスクリプトは<b>カタログの <c>qsvh264enc</c> の起動文字列を写しで</b>持っており、
+    /// 4K の報告構成にも解像度スイープにも同じ文字列を使う
+    /// （行の間で解像度だけが違うようにするため）。
     /// カタログ側の <c>qsvh264enc</c> の起動文字列が変わったのにここが変わらないと、
     /// <b>スクリプトは製品がもう作らない構成を検証し続け、しかも緑を返す。</b>
     /// </para>
@@ -255,6 +257,35 @@ public class EncoderCatalogScriptSyncTests
             + "カタログを意図的に変えたなら、スクリプトも合わせるか、"
             + Environment.NewLine
             + "「報告どおりに凍結する」と決めてこの表明を書き換えること。");
+
+        // 常時録画の枝の行も同じ写しである。**GOP だけが枝のレート（5fps × 2 秒）に固定**
+        // されており、それ以外はカタログどおりでなければならない ── ここが追随しないと、
+        // 常時枝のケースだけが製品の作らない構成（レート制御の違う古い文字列）で回る。
+        int at2 = -1;
+        for (int i = text.IndexOf("$reportedContinuousEnc", StringComparison.Ordinal); i >= 0;
+             i = text.IndexOf("$reportedContinuousEnc", i + 1, StringComparison.Ordinal))
+        {
+            if (!SourceReferences.IsCommentLine(text, i)) { at2 = i; break; }
+        }
+        Assert.True(at2 >= 0, "Verify-HighResolution.ps1 に（コメントでない）$reportedContinuousEnc が無い。");
+
+        var continuousLiteral = Regex.Match(text[at2..], @"'([^']+)'");
+        Assert.True(continuousLiteral.Success, "$reportedContinuousEnc に文字列リテラルが無い。");
+
+        const int continuousGop = 10;   // 5fps × EncoderCatalog.TargetKeyframeIntervalSeconds
+        string continuousInCatalog = EncoderCatalog.D3d12CandidatesFor(continuousGop)
+            .First(c => c.FactoryName == "qsvh264enc").LaunchString;
+
+        Assert.True(continuousLiteral.Groups[1].Value == continuousInCatalog,
+            "Verify-HighResolution.ps1 の常時枝のエンコーダー行がカタログとずれている。"
+            + Environment.NewLine
+            + $"  スクリプト: {continuousLiteral.Groups[1].Value}"
+            + Environment.NewLine
+            + $"  カタログ（GOP {continuousGop}）: {continuousInCatalog}"
+            + Environment.NewLine
+            + "GOP 以外はカタログどおりであること ── 手書きの文字列はそのまま流れるので、"
+            + Environment.NewLine
+            + "ずれたままだと常時枝のケースだけが古い構成を検証して緑を返す。");
     }
 
     /// <summary>
@@ -314,6 +345,75 @@ public class EncoderCatalogScriptSyncTests
                 + Environment.NewLine
                 + "このままだと実機で FAILED になり、**製品の欠陥に見える**"
                 + "（往復に時間がかかるので、偽の赤の害は大きい）。");
+        }
+    }
+
+    /// <summary>
+    /// <b><c>Verify-GpuEncoders.ps1</c> のビットレート ケースの雛形がカタログと一致すること。</b>
+    ///
+    /// <para>
+    /// あのケースは「カタログの <c>bitrate</c> が本当にエンコーダーへ届くか」を
+    /// 高低 2 本の録画物の比で見るもので、<c>EncodingProperties</c> を<b>完全な文字列で</b>渡す
+    /// （<c>parse_launch</c> へ生補間されるので、カタログの <c>bitrate=</c> の上に
+    /// 2 つ目の代入を重ねる形にすると last-wins という契約の無い前提に乗る）。
+    /// <b>雛形が古いと、測っているのは製品がもう作らない構成である。</b>
+    /// </para>
+    /// <para>
+    /// <b>対象は「単位が確認できている GPU 専用の定義」と過不足なく一致</b>させる ──
+    /// <c>bitrate</c> を持たない定義（<c>d3d12h264enc</c> / <c>amfh264enc</c>）に
+    /// ケースを作っても何も測れず、逆に単位を足した日にケースが増えないと
+    /// <b>その要素だけ「効くかどうか」を一度も測らないまま</b>になる。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void TheGpuScriptsBitrateTemplates_MatchTheCatalog()
+    {
+        string text = File.ReadAllText(ScriptPath);
+
+        int at = text.IndexOf("$bitrateTemplates = @{", StringComparison.Ordinal);
+        Assert.True(at >= 0,
+            $"{ScriptPath} に '$bitrateTemplates = @{{' が見つからない。"
+            + Environment.NewLine
+            + "書き方を変えたなら、この検査も一緒に直すこと"
+            + Environment.NewLine
+            + "── 見つからないまま緑にすると、検査そのものが消える。");
+
+        var end = Regex.Match(text[at..], @"(?m)^\}\s*$");
+        Assert.True(end.Success, $"{ScriptPath} の $bitrateTemplates を閉じる '}}' 行が見つからない。");
+        string body = text.Substring(at, end.Index);
+
+        var inScript = Regex.Matches(body, @"'([^']+)'\s*=\s*'([^']+)'")
+            .Select(m => (Name: m.Groups[1].Value, Template: m.Groups[2].Value))
+            .ToArray();
+
+        // 1件も取れないまま緑にしない（正規表現が壊れたときに検査が消える）。
+        Assert.True(inScript.Length > 0,
+            $"{ScriptPath} の $bitrateTemplates から雛形を1つも読めなかった。書き方を変えたか、正規表現が壊れている。");
+
+        var systemNames = EncoderCatalog.SystemCandidates.Select(c => c.FactoryName).ToHashSet(StringComparer.Ordinal);
+        var expected = EncoderCatalog.D3d12Candidates
+            .Where(c => !systemNames.Contains(c.FactoryName) && c.BitrateUnitPerKbps is not null)
+            .ToArray();
+
+        Assert.Equal(
+            [.. expected.Select(c => c.FactoryName).Order()],
+            [.. inScript.Select(r => r.Name).Order()]);
+
+        foreach (var def in expected)
+        {
+            string template = inScript.First(r => r.Name == def.FactoryName).Template;
+
+            // 値の差し込み口はちょうど1つ（PowerShell の -f が使う {0}）。
+            Assert.Single(Regex.Matches(template, @"\{0\}"));
+
+            Assert.True(template.Replace("{0}", "2000", StringComparison.Ordinal) == def.LaunchString,
+                $"ビットレート ケースの雛形 '{def.FactoryName}' がカタログとずれている。"
+                + Environment.NewLine
+                + $"  スクリプト（既定値 2000 を入れたもの）: {template.Replace("{0}", "2000", StringComparison.Ordinal)}"
+                + Environment.NewLine
+                + $"  カタログ                              : {def.LaunchString}"
+                + Environment.NewLine
+                + "このままだと実機で測るのは製品がもう作らない構成であり、しかもレポートは数字を出す。");
         }
     }
 

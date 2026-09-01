@@ -635,6 +635,45 @@ if ($manual) {
         " it means d3d12download is NOT covered by this run.")
 }
 
+# Does the bitrate in the catalog string actually reach the GPU encoder? The recording path
+# never calls WithBitrateKbps -- it runs the catalog's LaunchString as-is -- so the property
+# is only observable by recording the same source twice with two different values and
+# comparing the produced bit rate (Mp4Bytes / DurationSec). Nothing in the logs says whether
+# the value took effect.
+#
+# The full string is written out here instead of passing only PreferredH264Encoder:
+# EncodingProperties is interpolated into parse_launch verbatim, so adding a second bitrate=
+# assignment on top of the catalog's own would depend on last-wins, which is not a contract.
+#
+# {0} is the kbit/sec value. With {0} = 2000 each template must equal the catalog's launch
+# string for that encoder -- pinned by EncoderCatalogScriptSyncTests, so a catalog change
+# fails a test instead of quietly verifying a configuration the product no longer produces.
+# Only encoders whose bitrate property and unit are confirmed appear here; d3d12h264enc and
+# amfh264enc carry no bitrate at all, so a bitrate case for them would measure nothing.
+$bitrateTemplates = @{
+    'qsvh264enc'       = 'qsvh264enc rate-control=cbr bitrate={0} gop-size=60'
+    'nvh264enc'        = 'nvh264enc rc-mode=cbr bitrate={0} gop-size=60'
+    'nvd3d11h264enc'   = 'nvd3d11h264enc rc-mode=cbr bitrate={0} gop-size=60'
+    'nvautogpuh264enc' = 'nvautogpuh264enc rc-mode=cbr bitrate={0} gop-size=60'
+}
+$bitrateLowKbps  = 500
+$bitrateHighKbps = 4000
+
+foreach ($g in $gpuEncoders) {
+    if (-not $bitrateTemplates.ContainsKey($g)) { continue }
+    foreach ($kbps in @($bitrateLowKbps, $bitrateHighKbps)) {
+        $cases.Add([pscustomobject]@{
+            Name = "D3d12 / $g bitrate=$kbps"; Type = 'D3d12'; Preferred = ''
+            Enc = ($bitrateTemplates[$g] -f $kbps)
+            Expect = 'records'
+            Note = 'the bitrate must reach the encoder; only the high/low ratio of the produced bit rate shows it'
+            MustSelect = $g
+            BitrateEncoder = $g
+            BitrateKbps = $kbps
+        })
+    }
+}
+
 # ---------------------------------------------------------------- run
 
 $results = New-Object System.Collections.Generic.List[object]
@@ -688,6 +727,10 @@ function Invoke-Case {
             StartStdErr    = $ping.StdErr
             LogLines       = ''
             Diagnostics    = $null
+            # Carried over from the case so the bitrate section can pair low with high.
+            # Absent on every other case, which is how that section selects its rows.
+            BitrateEncoder = $Case.BitrateEncoder
+            BitrateKbps    = $Case.BitrateKbps
         }
     }
 
@@ -747,6 +790,8 @@ function Invoke-Case {
         StartStdErr    = $start.StdErr
         LogLines       = ($logLines -join "`n")
         Diagnostics    = $null
+        BitrateEncoder = $Case.BitrateEncoder
+        BitrateKbps    = $Case.BitrateKbps
     }
 }
 
@@ -784,6 +829,47 @@ foreach ($case in $cases) {
 }
 
 Stop-AllWorkers
+
+# ---------------------------------------------------------------- bitrate readings
+
+# The bit rate the case actually produced, in kbit/sec, or $null when there is nothing to
+# measure. Container overhead is included, so the value sits above the requested target --
+# only the high/low ratio is read.
+function Get-MeasuredKbps {
+    param([object]$Result)
+
+    if ($null -eq $Result) { return $null }
+    if (-not $Result.DurationSec) { return $null }   # $null or 0: nothing to divide by
+    if ($Result.Mp4Bytes -le 0) { return $null }
+    return [math]::Round(($Result.Mp4Bytes * 8) / $Result.DurationSec / 1000)
+}
+
+# Pair each encoder's low and high case. This is a READING, not a gate: the metric is noisy
+# (the encoder can fall short of a high target on a 320x240 source, and the duration cell is
+# noisy by itself), and a FAILED row here would read as "this encoder is broken on this
+# machine" -- a false red leaves a wrong record about the product. The rows themselves are
+# still judged the usual way (valid MP4, expected encoder selected).
+$bitrateRows = @($results | Where-Object { $_.BitrateEncoder })
+$bitrateSummary = New-Object System.Collections.Generic.List[object]
+foreach ($enc in @($bitrateRows | ForEach-Object { $_.BitrateEncoder } | Select-Object -Unique)) {
+    $low  = @($bitrateRows | Where-Object { $_.BitrateEncoder -eq $enc -and $_.BitrateKbps -eq $bitrateLowKbps })[0]
+    $high = @($bitrateRows | Where-Object { $_.BitrateEncoder -eq $enc -and $_.BitrateKbps -eq $bitrateHighKbps })[0]
+
+    $lowKbps  = Get-MeasuredKbps $low
+    $highKbps = Get-MeasuredKbps $high
+    $ratio = $null
+    if ($lowKbps -and $highKbps) { $ratio = [math]::Round($highKbps / $lowKbps, 2) }
+
+    $bitrateSummary.Add([pscustomobject]@{
+        Encoder     = $enc
+        LowMeasured = $lowKbps
+        HighMeasured = $highKbps
+        Ratio       = $ratio
+        Reading     = $(if ($null -eq $ratio) { 'n/a (one of the two cases produced nothing to measure)' }
+                        elseif ($ratio -ge 2) { 'the bitrate reaches the encoder' }
+                        else { 'CHECK -- the bitrate looks ineffective at these settings' })
+    })
+}
 
 # ---------------------------------------------------------------- report
 
@@ -829,6 +915,37 @@ foreach ($r in $results) {
         $r.Case, $r.StartExit, $r.StopExit, $r.Selected, $r.FailedAttempts,
         $(if ($r.Skipped) { 'n/a' } elseif ($r.ValidMp4) { 'valid' } else { 'INVALID' }), $r.DurationSec,
         $(if ($r.Ok) { 'OK' } elseif ($r.Skipped) { "SKIPPED ($($r.Skipped))" } else { '**FAILED**' })))
+}
+
+if ($bitrateSummary.Count -gt 0) {
+    $null = $sb.AppendLine()
+    $null = $sb.AppendLine('## Does the bitrate reach the GPU encoder?')
+    $null = $sb.AppendLine()
+    $null = $sb.AppendLine("Two recordings per encoder, identical except for ``bitrate=``: $bitrateLowKbps and " +
+        "$bitrateHighKbps kbit/sec, both written out as EncodingProperties.")
+    $null = $sb.AppendLine('Measured = MP4 bytes / duration, so container overhead is included and the absolute')
+    $null = $sb.AppendLine('value sits above the target. **Only the ratio is read: expected high/low >= 2.**')
+    $null = $sb.AppendLine()
+    $null = $sb.AppendLine('This is not gated. The metric is noisy -- a 320x240 source may not need the high')
+    $null = $sb.AppendLine('target, and the duration cell varies with the GOP boundary -- and a FAILED row would')
+    $null = $sb.AppendLine('read as a product defect. Judge it by eye.')
+    $null = $sb.AppendLine()
+    $null = $sb.AppendLine('If the ratio is well under 2, the rate control -- not the unit -- is the first suspect:')
+    $null = $sb.AppendLine('`rate-control=cbr` (qsv) / `rc-mode=cbr` (nvcodec) is what makes `bitrate` binding, and')
+    $null = $sb.AppendLine('the alternative is `vbr` plus `max-bitrate`. Also look at the default recordings in this')
+    $null = $sb.AppendLine('run: CBR at 2000 kbit/sec is the recording default now, so if those files look worse')
+    $null = $sb.AppendLine('than expected, that is the decision point for moving the catalog to vbr + max-bitrate.')
+    $null = $sb.AppendLine()
+    $null = $sb.AppendLine("| encoder | measured at $bitrateLowKbps | measured at $bitrateHighKbps | ratio | reading |")
+    $null = $sb.AppendLine('|---|---|---|---|---|')
+    foreach ($b in $bitrateSummary) {
+        $null = $sb.AppendLine(('| `{0}` | {1} | {2} | {3} | {4} |' -f `
+            $b.Encoder,
+            $(if ($null -ne $b.LowMeasured) { "$($b.LowMeasured) kbit/sec" } else { 'n/a' }),
+            $(if ($null -ne $b.HighMeasured) { "$($b.HighMeasured) kbit/sec" } else { 'n/a' }),
+            $(if ($null -ne $b.Ratio) { $b.Ratio } else { 'n/a' }),
+            $b.Reading))
+    }
 }
 
 $skippedCases = @($results | Where-Object { $_.Skipped })
@@ -899,6 +1016,13 @@ $results |
     Select-Object Case, StartExit, StopExit, Selected, DurationSec,
         @{ Name = 'Result'; Expression = { if ($_.Ok) { 'OK' } elseif ($_.Skipped) { 'SKIPPED' } else { 'FAILED' } } } |
     Format-Table -AutoSize
+
+# The bitrate reading sits next to the results table because it is a reading, not a verdict:
+# nothing in the exit code reflects it, so it has to be visible where results are read.
+if ($bitrateSummary.Count -gt 0) {
+    Write-Host "Bitrate readings (recorded at $bitrateLowKbps and $bitrateHighKbps kbit/sec; expected ratio >= 2, not gated):"
+    $bitrateSummary | Format-Table -AutoSize
+}
 
 # Read back what the app actually loaded. Do this AFTER the cases have run (activity.log only
 # has gst.runtime once the app has started at least once), and print it next to the table so a

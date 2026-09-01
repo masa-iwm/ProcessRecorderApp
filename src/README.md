@@ -444,11 +444,25 @@ I フレームゲートが次の I まで捨てる ── そのぶんの映像�
 - **プロパティの単位はエンコーダーごとに違う**。`x264enc` / `mfh264enc` の `bitrate` は
   **kbit/sec** だが `openh264enc` は **bit/sec**。数値をコピーすると 2000 bit/sec（＝2kbps）に
   なって実質壊れるため、`FactoryName` とは別に `LaunchString` を持たせている。
-  実機で確認できていない GPU 系エンコーダーには、後述の GOP 長以外のプロパティを付けていない。
+  `d3d12h264enc` / `amfh264enc` には、後述の GOP 長以外のプロパティを付けていない
+  （プロパティ名とレート制御の nick を実機で確かめられていないため）。
+- **Intel / NVIDIA は `bitrate` を渡す**。`qsvh264enc` は `rate-control=cbr bitrate=2000`、
+  `nvh264enc` / `nvd3d11h264enc` / `nvautogpuh264enc` は `rc-mode=cbr bitrate=2000` で、
+  **単位はどちらも kbit/sec**（同梱 DLL の property blurb: qsv は "Target bitrate in kbit/sec,
+  Ignored when rate-control is cqp/icq"、nvcodec は "Bitrate in kbit/sec (0 = automatic)"）。
+  **レート制御の指定が要る** ── `qsvh264enc` の `cqp` / `icq` では `bitrate` が無視される。
+  録画経路は `WithBitrateKbps` を通らず `LaunchString` をそのまま流すので、
+  **これは録画の既定でもある（Intel / NVIDIA 機の既定録画は CBR 2000 kbit/sec）**。
+  **2000 は解像度にも fps にも依らない固定値**である ── 4K の画面キャプチャ録画も
+  CBR 2000 kbit/sec で符号化され、**常時録画の枝も同じ `LaunchString`**（`ResolveContinuousEncoder`）を
+  使うので、低 fps・低解像度の枝でも目標 2000 kbit/sec まで膨らみうる
+  （セグメントのディスク使用量はそのぶん増える）。実機での画質とサイズの確認は
+  [docs/gpu-verification.md](../docs/gpu-verification.md) の決定点。
 - **帯域の指定は `H264EncoderDef.WithBitrateKbps(kbps)` を通す**。定義は `BitrateUnitPerKbps`
-  として「`bitrate` 1 単位が何 kbit/sec か」を持ち（`x264enc` / `mfh264enc` は `1`、
-  `openh264enc` は **bit/sec なので `1000`**）、`LaunchString` の `bitrate=` の値だけを
-  書き換えた定義を返す。**単位を持たない定義（実機未確認の GPU 系）は素通りする** ──
+  として「`bitrate` 1 単位が何 kbit/sec か」を持ち（`x264enc` / `mfh264enc` /
+  `qsvh264enc` / NVENC の 3 種は `1`、`openh264enc` は **bit/sec なので `1000`**）、
+  `LaunchString` の `bitrate=` の値だけを
+  書き換えた定義を返す。**単位を持たない定義（`d3d12h264enc` / `amfh264enc`）は素通りする** ──
   プロパティ名も単位も当て推量になるため。`WithoutProperties()` は単位も `null` へ戻す
   （プロパティを落とした文字列にはもう `bitrate=` が無い）。
   既定値（2000 kbit/sec）を与えた結果は現行の `LaunchString` と文字列同一で、
@@ -509,7 +523,11 @@ I フレームゲートが次の I まで捨てる ── そのぶんの映像�
 - `AppSettings.PreferredH264Encoder`（要素ファクトリ名。空欄で自動選択）を指定すると、
   その要素が実機に存在する場合のみ先頭へ移動する。存在しない場合は**黙って自動選択へ
   フォールスルー**する（設定ミスで録画が一切できなくなる方が有害なため）。
-  カタログに無い要素名でも、実機に存在すれば尊重する。
+  カタログに無い要素名でも、実機に存在すれば尊重する（プロパティ無しの候補になる）。
+  **その種別の候補列に無いカタログ既知の名前**（`System` 経路で GPU エンコーダーを
+  指名した場合）は、裸のファクトリ名ではなく**カタログの定義**が先頭に入る ──
+  裸名だと `gop-size` も `bitrate` も付かず、DASH プレビューと録画トランスコードの
+  画質プリセットがその機械でだけ効かなくなる。
 - レコーダーごとの `EncodingProperties`（自由形式の文字列）を指定した場合は、
   **その1件のみが候補**となりフォールバックしない（手動指定を常に優先し、
   黙って別の設定で録画しない）。失敗時は `IsInitialized=false` のままとなる。
@@ -2368,8 +2386,10 @@ caps 変化のたびに解き直される:
 - fps ＝ `min(プリセットの fps, ソースの fps)`（ソース未知ならプリセットのまま。下限 1）
 - ビットレートは**縮めない**（小さく符号化した方が余裕が出るだけで、上限として害が無い）
 
-**GPU エンコーダーにはビットレートが効かない**（カタログの 4 種は `BitrateUnitPerKbps` が
-null ＝ 書き込む先が無い）。プリセットで実際に変わるのは解像度・fps・GOP だけである
+**`d3d12h264enc` / `amfh264enc` にはビットレートが効かない**（この 2 種は
+`BitrateUnitPerKbps` が null ＝ 書き込む先が無い）。その機械でプリセットが実際に変えるのは
+解像度・fps・GOP だけである。Intel / NVIDIA の 4 種（`qsvh264enc` / `nvh264enc` /
+`nvd3d11h264enc` / `nvautogpuh264enc`）にはビットレートが渡る
 ── 詳細は「録画トランスコード」の節。
 
 選択肢（`Offered`）は**ソースより高いプリセットを出さない**（拡大しても情報は増えず帯域だけ増える）。
@@ -2509,11 +2529,15 @@ E2E の `TranscodeTests` と `tools/Verify-Transcode.ps1 -GstBin … -H264Decode
 （今日変換できる本を失敗させない）。どちらを通ったかは `transcode.start` の
 `gop=` / `gop-source=` に出る。
 
-**GPU エンコーダーにはビットレートが効かない。** カタログの 4 種（`nvh264enc` /
-`qsvh264enc` / `d3d12h264enc` / `amfh264enc`）は `BitrateUnitPerKbps` が null で、
-`H264EncoderDef.WithBitrateKbps` が書き込む先を持たない ── プリセットで効くのは
-解像度・fps・GOP だけである（ライブ DASH でも同じ）。プロパティ名と単位は GPU 実機でしか
-確かめられないので、現状は**制約として記す**にとどめる。
+**`d3d12h264enc` / `amfh264enc` にはビットレートが効かない。** この 2 種は
+`BitrateUnitPerKbps` が null で、`H264EncoderDef.WithBitrateKbps` が書き込む先を持たない
+── その機械でプリセットが効かせるのは解像度・fps・GOP だけである（ライブ DASH でも同じ）。
+プロパティ名とレート制御の nick は GPU 実機でしか確かめられないので、
+現状は**制約として記す**にとどめる。カタログの GPU 6 種のうち残りの 4 種
+（`qsvh264enc` / `nvh264enc` / `nvd3d11h264enc` / `nvautogpuh264enc`）は
+`bitrate`（kbit/sec）を持ち、プリセットのビットレートが渡る。
+**実機で効いていることの確認は `tools/Verify-GpuEncoders.ps1` の高低 2 本の比**で行う
+（[docs/gpu-verification.md](../docs/gpu-verification.md)）。
 
 停止理由（ログイベント名 `transcode.<理由>`）:
 

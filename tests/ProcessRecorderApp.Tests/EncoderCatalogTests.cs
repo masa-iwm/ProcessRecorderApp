@@ -97,6 +97,49 @@ public class EncoderCatalogResolveTests
         Assert.Equal(["x264enc", "openh264enc"], Names(resolved));
     }
 
+    /// <summary>
+    /// <b><c>System</c> 経路で GPU エンコーダーを指名したら、裸のファクトリ名ではなく
+    /// カタログの定義（プロパティ付き）が先頭に来ること。</b>
+    ///
+    /// <para>
+    /// 裸名だと <c>gop-size</c> も <c>bitrate</c> も付かない起動文字列になり、
+    /// <b>その機械でだけプレビュー／変換の画質プリセットが効かない</b>
+    /// （<c>WithBitrateKbps</c> は書き込む先が無いので素通しする）。
+    /// ログの <c>encoder=</c> は指名どおりに見えるので、配信物を測るまで気付けない。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void Preferred_AGpuEncoder_OnSystem_UsesTheCatalogDefinitionNotTheBareName()
+    {
+        var resolved = EncoderCatalog.Resolve(
+            EventRecordingType.System, "qsvh264enc", ProbeOnly("x264enc", "qsvh264enc"), gop: 45);
+
+        var pick = resolved[0];
+        Assert.Equal("qsvh264enc", pick.FactoryName);
+        Assert.Contains("gop-size=45", pick.LaunchString, StringComparison.Ordinal);
+        Assert.Contains("bitrate=2000", pick.LaunchString, StringComparison.Ordinal);
+        Assert.Contains("rate-control=cbr", pick.LaunchString, StringComparison.Ordinal);
+
+        // 帯域指定が実際に当たること（DashPreviewStream / TranscodeStreams が通る道）。
+        Assert.Contains("bitrate=800 ", pick.WithBitrateKbps(800).LaunchString, StringComparison.Ordinal);
+
+        // 通常の優先順位はフォールバック先として後ろに残る。
+        Assert.Equal(["qsvh264enc", "x264enc"], Names(resolved));
+    }
+
+    /// <summary>
+    /// 指名した GPU エンコーダーが実機に無ければ<b>従来どおり黙ってフォールスルー</b>する
+    /// ── カタログの定義を挿す枝が、この意味論を変えていないこと。
+    /// </summary>
+    [Fact]
+    public void Preferred_AGpuEncoderThatIsAbsent_StillFallsThrough()
+    {
+        var resolved = EncoderCatalog.Resolve(
+            EventRecordingType.System, "nvh264enc", ProbeOnly("x264enc", "openh264enc"));
+
+        Assert.Equal(["x264enc", "openh264enc"], Names(resolved));
+    }
+
     [Fact]
     public void Preferred_NotInTheCatalog_IsHonouredWhenItExistsOnTheMachine()
     {
@@ -905,15 +948,42 @@ public class EncoderBitrateParameterizationTests
     }
 
     /// <summary>
+    /// <b>Intel QSV / NVENC の <c>bitrate</c> は kbit/sec</b>（同梱 DLL の property blurb:
+    /// qsv は "Target bitrate in kbit/sec, Ignored when rate-control is cqp/icq"、
+    /// nvcodec は "Bitrate in kbit/sec (0 = automatic)"）。
+    ///
+    /// <para>
+    /// <b>レート制御のモードも一緒に見る。</b> 値が書けても <c>qsvh264enc</c> の
+    /// <c>cqp</c> / <c>icq</c> では <c>bitrate</c> が無視されるので、
+    /// モードが品質基準へ戻った日に「指定した帯域が効かない」形で壊れる
+    /// ── 起動文字列からは分からず、配信物を測るまで気付けない。
+    /// </para>
+    /// </summary>
+    [Theory]
+    [InlineData("qsvh264enc", "rate-control=cbr")]
+    [InlineData("nvh264enc", "rc-mode=cbr")]
+    [InlineData("nvd3d11h264enc", "rc-mode=cbr")]
+    [InlineData("nvautogpuh264enc", "rc-mode=cbr")]
+    public void GpuEncodersWithAConfirmedUnit_TakeKilobitsPerSecondUnchanged(string factoryName, string rateControl)
+    {
+        var def = Def(factoryName);
+        Assert.Equal(1, def.BitrateUnitPerKbps);
+
+        var applied = def.WithBitrateKbps(800);
+
+        Assert.Contains("bitrate=800 ", applied.LaunchString, StringComparison.Ordinal);
+        Assert.DoesNotContain("bitrate=2000", applied.LaunchString, StringComparison.Ordinal);
+        Assert.Contains(rateControl, applied.LaunchString, StringComparison.Ordinal);
+        // GOP は帯域の書き換えで巻き添えにならない。
+        Assert.Contains($"gop-size={EncoderCatalog.GopSize}", applied.LaunchString, StringComparison.Ordinal);
+    }
+
+    /// <summary>
     /// 単位を持たない定義（実機で <c>bitrate</c> を確認できていない GPU 系）は
     /// <b>同じインスタンスをそのまま返す</b> ── 当て推量のプロパティを書かない。
     /// </summary>
     [Theory]
     [InlineData("d3d12h264enc")]
-    [InlineData("qsvh264enc")]
-    [InlineData("nvd3d11h264enc")]
-    [InlineData("nvh264enc")]
-    [InlineData("nvautogpuh264enc")]
     [InlineData("amfh264enc")]
     public void DefinitionsWithoutABitrateUnit_AreReturnedAsIs(string factoryName)
     {
@@ -930,7 +1000,17 @@ public class EncoderBitrateParameterizationTests
     [Fact]
     public void ApplyingTheDefaultBitrate_ReproducesTheCurrentLaunchStrings()
     {
-        foreach (var def in EncoderCatalog.SystemCandidates)
+        // 見るのは**単位を持つ定義**だけ ── 単位の無い定義は同じインスタンスが返るだけの
+        // 自明な行で、それは DefinitionsWithoutABitrateUnit_AreReturnedAsIs の担当である。
+        // 名前で一意化する（x264 / openh264 / mfh264 は両方の候補列に居る）。
+        var withAUnit = EncoderCatalog.D3d12Candidates.Concat(EncoderCatalog.SystemCandidates)
+            .DistinctBy(c => c.FactoryName)
+            .Where(c => c.BitrateUnitPerKbps is not null)
+            .ToArray();
+
+        Assert.NotEmpty(withAUnit);
+
+        foreach (var def in withAUnit)
             Assert.Equal(def.LaunchString, def.WithBitrateKbps(2000).LaunchString);
     }
 

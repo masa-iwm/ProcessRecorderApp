@@ -730,27 +730,35 @@ H.264 デコーダーを要求し、同梱ランタイムにソフトウェア�
   **`moof` の個数では GOP の退行を検出できない**。上の 1 件が見ているのは
   「`trun` の先頭サンプルが同期か」だけである。
 
-### GPU 実機レポートが流すのは既定ビットレートの起動文字列だけ
+### GPU 実機レポートのビットレート ケースが覆う範囲
 
 **カタログとスクリプトの文字列そのものは機械が縛っている。**
 `EncoderCatalogScriptSyncTests.TheScriptsManualSystemMemoryCandidatesMatchTheCatalog` が
 `tools/Verify-GpuEncoders.ps1` の `$manualCandidates` の `Name` / `Props` を
 `EncoderCatalog.SystemCandidates` の `(FactoryName, LaunchString)` と**順序込みで完全一致**させ、
+同 `TheGpuScriptsBitrateTemplates_MatchTheCatalog` が `$bitrateTemplates` を
+「単位が確認できている GPU 専用の定義」と**過不足なく**一致させる（`{0}` に既定の 2000 を入れた
+文字列がカタログの `LaunchString` と 1 文字も違わないこと）。
 `EncoderBitrateParameterizationTests.ApplyingTheDefaultBitrate_ReproducesTheCurrentLaunchStrings`
-が「既定の 2000 kbit/sec を与えた結果 ＝ 現行の `LaunchString`」を固定する。
+が「既定の 2000 kbit/sec を与えた結果 ＝ 現行の `LaunchString`」をカタログ全体で固定する。
 `LaunchString` の既定値を動かせば両方が、`BitrateUnitPerKbps` だけを動かしても後者が赤になる。
-スクリプトが GPU 側に作るケース（`$gpuEncoders`）はプロパティ文字列を持たず、
+スクリプトが GPU 側に作る選択ケース（`$gpuEncoders`）はプロパティ文字列を持たず、
 `PreferredH264Encoder` を渡して製品にカタログの文字列を組ませるので、そこに写し違いは起きない
 ── 名前の一覧だけが同期の対象で足りている。
 
-**穴は「既定以外のビットレート」の側にある。** `WithBitrateKbps` を呼ぶのは
-`DashPreviewStream` だけで、`tools/Verify-GpuEncoders.ps1` が回すのは録画経路である
-（DASH プレビューのケースは無い）。**利用者が `PreviewBitrateKbps` を既定以外にしたときに
-実際に流れる起動文字列は、GPU 機のレポートで一度も試されていない。**
-さらに `bitrate=` トークンを持たない候補では `WithBitrateKbps` が素通しするので、
-`PreferredH264Encoder` に GPU 系の名前を書いた機械（`Resolve` がプロパティ無しの定義を
-先頭へ挿す）では `PreviewBitrateKbps` はそもそも効かない
-（`src/README.md` の「DASH プレビュー エンジン」）。**`dash.stream-start` が出す
+**録画経路の「既定以外のビットレート」は GPU 機のレポートが測る。** `qsvh264enc` /
+`nvh264enc` / `nvd3d11h264enc` / `nvautogpuh264enc` が実機に在れば、
+`bitrate=500` と `bitrate=4000` の 2 本を `EncodingProperties` として流し、
+`Mp4Bytes / DurationSec` の比（期待 高/低 ≥ 2）をレポートに出す。**この比は自動判定ではない**
+── ノイズが多く、赤くすると「このエンコーダーは壊れている」という誤った記録が残るため、
+終了コードには入れていない。**読まなければ何も守られない。**
+
+**DASH プレビュー側は依然として測られていない。** `WithBitrateKbps` を呼ぶのは
+`DashPreviewStream` と `TranscodeStreams.ResolveEncoder` の 2 か所で、
+`tools/Verify-GpuEncoders.ps1` が回すのは録画経路である（DASH プレビューのケースは無い）。
+**利用者が `PreviewBitrateKbps` を既定以外にしたときに実際に流れる起動文字列は、
+GPU 機のレポートで一度も試されていない。**
+**`dash.stream-start` が出す
 `kbps=` は設定から読んだ要求値なので、素通ししていてもログは要求どおりに見える**
 ── 効いたかどうかは配信物のビットレートを測る以外に分からない。
 
@@ -758,12 +766,22 @@ H.264 デコーダーを要求し、同梱ランタイムにソフトウェア�
 `PreviewBitrateKbps` の効き方や単位を触ったときは、GPU 機で既定以外の値を 1 度手で流し、
 配信物のビットレートがその値に見合っているかを確かめること。
 
-**そもそも GPU のエンコーダーにはビットレートが 1 つも渡らない ── 現在の制約（直していない）。**
-カタログの GPU 4 種（`nvh264enc` / `qsvh264enc` / `d3d12h264enc` / `amfh264enc`）は
-`BitrateUnitPerKbps` が null なので `WithBitrateKbps` が素通しする。**ライブ DASH の
-ライブ画質プリセットでも録画トランスコードのプリセットでも、GPU のエンコーダーに効くのは
+**プロパティが実機で通らなかったときの現れ方は経路で違う ── 録画経路にしか再試行が無い。**
+`ExpandAttempts` の「プロパティ無しで再試行」を通るのは録画経路（`EventRecorder`）だけで、
+`TranscodeStreams.ResolveEncoder` は候補列の先頭 1 つしか使わず、
+`DashPreviewStream` は投げた候補をファクトリ名単位で棄却する。
+そのため `PreferredH264Encoder` に GPU の名前を書いた機械で
+`rate-control` / `rc-mode` の nick がその実機で通らなければ、録画は裸名で成立するのに
+**変換とプレビューだけが失敗する**という非対称な出方になる。
+レート制御の nick の根拠は同梱 DLL の property blurb であり、**実機では未確認**である。
+
+**`d3d12h264enc` / `amfh264enc` にはビットレートが 1 つも渡らない ── 現在の制約（直していない）。**
+この 2 種は `BitrateUnitPerKbps` が null なので `WithBitrateKbps` が素通しする。**その機械では
+ライブ DASH のライブ画質プリセットでも録画トランスコードのプリセットでも、効くのは
 GOP だけである**（解像度と fps はプリセットの caps で決まるので、そちらは効く）。
-プロパティ名と単位は GPU 実機で `gst-inspect-1.0.exe <要素名>` を叩かないと確かめられないので、
+とくに `PreferredH264Encoder=d3d12h264enc` の機械では、画質メニューのビットレートが
+どのプリセットでも効かない。プロパティ名とレート制御の nick は GPU 実機で
+`gst-inspect-1.0.exe <要素名>` を叩かないと確かめられないので、
 カタログへ足すのは実機で確認してからにする。
 
 ### リモート操作のブラウザ側（役割による出し分けとソースの編集欄）

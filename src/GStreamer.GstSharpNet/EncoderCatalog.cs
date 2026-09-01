@@ -230,9 +230,34 @@ public static class EncoderCatalog
         return Math.Max(1, gop);
     }
 
-    /// <summary>Intel QSV。</summary>
+    /// <summary>
+    /// Intel QSV。<b><c>bitrate</c> は kbit/sec</b>（同梱 DLL の property blurb:
+    /// "Target bitrate in kbit/sec, Ignored when rate-control is cqp/icq"。
+    /// msvc 版と MSYS2 UCRT64 版で同一）。
+    ///
+    /// <para>
+    /// <b><c>rate-control=cbr</c> が要る</b> ── <c>bitrate</c> は <c>cqp</c> / <c>icq</c> では
+    /// 無視されるので、レート制御を品質基準のままにすると
+    /// <see cref="H264EncoderDef.WithBitrateKbps"/> が書き換えた値がどこにも効かない。
+    /// この要素の <c>rate-control</c> の nick は cbr/vbr/cqp/avbr/icq/vcm/qvbr。
+    /// </para>
+    /// <para>
+    /// <b>これは録画の既定でもある。</b> 録画経路は <see cref="H264EncoderDef.WithBitrateKbps"/> を
+    /// 通らず <c>LaunchString</c> をそのまま流すので、Intel 機の既定録画は
+    /// <b>CBR 2000 kbit/sec</b> で符号化される。
+    /// </para>
+    /// <para>
+    /// <b>この 2000 は解像度にも fps にも依らない固定値である。</b> 4K の画面キャプチャでも
+    /// CBR 2000 kbit/sec で符号化され（<c>tools/Verify-HighResolution.ps1</c> の 4K ケースが
+    /// まさにこの構成で回る）、<b>常時録画の枝も同じ <c>LaunchString</c></b> を使う
+    /// （<c>EventRecorder.ResolveContinuousEncoder</c>）ので、低 fps・低解像度の枝でも
+    /// 目標 2000 kbit/sec まで膨らみうる ── セグメントのディスク使用量はそのぶん増える。
+    /// 実機での画質とサイズの確認は docs/gpu-verification.md の決定点にある。
+    /// </para>
+    /// </summary>
     private static H264EncoderDef Qsv(int gop) =>
-        new("qsvh264enc", $"qsvh264enc rate-control=icq icq-quality=30 gop-size={gop}", NeedsSystemMemory: false);
+        new("qsvh264enc", $"qsvh264enc rate-control=cbr bitrate=2000 gop-size={gop}", NeedsSystemMemory: false,
+            BitrateUnitPerKbps: 1);
 
     /// <summary>x264（bitrate は kbit/sec。GOP は key-int-max）。</summary>
     private static H264EncoderDef X264(int gop) =>
@@ -249,8 +274,14 @@ public static class EncoderCatalog
         new("mfh264enc", $"mfh264enc bitrate=2000 gop-size={gop} low-latency=true", NeedsSystemMemory: true,
             BitrateUnitPerKbps: 1);
 
-    // 以下はプロパティ未確認のため GOP 長のみ指定する（既定の GOP は長すぎることが多く、
-    // 上記のとおり事前バッファを壊すため、ここだけは既定値に任せられない）。
+    /// <summary>
+    /// Direct3D12 の H.264 エンコーダー。<b><c>bitrate</c> は付けない</b> ── 実機が無く、
+    /// この要素の <c>bitrate</c> が効くレート制御モード（cbr/vbr/qvbr）の nick を実機で
+    /// 確かめられていない。GOP 長だけは指定する（既定の GOP は長すぎることが多く、
+    /// 事前バッファを壊すため、ここだけは既定値に任せられない）。
+    /// <b>結果として、この要素が選ばれた機械では <see cref="H264EncoderDef.WithBitrateKbps"/> が
+    /// 素通しし、プレビュー／変換の帯域指定は効かない</b>（GOP・解像度・fps だけが効く）。
+    /// </summary>
     private static H264EncoderDef D3d12(int gop) => new("d3d12h264enc", $"d3d12h264enc gop-size={gop}", NeedsSystemMemory: false);
     /// <summary>
     /// NVENC の Direct3D11 モード。
@@ -282,11 +313,43 @@ public static class EncoderCatalog
     /// <c>video/x-raw(memory:D3D11Memory)</c> で折り合う（実測）ので、現行の形は
     /// <c>d3d12download ! videoconvert !</c> である。
     /// <b>この形で NVIDIA/Intel 実機の全ケースが OK</b>（<c>tools/Verify-GpuEncoders.ps1</c>。
-    /// NVENC の 3 経路とも <c>retries</c> 0 で有効な MP4）。
+    /// NVENC の 3 経路とも <c>retries</c> 0 で有効な MP4）。<b>ただしその走行の起動文字列は
+    /// <c>gop-size</c> だけのもの</b>で、<c>rc-mode=cbr bitrate=…</c> を付けた現行の形は
+    /// <b>実機未走行</b>である（メモリ交渉の結論はレート制御に依らない）。
+    /// </para>
+    /// <para>
+    /// <b><c>bitrate</c> は kbit/sec、レート制御は <c>rc-mode</c></b> ── 同じ <c>nvcodec</c> の
+    /// 要素なので <see cref="Nvidia"/> と同一（根拠もそちらに書いてある）。
     /// </para>
     /// </summary>
-    private static H264EncoderDef NvD3d11(int gop) => new("nvd3d11h264enc", $"nvd3d11h264enc gop-size={gop}", NeedsSystemMemory: true);
-    private static H264EncoderDef Nvidia(int gop) => new("nvh264enc", $"nvh264enc gop-size={gop}", NeedsSystemMemory: true);
+    private static H264EncoderDef NvD3d11(int gop) =>
+        new("nvd3d11h264enc", $"nvd3d11h264enc rc-mode=cbr bitrate=2000 gop-size={gop}", NeedsSystemMemory: true,
+            BitrateUnitPerKbps: 1);
+
+    /// <summary>
+    /// NVENC の CUDA モード。<b><c>bitrate</c> は kbit/sec</b>（同梱 DLL の property blurb:
+    /// "Bitrate in kbit/sec (0 = automatic)"。msvc 版と MSYS2 UCRT64 版で同一）。
+    /// <c>nvcodec</c> の 3 要素（<see cref="Nvidia"/> / <see cref="NvD3d11"/> /
+    /// <see cref="NvAutoGpu"/>）はプロパティ名も単位も同じである。
+    ///
+    /// <para>
+    /// <b>レート制御は <c>rc-mode</c>（<c>qsvh264enc</c> の <c>rate-control</c> ではない）。</b>
+    /// nick は default/constqp/cbr/vbr/vbr-minqp/cbr-ld-hq/cbr-hq/vbr-hq。
+    /// <c>cbr</c> を明示するのは、<c>default</c> のままだと <c>bitrate</c> が効く保証が無いため。
+    /// 上限を別に持ちたい場合はこの要素の <c>max-bitrate</c> だが、
+    /// <see cref="H264EncoderDef.BitrateTokenRegex"/> は素の <c>bitrate=</c> しか書き換えない。
+    /// </para>
+    /// <para>
+    /// <b>これは録画の既定でもある。</b> 録画経路は <see cref="H264EncoderDef.WithBitrateKbps"/> を
+    /// 通らず <c>LaunchString</c> をそのまま流すので、NVIDIA 機の既定録画は
+    /// <b>CBR 2000 kbit/sec</b> で符号化される。<b>解像度にも fps にも依らない固定値</b>で、
+    /// <b>常時録画の枝も同じ <c>LaunchString</c></b> を使う
+    /// （<c>EventRecorder.ResolveContinuousEncoder</c>）── 詳しくは <see cref="Qsv"/>。
+    /// </para>
+    /// </summary>
+    private static H264EncoderDef Nvidia(int gop) =>
+        new("nvh264enc", $"nvh264enc rc-mode=cbr bitrate=2000 gop-size={gop}", NeedsSystemMemory: true,
+            BitrateUnitPerKbps: 1);
 
     /// <summary>
     /// NVENC の自動 GPU 選択モード。
@@ -295,6 +358,8 @@ public static class EncoderCatalog
     /// <b>優先順位は <see cref="Nvidia"/> の後ろに置く。</b> 明示的な2つもこの自動選択も、
     /// NVIDIA 実機で選ばれて有効な MP4 を出すことを確認済み
     /// （<c>tools/Verify-GpuEncoders.ps1</c> の専用ケース。docs/gpu-verification.md）。
+    /// <b>その確認は <c>gop-size</c> だけの起動文字列によるもので、
+    /// <c>rc-mode=cbr bitrate=…</c> を付けた現行の形は実機未走行</b>である。
     /// <b>それでも後ろのままにしてある</b> ── 自動選択を前に出す根拠が無いのに
     /// <b>NVIDIA 機で選ばれるエンコーダーだけが変わる</b>からで、
     /// ここに置けば「明示の2つが両方だめだったときの最後の NVIDIA 経路」として増えるだけで済む。
@@ -309,8 +374,16 @@ public static class EncoderCatalog
     /// </para>
     /// </summary>
     private static H264EncoderDef NvAutoGpu(int gop) =>
-        new("nvautogpuh264enc", $"nvautogpuh264enc gop-size={gop}", NeedsSystemMemory: true);
+        new("nvautogpuh264enc", $"nvautogpuh264enc rc-mode=cbr bitrate=2000 gop-size={gop}", NeedsSystemMemory: true,
+            BitrateUnitPerKbps: 1);
 
+    /// <summary>
+    /// AMD AMF。<b><c>bitrate</c> は付けない</b> ── AMD GPU の実機が無く、
+    /// プロパティ名もレート制御の nick も実機で確かめられていない
+    /// （DLL の blurb では kbit/sec）。GOP 長だけは指定する（既定の GOP は長すぎることが多く、
+    /// 事前バッファを壊すため）。<b>この要素が選ばれた機械では
+    /// <see cref="H264EncoderDef.WithBitrateKbps"/> が素通しし、帯域指定は効かない。</b>
+    /// </summary>
     private static H264EncoderDef Amd(int gop) => new("amfh264enc", $"amfh264enc gop-size={gop}", NeedsSystemMemory: true);
 
     /// <summary>
@@ -345,6 +418,24 @@ public static class EncoderCatalog
         definition = D3d12Candidates.Concat(SystemCandidates)
             .FirstOrDefault(c => string.Equals(c.FactoryName, factoryName, StringComparison.Ordinal))!;
         return definition is not null;
+    }
+
+    /// <summary>
+    /// 同じものを<b>指定の GOP 長で構築して</b>返す。
+    /// <b>名前の一致は既定 GOP の候補列（静的に作ってある）で先に判定する</b> ──
+    /// 一致しない名前のために候補を作り直さないため。
+    /// </summary>
+    public static bool TryGetKnown(string factoryName, int gop, out H264EncoderDef definition)
+    {
+        if (!TryGetKnown(factoryName, out _))
+        {
+            definition = null!;
+            return false;
+        }
+
+        definition = D3d12CandidatesFor(gop).Concat(SystemCandidatesFor(gop))
+            .First(c => string.Equals(c.FactoryName, factoryName, StringComparison.Ordinal));
+        return true;
     }
 
     /// <summary>
@@ -568,8 +659,10 @@ public static class EncoderCatalog
     /// 実機に存在する候補だけを優先順に並べて返す。
     ///
     /// <paramref name="preferred"/>（<c>AppSettings.PreferredH264Encoder</c>）が指定され、
-    /// かつ実機に存在する場合は先頭へ移動する。カタログに無いファクトリ名でも、
-    /// 実機に存在すればプロパティ無しの候補として先頭に加える（ユーザーの明示指定を優先する）。
+    /// かつ実機に存在する場合は先頭へ移動する。この種別の候補列に無い名前でも、
+    /// 実機に存在すれば先頭に加える（ユーザーの明示指定を優先する）──
+    /// <b>カタログが知っている名前ならその定義（プロパティ付き）を、
+    /// 知らない名前ならプロパティ無しの候補を</b>挿す。
     /// 指定された要素が存在しない場合は**黙って通常の優先順位へフォールスルーする**
     /// ── 設定ミスで録画が一切できなくなる方が有害なため。
     /// </summary>
@@ -603,11 +696,25 @@ public static class EncoderCatalog
             return ordered;
         }
 
+        if (!probe(name))
+            return ordered;
+
+        // ここへ来るのは「この種別の候補列には無いが、実機には在る」名前である。
+        // カタログが知っている名前なら、裸のファクトリ名ではなく**その定義**を挿す
+        // ── 実際に通るのは Type=System で GPU エンコーダーを指定した場合で
+        // （D3d12 の候補は全部この種別の ordered に居るため、上の FindIndex で片が付く）、
+        // 裸名にすると gop-size もビットレートも付かない起動文字列になる
+        // ＝ プレビュー／変換の画質プリセットがその機械でだけ効かない。
+        //
+        // NeedsSystemMemory はカタログの値のまま置く。System 経路の組み立ては
+        // どれもこの値を読まない（EventRecorder.BuildSinkPipeline は type==D3d12、
+        // ContinuousBranch は d3d12 の枝でしか見ない）。
         // カタログ外のファクトリ名でも、実機に存在するなら尊重する。
         // メモリ要件は不明なので、D3d12 経路では安全側（システムメモリ要求）に倒す
         // ── 余分な d3d12download が入っても動作するが、必要な download が無いと必ず失敗するため。
-        if (probe(name))
-            ordered.Insert(0, new H264EncoderDef(name, name, NeedsSystemMemoryFor(name, type)));
+        ordered.Insert(0, TryGetKnown(name, gop, out var known)
+            ? known
+            : new H264EncoderDef(name, name, NeedsSystemMemoryFor(name, type)));
 
         return ordered;
     }
