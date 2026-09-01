@@ -303,7 +303,7 @@ function Test-Mp4 {
         $br = New-Object System.IO.BinaryReader($fs)
         $res = [pscustomobject]@{
             HasFtyp = $false; HasMoov = $false; HasMdat = $false
-            HasAvc1 = $false; DurationSec = $null
+            HasAvc1 = $false; DurationSec = $null; DurationSource = $null
         }
 
         while ($fs.Position -lt $fs.Length - 8) {
@@ -338,7 +338,10 @@ function Test-Mp4 {
                             $db = $br.ReadBytes(4)
                             $duration = ([uint32]$db[0] -shl 24) -bor ([uint32]$db[1] -shl 16) -bor ([uint32]$db[2] -shl 8) -bor [uint32]$db[3]
                         }
-                        if ($timescale -gt 0) { $res.DurationSec = [math]::Round($duration / $timescale, 3) }
+                        if ($timescale -gt 0) {
+                            $res.DurationSec = [math]::Round($duration / $timescale, 3)
+                            if ($res.DurationSec -gt 0) { $res.DurationSource = 'mvhd' }
+                        }
                     }
                     $fs.Position = $start + 8
                     $moov = $br.ReadBytes([int]($size - 8))
@@ -347,8 +350,43 @@ function Test-Mp4 {
             }
             $fs.Position = $start + $size
         }
+
+        # A fragmented MP4 -- which FragmentedOutput (default true) produces -- has a zero
+        # mvhd duration: the length lives in the fragments and the moov is never rewritten.
+        # Without this, every recording this script makes reads as 0s and every case fails
+        # while the product worked. Fall back to the sidecar the app writes beside the
+        # recording (<file>.mp4.json). The mvhd is still read first, so the source of the
+        # value tells the reader which kind of file this is: 'mvhd' = not fragmented,
+        # 'sidecar' = fragmented.
+        if (-not ($res.DurationSec -gt 0)) {
+            $sidecar = $Path + '.json'
+            if (Test-Path $sidecar) {
+                try {
+                    $meta = [IO.File]::ReadAllText($sidecar, [Text.Encoding]::UTF8) | ConvertFrom-Json
+                    if ($meta.durationMs -gt 0) {
+                        $res.DurationSec = [math]::Round($meta.durationMs / 1000, 3)
+                        $res.DurationSource = 'sidecar'
+                    }
+                } catch {
+                    # Unreadable sidecar = no sidecar. The case then fails on the length,
+                    # which is right: the build under test writes one for every recording.
+                }
+            }
+        }
+
         return $res
     } finally { $fs.Dispose() }
+}
+
+# How the length reads in the console line and the report table. The source is shown so a
+# fragmented recording (length from the sidecar) is distinguishable from one that is not.
+function Format-Mp4Duration {
+    param($Probe)
+
+    if ($null -eq $Probe) { return 'n/a' }
+    if (-not ($Probe.DurationSec -gt 0)) { return 'n/a' }
+    if ($Probe.DurationSource -eq 'sidecar') { return ('{0}s (sidecar)' -f $Probe.DurationSec) }
+    return ('{0}s' -f $Probe.DurationSec)
 }
 
 function Get-EncoderLogLines {
@@ -735,6 +773,7 @@ function Invoke-Case {
             FailedAttempts = $null
             Mp4Bytes       = 0
             DurationSec    = $null
+            DurationSource = $null
             ValidMp4       = $false
             Ok             = $false
             Skipped        = "worker did not start (ping exit $($ping.ExitCode))"
@@ -798,6 +837,7 @@ function Invoke-Case {
         FailedAttempts = $failedAttempts
         Mp4Bytes       = if ($mp4) { $mp4.Length } else { 0 }
         DurationSec    = if ($probe) { $probe.DurationSec } else { $null }
+        DurationSource = if ($probe) { $probe.DurationSource } else { $null }
         ValidMp4       = if ($probe) { $probe.HasFtyp -and $probe.HasMoov -and $probe.HasMdat -and $probe.HasAvc1 } else { $false }
         Ok             = $ok
         Skipped        = $null
@@ -814,8 +854,8 @@ foreach ($case in $cases) {
     Write-Host "== $($case.Name)"
     $r = Invoke-Case -Case $case -GstDebug $GstDebug
 
-    Write-Host ("   exit start/stop = {0}/{1}   selected = {2}   duration = {3}s   -> {4}" -f `
-        $r.StartExit, $r.StopExit, $r.Selected, $(if ($null -ne $r.DurationSec) { $r.DurationSec } else { 'n/a' }),
+    Write-Host ("   exit start/stop = {0}/{1}   selected = {2}   duration = {3}   -> {4}" -f `
+        $r.StartExit, $r.StopExit, $r.Selected, (Format-Mp4Duration $r),
         $(if ($r.Ok) { 'OK' } elseif ($r.Skipped) { "SKIPPED ($($r.Skipped))" } else { 'FAILED' }))
     if ($r.Shortfall) { Write-Host "   NOTE: $($r.Shortfall) -- check the encoder's GOP length vs BufferDuration" -ForegroundColor Yellow }
     if (-not $r.Ok -and $r.StartStdErr) { Write-Host "   stderr: $($r.StartStdErr)" }
@@ -925,6 +965,9 @@ if ($unknown.Count -gt 0) {
 }
 $null = $sb.AppendLine()
 $null = $sb.AppendLine("- Recording window per case: ${RecordSeconds}s (BufferDuration=10000ms, 4s pre-roll)")
+$null = $sb.AppendLine('- The duration comes from the `mvhd`, and where that is zero -- a fragmented MP4, which')
+$null = $sb.AppendLine('  FragmentedOutput (default true) produces -- from the sidecar `<file>.mp4.json` the app')
+$null = $sb.AppendLine('  writes beside the recording. Cells marked `(sidecar)` are the fragmented ones.')
 $null = $sb.AppendLine()
 $null = $sb.AppendLine('| Case | start/stop | selected encoder | retries | MP4 | duration | result |')
 $null = $sb.AppendLine('|---|---|---|---|---|---|---|')
@@ -932,9 +975,10 @@ foreach ($r in $results) {
     # SKIPPED is deliberately distinct from FAILED: the case never ran (the worker did not
     # start), so a FAILED row would leave a wrong record about the product. Its MP4/duration
     # cells say n/a for the same reason -- nothing was produced to judge.
-    $null = $sb.AppendLine(('| {0} | {1}/{2} | `{3}` | {4} | {5} | {6}s | {7} |' -f `
+    $null = $sb.AppendLine(('| {0} | {1}/{2} | `{3}` | {4} | {5} | {6} | {7} |' -f `
         $r.Case, $r.StartExit, $r.StopExit, $r.Selected, $r.FailedAttempts,
-        $(if ($r.Skipped) { 'n/a' } elseif ($r.ValidMp4) { 'valid' } else { 'INVALID' }), $r.DurationSec,
+        $(if ($r.Skipped) { 'n/a' } elseif ($r.ValidMp4) { 'valid' } else { 'INVALID' }),
+        $(if ($r.Skipped) { 'n/a' } else { Format-Mp4Duration $r }),
         $(if ($r.Ok) { 'OK' } elseif ($r.Skipped) { "SKIPPED ($($r.Skipped))" } else { '**FAILED**' })))
 }
 
@@ -1038,7 +1082,7 @@ Write-Host '---------------------------------------------------------------'
 # Result column instead of Ok: a SKIPPED case has Ok=False but is NOT a product failure,
 # and this table is the last thing a human reads.
 $results |
-    Select-Object Case, StartExit, StopExit, Selected, DurationSec,
+    Select-Object Case, StartExit, StopExit, Selected, DurationSec, DurationSource,
         @{ Name = 'Result'; Expression = { if ($_.Ok) { 'OK' } elseif ($_.Skipped) { 'SKIPPED' } else { 'FAILED' } } } |
     Format-Table -AutoSize
 
