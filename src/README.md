@@ -446,26 +446,54 @@ I フレームゲートが次の I まで捨てる ── そのぶんの映像�
   なって実質壊れるため、`FactoryName` とは別に `LaunchString` を持たせている。
   `d3d12h264enc` / `amfh264enc` には、後述の GOP 長以外のプロパティを付けていない
   （プロパティ名とレート制御の nick を実機で確かめられていないため）。
-- **Intel / NVIDIA は `bitrate` を渡す**。`qsvh264enc` は `rate-control=cbr bitrate=2000`、
-  `nvh264enc` / `nvd3d11h264enc` / `nvautogpuh264enc` は `rc-mode=cbr bitrate=2000` で、
-  **単位はどちらも kbit/sec**（同梱 DLL の property blurb: qsv は "Target bitrate in kbit/sec,
-  Ignored when rate-control is cqp/icq"、nvcodec は "Bitrate in kbit/sec (0 = automatic)"）。
-  **レート制御の指定が要る** ── `qsvh264enc` の `cqp` / `icq` では `bitrate` が無視される。
-  録画経路は `WithBitrateKbps` を通らず `LaunchString` をそのまま流すので、
-  **これは録画の既定でもある（Intel / NVIDIA 機の既定録画は CBR 2000 kbit/sec）**。
-  **2000 は解像度にも fps にも依らない固定値**である ── 4K の画面キャプチャ録画も
-  CBR 2000 kbit/sec で符号化され、**常時録画の枝も同じ `LaunchString`**（`ResolveContinuousEncoder`）を
-  使うので、低 fps・低解像度の枝でも目標 2000 kbit/sec まで膨らみうる
-  （セグメントのディスク使用量はそのぶん増える）。実機での画質とサイズの確認は
+- **レート制御は VBR で、目標と上限を両方渡す**。`qsvh264enc` は
+  `rate-control=vbr bitrate=… max-bitrate=…`、`nvh264enc` / `nvd3d11h264enc` /
+  `nvautogpuh264enc` は `rc-mode=vbr bitrate=… max-bitrate=…`、`mfh264enc` は
+  `rc-mode=pcvbr bitrate=… max-bitrate=…` で、**単位はいずれも kbit/sec**（同梱 DLL の
+  property blurb: qsv は "Target bitrate in kbit/sec, Ignored when rate-control is cqp/icq"、
+  nvcodec は "Bitrate in kbit/sec (0 = automatic)"、mediafoundation の `max-bitrate` は
+  `pcvbr` のときに適用）。**レート制御の指定が要る** ── `qsvh264enc` の `cqp` / `icq` では
+  `bitrate` が無視される。`x264enc` は ABR で `max-bitrate` を持たない（ピークのプロパティは
+  `vbv-buf-capacity`）ので、目標だけが当たる。
+- **録画の既定ビットレートはソースの大きさと fps で決まる**（`EncoderCatalog.BitrateKbpsFor`）。
+  式は `幅 × 高さ × fps × 0.1 / 1000`（kbit/sec）を **床 300・天井 40000** で挟んだもので、
+  ピーク（`max-bitrate`）は目標の **1.5 倍**。例: 1920x1080@30 → 6221 / 9332、
+  3840x2160@30 → 24883 / 37325、640x360@2 → 床の 300 / 450。カタログの `LaunchString` に
+  書いてある 2000 / 3000 は**テンプレートの既定値であって、録画で流れる値ではない**
+  （3000 = ceil(2000 × 1.5) という整合は L1 が縛る）。
+- **大きさの出所は 3 つで、優先順は固定**（`EventRecorder.RecordingSizeFor`。
+  `gst.encoder selected` の `size-source=` にそのまま出る）:
+  `caps`（解決済み `SrcPipeline` が `width` / `height` を固定している）→
+  `monitor`（`MonitorSelection.Resolve` が当てたモニターの実寸）→ `assumed`（1920x1080）。
+  fps は caps の `framerate`、読めなければ 30。
+- **画面キャプチャのソースではモニターを必ず列挙する**（`MonitorSelection.RequiresMonitors`）。
+  `monitor-device-path` が書かれているときだけではない ── 画面キャプチャの caps は解像度を
+  持たない構成が既定で、**列挙しないと 4K の画面が仮定値 1920x1080 ぶんの帯域で録られる**。
+  当てるモニターは「パスが解決できたならそれ、`monitor-index` へ縮退したなら書かれた番号、
+  パス指定が無いなら書かれた番号（無ければ要素の既定＝0 番）」で、
+  列挙が空・番号が範囲外なら `assumed` へ落ちる。**画面キャプチャ以外は今までどおり
+  1 回も列挙しない**（`videotestsrc` やカメラのレコーダーは対象外）。
+- **常時録画の枝も同じ式に乗る**（`ResolveContinuousEncoder`）── 大きさは
+  `ContinuousResolution` が**実際に効く構成なら**それ（`size-source=override`。判定は
+  `ContinuousBranch.Plan` と同じ `SourceSizeIsPinned`）、効かなければ本線と同じ、
+  fps は枝の実効レート。低 fps・低解像度の枝はそのぶん低い目標になる。
+  実機での画質とサイズの確認は
   [docs/gpu-verification.md](../docs/gpu-verification.md) の決定点。
+- **手動指定（`EncodingProperties` / `ContinuousEncodingProperties`）は式を通らない。**
+  生の文字列 1 候補として流れるので、書いた値がそのまま効く ── このときログは
+  `size-source=manual` だけを出し、**`bitrate-kbps=` は出さない**
+  （式を通っていない数値を起動文字列の隣に並べない）。
 - **帯域の指定は `H264EncoderDef.WithBitrateKbps(kbps)` を通す**。定義は `BitrateUnitPerKbps`
   として「`bitrate` 1 単位が何 kbit/sec か」を持ち（`x264enc` / `mfh264enc` /
   `qsvh264enc` / NVENC の 3 種は `1`、`openh264enc` は **bit/sec なので `1000`**）、
   `LaunchString` の `bitrate=` の値だけを
-  書き換えた定義を返す。**単位を持たない定義（`d3d12h264enc` / `amfh264enc`）は素通りする** ──
+  書き換えた定義を返す。**`max-bitrate=` を持つ定義ではピークも一緒に**（目標の 1.5 倍へ）
+  書き換える ── 目標だけを下げると、据え置かれたピークのぶんまで実際のビットレートが伸びる。
+  正規表現は 2 本に分けてある（1 本で両方に一致させるとピークが目標と同値になり、
+  VBR が実質 CBR になる）。**単位を持たない定義（`d3d12h264enc` / `amfh264enc`）は素通りする** ──
   プロパティ名も単位も当て推量になるため。`WithoutProperties()` は単位も `null` へ戻す
   （プロパティを落とした文字列にはもう `bitrate=` が無い）。
-  既定値（2000 kbit/sec）を与えた結果は現行の `LaunchString` と文字列同一で、
+  既定値（2000 kbit/sec、ピーク 3000）を与えた結果は現行の `LaunchString` と文字列同一で、
   L1（`EncoderBitrateParameterizationTests`）が固定している ── `EncoderCatalogScriptSyncTests` と
   `tools/Verify-GpuEncoders.ps1` は既定の文字列を完全一致で縛っているため。
 
@@ -2359,6 +2387,11 @@ appsrc name=src format=time block=false max-buffers=2 max-bytes=0 leaky-type=dow
 先頭から 1 つずつ試す。**`bitrate=` トークンを持たないエンコーダー候補では
 `PreviewBitrateKbps` は効かない**（`WithBitrateKbps` が素通しする）。
 
+**画質メニューの kbit/s は目標であって上限ではない。** カタログの定義は VBR なので、
+`WithBitrateKbps` は同時に `max-bitrate` をその **1.5 倍**へ書く ── 実際に流れる帯域は
+選んだ値の前後を動き、静止した画では下、動きの多い画ではピークまで上がる。
+録画トランスコード（`TranscodeStreams.ResolveEncoder`）も同じ経路である。
+
 #### ライブ画質プリセット
 
 **視聴者側から画質を選べる。** 選択は `1080p` / `720p` / `480p` / `360p` の**プリセット id** か
@@ -3027,7 +3060,7 @@ GPU テクスチャになるため**アクセシブルテキストが 1 つも�
 | `cleanup.error` | WARN | 同上 | 削除できなかった理由（1件1行・上限あり）。ロック中のファイルなど |
 | `gst.encoders` | INFO | `Controller.StaticInitialize` | プローブ結果（存在/欠落と候補順）。1回のみ |
 | `gst.decoders` | INFO | 同上 | H.264 デコーダーのプローブ結果（`h264=<要素名｜(none)> transcode=<True\|False>`。`PROCESSRECORDERAPP_H264_DECODER` が在るときだけ後ろに `preferred='<名前>' used=<True\|False>` が付く）。1回のみ。**録画トランスコードが使えるかはここでしか分からない**（候補はハードウェアだけで、同梱ランタイムには 1 つも無い） |
-| `gst.encoder selected` | INFO | `EventRecorder.Initialize` | 実際に採用されたエンコーダーとメモリ要件・失敗した試行数 |
+| `gst.encoder selected` | INFO | `EventRecorder.Initialize` | 実際に採用されたエンコーダーとメモリ要件・失敗した試行数、式が決めた目標ビットレート（`bitrate-kbps=`。手動指定では出ない）と大きさの出所（`size-source=caps｜monitor｜assumed｜manual`） |
 | `gst.encoder candidate-failed` | WARN | 同上 | 候補が落ちた理由（要素が無い／リンク不可／未知のプロパティ） |
 | `gst.encoder fallback-from` | WARN | 同上 | フォールバックが起きた場合の全失敗の一覧 |
 | `gst.typefallback` | INFO | `Controller.StaticInitialize`（診断の購読） | バインディングがネイティブのインスタンスを基底型のラッパーで包んだ（`instance=` / `wrapped-as=`）。型が未登録である兆候で、`msg.Src is BaseSrc` のような型判定が黙って外れる原因になる |
@@ -3046,7 +3079,7 @@ GPU テクスチャになるため**アクセシブルテキストが 1 つも�
 | `recorder.restart` | INFO / WARN | 同上／`RestartLoopAsync` | 自動復帰の予約と、その結果（`ok` / `failed` / `no-samples`）。**`no-samples waited=3000ms` は「要素は `Playing` に戻ったが `appsink` に 1 枚も来なかった」**で、失敗として数えて連鎖を続ける（`RestartPolicy.SinkSampleGraceMs`）。監視できる映像源なら `watch=camera｜monitor` が付き、デバイスの到着で待ちを打ち切った回は `wake=device-arrival` が付く。**作り直しだけを試す連鎖は `attempt=` ではなく `round=`**（1 周ごとに新しい連鎖になるので `attempt` は常に 1 になる）で、待ちの案内は 1 周目と約 1 時間ごとにしか出さない（1 分に 1 行では `activity.log` を数日で使い切る）── ただし**間隔が前の周回から変わった回は必ず出す**（到着で仕切り直した後の短い梯子が、作り直しの成否の行は畳まれるので唯一の証拠になる。「頭打ちでない回」を条件にすると、到着のたびに梯子が 1 段目へ戻るぶん上限が無くなる）。録画を畳んで録り直すときは `will be resumed once the pipeline is rebuilt` / `resuming the recording that the rebuild finalized` / `not resuming the recording after the rebuild (…)` の 3 種が出る ── 直後の `recording.start` が利用者の操作か復帰かは、この行があるかどうかで見分ける |
 | `device.watch` | INFO / WARN | `DeviceArrivalWatcher` | デバイス到着の監視を張った／止めた（`kind=` と `provider=`）。WARN は**監視できない**構成（プロバイダが無い・`CanMonitor()` が false・起動に失敗）で、タイマーだけの復帰へ縮退したことを意味する |
 | `device.arrive` | INFO | 同上 | デバイスプロバイダが到着（`device-added` / `device-changed`）を報告した。連続する同一内容は畳んで `repeated=N` を添える |
-| `recorder.continuous-init ok` / `recorder.continuous-init fail` | INFO / WARN | `EventRecorder.StartContinuous` ／ `InitializeCore` ／ `InitializeWith` | 常時録画の枝を組めた（エンコーダー・fps・解像度・分割間隔）／組めなかったので**枝だけ落とした**（イベント録画は無事＝隔離契約）。**上書きだけを捨てた場合も同じ名前で出す**（読めないフレームレート・上流が固定されていないのに指定された解像度）── どちらも「設定が黙って効いていない」という同じ事故だからである |
+| `recorder.continuous-init ok` / `recorder.continuous-init fail` | INFO / WARN | `EventRecorder.StartContinuous` ／ `InitializeCore` ／ `InitializeWith` | 常時録画の枝を組めた（エンコーダー・fps・解像度・分割間隔・`bitrate-kbps=` と `size-source=`。枝は上書きが効くなら `override`、手動指定なら `manual` で `bitrate-kbps=` 無し）／組めなかったので**枝だけ落とした**（イベント録画は無事＝隔離契約）。**上書きだけを捨てた場合も同じ名前で出す**（読めないフレームレート・上流が固定されていないのに指定された解像度）── どちらも「設定が黙って効いていない」という同じ事故だからである |
 | `continuous.start` | INFO | `ContinuousRecorder.OpenSegment` | 常時録画のセグメントを開いた（ファイル名・通し番号・分割間隔） |
 | `continuous.finalize` | INFO | `ContinuousRecorder.FinalizeSegment` | セグメントを確定させた（`result=ok｜timeout｜error`） |
 | `continuous.finalize backlog` | WARN | `ContinuousRecorder.WaitForFinalizers` | 排出中のセグメントが上限に達したまま予算内に片付かなかった |

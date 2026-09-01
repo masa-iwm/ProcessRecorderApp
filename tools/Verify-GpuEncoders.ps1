@@ -618,7 +618,7 @@ $cases.Add([pscustomobject]@{
 $manualCandidates = @(
     [pscustomobject]@{ Name = 'x264enc';     Props = 'x264enc tune=zerolatency bitrate=2000 speed-preset=ultrafast key-int-max=60' }
     [pscustomobject]@{ Name = 'openh264enc'; Props = 'openh264enc bitrate=2000000 gop-size=60' }
-    [pscustomobject]@{ Name = 'mfh264enc';   Props = 'mfh264enc bitrate=2000 gop-size=60 low-latency=true' }
+    [pscustomobject]@{ Name = 'mfh264enc';   Props = 'mfh264enc rc-mode=pcvbr bitrate=2000 max-bitrate=3000 gop-size=60 low-latency=true' }
 )
 $manual = @($manualCandidates | Where-Object { $_.Name -in $present })[0]
 if ($manual) {
@@ -636,40 +636,55 @@ if ($manual) {
 }
 
 # Does the bitrate in the catalog string actually reach the GPU encoder? The recording path
-# never calls WithBitrateKbps -- it runs the catalog's LaunchString as-is -- so the property
-# is only observable by recording the same source twice with two different values and
-# comparing the produced bit rate (Mp4Bytes / DurationSec). Nothing in the logs says whether
-# the value took effect.
+# derives the target from the source size and fps (EncoderCatalog.BitrateKbpsFor) and applies
+# it with WithBitrateKbps, so the value that reaches the encoder is never the literal 2000 in
+# the catalog string. Whether the property has any effect is only observable by recording the
+# same source twice with two different values and comparing the produced bit rate
+# (Mp4Bytes / DurationSec). Nothing in the logs says whether the value took effect.
 #
 # The full string is written out here instead of passing only PreferredH264Encoder:
 # EncodingProperties is interpolated into parse_launch verbatim, so adding a second bitrate=
 # assignment on top of the catalog's own would depend on last-wins, which is not a contract.
+# It also pins the pair: the product always sets max-bitrate to 1.5x the target, and a manual
+# string must reproduce that or the two rows differ in more than the target.
 #
-# {0} is the kbit/sec value. With {0} = 2000 each template must equal the catalog's launch
-# string for that encoder -- pinned by EncoderCatalogScriptSyncTests, so a catalog change
-# fails a test instead of quietly verifying a configuration the product no longer produces.
-# Only encoders whose bitrate property and unit are confirmed appear here; d3d12h264enc and
-# amfh264enc carry no bitrate at all, so a bitrate case for them would measure nothing.
+# {0} is the target and {1} the peak, both kbit/sec. With {0} = 2000 and {1} = 3000 each
+# template must equal the catalog's launch string for that encoder -- pinned by
+# EncoderCatalogScriptSyncTests, so a catalog change fails a test instead of quietly verifying
+# a configuration the product no longer produces. Only encoders whose bitrate property and
+# unit are confirmed appear here; d3d12h264enc and amfh264enc carry no bitrate at all, so a
+# bitrate case for them would measure nothing.
 $bitrateTemplates = @{
-    'qsvh264enc'       = 'qsvh264enc rate-control=cbr bitrate={0} gop-size=60'
-    'nvh264enc'        = 'nvh264enc rc-mode=cbr bitrate={0} gop-size=60'
-    'nvd3d11h264enc'   = 'nvd3d11h264enc rc-mode=cbr bitrate={0} gop-size=60'
-    'nvautogpuh264enc' = 'nvautogpuh264enc rc-mode=cbr bitrate={0} gop-size=60'
+    'qsvh264enc'       = 'qsvh264enc rate-control=vbr bitrate={0} max-bitrate={1} gop-size=60'
+    'nvh264enc'        = 'nvh264enc rc-mode=vbr bitrate={0} max-bitrate={1} gop-size=60'
+    'nvd3d11h264enc'   = 'nvd3d11h264enc rc-mode=vbr bitrate={0} max-bitrate={1} gop-size=60'
+    'nvautogpuh264enc' = 'nvautogpuh264enc rc-mode=vbr bitrate={0} max-bitrate={1} gop-size=60'
 }
-$bitrateLowKbps  = 500
-$bitrateHighKbps = 4000
+
+# Target / peak pairs, each peak 1.5x its target -- the ratio the product applies
+# (EncoderCatalog.VbrPeakRatio). Two rows: low and high.
+$bitratePairs = @(
+    [pscustomobject]@{ Kbps = 500;  PeakKbps = 750 }
+    [pscustomobject]@{ Kbps = 4000; PeakKbps = 6000 }
+)
+$bitrateLowKbps      = $bitratePairs[0].Kbps
+$bitrateLowPeakKbps  = $bitratePairs[0].PeakKbps
+$bitrateHighKbps     = $bitratePairs[1].Kbps
+$bitrateHighPeakKbps = $bitratePairs[1].PeakKbps
 
 foreach ($g in $gpuEncoders) {
     if (-not $bitrateTemplates.ContainsKey($g)) { continue }
-    foreach ($kbps in @($bitrateLowKbps, $bitrateHighKbps)) {
+    foreach ($pair in $bitratePairs) {
         $cases.Add([pscustomobject]@{
-            Name = "D3d12 / $g bitrate=$kbps"; Type = 'D3d12'; Preferred = ''
-            Enc = ($bitrateTemplates[$g] -f $kbps)
+            Name = "D3d12 / $g bitrate=$($pair.Kbps) max-bitrate=$($pair.PeakKbps)"
+            Type = 'D3d12'; Preferred = ''
+            Enc = ($bitrateTemplates[$g] -f $pair.Kbps, $pair.PeakKbps)
             Expect = 'records'
             Note = 'the bitrate must reach the encoder; only the high/low ratio of the produced bit rate shows it'
             MustSelect = $g
             BitrateEncoder = $g
-            BitrateKbps = $kbps
+            BitrateKbps = $pair.Kbps
+            BitratePeakKbps = $pair.PeakKbps
         })
     }
 }
@@ -865,9 +880,15 @@ foreach ($enc in @($bitrateRows | ForEach-Object { $_.BitrateEncoder } | Select-
         LowMeasured = $lowKbps
         HighMeasured = $highKbps
         Ratio       = $ratio
+        # VBR, so a plain ">= 2" is the wrong test: on a still 320x240 source the encoder is
+        # free to stay well under the target. What must hold is that the high row moved up at
+        # all and that it did not land far above its own peak. The peak is not a hard bound
+        # here -- the measurement includes container overhead, so slightly above it is normal
+        # and only a value off by a factor says the number went into the wrong property.
         Reading     = $(if ($null -eq $ratio) { 'n/a (one of the two cases produced nothing to measure)' }
-                        elseif ($ratio -ge 2) { 'the bitrate reaches the encoder' }
-                        else { 'CHECK -- the bitrate looks ineffective at these settings' })
+                        elseif ($highKbps -le $lowKbps) { 'CHECK -- the bitrate looks ineffective at these settings' }
+                        elseif ($highKbps -gt ($bitrateHighPeakKbps * 2)) { "CHECK -- far above the peak ($bitrateHighPeakKbps kbit/sec): suspect the unit" }
+                        else { 'the bitrate reaches the encoder' })
     })
 }
 
@@ -921,22 +942,26 @@ if ($bitrateSummary.Count -gt 0) {
     $null = $sb.AppendLine()
     $null = $sb.AppendLine('## Does the bitrate reach the GPU encoder?')
     $null = $sb.AppendLine()
-    $null = $sb.AppendLine("Two recordings per encoder, identical except for ``bitrate=``: $bitrateLowKbps and " +
-        "$bitrateHighKbps kbit/sec, both written out as EncodingProperties.")
-    $null = $sb.AppendLine('Measured = MP4 bytes / duration, so container overhead is included and the absolute')
-    $null = $sb.AppendLine('value sits above the target. **Only the ratio is read: expected high/low >= 2.**')
+    $null = $sb.AppendLine("Two recordings per encoder, identical except for the target and its peak: " +
+        "$bitrateLowKbps / $bitrateLowPeakKbps and $bitrateHighKbps / $bitrateHighPeakKbps kbit/sec, " +
+        'both written out as EncodingProperties. The peak is 1.5x the target, the ratio the product applies.')
+    $null = $sb.AppendLine('Measured = MP4 bytes / duration, so container overhead is included.')
     $null = $sb.AppendLine()
-    $null = $sb.AppendLine('This is not gated. The metric is noisy -- a 320x240 source may not need the high')
-    $null = $sb.AppendLine('target, and the duration cell varies with the GOP boundary -- and a FAILED row would')
-    $null = $sb.AppendLine('read as a product defect. Judge it by eye.')
+    $null = $sb.AppendLine('**These are VBR, so do not read this as "high/low >= 2".** A VBR encoder is free to')
+    $null = $sb.AppendLine('stay well under its target on a still 320x240 source, and the low row is bounded from')
+    $null = $sb.AppendLine('below by nothing at all. What must hold is: **high > low**, and **high not far above')
+    $null = $sb.AppendLine("its own peak ($bitrateHighPeakKbps kbit/sec)**. The measurement includes container overhead, so")
+    $null = $sb.AppendLine('slightly above the peak is normal; a value off by a factor means it did not land in the')
+    $null = $sb.AppendLine('property it was meant for -- suspect the unit (kbit vs bit) before the rate control.')
     $null = $sb.AppendLine()
-    $null = $sb.AppendLine('If the ratio is well under 2, the rate control -- not the unit -- is the first suspect:')
-    $null = $sb.AppendLine('`rate-control=cbr` (qsv) / `rc-mode=cbr` (nvcodec) is what makes `bitrate` binding, and')
-    $null = $sb.AppendLine('the alternative is `vbr` plus `max-bitrate`. Also look at the default recordings in this')
-    $null = $sb.AppendLine('run: CBR at 2000 kbit/sec is the recording default now, so if those files look worse')
-    $null = $sb.AppendLine('than expected, that is the decision point for moving the catalog to vbr + max-bitrate.')
+    $null = $sb.AppendLine('This is not gated. The metric is noisy -- the duration cell varies with the GOP')
+    $null = $sb.AppendLine('boundary -- and a FAILED row would read as a product defect. Judge it by eye.')
     $null = $sb.AppendLine()
-    $null = $sb.AppendLine("| encoder | measured at $bitrateLowKbps | measured at $bitrateHighKbps | ratio | reading |")
+    $null = $sb.AppendLine('If high and low come out the same, the rate control is the first suspect:')
+    $null = $sb.AppendLine('`rate-control=vbr` (qsv) / `rc-mode=vbr` (nvcodec) is what makes `bitrate` and')
+    $null = $sb.AppendLine('`max-bitrate` binding; `cqp` / `icq` ignore `bitrate` entirely.')
+    $null = $sb.AppendLine()
+    $null = $sb.AppendLine("| encoder | measured at $bitrateLowKbps/$bitrateLowPeakKbps | measured at $bitrateHighKbps/$bitrateHighPeakKbps | ratio | reading |")
     $null = $sb.AppendLine('|---|---|---|---|---|')
     foreach ($b in $bitrateSummary) {
         $null = $sb.AppendLine(('| `{0}` | {1} | {2} | {3} | {4} |' -f `

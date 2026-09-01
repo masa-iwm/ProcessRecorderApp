@@ -124,6 +124,126 @@ public sealed partial class RecordingTests(PublishedApp app, ITestOutputHelper o
         RecordedMp4.AssertUsable(file, instance, output);
     }
 
+    /// <summary>
+    /// <b>録画の既定ビットレートがソースの大きさから決まること</b>を、発行物の
+    /// <c>gst.encoder selected</c> 1 行で断定する。
+    ///
+    /// <para>
+    /// ソースは caps で <c>1280x720</c>・<c>30/1</c> を名乗るので、式
+    /// （<c>幅 × 高さ × fps × 0.1 / 1000</c>）は 2765 kbit/sec、ピークはその 1.5 倍で
+    /// 4148 kbit/sec になる。<b>床（300）にも天井（40000）にも当たらない値</b>を選んである
+    /// ── 当たる値だと、式が壊れていても clamp のおかげで同じ数字が出る。
+    /// </para>
+    /// <para>
+    /// <b>主の断定は CI の既定エンコーダー（<c>x264enc</c>）で行う。</b> あちらは ABR で
+    /// <c>max-bitrate</c> を持たないので、見えるのは目標だけ ── それでも
+    /// 「式 → <c>WithBitrateKbps</c> → 起動文字列」という配線の証明としては足りる
+    /// （どの定義へ当てるかは L1 の担当）。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void RecordingBitrate_FollowsTheSourceSize_AndReachesTheEncoderString()
+    {
+        var settings = new SettingsFile();
+        var recorder = settings.AddRecorder("R1");
+        // 1280x720 / 30fps の caps 付きソース（EncodingProperties は付けない ──
+        // 手書きの起動文字列は式を通らないので、それでは配線を見たことにならない）。
+        recorder.SrcPipeline = SettingsFile.LargeVideoTestSrc;
+
+        using var instance = AppInstance.Create(app, settings);
+
+        string selected = Assert.Single(
+            ActivityLogFile.Events(instance.ReadActivityLog(), "gst.encoder selected"));
+        output.WriteLine(selected);
+
+        // 大きさの出所は caps（モニターでも仮定値でも手動指定でもない）。
+        Assert.Contains("size-source=caps", selected, StringComparison.Ordinal);
+        Assert.Contains("bitrate-kbps=2765", selected, StringComparison.Ordinal);
+        Assert.Contains(SettingsFile.DefaultEncoder, selected, StringComparison.Ordinal);
+        Assert.Contains("bitrate=2765 ", selected, StringComparison.Ordinal);
+
+        // 式の値で実際に録れること（通らない起動文字列を組み立てても意味が無い）。
+        Assert.Equal(0, instance.Run("start-recording-all").ExitCode);
+        Thread.Sleep(RecordingWindow);
+        Assert.Equal(0, instance.Run("stop-recording-all").ExitCode);
+
+        RecordedMp4.AssertUsable(Assert.Single(instance.ListRecordings()), instance, output);
+    }
+
+    /// <summary>
+    /// <b><c>max-bitrate</c> まで端から端で見られる唯一の経路。</b>
+    /// <c>mfh264enc</c>（Media Foundation のソフト MFT）は
+    /// <c>rc-mode=pcvbr</c> で目標と上限の両方を取る定義で、GPU の無いこの層で
+    /// <b>ピークが式の 1.5 倍になって実際に <c>parse_launch</c> を通ることを確かめられる</b>
+    /// のはこれだけである（<c>x264enc</c> は ABR、GPU の定義は要素が無い）。
+    ///
+    /// <para>
+    /// <b>実機に <c>mfh264enc</c> が無ければ Skip する</b>（判定は <c>gst.encoders</c> の
+    /// <c>available=[…]</c>。Media Foundation の H.264 エンコーダーは Windows の SKU に依る）
+    /// ── 不在を赤にすると製品の欠陥に見える。<b>緑だから走ったとは限らないので、
+    /// 実行結果の skip 件数を見ること。</b>
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void RecordingBitrate_OnMediaFoundation_AlsoSetsThePeak()
+    {
+        var settings = new SettingsFile { PreferredH264Encoder = "mfh264enc" };
+        var recorder = settings.AddRecorder("R1");
+        recorder.SrcPipeline = SettingsFile.LargeVideoTestSrc;
+
+        using var instance = AppInstance.Create(app, settings);
+
+        var log = instance.ReadActivityLog();
+        string probe = Assert.Single(ActivityLogFile.Events(log, "gst.encoders"));
+        output.WriteLine(probe);
+
+        Assert.SkipUnless(
+            probe.Contains("available=[", StringComparison.Ordinal)
+                && probe[probe.IndexOf("available=[", StringComparison.Ordinal)..]
+                    .Split(']')[0].Contains("mfh264enc", StringComparison.Ordinal),
+            "this machine has no mfh264enc (Media Foundation H.264 encoder), "
+                + "so the max-bitrate assertion cannot run here");
+
+        string selected = Assert.Single(ActivityLogFile.Events(log, "gst.encoder selected"));
+        output.WriteLine(selected);
+
+        Assert.Contains("size-source=caps", selected, StringComparison.Ordinal);
+        Assert.Contains("bitrate-kbps=2765", selected, StringComparison.Ordinal);
+        Assert.Contains(
+            "encoder='mfh264enc rc-mode=pcvbr bitrate=2765 max-bitrate=4148 gop-size=60 low-latency=true'",
+            selected, StringComparison.Ordinal);
+        Assert.Contains("failedAttempts=0", selected, StringComparison.Ordinal);
+
+        Assert.Equal(0, instance.Run("start-recording-all").ExitCode);
+        Thread.Sleep(RecordingWindow);
+        Assert.Equal(0, instance.Run("stop-recording-all").ExitCode);
+
+        RecordedMp4.AssertUsable(Assert.Single(instance.ListRecordings()), instance, output);
+    }
+
+    /// <summary>
+    /// <b>手動指定（<c>EncodingProperties</c>）では式を通らないので、
+    /// <c>bitrate-kbps=</c> を出さない</b>（<c>size-source=manual</c> だけ）。
+    /// 出すと、実際には流れていない値が起動文字列の隣に並ぶ。
+    /// </summary>
+    [Fact]
+    public void ManualEncodingProperties_ReportNoDerivedBitrate()
+    {
+        var settings = new SettingsFile();
+        settings.AddRecorder("R1").AsLarge();
+
+        using var instance = AppInstance.Create(app, settings);
+
+        string selected = Assert.Single(
+            ActivityLogFile.Events(instance.ReadActivityLog(), "gst.encoder selected"));
+        output.WriteLine(selected);
+
+        Assert.Contains("size-source=manual", selected, StringComparison.Ordinal);
+        Assert.DoesNotContain("bitrate-kbps=", selected, StringComparison.Ordinal);
+        // 手で書いた値はそのまま流れる。
+        Assert.Contains("bitrate=20000", selected, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void PreferredEncoder_ThatDoesNotExist_FallsThroughAndStillRecords()
     {

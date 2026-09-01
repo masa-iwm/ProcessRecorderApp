@@ -118,7 +118,7 @@ public class EncoderCatalogResolveTests
         Assert.Equal("qsvh264enc", pick.FactoryName);
         Assert.Contains("gop-size=45", pick.LaunchString, StringComparison.Ordinal);
         Assert.Contains("bitrate=2000", pick.LaunchString, StringComparison.Ordinal);
-        Assert.Contains("rate-control=cbr", pick.LaunchString, StringComparison.Ordinal);
+        Assert.Contains("rate-control=vbr", pick.LaunchString, StringComparison.Ordinal);
 
         // 帯域指定が実際に当たること（DashPreviewStream / TranscodeStreams が通る道）。
         Assert.Contains("bitrate=800 ", pick.WithBitrateKbps(800).LaunchString, StringComparison.Ordinal);
@@ -960,10 +960,11 @@ public class EncoderBitrateParameterizationTests
     /// </para>
     /// </summary>
     [Theory]
-    [InlineData("qsvh264enc", "rate-control=cbr")]
-    [InlineData("nvh264enc", "rc-mode=cbr")]
-    [InlineData("nvd3d11h264enc", "rc-mode=cbr")]
-    [InlineData("nvautogpuh264enc", "rc-mode=cbr")]
+    [InlineData("qsvh264enc", "rate-control=vbr")]
+    [InlineData("nvh264enc", "rc-mode=vbr")]
+    [InlineData("nvd3d11h264enc", "rc-mode=vbr")]
+    [InlineData("nvautogpuh264enc", "rc-mode=vbr")]
+    [InlineData("mfh264enc", "rc-mode=pcvbr")]
     public void GpuEncodersWithAConfirmedUnit_TakeKilobitsPerSecondUnchanged(string factoryName, string rateControl)
     {
         var def = Def(factoryName);
@@ -973,9 +974,29 @@ public class EncoderBitrateParameterizationTests
 
         Assert.Contains("bitrate=800 ", applied.LaunchString, StringComparison.Ordinal);
         Assert.DoesNotContain("bitrate=2000", applied.LaunchString, StringComparison.Ordinal);
+        // ピークは目標の VbrPeakRatio 倍。**同値になっていないこと**が要点で、
+        // 同値なら VBR は実質 CBR になり、上限を持たせた意味が消える。
+        Assert.Contains("max-bitrate=1200 ", applied.LaunchString, StringComparison.Ordinal);
+        Assert.DoesNotContain("max-bitrate=3000", applied.LaunchString, StringComparison.Ordinal);
         Assert.Contains(rateControl, applied.LaunchString, StringComparison.Ordinal);
         // GOP は帯域の書き換えで巻き添えにならない。
         Assert.Contains($"gop-size={EncoderCatalog.GopSize}", applied.LaunchString, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// <c>max-bitrate</c> を持たない定義（<c>x264enc</c> の ABR / <c>openh264enc</c>）では、
+    /// <b>目標だけが書き換わり例外にもならない</b>こと。トークンが無いのは設計違反ではない
+    /// ── ピークを持つプロパティがそもそも別（<c>vbv-buf-capacity</c>）である。
+    /// </summary>
+    [Theory]
+    [InlineData("x264enc", "bitrate=800")]
+    [InlineData("openh264enc", "bitrate=800000")]
+    public void DefinitionsWithoutAPeak_OnlyTakeTheTarget(string factoryName, string expected)
+    {
+        var applied = Def(factoryName).WithBitrateKbps(800);
+
+        Assert.Contains(expected, applied.LaunchString, StringComparison.Ordinal);
+        Assert.DoesNotContain("max-bitrate", applied.LaunchString, StringComparison.Ordinal);
     }
 
     /// <summary>
@@ -998,7 +1019,7 @@ public class EncoderBitrateParameterizationTests
     /// 巻き込まずに bitrate をパラメータ化できている。
     /// </summary>
     [Fact]
-    public void ApplyingTheDefaultBitrate_ReproducesTheCurrentLaunchStrings()
+    public void ApplyingTheDefaultBitrate2000_ReproducesTheCurrentLaunchStrings_IncludingPeak3000()
     {
         // 見るのは**単位を持つ定義**だけ ── 単位の無い定義は同じインスタンスが返るだけの
         // 自明な行で、それは DefinitionsWithoutABitrateUnit_AreReturnedAsIs の担当である。
@@ -1011,7 +1032,58 @@ public class EncoderBitrateParameterizationTests
         Assert.NotEmpty(withAUnit);
 
         foreach (var def in withAUnit)
+        {
+            // 既定の 2000 kbit/sec を与えると 1 文字も変わらない。
+            // **ピークの既定 3000 が ceil(2000 × VbrPeakRatio) と一致していること**も
+            // ここで縛られる ── ずれていればこの往復で文字列が変わる。
             Assert.Equal(def.LaunchString, def.WithBitrateKbps(2000).LaunchString);
+        }
+
+        Assert.Equal(3000, EncoderCatalog.PeakBitrateKbpsFor(2000));
+    }
+
+    /// <summary>
+    /// <b><c>max-bitrate=</c> を持つ定義は必ず単位を持つ</b>こと。
+    /// 単位が無ければ <c>WithBitrateKbps</c> は素通しするので、
+    /// <b>ピークだけが既定値のまま据え置かれた</b>起動文字列が残る
+    /// ── 目標を下げてもピークまで出せるので、指定した帯域が効かない。
+    /// </summary>
+    [Fact]
+    public void EveryDefinitionWithAPeak_AlsoHasABitrateUnit()
+    {
+        var all = EncoderCatalog.D3d12Candidates.Concat(EncoderCatalog.SystemCandidates).ToArray();
+        Assert.NotEmpty(all);
+
+        var withPeak = all.Where(c => H264EncoderDef.MaxBitrateTokenRegex().IsMatch(c.LaunchString)).ToArray();
+        Assert.NotEmpty(withPeak);
+
+        foreach (var def in withPeak)
+        {
+            Assert.True(def.BitrateUnitPerKbps is not null,
+                $"{def.FactoryName}: 'max-bitrate=' があるのに BitrateUnitPerKbps が null: {def.LaunchString}");
+        }
+    }
+
+    /// <summary>
+    /// カタログ全体で <c>bitrate=</c> が<b>ちょうど 1 個</b>であること。
+    /// 2 個あると <c>WithBitrateKbps</c>（1 個だけ置換する）が
+    /// <b>片方だけ書き換えた起動文字列</b>を作り、どちらが効くかは要素の実装次第になる。
+    /// </summary>
+    [Fact]
+    public void EveryDefinitionWithAUnit_HasExactlyOneBareBitrateToken()
+    {
+        var withAUnit = EncoderCatalog.D3d12Candidates.Concat(EncoderCatalog.SystemCandidates)
+            .DistinctBy(c => c.FactoryName)
+            .Where(c => c.BitrateUnitPerKbps is not null)
+            .ToArray();
+
+        Assert.NotEmpty(withAUnit);
+
+        foreach (var def in withAUnit)
+        {
+            Assert.True(H264EncoderDef.BitrateTokenRegex().Matches(def.LaunchString).Count == 1,
+                $"{def.FactoryName}: 'bitrate=' がちょうど 1 個ではない: {def.LaunchString}");
+        }
     }
 
     /// <summary>
@@ -1055,13 +1127,14 @@ public class EncoderBitrateParameterizationTests
     }
 
     /// <summary>
-    /// <b><c>max-bitrate=</c> のような別のプロパティは書き換えない。</b>
-    /// <c>-</c> は語の境界なので <c>\bbitrate=</c> では一致してしまう ──
+    /// <b>目標とピークはそれぞれの正規表現の担当から出ない。</b>
+    /// <c>-</c> は語の境界なので <c>\bbitrate=</c> は <c>max-bitrate=</c> にも一致する ──
     /// 一致すると、指定した帯域は当のプロパティに入らないまま
     /// <b>上限だけが黙って書き換わった</b>起動文字列ができる。
+    /// <b>2 つの値が違うことが検出器である</b>（同値だとどちらの規則で書かれたのか分からない）。
     /// </summary>
     [Fact]
-    public void OnlyTheBareBitratePropertyIsRewritten()
+    public void TheTargetAndThePeakAreRewrittenIndependently()
     {
         var def = new H264EncoderDef(
             "x264enc", "x264enc max-bitrate=2000 bitrate=1000", NeedsSystemMemory: false,
@@ -1069,7 +1142,28 @@ public class EncoderBitrateParameterizationTests
 
         var applied = def.WithBitrateKbps(8000);
 
-        Assert.Equal("x264enc max-bitrate=2000 bitrate=8000", applied.LaunchString);
+        Assert.Equal("x264enc max-bitrate=12000 bitrate=8000", applied.LaunchString);
+    }
+
+    /// <summary>
+    /// <b>ピーク側の正規表現も接頭辞付きのプロパティには一致しない。</b>
+    /// <c>(?&lt;![-\w])</c> を落とすと <c>qsv-max-bitrate=</c> のような別のプロパティが
+    /// 書き換わり、<b>指定した上限はどこにも入らないまま正常終了する</b>
+    /// ── 目標側の <c>target-bitrate=</c> と同じ罠である。
+    /// </summary>
+    [Fact]
+    public void APrefixedMaxBitratePropertyIsNotThePeak()
+    {
+        var def = new H264EncoderDef(
+            "x264enc", "x264enc qsv-max-bitrate=2000 bitrate=1000", NeedsSystemMemory: false,
+            BitrateUnitPerKbps: 1);
+
+        var applied = def.WithBitrateKbps(8000);
+
+        // 目標だけが変わり、接頭辞付きのプロパティは 1 文字も変わらない。
+        Assert.Equal("x264enc qsv-max-bitrate=2000 bitrate=8000", applied.LaunchString);
+        Assert.DoesNotMatch(H264EncoderDef.MaxBitrateTokenRegex(), "x264enc qsv-max-bitrate=2000");
+        Assert.Matches(H264EncoderDef.MaxBitrateTokenRegex(), "x264enc max-bitrate=2000");
     }
 
     /// <summary>
@@ -1228,4 +1322,91 @@ public sealed class H264DecoderProbeTests
             Assert.Equal(["d3d11h264dec"], probed);
         }
     }
+}
+
+/// <summary>
+/// <b>録画・配信の目標ビットレートを決める式</b>（<c>EncoderCatalog.BitrateKbpsFor</c>）と
+/// その VBR ピーク（<c>PeakBitrateKbpsFor</c>）。
+///
+/// <para>
+/// 式は 1 か所にしか無く、録画の本線・常時枝の両方がここを通る。
+/// <b>固定値で縛る</b> ── 係数・丸め・床・天井のどれを動かしても落ちる。
+/// </para>
+/// </summary>
+public class BitrateFormulaTests
+{
+    /// <summary>
+    /// 代表的な大きさでの値。<c>1920x1080@30 = 6221</c> は
+    /// ライブ画質プリセットの <c>1080p</c>（6000 kbit/sec）と同じ尺度である。
+    /// </summary>
+    [Theory]
+    [InlineData(1920, 1080, 30.0, 6221)]
+    [InlineData(3840, 2160, 30.0, 24883)]
+    [InlineData(1280, 720, 30.0, 2765)]
+    [InlineData(3840, 2160, 15.0, 12442)]
+    public void TheFormulaIsWidthTimesHeightTimesFpsTimesBitsPerPixel(int w, int h, double fps, int expected)
+        => Assert.Equal(expected, EncoderCatalog.BitrateKbpsFor(w, h, fps));
+
+    /// <summary>
+    /// <b>床（300）</b> ── 小さく遅いソースが判読できない画にならないようにする。
+    /// 640x360@2fps は式では 46。
+    /// </summary>
+    [Fact]
+    public void SmallAndSlowSourcesGetTheFloor()
+    {
+        Assert.Equal(EncoderCatalog.MinBitrateKbps, EncoderCatalog.BitrateKbpsFor(640, 360, 2));
+        Assert.Equal(300, EncoderCatalog.MinBitrateKbps);
+    }
+
+    /// <summary>
+    /// <b>天井（40000）</b> ── 8K・高 fps の掛け算がそのままバイト数にならないようにする。
+    /// 7680x4320@60 は式では約 199065。
+    /// </summary>
+    [Fact]
+    public void HugeSourcesGetTheCeiling()
+    {
+        Assert.Equal(EncoderCatalog.MaxBitrateKbps, EncoderCatalog.BitrateKbpsFor(7680, 4320, 60));
+        Assert.Equal(40000, EncoderCatalog.MaxBitrateKbps);
+    }
+
+    /// <summary>
+    /// 測れなかった値（0・負・NaN）は<b>床</b>へ落ちる ──
+    /// 読めなかったソースへ天井の帯域を割り当てない。
+    /// </summary>
+    [Theory]
+    [InlineData(0, 0, 30.0)]
+    [InlineData(1920, 1080, 0.0)]
+    [InlineData(1920, 1080, -30.0)]
+    [InlineData(1920, 1080, double.NaN)]
+    public void UnreadableSizesFallToTheFloor(int w, int h, double fps)
+        => Assert.Equal(EncoderCatalog.MinBitrateKbps, EncoderCatalog.BitrateKbpsFor(w, h, fps));
+
+    /// <summary>
+    /// 分数のフレームレート（<c>89/3</c> ＝ NTSC の 29.97 系）でも丸める
+    /// （6151.68 → 6152。切り捨てると 1 kbit/sec 低い値が定着する）。
+    /// </summary>
+    [Fact]
+    public void FractionalFrameratesAreRounded()
+        => Assert.Equal(6152, EncoderCatalog.BitrateKbpsFor(1920, 1080, 89.0 / 3.0));
+
+    /// <summary>
+    /// <b>ちょうど .5 は上へ丸める</b>（<c>MidpointRounding.AwayFromZero</c>）。
+    /// .NET の既定は <c>ToEven</c> なので、指定を落とすと<b>偶数側だけ 1 低い値</b>になる
+    /// ── 大半の入力では差が出ないので、ちょうど .5 になる入力でしか捕まえられない。
+    /// <c>100 × 100 × 1000.5 × 0.1 / 1000 = 1000.5</c> は IEEE754 でも厳密にこの値になる。
+    /// </summary>
+    [Fact]
+    public void AnExactHalfIsRoundedAwayFromZero()
+        => Assert.Equal(1001, EncoderCatalog.BitrateKbpsFor(100, 100, 1000.5));
+
+    /// <summary>
+    /// ピークは目標の 1.5 倍を<b>切り上げた</b>値。切り捨てると小さな目標で同値になり、
+    /// VBR が実質 CBR になる。
+    /// </summary>
+    [Theory]
+    [InlineData(2000, 3000)]
+    [InlineData(800, 1200)]
+    [InlineData(333, 500)]
+    public void ThePeakIsOneAndAHalfTimesTheTargetRoundedUp(int kbps, int expected)
+        => Assert.Equal(expected, EncoderCatalog.PeakBitrateKbpsFor(kbps));
 }

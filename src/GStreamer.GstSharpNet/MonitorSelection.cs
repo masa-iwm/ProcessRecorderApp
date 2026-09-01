@@ -26,6 +26,27 @@ public sealed class MonitorSelectionResult
     /// </summary>
     public string? Failure { get; init; }
 
+    /// <summary>
+    /// 実際に録るモニター（分からなければ <see langword="null"/>）。
+    ///
+    /// <para>
+    /// <b>「解決の副産物」ではなく、呼び出し側が大きさを知るための窓である。</b>
+    /// 画面キャプチャの <c>SrcPipeline</c> は解像度を caps に書かない構成が既定で、
+    /// そのとき実際に流れる大きさはこのモニターの実寸（<see cref="MonitorInfo.Resolution"/>）
+    /// でしか分からない ── <c>EventRecorder</c> はこれを録画ビットレートの式へ渡す。
+    /// </para>
+    /// <para>
+    /// <b>当て方は「実際に録られるのはどれか」で決まる</b>:
+    /// パスが解決できたならそのモニター、<c>monitor-index</c> へ縮退したなら
+    /// 書かれている番号のモニター、<b>パス指定が無い画面キャプチャなら書かれている番号
+    /// （書かれていなければ要素の既定＝ 0 番）</b>。
+    /// 一覧が空（ヘッドレス）・番号が一覧の範囲外・解決に失敗した・
+    /// ソースが画面キャプチャでないときは <see langword="null"/>
+    /// （呼び出し側は仮定値の大きさへ落ちる）。
+    /// </para>
+    /// </summary>
+    public MonitorInfo? Monitor { get; init; }
+
     /// <summary>解決できたか（縮退した場合も true。区別は <see cref="Warning"/> で付く）。</summary>
     public bool Succeeded => Failure is null;
 }
@@ -65,22 +86,47 @@ public static class MonitorSelection
     public const string IndexProperty = "monitor-index";
 
     /// <summary>
+    /// 画面キャプチャの要素名（<c>monitor-index</c> / <c>monitor-handle</c> を持つもの）。
+    /// </summary>
+    private static readonly string[] ScreenCaptureElements =
+        ["d3d12screencapturesrc", "d3d11screencapturesrc"];
+
+    /// <summary>
     /// その文字列の解決にモニターの列挙が要るか。
     ///
     /// <para>
+    /// <b>要るのは 2 つの場合である</b>: <see cref="PathProperty"/> が書かれている
+    /// （ハンドルへ解決するため）か、<b>ソースが画面キャプチャ要素である</b>
+    /// （録る画面の実寸が要るため）。後者はパス指定が無くても要る ──
+    /// 画面キャプチャの caps は解像度を持たない構成が既定で、そのとき実際に流れる大きさは
+    /// モニターの実寸でしか分からず、<b>これを取らないと 4K の画面が仮定値
+    /// （1920x1080）ぶんの帯域で録られる</b>（<see cref="MonitorSelectionResult.Monitor"/>）。
+    /// </para>
+    /// <para>
     /// <b>列挙は安くない</b>（デバイスプロバイダの Start/Stop と <c>monitor.devices</c> の 1 行）のに、
-    /// <c>InitializeCore</c> はレコーダーごと・復帰のたびに走る ── テストソースの
-    /// レコーダーまで巻き込んで 60 秒ごとにプロバイダを起こさないよう、ここで先に落とす。
+    /// <c>InitializeCore</c> はレコーダーごと・復帰のたびに走る ── だから
+    /// <b>画面キャプチャ以外は今までどおり 1 回も列挙しない</b>（<c>videotestsrc</c> や
+    /// カメラのレコーダーは対象外）。
     /// </para>
     /// <para>
     /// <b>見落としは起きない</b> ── <see cref="SrcPipelineBuilder.Parse"/> が
     /// <see cref="PathProperty"/> を見つけられる文字列は、必ずこの綴りを部分文字列として含む。
     /// 逆（含むが解決対象ではない）は起こりうるが、そのときは <see cref="Resolve"/> が
-    /// 何もせずに入力をそのまま返すだけである。
+    /// 文字列を 1 文字も変えずに返すだけである。
     /// </para>
     /// </summary>
     public static bool RequiresMonitors(string? srcPipeline)
-        => srcPipeline is not null && srcPipeline.Contains(PathProperty, StringComparison.Ordinal);
+        => srcPipeline is not null
+            && (srcPipeline.Contains(PathProperty, StringComparison.Ordinal)
+                || IsScreenCapture(srcPipeline));
+
+    /// <summary>ソース要素が画面キャプチャか（解析は <see cref="SrcPipelineBuilder.Parse"/> と同じ規則）。</summary>
+    private static bool IsScreenCapture(string? srcPipeline)
+    {
+        string? element = SrcPipelineBuilder.Parse(srcPipeline).SourceElement;
+        return element is not null
+            && Array.IndexOf(ScreenCaptureElements, element) >= 0;
+    }
 
     /// <summary>
     /// <c>monitor-device-path</c> を実際に要素へ渡せる形へ解決する。規則は 5 つ:
@@ -130,9 +176,19 @@ public static class MonitorSelection
         var parsed = SrcPipelineBuilder.Parse(srcPipeline);
         if (!parsed.Properties.TryGetValue(PathProperty, out string? path))
         {
-            // 綴りは在るが key=value としては読めない（値が無い・引用された別の値の中身など）。
-            // 触らない ── 中途半端に消すより、gst_parse_launch に大きな声で落ちてもらう方がよい。
-            return new MonitorSelectionResult { Pipeline = srcPipeline };
+            // パス指定が無い（または綴りは在るが key=value としては読めない ── 値が無い・
+            // 引用された別の値の中身など）。**文字列は 1 文字も変えない** ── 中途半端に消すより、
+            // gst_parse_launch に大きな声で落ちてもらう方がよい。
+            //
+            // それでも画面キャプチャなら**録る画面は決まっている**（書かれた monitor-index、
+            // 書かれていなければ要素の既定＝ 0）ので、その実寸だけは返す。
+            return new MonitorSelectionResult
+            {
+                Pipeline = srcPipeline,
+                Monitor = IsScreenCapture(srcPipeline)
+                    ? AtWrittenIndex(parsed.Properties, monitors, defaultToFirst: true)
+                    : null,
+            };
         }
 
         // **縮退できるのは戻せる先が在るときだけ。** `monitor-index` が書かれていなければ、
@@ -157,6 +213,7 @@ public static class MonitorSelection
             return new MonitorSelectionResult
             {
                 Pipeline = Rewrite(srcPipeline!, handle: null, removeIndex: false),
+                Monitor = AtWrittenIndex(parsed.Properties, monitors),
                 Warning = $"no screen-capture monitor could be enumerated, so {PathProperty}='{path}' "
                     + $"was ignored and {IndexProperty} is used instead",
             };
@@ -202,6 +259,7 @@ public static class MonitorSelection
             return new MonitorSelectionResult
             {
                 Pipeline = Rewrite(srcPipeline!, handle: null, removeIndex: false),
+                Monitor = AtWrittenIndex(parsed.Properties, monitors),
                 Warning = $"the monitor with {PathProperty}='{path}' was found but its {HandleProperty} "
                     + $"could not be read, so {IndexProperty} is used instead",
             };
@@ -211,7 +269,48 @@ public static class MonitorSelection
         return new MonitorSelectionResult
         {
             Pipeline = Rewrite(srcPipeline!, match.Handle.ToString(CultureInfo.InvariantCulture), removeIndex: true),
+            Monitor = match,
         };
+    }
+
+    /// <summary>
+    /// 番号で選ばれるときに実際に録られるモニター。
+    /// <b>番号は位置依存</b>なので、書かれている番号が一覧の範囲外なら
+    /// <see langword="null"/> を返す ── 範囲外の番号で当てずっぽうに 1 台選ぶと、
+    /// 録られていない画面の実寸を大きさの根拠にしてしまう。
+    /// 一致は <see cref="MonitorInfo.Index"/> で見る（一覧の並び順に依存しない）。
+    /// 列挙が空（ヘッドレス・プロバイダ不在）なら <see langword="null"/>。
+    /// </summary>
+    /// <param name="defaultToFirst">
+    /// <c>monitor-index</c> が書かれていないとき <b>0 番</b>とみなすか。
+    /// 画面キャプチャ要素の既定がそれなので真にする。<b>番号へ縮退する経路では偽</b>
+    /// ── あちらは番号が書かれていることが縮退の前提である。
+    /// </param>
+    private static MonitorInfo? AtWrittenIndex(
+        IReadOnlyDictionary<string, string> properties, IReadOnlyList<MonitorInfo>? monitors,
+        bool defaultToFirst = false)
+    {
+        if (monitors is null || monitors.Count == 0)
+            return null;
+
+        int index = 0;
+        if (properties.TryGetValue(IndexProperty, out string? written))
+        {
+            if (!int.TryParse(written.Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out index))
+                return null;
+        }
+        else if (!defaultToFirst)
+        {
+            return null;
+        }
+
+        foreach (MonitorInfo monitor in monitors)
+        {
+            if (monitor.Index == index)
+                return monitor;
+        }
+
+        return null;
     }
 
     /// <summary>

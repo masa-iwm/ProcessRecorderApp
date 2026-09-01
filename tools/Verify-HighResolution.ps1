@@ -513,14 +513,23 @@ $reportedSrc = "d3d12screencapturesrc monitor-index=$MonitorIndex show-cursor=tr
 #
 # What this script measures (the ring buffer's cyclic wait above the per-frame threshold) does
 # not depend on the encoder's rate control, so following the catalog is safe here.
-$reportedEnc = 'qsvh264enc rate-control=cbr bitrate=2000 gop-size=60'
+$reportedEnc = 'qsvh264enc rate-control=vbr bitrate=2000 max-bitrate=3000 gop-size=60'
+
+# The bitrate THE PRODUCT WOULD COMPUTE for a 4K source at 15fps
+# (EncoderCatalog.BitrateKbpsFor: 3840x2160x15x0.1/1000 -> 12442 kbit/sec, peak 1.5x -> 18663).
+# A hand-written encoder string is used as is, so the catalog default (2000/3000) never
+# measures what the product actually builds at 4K -- and a unit error (kbit vs bit) stays
+# invisible, because 2000 is plausible either way and 12442 is not. This gets its OWN case
+# below rather than replacing the sweep row: the sweep's whole value is that nothing but the
+# resolution differs between its rows. Pinned by EncoderCatalogScriptSyncTests.
+$fourKFormulaEnc = 'qsvh264enc rate-control=vbr bitrate=12442 max-bitrate=18663 gop-size=60'
 
 # For the rows that run the continuous branch at 5fps. A HAND-WRITTEN ENCODER STRING IS USED
 # AS IS, so the product's "two seconds derived from the framerate" does not apply. Passing
 # $reportedEnc (gop-size=60, which is 30fps based) gives a 12-second keyframe interval at 5fps,
 # and a segment can only be split on a keyframe, so a 5-second setting stretches to 10
 # (measured; continuous.overshoot). Pin the GOP to the branch rate here instead.
-$reportedContinuousEnc = 'qsvh264enc rate-control=cbr bitrate=2000 gop-size=10'
+$reportedContinuousEnc = 'qsvh264enc rate-control=vbr bitrate=2000 max-bitrate=3000 gop-size=10'
 
 $cases = New-Object System.Collections.Generic.List[object]
 
@@ -587,7 +596,7 @@ if ($SmokeTest) {
 else {
 
 $cases.Add([pscustomobject]@{
-    Name = "REPORTED: 4K screen capture, monitor-index=$MonitorIndex, qsvh264enc cbr"
+    Name = "REPORTED: 4K screen capture, monitor-index=$MonitorIndex, qsvh264enc vbr"
     Type = 'D3d12'; Src = $reportedSrc; Enc = $reportedEnc; Buffer = 10000
     Note = 'the reported configuration: source, monitor index and BufferDuration as received.' +
            ' The encoder line follows EncoderCatalog (pinned by EncoderCatalogScriptSyncTests), so it is' +
@@ -600,13 +609,26 @@ $cases.Add([pscustomobject]@{
 foreach ($wh in @('320x240', '1920x1080', '2560x1440', '3840x2160')) {
     $parts = $wh.Split('x')
     $cases.Add([pscustomobject]@{
-        Name = "sweep: d3d12testsrc $wh, qsvh264enc cbr"
+        Name = "sweep: d3d12testsrc $wh, qsvh264enc vbr"
         Type = 'D3d12'
         Src  = "d3d12testsrc is-live=true do-timestamp=true ! video/x-raw(memory:D3D12Memory), format=NV12, width=$($parts[0]), height=$($parts[1]), framerate=15/1"
         Enc  = $reportedEnc; Buffer = 3000
         Note = if ([int]$parts[0] * [int]$parts[1] * 3 / 2 -gt 5242880) { 'ABOVE the old threshold -- this used to deadlock' } else { 'below the old threshold -- this used to work; must still work' }
     })
 }
+
+# Same 4K source as the last sweep row, but with the bitrate the product derives for it.
+# Read the MP4 bytes and the duration of this row against the 3840x2160 sweep row: the
+# catalog default (2000 kbit/sec) and the formula value (12442) must produce visibly
+# different file sizes. If they do not, the value is not reaching the encoder; if this row
+# comes out enormously larger than ~12.4 Mbit/sec, the unit is wrong.
+$cases.Add([pscustomobject]@{
+    Name = 'sweep: d3d12testsrc 3840x2160, qsvh264enc vbr at the derived bitrate'
+    Type = 'D3d12'
+    Src  = 'd3d12testsrc is-live=true do-timestamp=true ! video/x-raw(memory:D3D12Memory), format=NV12, width=3840, height=2160, framerate=15/1'
+    Enc  = $fourKFormulaEnc; Buffer = 3000
+    Note = 'the bitrate the product computes for this source (12442/18663 kbit/sec) -- compare bytes and duration with the 3840x2160 sweep row'
+})
 
 # Isolating the event-framerate drop. THE THREE ROWS DIFFER ONLY IN THE CONTINUOUS SETTINGS;
 # source and event encoder are identical. Compare the effective fps (stsz frame count divided

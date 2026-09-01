@@ -644,10 +644,13 @@ DASH 側を選び、**かつライブ画質が `custom` のときだけ**、こ�
 メニューからの選択は `WebUiBrowserTests.TheLiveQualityMenuPicksAPresetAndTheRepresentationFollows`
 が通す。残るのは次の 3 つ:
 
-- **GPU 系エンコーダーではプリセットの kbit/s が効かない。** `bitrate=` トークンを持たない候補では
+- **`bitrate=` を持たない候補（`d3d12h264enc` / `amfh264enc`）ではプリセットの kbit/s が効かない。**
   `WithBitrateKbps` が素通しするので（下の節）、プリセットで選べるのは実質「解像度と fps」だけになる。
   どの候補が採用されたかは `dash.stream-start` に出るが、**要求した kbit/s はそのまま記録される**
   ので、ログを見ても効いたかどうかは分からない。
+- **プリセットの kbit/s は目標であって上限ではない。** カタログの定義は VBR で、
+  `WithBitrateKbps` は `max-bitrate` をその 1.5 倍へ書く ── 実際に流れる帯域が
+  選んだ値の前後を動くこと自体はどの層でも測っていない。
 - **複数の視聴者での「最後勝ち」と、他人の変更への追随は手動確認。** 状態はレコーダー単位で
   全視聴者に共有され、変更は mux の作り直し → `Period@id` の変化 → 連続体の開き直しで伝わる。
   E2E はブラウザを 1 枚しか開かないので、**2 枚目が自分で開き直すところは走っていない**。
@@ -748,10 +751,28 @@ H.264 デコーダーを要求し、同梱ランタイムにソフトウェア�
 
 **録画経路の「既定以外のビットレート」は GPU 機のレポートが測る。** `qsvh264enc` /
 `nvh264enc` / `nvd3d11h264enc` / `nvautogpuh264enc` が実機に在れば、
-`bitrate=500` と `bitrate=4000` の 2 本を `EncodingProperties` として流し、
-`Mp4Bytes / DurationSec` の比（期待 高/低 ≥ 2）をレポートに出す。**この比は自動判定ではない**
+目標/ピーク `500/750` と `4000/6000` の 2 本を `EncodingProperties` として流し、
+`Mp4Bytes / DurationSec` の比をレポートに出す。**この比は自動判定ではない**
 ── ノイズが多く、赤くすると「このエンコーダーは壊れている」という誤った記録が残るため、
-終了コードには入れていない。**読まなければ何も守られない。**
+終了コードには入れていない。**読まなければ何も守られない。** VBR なので読み方は
+「高 > 低 かつ 高 ≤ その peak」であり、単純な ≥ 2 では読めない。
+
+**GPU の `vbr` ＋ `max-bitrate` は実機で一度も走っていない。** `qsvh264enc` の
+`rate-control=vbr` と nvcodec 3 種の `rc-mode=vbr` は同梱 DLL の enum nick と property blurb
+だけを根拠にしており、**この開発機にも CI にも GPU が無いので `ParseLaunch` すら通っていない**。
+プロパティ名か nick が違えば `ExpandAttempts` がプロパティ無しで拾い直すので録画は成立するが、
+そのとき帯域も GOP も効かない（合図は `gst.encoder selected` の `failedAttempts` が 0 でないこと）。
+`mfh264enc rc-mode=pcvbr` だけは E2E
+（`RecordingTests.RecordingBitrate_FollowsTheSourceSize_AndReachesTheEncoderString`）が
+毎回この機のソフト MFT で通している。
+
+**`openh264enc` は式が渡るだけで、効きは未検証。** `bitrate` は bit/sec（単位 1000）なので
+値は届くが、この要素の `rate-control` は既定のままで、目標として扱われるかどうかを
+どの層でも測っていない。`d3d12h264enc` / `amfh264enc` には**式そのものが渡らない**
+（`BitrateUnitPerKbps` が null なので `WithBitrateKbps` が素通しする）── これらが採用された
+機械では、録画も配信も要素の既定レート制御で走る。`gst.encoder selected` の
+`bitrate-kbps=` は**式が出した値**であって効いた値ではないので、
+起動文字列に `bitrate=` が在るかどうかと併せて読むこと。
 
 **DASH プレビュー側は依然として測られていない。** `WithBitrateKbps` を呼ぶのは
 `DashPreviewStream` と `TranscodeStreams.ResolveEncoder` の 2 か所で、

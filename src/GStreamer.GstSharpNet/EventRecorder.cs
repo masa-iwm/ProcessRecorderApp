@@ -1301,6 +1301,101 @@ public partial class EventRecorder : ObservableObject, IDisposable
     }
 
     /// <summary>
+    /// 録画ビットレートの式へ渡す「ソースの大きさ」を決める（純関数）。
+    ///
+    /// <para>
+    /// <b>出所は 3 つで、この優先順は固定である</b>:
+    /// </para>
+    /// <list type="number">
+    ///   <item><c>caps</c> ── 解決済みの <c>SrcPipeline</c> が <c>width</c> / <c>height</c> を
+    ///   固定しているなら、それが実際に流れる大きさそのものである。</item>
+    ///   <item><c>monitor</c> ── 画面キャプチャの caps は解像度を持たない構成が既定なので、
+    ///   当たったモニターの実寸（<see cref="MonitorInfo.Resolution"/>）を使う。
+    ///   <b>これが無いと 4K の画面が 1080p ぶんの帯域で録られる。</b></item>
+    ///   <item><c>assumed</c> ── どちらも読めないとき
+    ///   （<see cref="EncoderCatalog.AssumedWidth"/>×<see cref="EncoderCatalog.AssumedHeight"/>）。</item>
+    /// </list>
+    ///
+    /// <para>
+    /// <b><paramref name="source"/> はログへ出すためにある。</b> 式の値だけを見ても
+    /// 「小さいソースだから低い」のか「大きさを読めなかったから仮定値なのか」が
+    /// 区別できず、帯域が想定より低い録画物の原因を追えない。
+    /// </para>
+    /// </summary>
+    /// <param name="resolvedSrcPipeline">解決済みの <c>SrcPipeline</c>。</param>
+    /// <param name="monitor">同じ解決で当たったモニター（無ければ <see langword="null"/>）。</param>
+    /// <param name="source">大きさの出所（<c>caps</c> / <c>monitor</c> / <c>assumed</c>）。</param>
+    public static (int Width, int Height) RecordingSizeFor(
+        string? resolvedSrcPipeline, MonitorInfo? monitor, out string source)
+    {
+        // 大きさの読み取りは常時枝と同じ規則を使う（2 か所に書かない）。
+        if (ContinuousBranch.TryParseResolution(
+                ContinuousBranch.SourceSize(resolvedSrcPipeline), out int width, out int height))
+        {
+            source = "caps";
+            return (width, height);
+        }
+
+        if (ContinuousBranch.TryParseResolution(monitor?.Resolution, out width, out height))
+        {
+            source = "monitor";
+            return (width, height);
+        }
+
+        source = "assumed";
+        return (EncoderCatalog.AssumedWidth, EncoderCatalog.AssumedHeight);
+    }
+
+    /// <summary>
+    /// ログへ出す「録画の帯域」。<b>手動指定のときは目標が無い</b>
+    /// （<c>Kbps</c> が <see langword="null"/>、<c>SizeSource</c> は <c>manual</c>）──
+    /// 式を通っていないのに数値を出すと、実際には流れていない値を起動文字列の隣に並べることになる。
+    /// </summary>
+    /// <param name="Kbps">式が決めた目標（手動指定なら <see langword="null"/>）。</param>
+    /// <param name="SizeSource">
+    /// 大きさの出所（<c>caps</c>/<c>monitor</c>/<c>assumed</c>/<c>override</c>/<c>manual</c>）。
+    /// </param>
+    private readonly record struct BitratePlan(int? Kbps, string SizeSource)
+    {
+        /// <summary>手動指定（<c>EncodingProperties</c>）── 式は通らない。</summary>
+        public static BitratePlan Manual { get; } = new(null, "manual");
+
+        /// <summary>ログの断片（<c>bitrate-kbps=… size-source=…</c>）。</summary>
+        public string ToLogFields()
+            => (Kbps is { } kbps
+                    ? $"bitrate-kbps={kbps.ToString(System.Globalization.CultureInfo.InvariantCulture)} "
+                    : "")
+                + $"size-source={SizeSource}";
+    }
+
+    /// <summary>
+    /// <see cref="BuildEncoderCandidates"/> が使った帯域（ログ用）。
+    /// <b>ログの時点で解き直さない</b> ── <see cref="SrcPipeline"/> は UI から書き換わりうるので、
+    /// 候補を作った値とログの値が別物になりうる。
+    /// </summary>
+    private BitratePlan _bitratePlan = BitratePlan.Manual;
+
+    /// <summary><see cref="ResolveContinuousEncoder"/> が使った帯域（ログ用）。</summary>
+    private BitratePlan _continuousBitratePlan = BitratePlan.Manual;
+
+    /// <summary>
+    /// 本線の録画に当てる目標ビットレート（kbit/sec）と、その大きさの出所。
+    /// fps は <see cref="SourceFramerate"/>（読めなければ
+    /// <see cref="EncoderCatalog.AssumedFps"/>）。
+    /// </summary>
+    private BitratePlan RecordingBitrate()
+    {
+        var (width, height) = RecordingSizeFor(_resolvedSrcPipeline, _resolvedMonitor, out string source);
+        return new(EncoderCatalog.BitrateKbpsFor(width, height, FramerateOrAssumed(SourceFramerate())), source);
+    }
+
+    /// <summary>caps の framerate 文字列を fps へ。読めなければ <see cref="EncoderCatalog.AssumedFps"/>。</summary>
+    private static double FramerateOrAssumed(string? framerate)
+        => ContinuousFirstSampleBudget.TryParseFramerate(framerate, out int numerator, out int denominator)
+            ? (double)numerator / denominator
+            : EncoderCatalog.AssumedFps;
+
+    /// <summary>
     /// 試行するエンコーダー候補を決める。
     ///
     /// <see cref="EncodingProperties"/> がユーザーによって明示指定されている場合は、
@@ -1321,6 +1416,7 @@ public partial class EventRecorder : ObservableObject, IDisposable
             string factory = EncodingProperties.Split(' ', StringSplitOptions.RemoveEmptyEntries) is [var first, ..]
                 ? first
                 : EncodingProperties;
+            _bitratePlan = BitratePlan.Manual;
             return (H264EncoderDef[])[
                 new H264EncoderDef(factory, EncodingProperties, EncoderCatalog.NeedsSystemMemoryFor(factory, Type))];
         }
@@ -1331,7 +1427,15 @@ public partial class EventRecorder : ObservableObject, IDisposable
         var resolved = EncoderCatalog.Resolve(
             Type, PreferredH264Encoder, EncoderCatalog.ProbeWithGStreamer,
             EncoderCatalog.GopForFramerate(SourceFramerate()));
-        return EncoderCatalog.ExpandAttempts(resolved).ToArray();
+
+        // ビットレートは**大きさと fps から**決める（EncoderCatalog.BitrateKbpsFor）。
+        // **ExpandAttempts より前に当てる** ── 展開が作る「プロパティ無し」の再試行は
+        // bitrate= を持たないので、後から当てると素通し（単位も null）になるだけである。
+        // 単位を持たない定義（d3d12h264enc / amfh264enc）と裸名のフォールバックは
+        // WithBitrateKbps が同じインスタンスを返すので、ここでは何も変わらない。
+        _bitratePlan = RecordingBitrate();
+        int kbps = _bitratePlan.Kbps!.Value;
+        return EncoderCatalog.ExpandAttempts(resolved.Select(c => c.WithBitrateKbps(kbps))).ToArray();
     }
 
     /// <summary>
@@ -1478,9 +1582,11 @@ public partial class EventRecorder : ObservableObject, IDisposable
         // ── 残したまま渡すと `no property` でパイプラインが組めない。
         // 候補ループの中（InitializeWith）で解くと、同じ失敗が候補の数だけ繰り返される。
         //
-        // **列挙は指定が在るときだけ走らせる。** InitializeCore はレコーダーごと・
+        // **列挙は画面キャプチャとパス指定のときだけ走らせる。** InitializeCore はレコーダーごと・
         // 復帰のたびに走るので、無条件に列挙するとテストソースのレコーダーまで
         // デバイスプロバイダを 60 秒ごとに起こし続けることになる。
+        // 画面キャプチャで走らせるのはパス解決のためだけではない ── 録る画面の実寸が
+        // 録画ビットレートの式の唯一の材料だからである（RecordingSizeFor の size-source=monitor）。
         // **1 回だけ読む。** SrcPipeline は UI から書き換わりうるので、門と解決で
         // 別の値を見ると「列挙しなかったのに解決だけ走る」形になりうる。
         string? configuredSrcPipeline = SrcPipeline;
@@ -1502,6 +1608,7 @@ public partial class EventRecorder : ObservableObject, IDisposable
             throw new InvalidOperationException(unresolved);
         }
         _resolvedSrcPipeline = monitorSelection.Pipeline;
+        _resolvedMonitor = monitorSelection.Monitor;
 
         // 効かせられなかった指定は黙って捨てない（常時録画の上書きと同じ流儀）。
         // 縮退したことは画面からは分からないので、記録と状態の両方へ出す。
@@ -1573,8 +1680,15 @@ public partial class EventRecorder : ObservableObject, IDisposable
                 // 採用結果は activity.log へ出す。DebugLogEx.Log（gst_debug_log 経由）は
                 // GST_DEBUG が未設定だと何も出力しないため、既定の起動では「どのエンコーダーが
                 // 実際に動いたか」が誰にも見えなくなる ── GPU 実機での確認がこの1行に依存する。
+                // ビットレートは**式の結果と大きさの出所を並べて**出す ── 起動文字列の
+                // bitrate= だけでは、その値が「小さいソースだから低い」のか
+                // 「大きさを読めず仮定値に落ちたから」なのかが読み取れない。
+                // 採用された候補がプロパティ無しの再試行（ExpandAttempts）だった場合は
+                // 起動文字列に bitrate= が無いので、この 2 つと突き合わせれば分かる。
+                // 手動指定なら size-source=manual だけを出す（式を通っていないので目標が無い）。
                 Components.ActivityLog.Info("gst.encoder selected",
                     $"recorder='{Name}' type={Type} encoder='{candidate.LaunchString}' "
+                    + $"{_bitratePlan.ToLogFields()} "
                     + $"needsSystemMemory={candidate.NeedsSystemMemory} failedAttempts={failures.Count}");
                 if (0 < failures.Count)
                     Components.ActivityLog.Warn("gst.encoder fallback-from", string.Join(" | ", failures));
@@ -1897,6 +2011,14 @@ public partial class EventRecorder : ObservableObject, IDisposable
     private string? _resolvedSrcPipeline;
 
     /// <summary>
+    /// <see cref="_resolvedSrcPipeline"/> と同じ解決で当たったモニター（無ければ null）。
+    /// <b>録画ビットレートの式へ渡す大きさの第 2 の出所</b>である
+    /// （<see cref="RecordingSizeFor"/>）── 画面キャプチャの caps は解像度を持たない構成が
+    /// 既定なので、これが無いと 4K の画面でも仮定値の帯域で録ることになる。
+    /// </summary>
+    private MonitorInfo? _resolvedMonitor;
+
+    /// <summary>
     /// <c>.dot</c> の保存先（<c>AppSettings.GstDebugDumpDotDir</c> の static ミラー）。
     /// 空なら書かない。<c>GStreamer.GstSharpNet</c> は <c>AppSettings</c> を知らない設計なので、
     /// <see cref="OutputDirectory"/> と同じく static のミラーとして受け取る。
@@ -1926,6 +2048,34 @@ public partial class EventRecorder : ObservableObject, IDisposable
     private string ContinuousEffectiveFramerate()
         => ContinuousBranch.RequiresVideorate(ContinuousFramerate) ? ContinuousFramerate : SourceFramerate();
 
+    /// <summary>
+    /// 常時録画の枝に当てる目標ビットレート（kbit/sec）と、その大きさの出所。
+    ///
+    /// <para>
+    /// <b>大きさは枝の上書きが実際に効くならそれ（<c>override</c>）、効かなければ本線と同じ</b>
+    /// （<c>caps</c> / <c>monitor</c> / <c>assumed</c>）。効くかどうかの判定は
+    /// <c>ContinuousBranch.Plan</c> と同じ（<c>SourceSizeIsPinned</c>）── 揃えないと、
+    /// 落とされる上書きを真に受けて実際より小さい目標を出す。
+    /// </para>
+    /// </summary>
+    private BitratePlan ContinuousBitrate()
+    {
+        double fps = FramerateOrAssumed(ContinuousEffectiveFramerate());
+
+        // **上書きを数えるのは、それが実際に効く構成のときだけ。** ソース側の大きさが
+        // 固定されていなければ ContinuousBranch.Plan は解像度の上書きを落とす
+        // （落とさないと枝の要求が tee を越えて本線まで縮める）── 判定を揃えないと、
+        // 実際には本線と同じ大きさで流れる枝を 960x540 として解き、床の 300 kbit/sec へ潰す。
+        if (ContinuousBranch.SourceSizeIsPinned(_resolvedSrcPipeline)
+            && ContinuousBranch.TryParseResolution(ContinuousResolution, out int width, out int height))
+        {
+            return new(EncoderCatalog.BitrateKbpsFor(width, height, fps), "override");
+        }
+
+        var (w, h) = RecordingSizeFor(_resolvedSrcPipeline, _resolvedMonitor, out string source);
+        return new(EncoderCatalog.BitrateKbpsFor(w, h, fps), source);
+    }
+
     private H264EncoderDef ResolveContinuousEncoder()
     {
         // フレームレートを変えるには videorate が要る。同梱ランタイムには入れてあるが、
@@ -1945,6 +2095,7 @@ public partial class EventRecorder : ObservableObject, IDisposable
             string factory = ContinuousEncodingProperties.Split(' ', StringSplitOptions.RemoveEmptyEntries) is [var first, ..]
                 ? first
                 : ContinuousEncodingProperties;
+            _continuousBitratePlan = BitratePlan.Manual;
             return new H264EncoderDef(
                 factory, ContinuousEncodingProperties, EncoderCatalog.NeedsSystemMemoryFor(factory, Type));
         }
@@ -1956,7 +2107,13 @@ public partial class EventRecorder : ObservableObject, IDisposable
         var resolved = EncoderCatalog.Resolve(
             Type, PreferredH264Encoder, EncoderCatalog.ProbeWithGStreamer,
             EncoderCatalog.GopForFramerate(ContinuousEffectiveFramerate()));
-        foreach (var attempt in EncoderCatalog.ExpandAttempts(resolved))
+
+        // **ビットレートも枝の大きさと枝のレートで解く。** 本線の値を流用すると、
+        // 960x540/5fps の枝が 4K/30fps ぶんの目標で符号化され、セグメントの
+        // ディスク使用量が実際の画に対して桁違いになる。
+        _continuousBitratePlan = ContinuousBitrate();
+        int kbps = _continuousBitratePlan.Kbps!.Value;
+        foreach (var attempt in EncoderCatalog.ExpandAttempts(resolved.Select(c => c.WithBitrateKbps(kbps))))
             return attempt;
 
         throw new InvalidOperationException(
@@ -1986,6 +2143,7 @@ public partial class EventRecorder : ObservableObject, IDisposable
         ActualContinuousEncodingProperties = encoder.LaunchString;
         Components.ActivityLog.Info("recorder.continuous-init ok",
             $"recorder='{Name}' encoder='{encoder.LaunchString}' "
+            + $"{_continuousBitratePlan.ToLogFields()} "
             + $"framerate='{ContinuousFramerate}' resolution='{ContinuousResolution}' "
             + $"segmentSeconds={ContinuousSegmentSeconds}");
     }

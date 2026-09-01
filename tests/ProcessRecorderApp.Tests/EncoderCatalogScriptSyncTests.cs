@@ -403,18 +403,71 @@ public class EncoderCatalogScriptSyncTests
         {
             string template = inScript.First(r => r.Name == def.FactoryName).Template;
 
-            // 値の差し込み口はちょうど1つ（PowerShell の -f が使う {0}）。
+            // 差し込み口は 2 つ（PowerShell の -f が使う {0}=目標・{1}=ピーク）で、
+            // **どちらもちょうど 1 つずつ**。ピークの穴が無いと、高いケースだけ
+            // 既定の 3000 で頭打ちになったものを測ることになる。
             Assert.Single(Regex.Matches(template, @"\{0\}"));
+            Assert.Single(Regex.Matches(template, @"\{1\}"));
 
-            Assert.True(template.Replace("{0}", "2000", StringComparison.Ordinal) == def.LaunchString,
+            string filled = template
+                .Replace("{0}", "2000", StringComparison.Ordinal)
+                .Replace("{1}", "3000", StringComparison.Ordinal);
+
+            Assert.True(filled == def.LaunchString,
                 $"ビットレート ケースの雛形 '{def.FactoryName}' がカタログとずれている。"
                 + Environment.NewLine
-                + $"  スクリプト（既定値 2000 を入れたもの）: {template.Replace("{0}", "2000", StringComparison.Ordinal)}"
+                + $"  スクリプト（既定値 2000 / 3000 を入れたもの）: {filled}"
                 + Environment.NewLine
-                + $"  カタログ                              : {def.LaunchString}"
+                + $"  カタログ                                    : {def.LaunchString}"
                 + Environment.NewLine
                 + "このままだと実機で測るのは製品がもう作らない構成であり、しかもレポートは数字を出す。");
         }
+    }
+
+    /// <summary>
+    /// <b><c>Verify-HighResolution.ps1</c> の 4K 行が、製品が 4K で作る文字列と一致すること。</b>
+    ///
+    /// <para>
+    /// あの行は<b>手書きの起動文字列としてそのまま流れる</b>ので、カタログの既定
+    /// （2000 / 3000）のままだと、4K で測るのは製品が 4K では作らない構成だけになる。
+    /// <b>スイープ側は触っていない</b>（「解像度だけが違う」ことがあちらの価値）ので、
+    /// これは同じ 4K ソースを式の値で回す<b>別ケース</b>の行である。
+    /// <b>式の値を明示してあることが単位誤りの検出器でもある</b> ── 2000 は
+    /// kbit/sec でも bit/sec でも「ありそうな数」だが、12442 はそうではない。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void TheHighResolutionScriptsFourKEncoderLine_CarriesTheFormulaValue()
+    {
+        string text = File.ReadAllText(RepositoryFiles.At("tools", "Verify-HighResolution.ps1"));
+
+        int at = -1;
+        for (int i = text.IndexOf("$fourKFormulaEnc", StringComparison.Ordinal); i >= 0;
+             i = text.IndexOf("$fourKFormulaEnc", i + 1, StringComparison.Ordinal))
+        {
+            if (!SourceReferences.IsCommentLine(text, i)) { at = i; break; }
+        }
+        Assert.True(at >= 0, "Verify-HighResolution.ps1 に（コメントでない）$fourKFormulaEnc が無い。");
+
+        var literal = Regex.Match(text[at..], @"'([^']+)'");
+        Assert.True(literal.Success, "$fourKFormulaEnc に文字列リテラルが無い。");
+
+        // このケースのソースは 3840x2160 @ 15fps。GOP はスイープの行に揃えてある（既定の 60）。
+        int kbps = EncoderCatalog.BitrateKbpsFor(3840, 2160, 15);
+        string expected = EncoderCatalog.D3d12Candidates
+            .First(c => c.FactoryName == "qsvh264enc")
+            .WithBitrateKbps(kbps).LaunchString;
+
+        Assert.True(literal.Groups[1].Value == expected,
+            "Verify-HighResolution.ps1 の 4K 行が、製品が 4K で作る文字列とずれている。"
+            + Environment.NewLine
+            + $"  スクリプト: {literal.Groups[1].Value}"
+            + Environment.NewLine
+            + $"  製品（3840x2160@15fps の式 = {kbps} kbit/sec）: {expected}"
+            + Environment.NewLine
+            + "手書きの文字列はそのまま流れるので、ずれたままだとこのケースは"
+            + Environment.NewLine
+            + "製品の作らない帯域で回り、単位誤りも見えなくなる。");
     }
 
     /// <summary>

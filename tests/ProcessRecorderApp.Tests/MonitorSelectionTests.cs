@@ -445,17 +445,160 @@ public class MonitorSelectionTests
     // ---- 列挙を要求するかどうかの門 ----
 
     /// <summary>
-    /// <b>列挙は指定が在るときだけ。</b> <c>InitializeCore</c> はレコーダーごと・復帰のたびに
-    /// 走るので、無条件に列挙するとテストソースのレコーダーまでデバイスプロバイダを
+    /// <b>列挙が要るのは画面キャプチャか、パス指定が在るときだけ。</b>
+    ///
+    /// <para>
+    /// 画面キャプチャで無条件に要るのは<b>録る画面の実寸が録画ビットレートの式の材料</b>
+    /// だからで（<see cref="MonitorSelectionResult.Monitor"/>）、パス指定の有無とは別の理由である。
+    /// </para>
+    /// <para>
+    /// <b>それ以外は 1 回も列挙しない。</b> <c>InitializeCore</c> はレコーダーごと・復帰のたびに
+    /// 走るので、無条件に列挙するとテストソースやカメラのレコーダーまでデバイスプロバイダを
     /// 起こし続けることになる。
+    /// </para>
     /// </summary>
     [Theory]
     [InlineData(null, false)]
     [InlineData("", false)]
     [InlineData("videotestsrc is-live=true", false)]
-    [InlineData("d3d12screencapturesrc monitor-index=0", false)]
-    [InlineData("d3d12screencapturesrc monitor-handle=99", false)]
+    [InlineData("mfvideosrc device-index=0", false)]
+    // 画面キャプチャ ── 選択プロパティの書き方に依らず要る。
+    [InlineData("d3d12screencapturesrc monitor-index=0", true)]
+    [InlineData("d3d12screencapturesrc monitor-handle=99", true)]
+    [InlineData("d3d11screencapturesrc", true)]
     [InlineData("d3d12screencapturesrc monitor-device-path=x", true)]
-    public void RequiresMonitors_IsTrueExactlyWhenTheNameCanBeFound(string? pipeline, bool expected)
+    // 画面キャプチャでなくても、パス指定が書かれていれば解決のために要る。
+    [InlineData("somevendorsrc monitor-device-path=x", true)]
+    public void RequiresMonitors_IsTrueForScreenCaptureAndForAnyWrittenPath(string? pipeline, bool expected)
         => Assert.Equal(expected, MonitorSelection.RequiresMonitors(pipeline));
+    // ---- 当たったモニター（録画ビットレートの式へ渡す大きさの出所） ----
+
+    /// <summary>
+    /// <b>解決の結果には「実際に録るモニター」が付いてくる</b>
+    /// （<see cref="MonitorSelectionResult.Monitor"/>）。
+    ///
+    /// <para>
+    /// 画面キャプチャの <c>SrcPipeline</c> は解像度を caps に書かない構成が既定なので、
+    /// 実際に流れる大きさはこのモニターの実寸でしか分からない ──
+    /// <c>EventRecorder</c> が録画ビットレートの式へ渡す第 2 の出所である。
+    /// <b>これが null に落ちると 4K の画面が 1080p ぶんの帯域で録られる</b>ので、
+    /// 3 分岐（一致・番号へ縮退・分からない）を全部固定する。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void AResolvedPath_ReportsTheMatchedMonitor()
+    {
+        string pipeline = $"d3d12screencapturesrc monitor-device-path={QuotedDevicePath}";
+
+        var result = MonitorSelection.Resolve(pipeline, Two());
+
+        Assert.True(result.Succeeded);
+        Assert.Equal(1, result.Monitor?.Index);
+        Assert.Equal("3840x2160", result.Monitor?.Resolution);
+    }
+
+    /// <summary>
+    /// <b>番号へ縮退したときは、書かれている番号のモニター</b>
+    /// ── 実際に録られるのはパスで指した方ではなく番号の方である。
+    /// </summary>
+    [Fact]
+    public void ADegradationToTheIndex_ReportsTheMonitorAtThatIndex()
+    {
+        string pipeline =
+            $"d3d12screencapturesrc monitor-index=0 monitor-device-path={QuotedDevicePath}";
+
+        // パスは一致するがハンドルが読めない（規則 5）。番号 0 は別のモニターを指す。
+        var monitors = (MonitorInfo[])
+        [
+            Monitor(0, @"\\?\DISPLAY#OTHER#4&1&UID256#{e6f07b5f-ee97-4a90-b076-33f57bf4eaa7}"),
+            Monitor(1, DevicePath, handle: 0),
+        ];
+
+        var result = MonitorSelection.Resolve(pipeline, monitors);
+
+        Assert.True(result.Succeeded);
+        Assert.NotNull(result.Warning);
+        Assert.Equal(0, result.Monitor?.Index);
+    }
+
+    /// <summary>
+    /// <b>パス指定の無い画面キャプチャでも、番号で選ばれるモニターを当てる。</b>
+    /// これが<b>既定の構成</b>（設定画面が書くのは <c>monitor-index</c> だけ）なので、
+    /// ここが null に落ちると <b>4K の画面が仮定値 1920x1080 ぶんの帯域で録られる</b> ──
+    /// 「サイズに合わせた VBR」の本命が外れる。
+    /// </summary>
+    [Fact]
+    public void AScreenCaptureWithoutAPath_StillReportsTheMonitorAtTheWrittenIndex()
+    {
+        var result = MonitorSelection.Resolve("d3d12screencapturesrc monitor-index=1", Two());
+
+        Assert.True(result.Succeeded);
+        Assert.Null(result.Warning);
+        Assert.Equal(1, result.Monitor?.Index);
+        Assert.Equal("3840x2160", result.Monitor?.Resolution);
+    }
+
+    /// <summary>
+    /// 番号も書かれていなければ<b>要素の既定＝ 0 番</b>（それが実際に録られる画面である）。
+    /// <c>d3d11screencapturesrc</c> でも同じ（同じ選択プロパティを持つ）。
+    /// <b>文字列は 1 文字も変えない</b> ── 解決すべきものが何も無いので入力をそのまま返す。
+    /// </summary>
+    [Theory]
+    [InlineData("d3d12screencapturesrc")]
+    [InlineData("d3d11screencapturesrc")]
+    public void AScreenCaptureWithNoSelectionAtAll_ReportsTheFirstMonitor(string element)
+    {
+        string pipeline = $"{element} show-cursor=true ! video/x-raw(memory:D3D12Memory), framerate=30/1";
+
+        var result = MonitorSelection.Resolve(pipeline, Two());
+
+        Assert.True(result.Succeeded);
+        Assert.Equal(pipeline, result.Pipeline);
+        Assert.Equal(0, result.Monitor?.Index);
+    }
+
+    /// <summary>
+    /// <b>画面キャプチャでないソースは列挙もしないし、モニターも当てない。</b>
+    /// <c>videotestsrc</c> やカメラのレコーダーまで 60 秒ごとにデバイスプロバイダを
+    /// 起こしてはいけない（<see cref="MonitorSelection.RequiresMonitors"/>）。
+    /// </summary>
+    [Fact]
+    public void ANonScreenCaptureSource_NeedsNoMonitorsAndGetsNone()
+    {
+        const string pipeline =
+            "videotestsrc is-live=true ! videoconvert ! video/x-raw,format=I420,width=320,height=240,framerate=15/1";
+
+        Assert.False(MonitorSelection.RequiresMonitors(pipeline));
+        Assert.Null(MonitorSelection.Resolve(pipeline, Two()).Monitor);
+
+        // 画面キャプチャならパス指定が無くても列挙が要る。
+        Assert.True(MonitorSelection.RequiresMonitors("d3d12screencapturesrc monitor-index=0"));
+        Assert.True(MonitorSelection.RequiresMonitors("d3d11screencapturesrc"));
+    }
+
+    /// <summary>
+    /// <b>分からないときは null</b> ── 列挙が空（ヘッドレス・プロバイダ不在）／
+    /// 解決に失敗した／書かれた番号が一覧の範囲外／ソースが画面キャプチャでない。
+    /// 範囲外の番号で当てずっぽうに 1 台選ぶと、録られていない画面の実寸を帯域の根拠にしてしまう。
+    /// </summary>
+    [Fact]
+    public void TheMonitorIsNullWhenItCannotBeKnown()
+    {
+        // 列挙が空（パス指定の有無に関わらず）。
+        Assert.Null(MonitorSelection.Resolve("d3d12screencapturesrc monitor-index=0", None).Monitor);
+        Assert.Null(MonitorSelection.Resolve(
+            $"d3d12screencapturesrc monitor-index=0 monitor-device-path={QuotedDevicePath}", None).Monitor);
+
+        // 一致しない（規則 3・失敗）。
+        Assert.Null(MonitorSelection.Resolve(
+            $"d3d12screencapturesrc monitor-device-path={QuotedDevicePath}",
+            (MonitorInfo[])[Monitor(0, @"\\?\DISPLAY#OTHER#4&1&UID256#{e6f07b5f-ee97-4a90-b076-33f57bf4eaa7}")])
+            .Monitor);
+
+        // 書かれた番号が一覧の範囲外（パス指定の有無に関わらず）。
+        Assert.Null(MonitorSelection.Resolve("d3d12screencapturesrc monitor-index=7", Two()).Monitor);
+        Assert.Null(MonitorSelection.Resolve(
+            $"d3d12screencapturesrc monitor-index=7 monitor-device-path={QuotedDevicePath}",
+            (MonitorInfo[])[Monitor(0, DevicePath, handle: 0)]).Monitor);
+    }
 }

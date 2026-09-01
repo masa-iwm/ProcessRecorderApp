@@ -57,6 +57,20 @@ public sealed partial record H264EncoderDef(
     internal static partial System.Text.RegularExpressions.Regex BitrateTokenRegex();
 
     /// <summary>
+    /// <c>max-bitrate=&lt;数値&gt;</c> のトークン（VBR のピーク。値だけを置き換える）。
+    ///
+    /// <para>
+    /// <b><see cref="BitrateTokenRegex"/> とは別に持つ。</b> 目標とピークは別の値
+    /// （<see cref="EncoderCatalog.PeakBitrateKbpsFor"/> 倍）なので、1 本の正規表現で
+    /// 両方に一致させると<b>ピークが目標と同値になり VBR が実質 CBR になる</b>。
+    /// 先頭を <c>(?&lt;![-\w])</c> で切るのは <c>target-max-bitrate=</c> のような
+    /// 別のプロパティに一致させないため。
+    /// </para>
+    /// </summary>
+    [System.Text.RegularExpressions.GeneratedRegex(@"(?<![-\w])max-bitrate=\d+\b")]
+    internal static partial System.Text.RegularExpressions.Regex MaxBitrateTokenRegex();
+
+    /// <summary>
     /// プロパティを一切付けない、ファクトリ名だけの定義を返す。
     /// <b><see cref="BitrateUnitPerKbps"/> も null へ戻す</b> ── 落とした
     /// <c>LaunchString</c> にはもう <c>bitrate=</c> が無いので、残すと
@@ -80,6 +94,12 @@ public sealed partial record H264EncoderDef(
     /// 単位を持つのに <c>bitrate=</c> が無い定義は<b>設計違反</b>なので投げる ──
     /// 黙って元の値のまま返すと、指定した帯域が効いていないことに気付けない。
     /// </para>
+    /// <para>
+    /// <b><c>max-bitrate=</c> を持つ定義では VBR のピークも一緒に書き換える</b>
+    /// （<see cref="EncoderCatalog.PeakBitrateKbpsFor"/>）── 目標だけを下げると、
+    /// 据え置かれたピークのぶんまで実際のビットレートが伸びる。
+    /// トークンが無い定義（<c>x264enc</c> の ABR など）では何もしない。
+    /// </para>
     /// </summary>
     public H264EncoderDef WithBitrateKbps(int kbps)
     {
@@ -97,7 +117,18 @@ public sealed partial record H264EncoderDef(
         // **checked。** 単位が 1000 のエンコーダー（bit/sec で受ける定義）では
         // 大きな kbps が int を溢れ、投げずに負の bitrate 文字列を書いてしまう。
         string value = checked(kbps * unit).ToString(System.Globalization.CultureInfo.InvariantCulture);
-        return this with { LaunchString = BitrateTokenRegex().Replace(LaunchString, $"bitrate={value}", 1) };
+        string launch = BitrateTokenRegex().Replace(LaunchString, $"bitrate={value}", 1);
+
+        // ピークは「トークンが在れば書き換える」── 無い定義（x264enc の ABR）では
+        // 書く先が無いだけで、設計違反ではない。
+        if (MaxBitrateTokenRegex().IsMatch(launch))
+        {
+            string peak = checked(EncoderCatalog.PeakBitrateKbpsFor(kbps) * unit)
+                .ToString(System.Globalization.CultureInfo.InvariantCulture);
+            launch = MaxBitrateTokenRegex().Replace(launch, $"max-bitrate={peak}", 1);
+        }
+
+        return this with { LaunchString = launch };
     }
 }
 
@@ -189,10 +220,81 @@ public static class EncoderCatalog
     public const int AssumedFps = 30;
 
     /// <summary>
+    /// caps にもモニターにも大きさが無いときに想定する幅（px）。
+    /// <see cref="AssumedFps"/> と対になる（<c>EventRecorder.RecordingSizeFor</c> の
+    /// <c>size-source=assumed</c>）。
+    /// </summary>
+    public const int AssumedWidth = 1920;
+
+    /// <summary>caps にもモニターにも大きさが無いときに想定する高さ（px）。</summary>
+    public const int AssumedHeight = 1080;
+
+    /// <summary>
     /// 既定のフレームレートでの GOP 長（＝60）。文書と
     /// <c>tools/Verify-GpuEncoders.ps1</c> の手動指定行がこの値を基準にしている。
     /// </summary>
     public const int GopSize = AssumedFps * TargetKeyframeIntervalSeconds;
+
+    // ---- ビットレートの式 ------------------------------------------------------------
+
+    /// <summary>
+    /// 画素 1 つ・1 フレームあたりに割り当てるビット数。
+    /// <b>ライブ画質プリセットの尺度と揃えてある</b> ── <c>1080p</c> プリセットの
+    /// 6000 kbit/sec に対し、この係数での 1920×1080@30 は 6221 kbit/sec。
+    /// </summary>
+    public const double BitsPerPixel = 0.1;
+
+    /// <summary>
+    /// 式が返す下限（kbit/sec）。<b>低画質の床</b>で、小さく遅いソースが
+    /// 判読できない画になるのを防ぐ ── 例: 640×360@2fps は式では 46 だが 300 になる。
+    /// </summary>
+    public const int MinBitrateKbps = 300;
+
+    /// <summary>
+    /// 式が返す上限（kbit/sec）。<b>ディスクの天井</b>で、8K・高 fps の
+    /// 掛け算がそのまま録画のバイト数になるのを止める。
+    /// </summary>
+    public const int MaxBitrateKbps = 40000;
+
+    /// <summary>
+    /// VBR のピーク（<c>max-bitrate</c>）が目標の何倍か。
+    /// <see cref="MaxBitrateKbps"/> の clamp は目標側にだけ掛かるので、
+    /// ピークはこの倍率ぶん上を取りうる。
+    /// </summary>
+    public const double VbrPeakRatio = 1.5;
+
+    /// <summary>
+    /// 大きさとフレームレートから、録画・配信の目標ビットレート（kbit/sec）を決める。
+    ///
+    /// <para>
+    /// <b>式は 1 か所にしか無い</b>: <c>幅 × 高さ × fps × <see cref="BitsPerPixel"/> / 1000</c> を
+    /// <see cref="MinBitrateKbps"/>〜<see cref="MaxBitrateKbps"/> へ収める。
+    /// caps 文字列を受ける多重定義は<b>作らない</b> ── 大きさの出所は経路ごとに違い
+    /// （caps／モニターの実寸／仮定値）、その優先順位は呼び出し側の関心である。
+    /// </para>
+    /// <para>
+    /// <paramref name="fps"/> が 0 以下・幅高さが 0 以下のときは
+    /// <see cref="MinBitrateKbps"/> になる（clamp の下側）── 測れなかったソースへ
+    /// 天井の帯域を割り当てないため。
+    /// </para>
+    /// </summary>
+    public static int BitrateKbpsFor(int width, int height, double fps)
+    {
+        double kbps = (double)width * height * fps * BitsPerPixel / 1000.0;
+        if (!double.IsFinite(kbps) || kbps <= MinBitrateKbps)
+            return MinBitrateKbps;
+        if (MaxBitrateKbps <= kbps)
+            return MaxBitrateKbps;
+
+        return (int)Math.Round(kbps, MidpointRounding.AwayFromZero);
+    }
+
+    /// <summary>
+    /// 目標ビットレートに対する VBR のピーク（kbit/sec）。<b>切り上げる</b> ──
+    /// 切り捨てると目標と同値になる小さな値（例 2 kbps）でピークが目標を下回りうる。
+    /// </summary>
+    public static int PeakBitrateKbpsFor(int kbps)
+        => checked((int)Math.Ceiling(kbps * VbrPeakRatio));
 
     /// <summary>
     /// caps の framerate 文字列（<c>30/1</c> など）から、録画のキーフレーム間隔
@@ -236,30 +338,37 @@ public static class EncoderCatalog
     /// msvc 版と MSYS2 UCRT64 版で同一）。
     ///
     /// <para>
-    /// <b><c>rate-control=cbr</c> が要る</b> ── <c>bitrate</c> は <c>cqp</c> / <c>icq</c> では
+    /// <b><c>rate-control=vbr</c> が要る</b> ── <c>bitrate</c> は <c>cqp</c> / <c>icq</c> では
     /// 無視されるので、レート制御を品質基準のままにすると
     /// <see cref="H264EncoderDef.WithBitrateKbps"/> が書き換えた値がどこにも効かない。
-    /// この要素の <c>rate-control</c> の nick は cbr/vbr/cqp/avbr/icq/vcm/qvbr。
+    /// この要素の <c>rate-control</c> の nick は cbr/vbr/cqp/avbr/icq/vcm/qvbr で、
+    /// <c>vbr</c> は <c>bitrate</c> を目標・<c>max-bitrate</c> を上限として使う。
     /// </para>
     /// <para>
-    /// <b>これは録画の既定でもある。</b> 録画経路は <see cref="H264EncoderDef.WithBitrateKbps"/> を
-    /// 通らず <c>LaunchString</c> をそのまま流すので、Intel 機の既定録画は
-    /// <b>CBR 2000 kbit/sec</b> で符号化される。
+    /// <b><c>LaunchString</c> の 2000 / 3000 はテンプレートの既定値であって、録画で流れる値ではない。</b>
+    /// 録画経路（<c>EventRecorder.BuildEncoderCandidates</c> / <c>ResolveContinuousEncoder</c>）は
+    /// <see cref="EncoderCatalog.BitrateKbpsFor"/> の値を
+    /// <see cref="H264EncoderDef.WithBitrateKbps"/> で当ててから流すので、
+    /// <b>目標はソースの大きさと fps で決まり、ピークはその
+    /// <see cref="EncoderCatalog.VbrPeakRatio"/> 倍</b>になる。3000 は既定値 2000 のピーク
+    /// （＝ この 2 つが式と整合していることを L1 が縛っている）。
     /// </para>
     /// <para>
-    /// <b>この 2000 は解像度にも fps にも依らない固定値である。</b> 4K の画面キャプチャでも
-    /// CBR 2000 kbit/sec で符号化され（<c>tools/Verify-HighResolution.ps1</c> の 4K ケースが
-    /// まさにこの構成で回る）、<b>常時録画の枝も同じ <c>LaunchString</c></b> を使う
-    /// （<c>EventRecorder.ResolveContinuousEncoder</c>）ので、低 fps・低解像度の枝でも
-    /// 目標 2000 kbit/sec まで膨らみうる ── セグメントのディスク使用量はそのぶん増える。
+    /// <b>常時録画の枝も同じ式に乗る</b>（<c>EventRecorder.ResolveContinuousEncoder</c>。
+    /// 枝の大きさと枝のレートで解く）ので、低 fps・低解像度の枝はそのぶん低い目標になる。
     /// 実機での画質とサイズの確認は docs/gpu-verification.md の決定点にある。
     /// </para>
     /// </summary>
     private static H264EncoderDef Qsv(int gop) =>
-        new("qsvh264enc", $"qsvh264enc rate-control=cbr bitrate=2000 gop-size={gop}", NeedsSystemMemory: false,
-            BitrateUnitPerKbps: 1);
+        new("qsvh264enc", $"qsvh264enc rate-control=vbr bitrate=2000 max-bitrate=3000 gop-size={gop}",
+            NeedsSystemMemory: false, BitrateUnitPerKbps: 1);
 
-    /// <summary>x264（bitrate は kbit/sec。GOP は key-int-max）。</summary>
+    /// <summary>
+    /// x264（bitrate は kbit/sec。GOP は key-int-max）。
+    /// <b><c>max-bitrate</c> は無い</b> ── この要素は ABR で、ピークを持ちたい場合の
+    /// プロパティは <c>vbv-buf-capacity</c> である。したがって
+    /// <see cref="H264EncoderDef.WithBitrateKbps"/> は目標だけを書き換える。
+    /// </summary>
     private static H264EncoderDef X264(int gop) =>
         new("x264enc", $"x264enc tune=zerolatency bitrate=2000 speed-preset=ultrafast key-int-max={gop}", NeedsSystemMemory: true,
             BitrateUnitPerKbps: 1);
@@ -269,10 +378,20 @@ public static class EncoderCatalog
         new("openh264enc", $"openh264enc bitrate=2000000 gop-size={gop}", NeedsSystemMemory: true,
             BitrateUnitPerKbps: 1000);
 
-    /// <summary>Media Foundation（bitrate は kbit/sec）。</summary>
+    /// <summary>
+    /// Media Foundation（<c>bitrate</c> / <c>max-bitrate</c> はどちらも kbit/sec）。
+    ///
+    /// <para>
+    /// <b>レート制御は <c>rc-mode</c>、nick は cbr/pcvbr/uvbr/qvbr。</b>
+    /// <c>max-bitrate</c> が効くのは <c>pcvbr</c>（peak-constrained VBR）のときだけである
+    /// （同梱 DLL の property blurb）。<b>この機のソフト MFT でこの形が通ることは実測済み</b>
+    /// （<c>gst-launch</c> の終了コード 0、および E2E の
+    /// <c>RecordingTests.RecordingBitrate_FollowsTheSourceSize_AndReachesTheEncoderString</c>）。
+    /// </para>
+    /// </summary>
     private static H264EncoderDef MediaFoundation(int gop) =>
-        new("mfh264enc", $"mfh264enc bitrate=2000 gop-size={gop} low-latency=true", NeedsSystemMemory: true,
-            BitrateUnitPerKbps: 1);
+        new("mfh264enc", $"mfh264enc rc-mode=pcvbr bitrate=2000 max-bitrate=3000 gop-size={gop} low-latency=true",
+            NeedsSystemMemory: true, BitrateUnitPerKbps: 1);
 
     /// <summary>
     /// Direct3D12 の H.264 エンコーダー。<b><c>bitrate</c> は付けない</b> ── 実機が無く、
@@ -314,7 +433,7 @@ public static class EncoderCatalog
     /// <c>d3d12download ! videoconvert !</c> である。
     /// <b>この形で NVIDIA/Intel 実機の全ケースが OK</b>（<c>tools/Verify-GpuEncoders.ps1</c>。
     /// NVENC の 3 経路とも <c>retries</c> 0 で有効な MP4）。<b>ただしその走行の起動文字列は
-    /// <c>gop-size</c> だけのもの</b>で、<c>rc-mode=cbr bitrate=…</c> を付けた現行の形は
+    /// <c>gop-size</c> だけのもの</b>で、<c>rc-mode=vbr bitrate=… max-bitrate=…</c> を付けた現行の形は
     /// <b>実機未走行</b>である（メモリ交渉の結論はレート制御に依らない）。
     /// </para>
     /// <para>
@@ -323,7 +442,7 @@ public static class EncoderCatalog
     /// </para>
     /// </summary>
     private static H264EncoderDef NvD3d11(int gop) =>
-        new("nvd3d11h264enc", $"nvd3d11h264enc rc-mode=cbr bitrate=2000 gop-size={gop}", NeedsSystemMemory: true,
+        new("nvd3d11h264enc", $"nvd3d11h264enc rc-mode=vbr bitrate=2000 max-bitrate=3000 gop-size={gop}", NeedsSystemMemory: true,
             BitrateUnitPerKbps: 1);
 
     /// <summary>
@@ -335,20 +454,18 @@ public static class EncoderCatalog
     /// <para>
     /// <b>レート制御は <c>rc-mode</c>（<c>qsvh264enc</c> の <c>rate-control</c> ではない）。</b>
     /// nick は default/constqp/cbr/vbr/vbr-minqp/cbr-ld-hq/cbr-hq/vbr-hq。
-    /// <c>cbr</c> を明示するのは、<c>default</c> のままだと <c>bitrate</c> が効く保証が無いため。
-    /// 上限を別に持ちたい場合はこの要素の <c>max-bitrate</c> だが、
-    /// <see cref="H264EncoderDef.BitrateTokenRegex"/> は素の <c>bitrate=</c> しか書き換えない。
+    /// <c>vbr</c> を明示するのは、<c>default</c> のままだと <c>bitrate</c> が効く保証が無いため。
+    /// 上限は同じ要素の <c>max-bitrate</c>（kbit/sec。<c>cbr</c> では無視される）で、
+    /// <see cref="H264EncoderDef.MaxBitrateTokenRegex"/> が目標とは別の値へ書き換える。
     /// </para>
     /// <para>
-    /// <b>これは録画の既定でもある。</b> 録画経路は <see cref="H264EncoderDef.WithBitrateKbps"/> を
-    /// 通らず <c>LaunchString</c> をそのまま流すので、NVIDIA 機の既定録画は
-    /// <b>CBR 2000 kbit/sec</b> で符号化される。<b>解像度にも fps にも依らない固定値</b>で、
-    /// <b>常時録画の枝も同じ <c>LaunchString</c></b> を使う
-    /// （<c>EventRecorder.ResolveContinuousEncoder</c>）── 詳しくは <see cref="Qsv"/>。
+    /// <b>2000 / 3000 はテンプレートの既定値であって、録画で流れる値ではない</b> ──
+    /// 録画経路は <see cref="EncoderCatalog.BitrateKbpsFor"/> の値を
+    /// <see cref="H264EncoderDef.WithBitrateKbps"/> で当ててから流す。詳しくは <see cref="Qsv"/>。
     /// </para>
     /// </summary>
     private static H264EncoderDef Nvidia(int gop) =>
-        new("nvh264enc", $"nvh264enc rc-mode=cbr bitrate=2000 gop-size={gop}", NeedsSystemMemory: true,
+        new("nvh264enc", $"nvh264enc rc-mode=vbr bitrate=2000 max-bitrate=3000 gop-size={gop}", NeedsSystemMemory: true,
             BitrateUnitPerKbps: 1);
 
     /// <summary>
@@ -359,7 +476,7 @@ public static class EncoderCatalog
     /// NVIDIA 実機で選ばれて有効な MP4 を出すことを確認済み
     /// （<c>tools/Verify-GpuEncoders.ps1</c> の専用ケース。docs/gpu-verification.md）。
     /// <b>その確認は <c>gop-size</c> だけの起動文字列によるもので、
-    /// <c>rc-mode=cbr bitrate=…</c> を付けた現行の形は実機未走行</b>である。
+    /// <c>rc-mode=vbr bitrate=… max-bitrate=…</c> を付けた現行の形は実機未走行</b>である。
     /// <b>それでも後ろのままにしてある</b> ── 自動選択を前に出す根拠が無いのに
     /// <b>NVIDIA 機で選ばれるエンコーダーだけが変わる</b>からで、
     /// ここに置けば「明示の2つが両方だめだったときの最後の NVIDIA 経路」として増えるだけで済む。
@@ -374,7 +491,7 @@ public static class EncoderCatalog
     /// </para>
     /// </summary>
     private static H264EncoderDef NvAutoGpu(int gop) =>
-        new("nvautogpuh264enc", $"nvautogpuh264enc rc-mode=cbr bitrate=2000 gop-size={gop}", NeedsSystemMemory: true,
+        new("nvautogpuh264enc", $"nvautogpuh264enc rc-mode=vbr bitrate=2000 max-bitrate=3000 gop-size={gop}", NeedsSystemMemory: true,
             BitrateUnitPerKbps: 1);
 
     /// <summary>
