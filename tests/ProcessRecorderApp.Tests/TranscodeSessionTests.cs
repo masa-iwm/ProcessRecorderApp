@@ -29,8 +29,9 @@ public sealed class TranscodeSessionTests
     [Theory]
     // 位置指定を直接送る相手（パイプラインへ送ると mp4mux まで遡って 0 バイトで固まる）。
     [InlineData("qtdemux name=demux")]
-    // 間引きだけ（複製はしない）。
-    [InlineData("videorate drop-only=true")]
+    // 間引きだけ（複製はしない）。名前が要るのは、交渉済みの出力 fps を
+    // この要素の src pad から読むため（TranscodeSession.Retune）。
+    [InlineData("videorate name=rate drop-only=true")]
     [InlineData("videoscale")]
     [InlineData("videoconvert")]
     // セグメントは途中から取得される。SPS/PPS を各 IDR へ付けないと復帰できない。
@@ -66,6 +67,36 @@ public sealed class TranscodeSessionTests
     [Fact]
     public void TheSourcePathIsQuotedAndUsesForwardSlashes()
         => Assert.Contains("filesrc location=\"C:/rec/a b.mp4\"", Pipeline, StringComparison.Ordinal);
+
+    /// <summary>
+    /// <b>組み直すのは「測った GOP が要求より小さい」ときだけ。</b>
+    ///
+    /// <para>
+    /// 交渉される fps は上限 caps（<c>framerate=[1/1,{fps}/1]</c>）によって要求を超えないので、
+    /// 測った GOP が要求を上回ることは起こらない。等しい通常経路まで組み直すと、
+    /// <b>すべての要求が 2 回ぶんの <c>parse_launch</c> と状態遷移を払う</b>
+    /// ── 実 fps が分数のカメラ（<c>89/3</c>＝29.67 → 30）がまさに等しくなる形である。
+    /// </para>
+    /// </summary>
+    [Theory]
+    // 実 5fps の本を 30fps プリセットで（＝ sidecar の無い本）。
+    [InlineData(5, 30, true)]
+    // 89/3 は round して 30。要求と同値なので組み直さない。
+    [InlineData(30, 30, false)]
+    // 起こらない向きだが、上回ったからといって組み直さない。
+    [InlineData(30, 15, false)]
+    public void TheRebuildHappensOnlyWhenTheMeasuredGopIsShorter(int computed, int requested, bool expected)
+        => Assert.Equal(expected, TranscodeSession.NeedsRebuild(computed, requested));
+
+    /// <summary>
+    /// <b>交渉済みの fps を読む相手は名前で決まっている。</b> <see cref="TranscodeSession.RateElementName"/>
+    /// を変えたのにパイプライン文字列を直さないと、<c>GetByName</c> が null を返して
+    /// 黙って fallback へ倒れる（変換は成功したまま GOP だけ要求のままになる）。
+    /// </summary>
+    [Fact]
+    public void TheRateElementIsNamedInThePipeline()
+        => Assert.Contains(
+            $"videorate name={TranscodeSession.RateElementName} ", Pipeline, StringComparison.Ordinal);
 
     /// <summary>
     /// <b><c>SeekToStart</c> は破綻を見て降りる。</b> preroll しないまま壊れたパイプラインは

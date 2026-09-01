@@ -195,18 +195,38 @@ public static class EncoderCatalog
     public const int GopSize = AssumedFps * TargetKeyframeIntervalSeconds;
 
     /// <summary>
-    /// caps の framerate 文字列（<c>30/1</c> など）から GOP 長（フレーム数）を決める。
-    /// 読めなければ <see cref="GopSize"/>。解析は
-    /// <see cref="ContinuousFirstSampleBudget.TryParseFramerate"/> と同じ規則を使う
-    /// （フレームレートの読み方を 2 か所に書かない）。
+    /// caps の framerate 文字列（<c>30/1</c> など）から、録画のキーフレーム間隔
+    /// （<see cref="TargetKeyframeIntervalSeconds"/> 秒）ぶんの GOP 長を決める。
+    /// 読めなければ <see cref="GopSize"/>。
     /// </summary>
     public static int GopForFramerate(string? framerate)
+        => GopForFramerate(framerate, TargetKeyframeIntervalSeconds, GopSize);
+
+    /// <summary>
+    /// caps の framerate 文字列（<c>30/1</c> など）から
+    /// <paramref name="keyframeIntervalSeconds"/> 秒ぶんの GOP 長（フレーム数）を決める。
+    /// <b>GOP 長を秒から逆算する場所はここ 1 か所である</b>
+    /// ── 録画は 2 秒、トランスコードは <c>fragment</c> 1 つぶん（1 秒）と、
+    /// 欲しい間隔が経路ごとに違うので秒を引数で受ける。
+    ///
+    /// <para>
+    /// 解析は <see cref="ContinuousFirstSampleBudget.TryParseFramerate"/> と同じ規則を使う
+    /// （フレームレートの読み方を 2 か所に書かない）。<b>読めなければ
+    /// <paramref name="fallback"/> をそのまま返す</b> ── 呼び出し側にとって
+    /// 「測れなかった」と「測ったら同じだった」を区別する必要が無いので、
+    /// 既定値は呼び出し側が持つ。
+    /// </para>
+    /// </summary>
+    /// <param name="framerate">caps の <c>framerate</c>（<c>5/1</c> / <c>89/3</c> / <c>30</c>）。</param>
+    /// <param name="keyframeIntervalSeconds">欲しいキーフレーム間隔(秒)。</param>
+    /// <param name="fallback"><paramref name="framerate"/> が読めなかったときに返す GOP 長。</param>
+    public static int GopForFramerate(string? framerate, double keyframeIntervalSeconds, int fallback)
     {
         if (!ContinuousFirstSampleBudget.TryParseFramerate(framerate, out int numerator, out int denominator))
-            return GopSize;
+            return fallback;
 
         double fps = (double)numerator / denominator;
-        int gop = (int)Math.Round(fps * TargetKeyframeIntervalSeconds, MidpointRounding.AwayFromZero);
+        int gop = (int)Math.Round(fps * keyframeIntervalSeconds, MidpointRounding.AwayFromZero);
         return Math.Max(1, gop);
     }
 

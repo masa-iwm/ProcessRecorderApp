@@ -61,6 +61,26 @@ internal sealed class TranscodeSession
     public const int SeekRetryIntervalMs = 10;
 
     /// <summary>
+    /// 交渉済みの caps が <c>videorate</c> の src pad に現れるまで待つ上限(ms)。
+    /// <see cref="SeekTimeoutMs"/> / <see cref="ReaderExitTimeoutMs"/> と同じ 5 秒。
+    ///
+    /// <para>
+    /// <b>ここは <c>GetState</c> では待てない</b> ── <c>appsink async=false</c> では
+    /// <c>PAUSED</c> が preroll を待たないので、状態遷移が返った時点ではまだ
+    /// caps が流れていない（<see cref="SeekTimeoutMs"/> と同じ理由）。
+    /// <see cref="SeekRetryIntervalMs"/> ごとに pad を見に行く形で待つ
+    /// （<see cref="SeekToStart"/> と同じ）。
+    /// </para>
+    /// </summary>
+    public const int PrerollTimeoutMs = 5000;
+
+    /// <summary>
+    /// <c>videorate</c> に付ける名前。<b>交渉済みの出力 fps を読む場所</b>で、
+    /// <see cref="BuildPipeline"/> と <see cref="Retune"/> の両方が使う。
+    /// </summary>
+    public const string RateElementName = "rate";
+
+    /// <summary>
     /// <see cref="Close"/> が「引いている最中の <see cref="TryRead"/> が抜ける」のを待つ上限(ms)。
     /// <see cref="DashPreviewStream.CallbackExitTimeoutMs"/> と同じ 5 秒。
     /// </summary>
@@ -144,6 +164,12 @@ internal sealed class TranscodeSession
     /// 引き手が遅ければ appsink が上流を止める（配信物に穴を開けない）。
     /// </para>
     /// <para>
+    /// <c>videorate</c> に <see cref="RateElementName"/> と名前を付けるのは、
+    /// <b>交渉済みの出力 fps をその src pad から読む</b>ため（<see cref="Retune"/>）
+    /// ── 直後の capsfilter とは直リンクなので caps は同じもので、
+    /// <c>appsink</c> の caps は mux 済みなので使えない。
+    /// </para>
+    /// <para>
     /// <c>location</c> は二重引用符で囲む（録画パスに空白が入りうる）。区切りは <c>/</c> へ直す。
     /// </para>
     /// </summary>
@@ -151,7 +177,8 @@ internal sealed class TranscodeSession
         string filePath, int width, int height, int fps, string decoderLaunch, string encoderLaunch)
         => string.Create(CultureInfo.InvariantCulture,
             $"filesrc location=\"{filePath.Replace('\\', '/')}\" ! qtdemux name=demux ! "
-            + $"h264parse ! {decoderLaunch} ! videoconvert ! videoscale ! videorate drop-only=true ! "
+            + $"h264parse ! {decoderLaunch} ! videoconvert ! videoscale ! "
+            + $"videorate name={RateElementName} drop-only=true ! "
             + $"video/x-raw,width={width},height={height},framerate=[1/1,{fps}/1],pixel-aspect-ratio=1/1 ! "
             + $"videoconvert ! {encoderLaunch} ! h264parse config-interval=-1 ! "
             + $"mp4mux name=mux fragment-duration={FragmentDurationMs} fragment-mode=dash-or-mss ! "
@@ -160,7 +187,26 @@ internal sealed class TranscodeSession
     private readonly TranscodeOpen _open;
     private readonly PreviewQuality _quality;
     private readonly string _decoderLaunch;
-    private readonly string _encoderLaunch;
+
+    /// <summary>
+    /// GOP 長からエンコーダーの launch 文字列を解決する（<c>TranscodeStreams.ResolveEncoder</c>）。
+    /// <b>解決できなければ null</b> ── そのときは今の GOP のまま続ける。
+    /// </summary>
+    private readonly Func<int, string?> _resolveEncoder;
+
+    /// <summary>
+    /// 要求された GOP 長（<c>quality.Fps</c> を <see cref="FragmentDurationMs"/> 秒へ換算したもの）。
+    /// <b>測り直した GOP がこれを下回るときだけ組み直す</b> ── 交渉される fps は
+    /// 上限 caps によって <c>quality.Fps</c> を超えないので、上回ることは起こらない。
+    /// </summary>
+    private readonly int _requestedGop;
+
+    /// <summary>いま組んであるエンコーダーの launch 文字列（組み直しで入れ替わる）。</summary>
+    private string _encoderLaunch;
+
+    /// <summary>いま組んである GOP 長（組み直しで入れ替わる）。</summary>
+    private int _gop;
+
     /// <summary>
     /// 停止の記録（第 1 引数は <c>transcode.&lt;理由&gt;</c> のイベント名、第 2 引数は内訳）。
     /// <b>書き手は <see cref="TranscodeStreams"/> 側に置く</b> ── スクラッチの
@@ -194,11 +240,21 @@ internal sealed class TranscodeSession
     /// </summary>
     private int _closed;
 
+    /// <param name="open">この要求。</param>
+    /// <param name="quality">解決済みの 4 値。</param>
+    /// <param name="decoderLaunch">デコーダーの launch 文字列。</param>
+    /// <param name="encoderLaunch"><paramref name="gop"/> で解決済みのエンコーダーの launch 文字列。</param>
+    /// <param name="gop">要求された GOP 長。</param>
+    /// <param name="resolveEncoder">別の GOP 長でエンコーダーを解決し直す（<see cref="Retune"/> 用）。</param>
+    /// <param name="lease">補助エンコーダー枠。</param>
+    /// <param name="log">停止の記録。</param>
     public TranscodeSession(
         TranscodeOpen open,
         PreviewQuality quality,
         string decoderLaunch,
         string encoderLaunch,
+        int gop,
+        Func<int, string?> resolveEncoder,
         AuxiliaryEncoderLease lease,
         Action<string, string> log)
     {
@@ -206,12 +262,41 @@ internal sealed class TranscodeSession
         _quality = quality;
         _decoderLaunch = decoderLaunch;
         _encoderLaunch = encoderLaunch;
+        _requestedGop = gop;
+        _gop = gop;
+        _resolveEncoder = resolveEncoder;
         Lease = lease;
         _log = log;
     }
 
     /// <summary>この要求。</summary>
     public TranscodeOpen Open => _open;
+
+    /// <summary>
+    /// いま組んであるエンコーダーの launch 文字列。<b><c>transcode.start</c> が出すのはこれ</b>
+    /// ── 組み直した後は構築時のものと違う（<see cref="Retune"/>）。
+    /// </summary>
+    internal string EncoderLaunch => _encoderLaunch;
+
+    /// <summary>いま組んである GOP 長（<c>transcode.start</c> の <c>gop=</c>）。</summary>
+    internal int Gop => _gop;
+
+    /// <summary>
+    /// GOP 長をどう決めたか（<c>transcode.start</c> の <c>gop-source=</c>）。
+    /// <b>3 値</b>: <c>quality</c>（sidecar の fps が在るので 1 段。要求のまま）／
+    /// <c>negotiated</c>（交渉済みの実 fps で決めた ── 要求より短ければ組み直しており、
+    /// 同値なら組み直していない）／
+    /// <c>fallback</c>（交渉済みの fps が読めず、要求のまま続けた）。
+    /// </summary>
+    internal string GopSource { get; private set; } = GopSources.Quality;
+
+    /// <summary><see cref="GopSource"/> が取りうる値。</summary>
+    internal static class GopSources
+    {
+        public const string Quality = "quality";
+        public const string Negotiated = "negotiated";
+        public const string Fallback = "fallback";
+    }
 
     /// <summary>
     /// このセッションが握っている枠。<b>畳むのは <see cref="TranscodeStreams"/> の責務</b>
@@ -260,7 +345,8 @@ internal sealed class TranscodeSession
     /// ── 失敗は <see cref="Error"/> に文言を置き、<c>transcode.start-failed</c> を記録する。
     ///
     /// <para>
-    /// 手順は <c>PAUSED</c> →（<c>qtdemux</c> が受理するまで seek を試し直す）→ <c>PLAYING</c>。
+    /// 手順は <c>PAUSED</c> →（<c>qtdemux</c> が受理するまで seek を試し直す）→
+    /// （sidecar の fps が無い本だけ <see cref="Retune"/>）→ <c>PLAYING</c>。
     /// <b>seek は最初のバッファが <c>mp4mux</c> へ届く前でなければならない</b>
     /// ── 一度データが通った後の flush では <c>moov</c> が出し直されず、
     /// 最初の <c>moof</c> に seek 前のサンプルが残る（実測）。<c>start=0</c> でも同じ手順を通る。
@@ -283,31 +369,11 @@ internal sealed class TranscodeSession
 
             try
             {
-                string desc = BuildPipeline(
-                    _open.FilePath, _quality.Width, _quality.Height, _quality.Fps,
-                    _decoderLaunch, _encoderLaunch);
-
-                // **ParseLaunch も try の内側で**（要素やプロパティが版によって無ければ
-                // Gst.GLib.GException を投げる）。
-                var pipeline = (Pipeline)Gst.Global.ParseLaunch(desc);
-                _pipeline = pipeline;
-                pipeline.SetName($"transcode-{_open.SessionId}");
-
-                _sink = (GstApp.AppSink?)pipeline.GetByName("sink")
-                    ?? throw new InvalidOperationException("the transcode pipeline has no appsink");
-                var demux = pipeline.GetByName("demux")
-                    ?? throw new InvalidOperationException("the transcode pipeline has no qtdemux");
-
-                // 購読は状態遷移より前に済ませる（NULL のバスには post が届かない）。
-                if (pipeline.GetBus() is { } bus)
-                    _subscription = bus.SubscribeSyncDrop((_, m) => OnBusMessage(m));
-
-                if (pipeline.SetState(State.Paused) == StateChangeReturn.Failure)
-                    throw new InvalidOperationException("the transcode pipeline did not want to pause");
-
-                // 位置指定の途中で閉じられたら PLAYING へは進めない。
-                if (SeekToStart(demux)
-                    && pipeline.SetState(State.Playing) == StateChangeReturn.Failure)
+                // 位置指定の途中で閉じられたら（Assemble / Retune が false）PLAYING へは進めない。
+                if (Assemble()
+                    && Retune()
+                    && _pipeline is { } running
+                    && running.SetState(State.Playing) == StateChangeReturn.Failure)
                 {
                     throw new InvalidOperationException("the transcode pipeline did not want to play");
                 }
@@ -329,6 +395,174 @@ internal sealed class TranscodeSession
             if (Interlocked.CompareExchange(ref _closed, 0, 0) != 0)
                 ShutDown(ClaimPipeline());
         }
+    }
+
+    /// <summary>
+    /// いまの <see cref="_encoderLaunch"/> でパイプラインを組み、<c>PAUSED</c> にして
+    /// 位置指定まで済ませる。<b><see cref="_readLock"/> を保持したまま呼ぶこと。</b>
+    /// <b>組み直し（<see cref="Retune"/>）も同じ道を通る</b> ── 2 本目だけ別の手順で
+    /// 組むと、片方でしか起きない失敗ができる。
+    /// </summary>
+    /// <returns>位置指定が受理されたら true、閉じられて降りたら false。</returns>
+    private bool Assemble()
+    {
+        string desc = BuildPipeline(
+            _open.FilePath, _quality.Width, _quality.Height, _quality.Fps,
+            _decoderLaunch, _encoderLaunch);
+
+        // **ParseLaunch も try の内側で**（要素やプロパティが版によって無ければ
+        // Gst.GLib.GException を投げる）── 呼び手の Start が try の中で呼ぶ。
+        var pipeline = (Pipeline)Gst.Global.ParseLaunch(desc);
+        _pipeline = pipeline;
+        pipeline.SetName($"transcode-{_open.SessionId}");
+
+        _sink = (GstApp.AppSink?)pipeline.GetByName("sink")
+            ?? throw new InvalidOperationException("the transcode pipeline has no appsink");
+        var demux = pipeline.GetByName("demux")
+            ?? throw new InvalidOperationException("the transcode pipeline has no qtdemux");
+
+        // 購読は状態遷移より前に済ませる（NULL のバスには post が届かない）。
+        if (pipeline.GetBus() is { } bus)
+            _subscription = bus.SubscribeSyncDrop((_, m) => OnBusMessage(m));
+
+        if (pipeline.SetState(State.Paused) == StateChangeReturn.Failure)
+            throw new InvalidOperationException("the transcode pipeline did not want to pause");
+
+        return SeekToStart(demux);
+    }
+
+    /// <summary>
+    /// <b>交渉済みの出力 fps で GOP を測り直し、必要なら組み直す。</b>
+    /// <b><see cref="_readLock"/> を保持したまま呼ぶこと。</b>
+    ///
+    /// <para>
+    /// <b>通るのは sidecar の fps が無い本だけ</b>（<c>Open.Source.Fps</c> が 0）。
+    /// そのとき <c>PreviewQualityPresets.Resolve</c> は fps をクランプできないので、
+    /// プリセットの生値（720p なら 30）がそのまま要求され、GOP もその枚数になる
+    /// ── 実 5 fps の本なら 6 秒間隔で、<c>fragment</c> は
+    /// <c>fragment-duration</c> どおり 1 秒で切られるのに<b>同期サンプルで始まるのは
+    /// 6 個に 1 個だけ</b>になる（実測）。
+    /// </para>
+    /// <para>
+    /// <b>組み直す条件は「測った GOP が要求より小さい」だけである。</b>
+    /// 交渉される fps は上限 caps によって要求を超えないので、測った GOP が
+    /// 要求を上回ることは起こらない（例: <c>89/3</c> は round(29.67)=30 で
+    /// 要求 30 と同値 ── 組み直さない）。
+    /// </para>
+    /// <para>
+    /// <b>読めなければ今の GOP のまま続ける。</b> preroll が間に合わない・caps が無い・
+    /// <c>framerate</c> が無い、のどれでも「今日変換できる本」を失敗させない。
+    /// </para>
+    /// </summary>
+    /// <returns>そのまま <c>PLAYING</c> へ進んでよければ true、閉じられて降りたら false。</returns>
+    private bool Retune()
+    {
+        if (_open.Source is { Fps: > 0 } || _pipeline is not { } pipeline)
+            return true;
+
+        string? framerate = WaitForNegotiatedFramerate(pipeline);
+        int computed = EncoderCatalog.GopForFramerate(
+            framerate, FragmentDurationMs / 1000.0, _requestedGop);
+
+        if (!NeedsRebuild(computed, _requestedGop))
+        {
+            GopSource = framerate is null ? GopSources.Fallback : GopSources.Negotiated;
+            return true;
+        }
+
+        // **エンコーダーを先に解決する。** 解決できないまま畳むと、走っていた
+        // パイプラインを失ったうえで組み直せない。
+        if (_resolveEncoder(computed) is not { } encoder)
+        {
+            GopSource = GopSources.Fallback;
+            return true;
+        }
+
+        // ShutDown は _sink と購読も外す（Monitor は再入可能なので自分のロックで通る）。
+        ShutDown(ClaimPipeline());
+        if (Closed)
+            return false;
+
+        _gop = computed;
+        _encoderLaunch = encoder;
+        GopSource = GopSources.Negotiated;
+
+        // 1 本目の観測を持ち越さない。EOS は Ended が 2 本目を終端と読むから、
+        // 破綻は 2 本目の SeekToStart が「位置指定より前に壊れた」と読むから
+        // ── 1 本目の SetState(Null) は購読が生きたまま走るので、畳みで出た
+        // ERROR がここに残っていると、健全な 2 本目が偽の失敗で終わる。
+        _eos = false;
+        _error = null;
+
+        return Assemble();
+    }
+
+    /// <summary>
+    /// 測り直した GOP <paramref name="computed"/> で組み直すか。
+    /// <b>要求より小さいときだけ</b>である（等しい通常経路で組み直すと、
+    /// すべての要求が 2 回ぶんの <c>parse_launch</c> と状態遷移を払う）。
+    /// </summary>
+    internal static bool NeedsRebuild(int computed, int requested) => computed < requested;
+
+    /// <summary>
+    /// <c>videorate</c> の src pad に交渉済みの <c>framerate</c> が現れるまで待って返す
+    /// （<c>5/1</c> の形）。<b>読めなければ null。</b>
+    ///
+    /// <para>
+    /// <b><c>GetState</c> では待てない</b> ── <c>appsink async=false</c> では
+    /// <c>PAUSED</c> が preroll を待たないので、状態遷移が返った時点ではまだ
+    /// caps が流れていない。<see cref="SeekToStart"/> と同じ形で、
+    /// <see cref="SeekRetryIntervalMs"/> ごとに <see cref="Closed"/> と
+    /// <see cref="_error"/> を見ながら <see cref="PrerollTimeoutMs"/> まで pad を見に行く。
+    /// </para>
+    /// <para>
+    /// <b>所有権</b>: pad は interned な GObject なので Dispose しない。
+    /// <c>Caps</c>（MiniObject）と <c>Structure</c>（Boxed の複製）は破棄する。
+    /// </para>
+    /// </summary>
+    private string? WaitForNegotiatedFramerate(Pipeline pipeline)
+    {
+        if (pipeline.GetByName(RateElementName) is not { } rate)
+            return null;
+
+        var spin = Stopwatch.StartNew();
+        while (true)
+        {
+            if (Closed || _error is not null)
+                return null;
+
+            // **GetState は待たせない**（タイムアウト 0）── ここで待つと Closed を
+            // 見ない時間ができる。遷移そのものは appsink async=false なので
+            // ASYNC を返さず、待つ意味も無い。
+            pipeline.GetState(out _, out _, ClockTime.Zero);
+
+            if (rate.GetStaticPad("src") is { } pad && ReadFramerate(pad) is { } framerate)
+                return framerate;
+
+            if (PrerollTimeoutMs <= spin.ElapsedMilliseconds)
+                return null;
+
+            Thread.Sleep(SeekRetryIntervalMs);
+        }
+    }
+
+    /// <summary><paramref name="pad"/> の交渉済み caps の <c>framerate</c>（無ければ null）。</summary>
+    private static string? ReadFramerate(Pad pad)
+    {
+        using var caps = pad.GetCurrentCaps();
+        if (caps is null || caps.IsAny() || caps.IsEmpty() || caps.GetSize() == 0)
+            return null;
+
+        using var structure = caps.GetStructure(0);
+        if (structure is null
+            || !structure.GetFraction("framerate", out int numerator, out int denominator)
+            || numerator <= 0
+            || denominator <= 0)
+        {
+            return null;
+        }
+
+        return string.Create(CultureInfo.InvariantCulture, $"{numerator}/{denominator}");
     }
 
     /// <summary>

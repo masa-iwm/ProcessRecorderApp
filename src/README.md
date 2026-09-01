@@ -2495,6 +2495,20 @@ E2E の `TranscodeTests` と `tools/Verify-Transcode.ps1 -GstBin … -H264Decode
 カメラ**（実測 `89/3`＝約 29.67。sidecar の `fps` は整数へ丸められるので `min(プリセット,
 ソース)` が 30 になる）である。**上げ方向の複製（`drop-only` を外す）は採らない。**
 
+**GOP は交渉済みの実 fps で決め直す（sidecar の fps が無い本だけ）。** 要求時に読めているのは
+`quality.Fps` だけで、sidecar の無い本ではそれがプリセットの生値（720p なら 30）のまま
+エンコーダーの GOP 長になる ── 実 5fps の本ではキーフレームが 30 枚＝6 秒間隔になり、
+`fragment` は `fragment-duration` どおり 1 秒で切られるのに、**同期サンプルで始まるのは
+6 個に 1 個だけ**になる（実測。`fragment` の長さは GOP に依らない）。そこで `Start()` は
+`PAUSED` ＋ 位置指定の後、`videorate name=rate` の src pad の交渉済み caps から `framerate` を
+読み（`appsink` の caps は mux 済みなので使えない）、`fragment` 1 つぶん（1 秒）の GOP 長を
+測り直す（`gop-source=negotiated`）。**測った長さが要求より短いときだけ**エンコーダーを
+解決し直して同じ手順で組み直す ── 交渉される fps は上限 caps によって要求を超えないので、
+`89/3` のように丸めて同値になる本は「実 fps で決めた」まま組み直さない。caps が 5 秒（`PrerollTimeoutMs`）以内に読めない・`framerate` が無い・
+新しい GOP でエンコーダーを解決できない、のいずれでも**要求のまま続行する**
+（今日変換できる本を失敗させない）。どちらを通ったかは `transcode.start` の
+`gop=` / `gop-source=` に出る。
+
 **GPU エンコーダーにはビットレートが効かない。** カタログの 4 種（`nvh264enc` /
 `qsvh264enc` / `d3d12h264enc` / `amfh264enc`）は `BitrateUnitPerKbps` が null で、
 `H264EncoderDef.WithBitrateKbps` が書き込む先を持たない ── プリセットで効くのは
@@ -3040,7 +3054,7 @@ GPU テクスチャになるため**アクセシブルテキストが 1 つも�
 | `dash.stream-stop` | INFO | `DashPreviewStream.Teardown` | 第 2 パイプラインを退役させた（`reason=` は `lease expired｜settings changed｜caps changed｜encoder failed｜pts rewind｜gop too long｜init unparsable｜splitter fault｜stream error｜close` の 10 種。上の停止理由の表を参照） |
 | `dash.stream-error` | ERROR | `DashPreviewStream` の `OnRawSample` / `StartMux` / `OnMuxSample` / `OnBusMessage` / `Retire` | 押し込みの失敗／候補のエンコーダーで組めなかった（候補が尽きた場合は**1 回だけ**）／切り出し・集約の破綻（`reason=` ＋ 自由文の `detail=`）／バスの ERROR ／退役したパイプラインを綺麗に落とせなかった。**録画は止めない**ので、ここが唯一の観測点になる |
 | `dash.leak` | WARN | `DashPreviewStream.Close` | `Monitor.TryEnter(_muxLock, 5000)` が抜けず、第 2 パイプラインを止めずに手放した（`preview.leak` と同じ規律） |
-| `transcode.start` | INFO | `TranscodeStreams.TryOpen` | トランスコードを 1 本開いた（`session=` / `file=` / `start=` / `quality=` / `size=WxH` / `fps=` / `decoder=` / `encoder=`）。**実際に採用されたデコーダーとエンコーダーはここにしか出ない** |
+| `transcode.start` | INFO | `TranscodeStreams.TryOpen` | トランスコードを 1 本開いた（`session=` / `file=` / `start=` / `quality=` / `size=WxH` / `fps=` / `gop=` / `gop-source=` / `decoder=` / `encoder=`）。**実際に採用されたデコーダーとエンコーダー、実際に走っている GOP 長はここにしか出ない**（`gop-source=` は `quality` ＝ sidecar の fps が在るので要求のまま / `negotiated` ＝ 交渉済みの実 fps で決めた（要求より短ければ組み直しており、同値なら組み直していない）/ `fallback` ＝ 実 fps が読めず要求のまま） |
 | `transcode.eos` | INFO | `TranscodeSession.Close` | 変換元の末尾まで流し切って畳んだ（`session=`） |
 | `transcode.client-closed` | INFO | 同上 | 読み手が閉じたので畳んだ（切断・画質の切り替え・ページ遷移）。**枠はまだ返さない**（`GraceMs` の猶予に入る） |
 | `transcode.replaced` | INFO | 同上 | 同じ `session` の新しい要求（＝シーク）に置き換えられた。枠はそのまま引き継ぐ |

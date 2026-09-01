@@ -81,7 +81,15 @@ internal sealed partial class TranscodeStreams : ITranscodeSource, IDisposable
 
         var quality = PreviewQualityPresets.Resolve(preset, open.Source);
 
-        if (ResolveEncoder(quality) is not { } encoder)
+        // **GOP は fragment 1 つぶんの秒数で決める**（フレーム数の直渡しはしない）。
+        // 要求の時点で読めているのは quality.Fps だけで、実際に交渉される fps が
+        // それを下回る本は TranscodeSession.Retune が測り直して組み直す。
+        int gop = EncoderCatalog.GopForFramerate(
+            string.Create(CultureInfo.InvariantCulture, $"{quality.Fps}/1"),
+            TranscodeSession.FragmentDurationMs / 1000.0,
+            quality.Fps);
+
+        if (ResolveEncoder(quality, gop) is not { } encoder)
         {
             ActivityLog.Error("transcode.error",
                 $"session='{open.SessionId}' {DashPreviewReasons.EncoderUnavailable}");
@@ -120,7 +128,9 @@ internal sealed partial class TranscodeStreams : ITranscodeSource, IDisposable
                 lease = acquired;
             }
 
-            session = new TranscodeSession(open, quality, decoder, encoder, lease, Log);
+            session = new TranscodeSession(
+                open, quality, decoder, encoder, gop, retuned => ResolveEncoder(quality, retuned),
+                lease, Log);
             _sessions[open.SessionId] = session;
         }
 
@@ -146,11 +156,14 @@ internal sealed partial class TranscodeStreams : ITranscodeSource, IDisposable
             return false;
         }
 
+        // **エンコーダーと GOP は session から読む** ── 交渉済みの fps で組み直していれば、
+        // 実際に走っているのは上で解決したものではない（gop-source= がその内訳）。
         ActivityLog.Info("transcode.start",
             string.Create(CultureInfo.InvariantCulture,
                 $"session='{open.SessionId}' file='{open.FilePath}' start={open.StartSeconds:0.###} "
                 + $"quality={open.QualityId} size={quality.Width}x{quality.Height} fps={quality.Fps} "
-                + $"decoder='{decoder}' encoder='{encoder}'"));
+                + $"gop={session.Gop} gop-source={session.GopSource} "
+                + $"decoder='{decoder}' encoder='{session.EncoderLaunch}'"));
 
         reader = new SessionReader(this, session);
         reason = null;
@@ -162,12 +175,17 @@ internal sealed partial class TranscodeStreams : ITranscodeSource, IDisposable
     /// ── 要求 1 本ごとに候補列を舐めると、失敗のたびにその回数ぶん
     /// <c>parse_launch</c> と状態遷移を回すことになる（<c>DashPreviewStream</c> と同じ判断だが、
     /// あちらは次のサンプルで次の候補へ進めるのに対し、こちらは 1 要求で終わる）。
+    ///
+    /// <para>
+    /// <b>GOP 長は引数で受ける</b> ── <c>TranscodeSession.Retune</c> が交渉済みの fps で
+    /// 測り直した長さで解決し直すので、ここで <c>quality</c> から導いてはいけない。
+    /// </para>
     /// </summary>
-    private static string? ResolveEncoder(PreviewQuality quality)
+    private static string? ResolveEncoder(PreviewQuality quality, int gop)
     {
         var candidates = EncoderCatalog.Resolve(
             EventRecordingType.System, EventRecorder.PreferredH264Encoder,
-            EncoderCatalog.ProbeWithGStreamer, gop: quality.Fps);
+            EncoderCatalog.ProbeWithGStreamer, gop);
 
         if (candidates.Count == 0)
             return null;

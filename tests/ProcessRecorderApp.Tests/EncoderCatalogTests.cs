@@ -213,6 +213,56 @@ public class EncoderCatalogResolveTests
         => Assert.Equal(EncoderCatalog.GopSize, EncoderCatalog.GopForFramerate(framerate));
 
     /// <summary>
+    /// <b>間隔（秒）は引数で受ける。</b> 録画は 2 秒、トランスコードは <c>fragment</c>
+    /// 1 つぶん（1 秒）で、逆算の場所は 1 つである。
+    ///
+    /// <para>
+    /// トランスコードでこれが効かないと、実 5fps の本を 30fps プリセットで変換したときに
+    /// キーフレームが 30 枚＝6 秒間隔になり、1 秒ごとに切られる <c>fragment</c> のうち
+    /// <b>同期サンプルで始まるのは 6 個に 1 個だけ</b>になる（実測）。
+    /// </para>
+    /// </summary>
+    [Theory]
+    // トランスコード（1 秒）: 実 fps がそのまま GOP 長になる。
+    [InlineData("5/1", 1.0, 5)]
+    [InlineData("30/1", 1.0, 30)]
+    // 分数のカメラは最近接へ丸める（89/3 ＝ 29.67 → 30 ＝ 要求と同値で組み直しは起きない）。
+    [InlineData("89/3", 1.0, 30)]
+    // 録画（2 秒）: 既定の呼び出しと同じ値。
+    [InlineData("30/1", 2.0, 60)]
+    // 0 にはしない（そのまま起動文字列に入る）。
+    [InlineData("1/2", 1.0, 1)]
+    public void GopForFramerate_TakesTheKeyframeIntervalInSeconds(
+        string framerate, double seconds, int expected)
+        => Assert.Equal(expected, EncoderCatalog.GopForFramerate(framerate, seconds, fallback: 999));
+
+    /// <summary>
+    /// 読めなければ<b>呼び出し側が渡した既定</b>を返す。トランスコードはそこへ
+    /// 「要求された GOP 長」を渡すので、測れなかった本は要求のまま走り続ける。
+    /// </summary>
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("variable")]
+    [InlineData("30/0")]
+    public void GopForFramerate_UnreadableFramerate_ReturnsTheCallersFallback(string? framerate)
+        => Assert.Equal(30, EncoderCatalog.GopForFramerate(framerate, 1.0, fallback: 30));
+
+    /// <summary>
+    /// 既定の呼び出しは「2 秒・<see cref="EncoderCatalog.GopSize"/>」の overload である
+    /// （録画の 2 か所の挙動を変えない）。
+    /// </summary>
+    [Theory]
+    [InlineData("30/1")]
+    [InlineData("5/1")]
+    [InlineData(null)]
+    public void GopForFramerate_DefaultOverload_IsTheTwoSecondOne(string? framerate)
+        => Assert.Equal(
+            EncoderCatalog.GopForFramerate(
+                framerate, EncoderCatalog.TargetKeyframeIntervalSeconds, EncoderCatalog.GopSize),
+            EncoderCatalog.GopForFramerate(framerate));
+
+    /// <summary>
     /// 低いフレームレートでも候補の起動文字列に反映されること
     /// （<see cref="EncoderCatalog.Resolve"/> の <c>gop</c> 引数を落とすと、
     /// カタログの既定値が黙って使われて上の事故に戻る）。

@@ -47,6 +47,19 @@ public sealed class TranscodeTests(PublishedApp app, ITestOutputHelper output)
     /// </summary>
     private const string HighQuality = "720p";
 
+    /// <summary>
+    /// キーフレーム間隔を見るときのソースの実 fps。<b><see cref="HighQuality"/>（30fps）より
+    /// はっきり低い</b>ので、GOP を要求 fps のフレーム数で決めると 30 枚＝6 秒間隔になる。
+    /// </summary>
+    private const int LowSourceFps = 5;
+
+    /// <summary>
+    /// <see cref="LowSourceFps"/> の本に期待する「同期サンプルで始まる <c>moof</c>」の下限。
+    /// <b>実測: 実尺 6 秒で <c>moof</c> は 6 個</b>（<c>fragment-duration</c> どおり 1 秒ごと）で、
+    /// GOP が 6 秒間隔だとそのうち同期で始まるのは先頭の 1 個だけになる。
+    /// </summary>
+    private const int LowFpsMinimumSyncFragments = 4;
+
     /// <summary>常時録画のセグメントの長さ（製品の下限）。</summary>
     private const int ContinuousSegmentSeconds = 5;
 
@@ -756,6 +769,76 @@ public sealed class TranscodeTests(PublishedApp app, ITestOutputHelper output)
         var (stream, _) = await ReadAndProbeAsync(response, $"transcode {sourceFramerate}");
         Assert.True(stream.StartsWithInitSegment, $"先頭が ftyp+moov ではありません: {stream}");
         Assert.True(1 <= stream.MoofCount, $"fragment が 1 つも出ていません: {stream}");
+    }
+
+    /// <summary>
+    /// <b>sidecar の無い低 fps の本でも、<c>fragment</c> が同期サンプルで始まること。</b>
+    ///
+    /// <para>
+    /// sidecar の無い本はソース未知として <see cref="HighQuality"/>（30fps）の生値が要求され、
+    /// 出力の実 fps は <c>videorate drop-only=true</c> ＋ 上限 caps によって<b>ソースの
+    /// <see cref="LowSourceFps"/> のまま</b>になる。GOP を要求 fps のフレーム数で決めると
+    /// キーフレームは 30 枚＝6 秒間隔になり、<b>実測では <c>moof</c> 6 個のうち
+    /// 同期で始まるのは先頭の 1 個だけ</b>になる ── その本文は先頭からしか復号できず、
+    /// クライアントは途中の fragment へ飛べない。
+    /// </para>
+    /// <para>
+    /// <b><c>fragment</c> の長さは判別に使えない。</b> <c>mp4mux
+    /// fragment-mode=dash-or-mss</c> は <c>fragment-duration</c> のとおり 1 秒で切るので、
+    /// GOP が 6 秒あっても <c>moof</c> は 6 個出る（実測）── 分かれるのは
+    /// <c>trun</c> の先頭サンプルが同期かどうかだけである。
+    /// </para>
+    /// <para>
+    /// 遅い機械では実尺が伸び縮みするので、個数そのものではなく下限
+    /// （<see cref="LowFpsMinimumSyncFragments"/>）で見る。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task ATranscodeOfALowFramerateSource_KeepsEveryFragmentSeekable()
+    {
+        var settings = TranscodeSettings(limit: 2, recorders: 1);
+        settings.Recorders[0].SrcPipeline =
+            "videotestsrc is-live=true do-timestamp=true ! videoconvert ! "
+            + $"video/x-raw,format=I420,width={SourceWidth},height={SourceHeight},"
+            + $"framerate={LowSourceFps}/1";
+
+        using var instance = AppInstance.Create(app, settings, configure: Configure);
+        int port = WaitForPort(instance);
+        using var client = CreateClient(port);
+
+        await AssertTranscodeIsAvailableAsync(client, instance);
+        string recording = await RecordOnceAsync(client);
+
+        // sidecar を消してソース未知にする（＝プリセットの生値 30fps が要求される）。
+        foreach (string sidecar in Directory.GetFiles(instance.RecordingsDir, "*.mp4.json"))
+        {
+            File.Delete(sidecar);
+            output.WriteLine($"消した sidecar: {sidecar}");
+        }
+
+        using var response = await client.GetAsync(
+            TranscodePath(recording, 0, "s1", HighQuality), HttpCompletionOption.ResponseHeadersRead, Ct);
+
+        Assert.True(
+            response.StatusCode == HttpStatusCode.OK,
+            $"{(int)response.StatusCode} {await response.Content.ReadAsStringAsync(Ct)}"
+                + Environment.NewLine + TranscodeDiagnostics(instance));
+
+        var (stream, _) = await ReadAndProbeAsync(response, $"transcode {LowSourceFps}fps");
+        Assert.True(stream.StartsWithInitSegment, $"先頭が ftyp+moov ではありません: {stream}");
+
+        // 1 秒刻みそのものは GOP に依らず成り立つ（形が崩れていないことの確認）。
+        Assert.True(
+            LowFpsMinimumSyncFragments <= stream.MoofCount,
+            $"fragment が {LowFpsMinimumSyncFragments} 個未満です: {stream}");
+
+        int synced = stream.MoofStartsWithSync.Count(sync => sync);
+        Assert.True(
+            LowFpsMinimumSyncFragments <= synced,
+            $"同期サンプルで始まる fragment が {synced} 個しかありません"
+                + $"（{LowFpsMinimumSyncFragments} 個以上を期待 ── "
+                + "GOP が実 fps 基準になっていません）: "
+                + $"{stream}" + Environment.NewLine + TranscodeDiagnostics(instance));
     }
 
     // ---- (5) 常時録画のセグメント ----
