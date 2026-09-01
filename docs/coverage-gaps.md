@@ -757,11 +757,14 @@ H.264 デコーダーを要求し、同梱ランタイムにソフトウェア�
 終了コードには入れていない。**読まなければ何も守られない。** VBR なので読み方は
 「高 > 低 かつ 高 ≤ その peak」であり、単純な ≥ 2 では読めない。
 
-**GPU の `vbr` ＋ `max-bitrate` は実機で一度も走っていない。** `qsvh264enc` の
-`rate-control=vbr` と nvcodec 3 種の `rc-mode=vbr` は同梱 DLL の enum nick と property blurb
-だけを根拠にしており、**この開発機にも CI にも GPU が無いので `ParseLaunch` すら通っていない**。
-プロパティ名か nick が違えば `ExpandAttempts` がプロパティ無しで拾い直すので録画は成立するが、
-そのとき帯域も GOP も効かない（合図は `gst.encoder selected` の `failedAttempts` が 0 でないこと）。
+**GPU の `vbr` ＋ `max-bitrate` は Intel + NVIDIA の実機で確認済みだが、この検証は
+自動では守られていない。** `qsvh264enc rate-control=vbr` と nvcodec 3 種の `rc-mode=vbr` は
+Intel + NVIDIA 機の `Verify-GpuEncoders.ps1` で全ケース `failedAttempts=0`、比の表も
+4 種とも高 > 低（1.45〜1.53、peak 内）で、`bitrate` が kbit/sec の目標として効くことまで実測済み。
+**この開発機にも CI にも GPU が無い**ので、起動文字列を変えた日にはこの確認が丸ごと失効する
+── そのときは同スクリプトを実機で流し直すこと。プロパティ名か nick が違えば `ExpandAttempts` が
+プロパティ無しで拾い直すので録画は成立するが、帯域も GOP も効かない
+（合図は `gst.encoder selected` の `failedAttempts` が 0 でないこと）。`amfh264enc`（AMD）は実機が無く未確認のまま。
 `mfh264enc rc-mode=pcvbr` だけは E2E
 （`RecordingTests.RecordingBitrate_FollowsTheSourceSize_AndReachesTheEncoderString`）が
 毎回この機のソフト MFT で通している。
