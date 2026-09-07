@@ -326,7 +326,7 @@ jobs:
       # 発行ディレクトリの名前は形態の名前と同じなので、matrix.flavor がそのままパスになる。
       # **元と同じパスへ戻す** ── 失敗時に上げる `*.pdb` の経路を発行ジョブと揃えておく。
       - name: Download the publish
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: publish-${{ matrix.flavor }}
           path: src/ProcessRecorderApp/bin/Release/win-x64/publish/${{ matrix.flavor }}
@@ -336,7 +336,7 @@ jobs:
       # -NoBuild でそこの dll を組み立てて VSTest に渡す。
       # obj/ は artifact に入らないが、dll を直接指す形は project.assets.json を要求しない。
       - name: Download the E2E test build
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: e2e-tests
           path: tests/ProcessRecorderApp.E2E/bin/Release/net10.0-windows10.0.19041.0
