@@ -981,22 +981,98 @@ public sealed class WebUiBrowserTests(PublishedApp app, ITestOutputHelper output
     private const string PreviewWaitingCount = "window.__praWaiting";
 
     /// <summary>
-    /// プレビューのライブ端の余裕（<c>buffered.end</c> − <c>currentTime</c>）。バッファが空なら -1。
-    /// <b>これが 1 秒を切ったまま推移する形が、DASH で止まり続けている姿である</b>
-    /// ── セグメントは 1 秒に 1 つしか来ないので、1 秒未満の余裕では次が間に合わない。
+    /// プレビューのライブ端の余裕（<c>buffered.end</c> − <c>currentTime</c>）を返す関数。
+    /// バッファが空なら -1。<b>これが 1 秒を切ったまま推移する形が、DASH で止まり続けている
+    /// 姿である</b> ── セグメントは 1 秒に 1 つしか来ないので、1 秒未満の余裕では次が間に合わない。
+    /// <b>式はここ 1 つ</b>（標本器も 1 秒ごとの読みもこれを呼ぶ ── 別々に書くと値が食い違う）。
     /// </summary>
-    private const string PreviewCushion = """
-        (function () {
-          var video = document.getElementById('previewPlayer');
+    private const string PreviewCushionOfVideo = """
+        (function (video) {
           var ranges = video.buffered;
           return ranges.length === 0 ? -1 : ranges.end(ranges.length - 1) - video.currentTime;
+        })
+        """;
+
+    /// <summary>
+    /// ライブ端の余裕を <see cref="CushionSamplerIntervalMs"/> ミリ秒ごとに測り、その最大と
+    /// 最小を <c>window.__praCushionPeak</c> / <c>__praCushionMin</c> へ溜め始める。
+    /// <b>append の周期より細かく測ること</b> ── 余裕はセグメントが 1 本届くたびに跳ね、
+    /// 次が届くまで秒あたり 1 秒ずつ減る鋸歯なので、1 秒ごとに 1 回だけ読むと
+    /// <b>append との位相で決まる定数</b>しか見えない（同じ健全な再生が、位相しだいで
+    /// 全標本 1.15 秒にも 1.33/0.30 の交互にもなる）。
+    /// 二度仕掛けても走るのは 1 つのまま、溜めた値だけが戻る。
+    /// 最小の初期値は <see cref="NoCushionSample"/>（標本が 1 つも無い秒の印）。
+    /// </summary>
+    private static readonly string StartSamplingPreviewCushion = Inv($$"""
+        (function () {
+          window.__praCushionPeak = -1;
+          window.__praCushionMin = {{NoCushionSample}};
+          window.__praCushionSamples = 0;
+          if (window.__praCushionTimer) { clearInterval(window.__praCushionTimer); }
+          window.__praCushionTimer = setInterval(function () {
+            var video = document.getElementById('previewPlayer');
+            if (!video) { return; }
+            var cushion = {{PreviewCushionOfVideo}}(video);
+            if (window.__praCushionPeak < cushion) { window.__praCushionPeak = cushion; }
+            if (cushion < window.__praCushionMin) { window.__praCushionMin = cushion; }
+            window.__praCushionSamples++;
+          }, {{CushionSamplerIntervalMs}});
+          return true;
+        })()
+        """);
+
+    /// <summary>
+    /// 溜まった最大・最小・その標本数・その瞬間の値・再生位置・停止数を<b>ひと息に</b>読み、
+    /// 溜めた側を戻す。<b>読みと戻しは 1 つの式の中で行う</b>
+    /// ── 2 回に分けて評価すると、あいだの標本がどちらの秒にも入らない。
+    /// </summary>
+    private static readonly string ReadAndResetPreviewCushion = Inv($$"""
+        (function () {
+          var video = document.getElementById('previewPlayer');
+          var peak = window.__praCushionPeak;
+          var min = window.__praCushionMin;
+          var samples = window.__praCushionSamples;
+          window.__praCushionPeak = -1;
+          window.__praCushionMin = {{NoCushionSample}};
+          window.__praCushionSamples = 0;
+          return {
+            peak: peak, min: min, samples: samples, cushion: {{PreviewCushionOfVideo}}(video),
+            currentTime: video.currentTime, waiting: {{PreviewWaitingCount}}
+          };
+        })()
+        """);
+
+    private const string StopSamplingPreviewCushion = """
+        (function () {
+          if (window.__praCushionTimer) { clearInterval(window.__praCushionTimer); }
+          window.__praCushionTimer = 0;
+          return true;
         })()
         """;
+
+    /// <summary>余裕を測る周期（ミリ秒）。セグメント長 1 秒に対して十分細かいこと。</summary>
+    private const int CushionSamplerIntervalMs = 50;
+
+    /// <summary>
+    /// 最小の初期値（標本が 1 つも無い秒に残る値）。<b>無限大は使えない</b>
+    /// ── <c>returnByValue</c> の JSON では <c>null</c> になり、読む側が型で落ちる。
+    /// この値がそのまま出る秒は <see cref="MinimumCushionSamplesPerSecond"/> の断定で落ちる。
+    /// </summary>
+    private const int NoCushionSample = 1000000;
+
+    /// <summary>
+    /// <b>1 秒あたりに要る標本数の下限。</b> 測れていない標本器は「最大＝その瞬間の値」を
+    /// 返すだけで、1 秒ごとに読んでいた頃と同じ位相依存の値になる ── 黙って戻るので、
+    /// 数そのものを断定する。周期 <see cref="CushionSamplerIntervalMs"/> なら 1 秒に約 20 回で、
+    /// 下限はタイマーが 1 Hz へ絞られた形（1 回）だけを弾く高さに採ってある。
+    /// </summary>
+    private const int MinimumCushionSamplesPerSecond = 5;
 
     /// <summary>
     /// 滑らかさを測る秒数（1 秒ごとに 1 標本）。<b>定常への遷移が末尾の窓へ入らない長さが要る</b>
     /// ── 遷移そのものが停止を伴うので、窓に掛かると「定常で止まっている」ことにされる。
-    /// 遅い機械では遷移が t+9 まで来る（それまで余裕 0.9 秒前後・停止ゼロ、遷移で 1.9 秒台へ跳ねる）。
+    /// 遅い機械では遷移が t+9 まで来る（1 Hz の瞬間値で見た観測: それまで余裕 0.9 秒前後・停止ゼロ、
+    /// 遷移で 1.9 秒台へ跳ねる。今の標本は毎秒の最大/最小なので尺度が違う）。
     /// </summary>
     private const int DashSmoothnessSeconds = 18;
 
@@ -1015,14 +1091,18 @@ public sealed class WebUiBrowserTests(PublishedApp app, ITestOutputHelper output
     private const int DashSteadySamples = 5;
 
     /// <summary>
-    /// <b>一度は届かなければならないライブ端の余裕（全標本の最大）。</b>
-    /// ライブ端の 0.5 秒手前へ寄せ続ける形では届かない ── そこでの余裕は寄せ先＋append の
-    /// ジッタで頭打ちになる（実測の上限 1.05 秒）。届く側の実測の下限は 1.26 秒で、
-    /// 閾値はその間から採ってある。
-    /// <b>余裕は末尾では見ない</b> ── 寄せは前へしか跳べないので終わりの値はドリフトのぶん
-    /// だけ振れる（実測 0.58〜1.98）。
+    /// <b>ライブ端の余裕の大きさそのものは断定しない。</b> セグメントは 1 秒に 1 本しか
+    /// 生まれず、余裕は届くたびに跳ねて秒あたり 1 秒ずつ減る鋸歯なので、どの高さで測っても
+    /// 値は append との位相で決まる ── 「頂点が閾値に届くこと」は、ライブ端へ寄り切った形でも
+    /// 1 本の append で満たされてしまい、健全な定常と分けられない（実測: 瞬間値が 0.4〜0.5 秒に
+    /// 張り付いた 8 秒の頂点が 1.05〜1.35 秒で、定常の頂点 1.25〜1.48 秒と重なる）。
+    /// <b>製品側にも余裕を保証する機構は無い</b> ── 追従が動くのは遅れが 4.5 秒を超えたときだけで、
+    /// join 時に先行バッファを作るかは未決である。<b>観測点は停止の回数</b>（<c>waiting</c>）に置き、
+    /// 余裕は<b>合否に関わらず毎秒の最大・最小を出力へ残す</b>（先行バッファを決めるときの較正データ）。
+    /// 断定に使うのは「停止の無い末尾の窓で余裕が負でないこと」だけである
+    /// ── 停止の最中は再生位置が <c>buffered.end</c> に並ぶので、そこでの 0 前後は正常である。
     /// </summary>
-    private const double DashPeakCushionSeconds = 1.2;
+    private const double MinimumSteadyCushionSeconds = 0;
 
     /// <summary>
     /// <b>DASH プレビューがライブ端の手前で止まり続けないこと。</b>
@@ -1030,15 +1110,23 @@ public sealed class WebUiBrowserTests(PublishedApp app, ITestOutputHelper output
     /// <para>
     /// <see cref="TheDashPreviewPlaysInTheBrowser"/> は「2 秒で 1 秒以上進む」しか見ないので、
     /// <b>止まっては跳ぶ</b>形（進みは足りているのに絵はカクついている）を通してしまう。
-    /// 機構はこうである: 追従がライブ端の 0.5 秒手前へ寄せる → DASH は 1 秒セグメント×
-    /// 1 秒ポーリングなので次のセグメントが間に合わず停止（<c>waiting</c>）→ 停止の間に
-    /// 遅れが開いてまた寄せる、の周期。余裕は 0.5 秒に張り付き、<c>waiting</c> が数秒ごとに増える。
+    /// 機構はこうである: 追従がライブ端の 0.5 秒手前へ寄せる → セグメントは 1 秒に 1 本しか
+    /// 生まれないので次が間に合わず停止（<c>waiting</c>）→ 停止の間に遅れが開いてまた寄せる、
+    /// の周期。余裕は 0.5 秒に張り付き、<c>waiting</c> が数秒ごとに増える。
     /// </para>
     /// <para>
-    /// 断定は 3 つ ── <b>進み</b>（止まっていない）・<b>末尾 5 標本での停止の増分</b>
-    /// （定常で止まっていない）・<b>全標本のどこかで余裕が閾値に届くこと</b>
-    /// （ライブ端に貼り付いていない）。<b>18 標本の軌跡は合否に関わらず 1 行で
-    /// <c>output</c> へ出す</b> ── 緑の run も較正のデータになる。
+    /// 断定は 4 つ ── <b>進み</b>（止まっていない）・<b>末尾 5 標本での停止の増分</b>
+    /// （定常で止まっていない）・<b>停止の無い末尾 5 標本で余裕が負に落ちていないこと</b>
+    /// （測っている対象が正しい）・<b>標本器が実際に測れていること</b>。
+    /// <b>余裕の大きさは断定しない</b> ── 詳細は <see cref="MinimumSteadyCushionSeconds"/>。
+    /// </para>
+    /// <para>
+    /// 余裕は<b>ページの中の <see cref="CushionSamplerIntervalMs"/> ミリ秒の標本器</b>で測り、
+    /// 1 秒ごとにその 1 秒の最大・最小を読んで捨てる ── 1 秒周期で読むと、append との位相で
+    /// 決まる定数しか見えない（余裕はセグメントが届くたびに跳ねて秒あたり 1 秒ずつ減る鋸歯で、
+    /// 同じ健全な再生が位相しだいで全標本 1.15 秒にも 1.33/0.30 の交互にも見える）。
+    /// <b>18 標本の軌跡は合否に関わらず 1 行で <c>output</c> へ出す</b>
+    /// ── join 時に先行バッファを作るかを決めるときの較正データになる。
     /// </para>
     /// </summary>
     [Fact]
@@ -1069,19 +1157,36 @@ public sealed class WebUiBrowserTests(PublishedApp app, ITestOutputHelper output
             await browser.WaitUntilAsync($"{TextOf("previewStatus")}.indexOf('DASH: live') === 0", PlaybackBudget, Ct),
             "DASH の配信が始まりませんでした: " + await browser.EvaluateStringAsync(TextOf("previewStatus"), Ct));
 
+        // 標本器は観測の窓に入る直前に仕掛ける（最初の 1 秒も満たされた窓にする）。
+        Assert.True(await browser.EvaluateBoolAsync(StartSamplingPreviewCushion, Ct),
+            "ライブ端の余裕の標本器を仕掛けられませんでした。");
+
         double before = await browser.EvaluateNumberAsync(PreviewTime, Ct);
-        double[] cushions = new double[DashSmoothnessSeconds];
+        double[] peaks = new double[DashSmoothnessSeconds];
+        double[] troughs = new double[DashSmoothnessSeconds];
         double[] stalls = new double[DashSmoothnessSeconds];
+        double[] sampleCounts = new double[DashSmoothnessSeconds];
         for (int second = 1; second <= DashSmoothnessSeconds; second++)
         {
             await Task.Delay(TimeSpan.FromSeconds(1), Ct);
-            cushions[second - 1] = await browser.EvaluateNumberAsync(PreviewCushion, Ct);
-            double position = await browser.EvaluateNumberAsync(PreviewTime, Ct);
-            stalls[second - 1] = await browser.EvaluateNumberAsync(PreviewWaitingCount, Ct);
+
+            // 読みと戻しは 1 つの式の中（あいだの標本を落とさない）。
+            var sample = await browser.EvaluateAsync(ReadAndResetPreviewCushion, Ct);
+            peaks[second - 1] = sample.GetProperty("peak").GetDouble();
+            troughs[second - 1] = sample.GetProperty("min").GetDouble();
+            sampleCounts[second - 1] = sample.GetProperty("samples").GetDouble();
+            double instant = sample.GetProperty("cushion").GetDouble();
+            double position = sample.GetProperty("currentTime").GetDouble();
+            stalls[second - 1] = sample.GetProperty("waiting").GetDouble();
             output.WriteLine(
                 Inv($"dash smoothness t+{second,2}s: currentTime={position:F2}s ")
-                + Inv($"cushion={cushions[second - 1]:F2}s waiting={stalls[second - 1]:F0}"));
+                + Inv($"cushionPeak={peaks[second - 1]:F2}s cushionMin={troughs[second - 1]:F2}s ")
+                + Inv($"cushion={instant:F2}s samples={sampleCounts[second - 1]:F0} ")
+                + Inv($"waiting={stalls[second - 1]:F0}"));
         }
+
+        Assert.True(await browser.EvaluateBoolAsync(StopSamplingPreviewCushion, Ct),
+            "ライブ端の余裕の標本器を止められませんでした。");
 
         double after = await browser.EvaluateNumberAsync(PreviewTime, Ct);
         string state = await browser.EvaluateStringAsync(TextOf("previewStatus"), Ct);
@@ -1093,16 +1198,26 @@ public sealed class WebUiBrowserTests(PublishedApp app, ITestOutputHelper output
             Inv($"末尾の窓（{DashSteadySamples}）が標本数（{DashSmoothnessSeconds}）以上です ── 基準の標本が取れません。"));
         int tail = DashSmoothnessSeconds - DashSteadySamples;
         double tailWaiting = stalls[DashSmoothnessSeconds - 1] - stalls[tail - 1];
-        double peakCushion = cushions.Max();
+        double peakCushion = peaks.Max();
+        double tailTrough = troughs.Skip(tail).Min();
 
-        // **軌跡は合否に関わらず出す。** 緑の run も閾値を較正するためのデータである。
+        // **軌跡は合否に関わらず出す。** 緑の run も、先行バッファを決めるときの較正データになる。
         string trace = string.Join(" ", Enumerable.Range(0, DashSmoothnessSeconds).Select(
-            i => Inv($"t+{i + 1}:{cushions[i]:F2}/{stalls[i]:F0}")));
+            i => Inv($"t+{i + 1}:{peaks[i]:F2}-{troughs[i]:F2}/{stalls[i]:F0}")));
         output.WriteLine(Inv($"dash smoothness trace (cushion/waiting): {trace}"));
         output.WriteLine(
             Inv($"dash smoothness: {before:F2}s -> {after:F2}s (+{after - before:F2}s), ")
             + Inv($"last {DashSteadySamples} samples: waiting +{tailWaiting:F0}, ")
-            + Inv($"peak cushion {peakCushion:F2}s, status='{state}'"));
+            + Inv($"cushion min {tailTrough:F2}s, peak cushion {peakCushion:F2}s (all {DashSmoothnessSeconds}), ")
+            + Inv($"status='{state}'"));
+
+        // **標本器が測れていたことを先に断定する。** 測れていなければ「最大」は 1 秒ごとの
+        // 瞬間値でしかなく、位相しだいでどちらへも倒れる ── 黙って通してはいけない。
+        double leanestSecond = sampleCounts.Min();
+        Assert.True(MinimumCushionSamplesPerSecond <= leanestSecond,
+            Inv($"ライブ端の余裕の標本が 1 秒に {leanestSecond:F0} 個しか取れていません")
+            + Inv($"（{MinimumCushionSamplesPerSecond} 個以上。周期 {CushionSamplerIntervalMs} ms なら約 20 個）── ")
+            + Inv($"標本器が走っていないか、タイマーが絞られています（status='{state}'）。"));
 
         Assert.True(DashMinimumAdvanceSeconds <= after - before,
             Inv($"{DashSmoothnessSeconds} 秒のあいだに再生位置が {after - before:F2} 秒しか進みませんでした")
@@ -1118,12 +1233,14 @@ public sealed class WebUiBrowserTests(PublishedApp app, ITestOutputHelper output
             Inv($"末尾 {DashSteadySamples} 標本でバッファ切れの停止が {tailWaiting:F0} 回ありました（1 回まで）── ")
             + Inv($"ライブ端に寄せすぎています（status='{state}'; {trace}）。"));
 
-        // **余裕は全標本の最大で見る。** 終わりの値も末尾の窓も、寄せが前へしか跳べない
-        // せいでドリフトのぶんだけ振れる ── 落ち着いた再生でも下がって終わる。
-        // 寄せすぎている側は 0.5 秒へ引き戻され続けるので、どの標本もここへ届かない。
-        Assert.True(DashPeakCushionSeconds <= peakCushion,
-            Inv($"ライブ端の余裕が一度も {DashPeakCushionSeconds} 秒に届きませんでした（最大 {peakCushion:F2} 秒）── ")
-            + Inv($"ライブ端に張り付いています（status='{state}'; {trace}）。"));
+        // **余裕は大きさを断定せず、停止の無い末尾で負にならないことだけを見る**
+        //（理由は `MinimumSteadyCushionSeconds`）。停止が 1 度も無い窓で余裕が負・-1
+        //（バッファが空）になっていたら、それは再生の姿ではなく**測っている対象が違う**
+        // ということである（要素違い・範囲違い）。**停止を許した窓では見ない**
+        // ── 停止の最中は再生位置が buffered.end に並ぶので、0 前後は正常な姿である。
+        Assert.True(0 < tailWaiting || MinimumSteadyCushionSeconds < tailTrough,
+            Inv($"末尾 {DashSteadySamples} 標本で停止が無いのにライブ端の余裕が {tailTrough:F2} 秒まで")
+            + Inv($"落ちました（正であること）── 測っている対象が違います（status='{state}'; {trace}）。"));
 
         Assert.True(await browser.EvaluateBoolAsync(Click("stopPreview"), Ct), "Stop preview を押せませんでした。");
         Assert.True(
