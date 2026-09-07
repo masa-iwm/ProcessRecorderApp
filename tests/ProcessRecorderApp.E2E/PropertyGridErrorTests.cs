@@ -13,6 +13,7 @@ namespace ProcessRecorderApp.E2E;
 /// </para>
 /// </summary>
 [Collection(E2ECollection.Name)]
+[Trait("Category", "Gui")]
 public sealed class PropertyGridErrorTests(PublishedApp app)
 {
     /// <summary>エラー表示の有無を見る行（型変換に失敗しうる int のプロパティ）。</summary>

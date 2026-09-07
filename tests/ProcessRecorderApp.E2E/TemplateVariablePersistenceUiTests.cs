@@ -17,6 +17,7 @@ namespace ProcessRecorderApp.E2E;
 /// </para>
 /// </summary>
 [Collection(E2ECollection.Name)]
+[Trait("Category", "Gui")]
 public sealed class TemplateVariablePersistenceUiTests(PublishedApp app, ITestOutputHelper output)
 {
     /// <summary>デバウンス保存（約1秒）が書き切るまでの上限。</summary>

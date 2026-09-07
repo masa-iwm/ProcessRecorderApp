@@ -25,6 +25,7 @@ namespace ProcessRecorderApp.E2E;
 /// </para>
 /// </summary>
 [Collection(E2ECollection.Name)]
+[Trait("Category", "Gui")]
 public sealed class FramingGridChoiceUiTests(PublishedApp app, ITestOutputHelper output)
 {
     private const string ComboId = "FramingGrid";

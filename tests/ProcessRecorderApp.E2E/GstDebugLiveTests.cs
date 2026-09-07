@@ -13,6 +13,7 @@ namespace ProcessRecorderApp.E2E;
 /// </para>
 /// </summary>
 [Collection(E2ECollection.Name)]
+[Trait("Category", "Gui")]
 public sealed class GstDebugLiveTests(PublishedApp app)
 {
     /// <summary>デバウンス保存（約1秒）が書き切るまでの待ち。</summary>

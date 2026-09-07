@@ -25,6 +25,7 @@ namespace ProcessRecorderApp.E2E;
 /// </para>
 /// </summary>
 [Collection(E2ECollection.Name)]
+[Trait("Category", "Gui")]
 public sealed class PreviewPlaceholderTests(PublishedApp app, ITestOutputHelper output)
 {
     /// <summary>

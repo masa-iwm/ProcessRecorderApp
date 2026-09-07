@@ -32,6 +32,7 @@ namespace ProcessRecorderApp.E2E;
 /// </para>
 /// </summary>
 [Collection(E2ECollection.Name)]
+[Trait("Category", "Gui")]
 public sealed class LanguageMatrixTests(PublishedApp app, ITestOutputHelper output)
 {
     /// <summary>未定義変数の指定で返る終了コード（`src/README.md` の終了コード表）。</summary>

@@ -1010,8 +1010,21 @@ public sealed class RecordingDeliveryTests(PublishedApp app, ITestOutputHelper o
         output.WriteLine(finished.ToString());
         Assert.True(finished.GetProperty("fragmented").GetBoolean(),
             "確定したセグメントが fragmented として出ていない: " + finished);
+
+        // **開始理由は sidecar から来るので、閉じた直後は未だ無いことがある。**
+        // sidecar はスレッドプールの best-effort で書かれ、inProgress が下りるより後になりうる
+        // （負荷が掛かっているほど遅れる）。載るまで待ってから断定する。
+        var triggered = await WaitForListingAsync(
+            client,
+            fs => fs.Any(f =>
+                string.Equals(f.GetProperty("path").GetString(), relativePath, StringComparison.OrdinalIgnoreCase)
+                && f.GetProperty("trigger").ValueKind != JsonValueKind.Null),
+            SidecarBudget);
+        var settledSegment = triggered.First(f =>
+            string.Equals(f.GetProperty("path").GetString(), relativePath, StringComparison.OrdinalIgnoreCase));
+
         // 常時録画のセグメントは、開始理由でイベント録画と区別できること。
-        Assert.Equal("continuous", finished.GetProperty("trigger").GetString());
+        Assert.Equal("continuous", settledSegment.GetProperty("trigger").GetString());
 
         var (_, after) = await ListAsync(client);
         Assert.True(1 < after.Length, $"セグメントが切り替わっていない（{after.Length} 本）。");

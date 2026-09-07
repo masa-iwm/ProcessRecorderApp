@@ -7,20 +7,24 @@
 #   L4 が使うテストプロジェクトは Components / GStreamer.GstSharpNet / SingleInstance しか
 #   参照していないので、ここまでのビルドはアプリ本体より桁違いに軽い。
 #
-#   L2（E2E）は publish の後に実行する。発行済みの exe を外から叩くので、
-#   発行物が無ければ動かない。CI ランナーには GPU が無い（WARP）ため、
+#   L2（E2E）は別ジョブ（e2e）で実行する。発行済みの exe を外から叩くので発行物が要る
+#   ── 発行ジョブ（build-and-test / publish-aot）が publish-selfcontained / publish-aot として
+#   アップロードしたものを download-artifact で元と同じパスへ戻し、そこに対して流す。
+#   形態（selfcontained / aot）× シャード（gui / web / core）の matrix で、
+#   シャードの定義は tools/Run-E2E.ps1 が唯一の出所である（ここにフィルタを書かない）。
+#   CI ランナーには GPU が無い（WARP）ため、
 #   フィクスチャは Type=System + videotestsrc + x264enc を明示設定して起動する
 #   ── これはエンコーダーの自動フォールバックが効いていることの実証にもなる。
 #
 #   **GStreamer はリポジトリに同梱していない**（runtimes/ はサイズが大きいためリポジトリには置かない）。
-#   ランナーでは MSYS2(UCRT64) 版を pacman で入れ、GstSharp.Net のローダーが
+#   ランナー（e2e ジョブ）では MSYS2(UCRT64) 版を pacman で入れ、GstSharp.Net のローダーが
 #   それを見つける（PATH の走査が最優先の段）。**gst-plugins-ugly は必須**
 #   ── 上記のとおりフィクスチャが x264enc を明示指定しており、抜けると openh264enc へ
 #   落ちる。openh264 の bitrate は bit/sec で x264 の kbit/sec と桁が違うため、
 #   生成サイズの前提（StopSynchronicityTests の 20MB 下限など）が丸ごとずれる。
 #
-#   L3（GUI・UIA）は L2 と同じプロジェクトに入っているので、下の E2E ステップで
-#   一緒に走る。L3 は対話セッションとデスクトップに依存する ── 赤くなったら、
+#   L3（GUI・UIA）は L2 と同じプロジェクトに入っているので、e2e ジョブで
+#   一緒に走る（gui シャード）。L3 は対話セッションとデスクトップに依存する ── 赤くなったら、
 #   まずランナー側の制約を疑うこと（下の一覧を参照）。
 #
 #   **ランナーで落ちやすいもの**（製品の不具合とは限らない。詳細は docs/ci.md「運用上の注意」）:
@@ -66,11 +70,8 @@ env:
 jobs:
   build-and-test:
     runs-on: windows-latest
-    # L2 は実際に録画するので分単位で時間を使う。ハングしたときに
-    # 既定の6時間を焼かないよう上限を置く。
-    # 開発機での実測はフルスイート 57 件で 8 分強（GPU 無し）。ランナーは vCPU が
-    # 少なくソフトウェアエンコード主体で、**同じコードでも所要が 4〜9 分の幅で揺れる**
-    # ── このばらつきの大きさ自体が厚い上限の根拠になる。
+    # このジョブはビルド・L1/L4・selfcontained 発行まで（E2E は e2e ジョブ）。
+    # 上限は所要の見積もりではなく、ハングした run に既定の6時間を焼かせないためのもの。
     # **打ち切りは「テスト結果」ではなく「何も分からない」なので、上限は厚めに取る**
     # ── これを踏むと、赤の原因の切り分けが1サイクル遅れる。
     timeout-minutes: 90
@@ -102,7 +103,7 @@ jobs:
         run: >
           dotnet test tests/ProcessRecorderApp.Tests
           -c Release --no-restore -p:TreatWarningsAsErrors=true
-          --filter "FullyQualifiedName~LocalizationTests|FullyQualifiedName~DocumentationDriftTests"
+          --filter "FullyQualifiedName~LocalizationTests|FullyQualifiedName~DocumentationDriftTests|FullyQualifiedName~E2EShardSyncTests"
           --logger "trx;LogFileName=l4.trx"
 
       # **`--filter` は1件も選ばなくても `dotnet test` は成功で終わる。**
@@ -128,7 +129,7 @@ jobs:
             Sort-Object -Unique
           Write-Host "ran $($names.Count) tests in [$($classes -join ', ')]"
 
-          $expected = @('LocalizationTests', 'DocumentationDriftTests')
+          $expected = @('LocalizationTests', 'DocumentationDriftTests', 'E2EShardSyncTests')
           $missing = @($expected | Where-Object { $classes -notcontains $_ })
           if ($missing.Count) {
             throw "the L4 filter selected nothing from: $($missing -join ', ') (renamed or moved?)"
@@ -166,6 +167,122 @@ jobs:
           $exe = 'src/ProcessRecorderApp/bin/Release/win-x64/publish/selfcontained/ProcessRecorderApp.exe'
           if (-not (Test-Path $exe)) { throw "published exe not found: $exe" }
           Write-Host "published: $((Get-Item $exe).Length) bytes"
+
+      # 発行物は e2e ジョブ（形態 × シャードの matrix）が download-artifact で受け取る。
+      # **ランナーを分けるのが目的**: 同じランナーで E2E を並べると CPU を奪い合って
+      # 録画の尺が揺れる。artifact 経由なら AOT の再発行（開発機で 3.4 分）も要らない。
+      # `if-no-files-found: error` にしておく ── 空の artifact を配ると、
+      # e2e 側が「発行物が無い」でしか落ちず、原因がこのジョブに在ることが見えない。
+      - name: Upload the publish
+        uses: actions/upload-artifact@v7
+        with:
+          name: publish-selfcontained
+          path: src/ProcessRecorderApp/bin/Release/win-x64/publish/selfcontained
+          if-no-files-found: error
+
+  # 配布物が AOT（release.yml は win-x64-aot で発行する）なので、
+  # タグ限定ではなく常時のジョブにしてある。
+  #
+  # **このジョブはゲートであり、`continue-on-error` を付けないこと** ── 付けると
+  # AOT だけ赤でも run 全体は `success` と表示され、緑の誤読を招く。
+  publish-aot:
+    runs-on: windows-latest
+    # ネイティブコード生成は開発機で数分。E2E は e2e ジョブへ移したので、この上限は
+    # 発行だけに掛かる。build-and-test と同じ理由で厚めに取る（上のコメントを参照）。
+    timeout-minutes: 120
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '10.0.x'
+
+      # **ここで --no-restore を使ってはいけない。** PublishAot は .pubxml だけに書いてあり
+      # （csproj 側を Release 条件付きにすると通常の Release ビルドまで AOT になるため、
+      #   意図的にそうしてある）、プロファイル抜きの restore では ILCompiler パッケージが
+      # 復元されない。復元は publish に任せる。
+      #
+      # ILCompiler は findvcvarsall.bat の標準出力の1行目をツールチェーンのパスとして使う。
+      # その中で呼ばれる vcvarsall.bat が vswhere を PATH 前提で実行するため、通っていないと
+      # 「'vswhere.exe' は…認識されていません」が1行目に紛れ込み、リンカのパスが壊れて
+      # MSB3073（exit 123）になる。bat 自体は exit 0 を返すのでエラーとして検出されない。
+      # 詳細は src/ProcessRecorderApp/Properties/PublishProfiles/win-x64-aot.pubxml の冒頭。
+      #
+      # **ここで PATH に VS Installer を足していないのは意図的。**
+      # windows-latest には VS 2022 Enterprise と vswhere が標準の場所に入っている。
+      # 手元の開発機では必要なので pubxml の注記は残してある。
+      # 万一 MSB3073 / exit 123 で落ちたら、この1行を足すだけで切り分けられる:
+      #   $env:PATH = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer;$env:PATH"
+      # **このジョブはゲートである**（`continue-on-error` を付けない）ので、
+      # ここで落ちるとビルド全体が赤になる。
+      - name: Publish (Native AOT)
+        run: dotnet publish src/ProcessRecorderApp/ProcessRecorderApp.csproj -p:PublishProfile=win-x64-aot
+
+      - name: Verify the published output
+        run: |
+          $exe = 'src/ProcessRecorderApp/bin/Release/win-x64/publish/aot/ProcessRecorderApp.exe'
+          if (-not (Test-Path $exe)) { throw "published exe not found: $exe" }
+          Write-Host "published: $((Get-Item $exe).Length) bytes"
+
+      # **MSYS2 はこのジョブに置かない。** setup-msys2 は後続ステップの PATH を書き換え、
+      # ILCompiler が findvcvarsall.bat 経由で PATH から探す vswhere を隠して
+      # MSB3073（exit 123）を招く。MSYS2 が要るのは E2E だけなので e2e ジョブに置いてある。
+      #
+      # AOT のネイティブ PDB は 80MB あり、この artifact に載る（発行ディレクトリごと上げる）。
+      # e2e 側はダンプの記号化にこれを使うので、失敗時だけに絞れない。
+      - name: Upload the publish
+        uses: actions/upload-artifact@v7
+        with:
+          name: publish-aot
+          path: src/ProcessRecorderApp/bin/Release/win-x64/publish/aot
+          if-no-files-found: error
+
+  # E2E（L2 + L3）は発行の後の別ジョブで、**形態 × シャードの matrix** で流す。
+  # 発行ジョブが上げた artifact を元と同じパスへ戻し、そこに対して実行する。
+  #
+  # **ランナーを分けるのが目的。** 直列のフルスイートは 196 件・開発機で約 29 分あり、
+  # 同じランナーに並べると CPU を奪い合って録画の尺が揺れる（プロセスを 2 本並べると
+  # 大半のテストが 1.1〜1.3 倍に伸びる）。ランナーを分ければその競合が無い。
+  #
+  # **シャードの定義をここに書かない。** フィルタの正本は tools/Run-E2E.ps1 で、
+  # ここが渡すのは名前だけ。フィルタが 1 件も選ばなくても `dotnet test` は成功で終わるので、
+  # 空振りはスクリプト側が「合計 0 件は失敗」で落とす。
+  #
+  # `fail-fast: false` ── 1 つのシャードが赤でも残りの標本を取る。このスイートは
+  # 同じコードで失敗数が揺れるため、他のシャードの結果に独立した価値がある。
+  e2e:
+    needs: [build-and-test, publish-aot]
+    runs-on: windows-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        flavor: [selfcontained, aot]
+        shard: [gui, web, core]
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '10.0.x'
+
+      # 発行ディレクトリの名前は形態の名前と同じなので、matrix.flavor がそのままパスになる。
+      # **元と同じパスへ戻す** ── 失敗時に上げる `*.pdb` の経路を発行ジョブと揃えておく。
+      - name: Download the publish
+        uses: actions/download-artifact@v7
+        with:
+          name: publish-${{ matrix.flavor }}
+          path: src/ProcessRecorderApp/bin/Release/win-x64/publish/${{ matrix.flavor }}
 
       # GStreamer は同梱していないので、ランナー側に入れる。
       # 既定（release: true）は MSYS2 のリリースを新規に展開する ── パッケージDBが
@@ -209,6 +326,8 @@ jobs:
       #   ダンプが在る            → クラッシュ。落ちた場所がスタックから分かる
       #   ダンプが無い＋終了コード → クラッシュではない（＝終了経路を疑う）
       # **「何も出なかった」ことにも意味がある**ので、失敗時は必ず結果を確認すること。
+      # **AOT でこそ効く** ── ネイティブコード生成後のクラッシュはマネージドの
+      # スタックトレースが出ないので、ダンプ以外に落ちた場所を知る手段が無い。
       #
       # DumpFolder は明示する。既定は %LOCALAPPDATA%\CrashDumps で runner.temp の
       # 外に出てしまい、成果物の収集が空振りする。
@@ -278,18 +397,19 @@ jobs:
       # 一時ディレクトリを残すのは失敗時の診断のため ── ランナーは使い捨てなので
       # 消さないことによる副作用は無い。
       #
-      # **L3（GUI・UIA）も同じプロジェクトに入っているのでここで一緒に走る。**
+      # **L3（GUI・UIA）も同じプロジェクトに入っている**ので gui シャードで走る。
       # L3 はウィンドウを実際に開いて操作するため、対話セッションとデスクトップに依存する。
-      # L2 だけを回したい場合は、UIA（AppUi/TrayUi）を使う全クラスを除外する:
-      #   --filter "FullyQualifiedName!~GuiSmokeTests&FullyQualifiedName!~PropertyEditingTests&FullyQualifiedName!~ShutdownTests&FullyQualifiedName!~RecorderManagementTests&FullyQualifiedName!~PipelineDialogTests&FullyQualifiedName!~LanguageMatrixTests&FullyQualifiedName!~TrayMenuTests&FullyQualifiedName!~EncoderChoiceUiTests&FullyQualifiedName!~PreviewPlaceholderTests&FullyQualifiedName!~TemplateVariablePersistenceUiTests&FullyQualifiedName!~PropertyGridErrorTests&FullyQualifiedName!~GstDebugLiveTests&FullyQualifiedName!~SettingsReloadTests"
-      # この一覧は手書きで、クラス追加に機械的には追従しない ── 使う前に
-      # `grep -l "AppUi\|TrayUi" tests/ProcessRecorderApp.E2E/*Tests.cs` で漏れを確認すること。
+      # GUI だけを外すなら `Category!=Gui`（トレイトは L4 が AppUi/TrayUi の使用と
+      # 突き合わせるので、クラスを足したときに手書きの一覧を直す必要は無い）。
       #
-      # **Category=Fragile は意図的にゲートから外す。** 該当するのは
+      # **Category=Fragile は意図的にゲートから外す**（`-ExcludeFragile`）。該当するのは
       # TrayMenuTests ── 通知領域のオーバーフローを開き、**物理的なマウスカーソルを動かして**
       # トレイアイコンを右クリックする。不安定さの原因はシェル側にあって製品ではないので、
       # ここで赤くなっても「録画アプリが壊れた」ことを意味しない。
-      # 手元では `dotnet test tests/ProcessRecorderApp.E2E -c Release`（フィルタなし）で回す。
+      # 手元では `tools/Run-E2E.ps1`（除外なし）で回す。
+      #
+      # E2E プロジェクトは他プロジェクトを参照しないので、スクリプトがこのジョブで
+      # テストアセンブリだけをビルドする（発行物はビルドしない）。
       - name: End-to-end tests (L2 + L3)
         env:
           PROCESSRECORDERAPP_E2E_KEEP: '1'
@@ -298,17 +418,21 @@ jobs:
           TMP: ${{ runner.temp }}
           TEMP: ${{ runner.temp }}
         run: >
-          dotnet test tests/ProcessRecorderApp.E2E
-          -c Release --no-restore --no-build
-          --filter "Category!=Fragile"
-          --logger "trx;LogFileName=l2.trx"
+          ./tools/Run-E2E.ps1
+          -Shard ${{ matrix.shard }}
+          -ExcludeFragile
+          -PublishDir ${{ github.workspace }}/src/ProcessRecorderApp/bin/Release/win-x64/publish/${{ matrix.flavor }}
 
+      # trx に加えて、スクリプトが子プロセスの標準出力を落とした e2e-<shard>.log も上げる
+      # ── 子の console 出力はステップのログには出ない。
       - name: Upload test results
         if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: test-results
-          path: '**/TestResults/*.trx'
+          name: test-results-${{ matrix.flavor }}-${{ matrix.shard }}
+          path: |
+            **/TestResults/*.trx
+            tests/ProcessRecorderApp.E2E/TestResults/e2e-*.log
           if-no-files-found: ignore
 
       # 失敗した L2 の診断に要るのは activity.log と debug.log と settings.json、
@@ -321,7 +445,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: e2e-diagnostics
+          name: e2e-diagnostics-${{ matrix.flavor }}-${{ matrix.shard }}
           path: |
             ${{ runner.temp }}/pra-e2e-*/*.log
             ${{ runner.temp }}/pra-e2e-*/*.log.1
@@ -335,6 +459,7 @@ jobs:
       #   pra-e2e-*/*.dmp   … .NET ランタイムの DOTNET_DbgEnableMiniDump。
       #                        昇格も HKLM も要らないので開発機で実証済みだが、
       #                        **CoreCLR の機能なので AOT 発行物では出ない**
+      #                        （出ないことも観測のうちなので、パターンは残す）
       #
       # **ここだけ `always()` にする。** 他の成果物は `failure()` でよいが、
       # **ワーカーはテストを緑にしたまま死にうる**（ハーネスがリトライで拾うため）
@@ -346,7 +471,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: crash-dumps
+          name: crash-dumps-${{ matrix.flavor }}-${{ matrix.shard }}
           # wer-status.log も一緒に上げる。**「ダンプが無い」は、
           # LocalDumps が実際に武装できていた場合にしか「クラッシュではない」を意味しない**
           # ── ランナーで HKLM に書けなかった可能性を、成果物だけで判定できるようにする。
@@ -355,197 +480,17 @@ jobs:
             ${{ runner.temp }}/pra-e2e-*/*.dmp
           if-no-files-found: ignore
 
-      # **PDB は失敗時だけ。** AOT のネイティブ PDB は 80MB あるので毎回は上げない。
-      # ダンプ側だけ集めても自前コードのフレームが記号化されず、`!analyze -v` が
-      # `d2d1.dll` の中しか見せてくれない（呼び出し元の巻き戻しも壊れる）。
-      # **ランナーのビルドと一致する PDB はそのランナーの上にしか無い。**
+      # **記号は失敗時だけ上げる。** ダンプ側だけ集めても自前コードのフレームが
+      # 記号化されず、`!analyze -v` が `d2d1.dll` の中しか見せてくれない
+      # （呼び出し元の巻き戻しも壊れる）。PDB は発行ジョブの artifact にも入っているが、
+      # ここで一緒に上げるのは、失敗したシャードの成果物だけで解析を始められるようにするため。
       - name: Upload crash symbols
         if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: crash-symbols
+          name: crash-symbols-${{ matrix.flavor }}-${{ matrix.shard }}
           path: |
             ${{ runner.temp }}/cairo-symbols.txt
             ${{ runner.temp }}/libcairo-2.dll
-            src/ProcessRecorderApp/bin/Release/win-x64/publish/selfcontained/*.pdb
-          if-no-files-found: ignore
-
-  # 配布物が AOT（release.yml は win-x64-aot で発行する）なので、
-  # タグ限定ではなく常時のジョブにしてある。
-  #
-  # **このジョブはゲートであり、`continue-on-error` を付けないこと** ── 付けると
-  # AOT だけ赤でも run 全体は `success` と表示され、緑の誤読を招く。
-  publish-aot:
-    runs-on: windows-latest
-    # ネイティブコード生成（開発機で数分）＋ AOT 発行物に対する E2E（所要は
-    # ランナーで大きく揺れる）。build-and-test と同じ理由で厚めに取る（上のコメントを参照）。
-    timeout-minutes: 120
-
-    steps:
-      - name: Check out
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 1
-
-      - name: Set up .NET
-        uses: actions/setup-dotnet@v6
-        with:
-          dotnet-version: '10.0.x'
-
-      # **ここで --no-restore を使ってはいけない。** PublishAot は .pubxml だけに書いてあり
-      # （csproj 側を Release 条件付きにすると通常の Release ビルドまで AOT になるため、
-      #   意図的にそうしてある）、プロファイル抜きの restore では ILCompiler パッケージが
-      # 復元されない。復元は publish に任せる。
-      #
-      # ILCompiler は findvcvarsall.bat の標準出力の1行目をツールチェーンのパスとして使う。
-      # その中で呼ばれる vcvarsall.bat が vswhere を PATH 前提で実行するため、通っていないと
-      # 「'vswhere.exe' は…認識されていません」が1行目に紛れ込み、リンカのパスが壊れて
-      # MSB3073（exit 123）になる。bat 自体は exit 0 を返すのでエラーとして検出されない。
-      # 詳細は src/ProcessRecorderApp/Properties/PublishProfiles/win-x64-aot.pubxml の冒頭。
-      #
-      # **ここで PATH に VS Installer を足していないのは意図的。**
-      # windows-latest には VS 2022 Enterprise と vswhere が標準の場所に入っている。
-      # 手元の開発機では必要なので pubxml の注記は残してある。
-      # 万一 MSB3073 / exit 123 で落ちたら、この1行を足すだけで切り分けられる:
-      #   $env:PATH = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer;$env:PATH"
-      # **このジョブはゲートである**（`continue-on-error` を付けない）ので、
-      # ここで落ちるとビルド全体が赤になる。
-      - name: Publish (Native AOT)
-        run: dotnet publish src/ProcessRecorderApp/ProcessRecorderApp.csproj -p:PublishProfile=win-x64-aot
-
-      - name: Verify the published output
-        run: |
-          $exe = 'src/ProcessRecorderApp/bin/Release/win-x64/publish/aot/ProcessRecorderApp.exe'
-          if (-not (Test-Path $exe)) { throw "published exe not found: $exe" }
-          Write-Host "published: $((Get-Item $exe).Length) bytes"
-
-      # **MSYS2 は AOT 発行の後に入れる。** この action は後続ステップの PATH を書き換える。
-      # ILCompiler は findvcvarsall.bat 経由で vswhere を PATH 前提で探すので、
-      # 発行より前に PATH をいじると、上のコメントで説明した MSB3073 の罠を
-      # 別の形で踏み直すことになる。ここで要るのは E2E だけ。
-      - name: Set up MSYS2 (GStreamer)
-        id: msys2
-        uses: msys2/setup-msys2@v2
-        with:
-          msystem: UCRT64
-          install: >-
-            mingw-w64-ucrt-x86_64-gstreamer
-            mingw-w64-ucrt-x86_64-gst-plugins-base
-            mingw-w64-ucrt-x86_64-gst-plugins-good
-            mingw-w64-ucrt-x86_64-gst-plugins-bad
-            mingw-w64-ucrt-x86_64-gst-plugins-ugly
-
-      - name: Make GStreamer visible to the app
-        run: |
-          $bin = Join-Path '${{ steps.msys2.outputs.msys2-location }}' 'ucrt64\bin'
-          $core = Join-Path $bin 'libgstreamer-1.0-0.dll'
-          if (-not (Test-Path $core)) { throw "GStreamer not found: $core" }
-          $openh264 = Join-Path (Join-Path '${{ steps.msys2.outputs.msys2-location }}' 'ucrt64\lib\gstreamer-1.0') 'libgstopenh264.dll'
-          if (-not (Test-Path $openh264)) { throw "gst-plugins-bad (openh264dec) not found: $openh264" }
-          Add-Content -Path $env:GITHUB_PATH -Value $bin
-          Write-Host "gstreamer: $core"
-
-      # 意図は build-and-test 側の同名ステップのコメントを参照。
-      # **AOT でこそ効く** ── ネイティブコード生成後のクラッシュはマネージドの
-      # スタックトレースが出ないので、ダンプ以外に落ちた場所を知る手段が無い。
-      - name: Enable crash dumps (WER LocalDumps)
-        run: |
-          $dumps = Join-Path '${{ runner.temp }}' 'crashdumps'
-          New-Item -ItemType Directory -Force -Path $dumps | Out-Null
-          $status = Join-Path $dumps 'wer-status.log'
-          $key = 'HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps\ProcessRecorderApp.exe'
-          try {
-            New-Item -Path $key -Force -ErrorAction Stop | Out-Null
-            Set-ItemProperty -Path $key -Name 'DumpFolder' -Value $dumps -Type ExpandString -ErrorAction Stop
-            Set-ItemProperty -Path $key -Name 'DumpType'   -Value 1      -Type DWord -ErrorAction Stop
-            Set-ItemProperty -Path $key -Name 'DumpCount'  -Value 10     -Type DWord -ErrorAction Stop
-            $readBack = Get-ItemProperty -Path $key -ErrorAction Stop
-            if ($readBack.DumpFolder -ne $dumps) { throw "read-back mismatch: '$($readBack.DumpFolder)'" }
-            "ARMED DumpFolder=$dumps DumpType=$($readBack.DumpType)" | Set-Content -Path $status -Encoding utf8
-            Write-Host "crash dumps ARMED -> $dumps (DumpType=$($readBack.DumpType))"
-          } catch {
-            "NOT-ARMED $($_.Exception.Message)" | Set-Content -Path $status -Encoding utf8
-            Write-Host "::warning::WER LocalDumps could not be configured: $($_.Exception.Message)"
-            Write-Host "'no dump' must NOT be read as 'not a crash' for this run."
-          }
-
-          # **libcairo-2.dll の現物とエクスポート表を持ち帰る。** AOT/ミニダンプでは
-          # 自前フレームが記号化されないため、ダンプに出るモジュール内オフセットを
-          # 解決するには**現物とエクスポート表をそのまま持ち帰る**必要がある。
-          #
-          # **このブロックで例外を投げて止めないこと。** E2E の前にあるので、
-          # 落とすと本来欲しかった標本を丸ごと失う（上と同じ理由）。
-          try {
-            $cairo = Join-Path '${{ steps.msys2.outputs.msys2-location }}' 'ucrt64\bin\libcairo-2.dll'
-            if (Test-Path $cairo) {
-              Copy-Item $cairo (Join-Path '${{ runner.temp }}' 'libcairo-2.dll') -Force
-              Write-Host "cairo captured: $cairo"
-              # nm は MSYS2 の base に入っているとは限らない。無ければ現物だけ持ち帰る
-              # （手元の VS の dumpbin で解決できる）。
-              $nm = Join-Path '${{ steps.msys2.outputs.msys2-location }}' 'usr\bin\nm.exe'
-              if (Test-Path $nm) {
-                & $nm --defined-only $cairo | Set-Content -Path (Join-Path '${{ runner.temp }}' 'cairo-symbols.txt') -Encoding utf8
-                Write-Host "cairo symbols captured"
-              } else {
-                Write-Host "nm not present; shipping the DLL only"
-              }
-            } else {
-              Write-Host "::warning::libcairo-2.dll not found at $cairo"
-            }
-          } catch {
-            Write-Host "::warning::cairo capture failed: $($_.Exception.Message)"
-          }
-
-      # AOT 固有の破損（リフレクション欠落）は発行時ではなく**実行時**に出る。
-      # PropertyGrid のプロパティ列挙と設定 JSON のソース生成がその危険域で、
-      # **L1 では絶対に検出できない**ため、AOT 発行物に対しても L2 を流す。
-      # L3 もここで AOT 発行物に対して走る（Fragile 除外は build-and-test と同じ）。
-      # PropertyGrid のプロパティ列挙はリフレクションを使う AOT の危険域そのものなので、
-      # 「AOT でプロパティ行が出るか・編集がモデルへ届くか」はむしろここでこそ効く。
-      - name: End-to-end tests against the AOT output (L2 + L3)
-        env:
-          # 相対パスにしない ── テストホストの作業ディレクトリはランナーによって変わる。
-          PROCESSRECORDERAPP_E2E_PUBLISH_DIR: ${{ github.workspace }}/src/ProcessRecorderApp/bin/Release/win-x64/publish/aot
-          PROCESSRECORDERAPP_E2E_KEEP: '1'
-          TMP: ${{ runner.temp }}
-          TEMP: ${{ runner.temp }}
-        run: >
-          dotnet test tests/ProcessRecorderApp.E2E
-          -c Release --filter "Category!=Fragile"
-          --logger "trx;LogFileName=l2-aot.trx"
-
-      - name: Upload AOT E2E diagnostics
-        if: failure()
-        uses: actions/upload-artifact@v7
-        with:
-          name: e2e-aot-diagnostics
-          path: |
-            ${{ runner.temp }}/pra-e2e-*/*.log
-            ${{ runner.temp }}/pra-e2e-*/*.log.1
-            ${{ runner.temp }}/pra-e2e-*/*.json
-            **/TestResults/*.trx
-          if-no-files-found: ignore
-
-      # 意図は build-and-test 側の同名ステップを参照（**always** である理由を含む）。
-      # `pra-e2e-*/*.dmp` はここでは出ない（CoreCLR の機能なので AOT では効かない）が、
-      # パターンは残す ── **出ないことも観測のうち。**
-      - name: Upload AOT crash dumps
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: crash-dumps-aot
-          path: |
-            ${{ runner.temp }}/crashdumps/*
-            ${{ runner.temp }}/pra-e2e-*/*.dmp
-          if-no-files-found: ignore
-
-      - name: Upload AOT crash symbols
-        if: failure()
-        uses: actions/upload-artifact@v7
-        with:
-          name: crash-symbols-aot
-          path: |
-            ${{ runner.temp }}/cairo-symbols.txt
-            ${{ runner.temp }}/libcairo-2.dll
-            src/ProcessRecorderApp/bin/Release/win-x64/publish/aot/*.pdb
+            src/ProcessRecorderApp/bin/Release/win-x64/publish/${{ matrix.flavor }}/*.pdb
           if-no-files-found: ignore

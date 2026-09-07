@@ -28,6 +28,7 @@ namespace ProcessRecorderApp.E2E;
 /// </para>
 /// </summary>
 [Collection(E2ECollection.Name)]
+[Trait("Category", "Gui")]
 [Trait("Category", "Fragile")]
 public sealed class TrayMenuTests(PublishedApp app, ITestOutputHelper output)
 {

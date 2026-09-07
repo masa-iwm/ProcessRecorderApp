@@ -17,6 +17,7 @@ namespace ProcessRecorderApp.E2E;
 /// </para>
 /// </summary>
 [Collection(E2ECollection.Name)]
+[Trait("Category", "Gui")]
 public sealed class RecorderManagementTests(PublishedApp app)
 {
     /// <summary>

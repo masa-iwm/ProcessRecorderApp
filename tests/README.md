@@ -154,15 +154,35 @@ L3（GUI・UIA）は同じプロジェクトに入っている。**対話セッ�
 （切断中の RDP セッションでも UIA から要素を辿れることは確認済み。ただし
 `Category=Fragile` は物理カーソルを使うため対話セッションでしか回せない）。
 
-**CI が回すのは `Category=Fragile` を除いた部分集合:**
-
-```powershell
-dotnet test tests/ProcessRecorderApp.E2E -c Release --filter "Category!=Fragile"
-```
+**CI が回すのは `Category=Fragile` を除いた部分集合**（出所は下記 `tools/Run-E2E.ps1` の
+`-ExcludeFragile` の 1 箇所。生の `--filter` をワークフローや文書に複製しない）。
 
 `Category=Fragile` は `TrayMenuTests` の 4 件だけ。**除外の理由は製品ではなくシェル側にある**
 （通知領域のオーバーフローを開き、**物理的なマウスカーソルを動かして**右クリックする）。
 手元では**フィルタなしで回す** ── ただしカーソルが取られるので、他の作業をしながら回さないこと。
+
+`tools/Run-E2E.ps1` はこのスイートを**シャード**に割って回す。CI（`build.yml` の `e2e` ジョブ）は
+形態 × シャードの matrix でこのスクリプトを呼ぶので、**シャードのフィルタの唯一の出所はこの
+スクリプトである**（ワークフローにも、この README にも書かない）。
+
+```powershell
+tools\Run-E2E.ps1 -Shard core -ExcludeFragile          # 1 シャードだけ
+tools\Run-E2E.ps1 -Shard gui,web,core -Parallel        # 3 つを同時に走らせる
+tools\Run-E2E.ps1 -Shard web -ExcludeFragile -NoBuild  # ビルド済みなら省ける
+```
+
+- シャードは `gui`（`Category=Gui`）・`web`（ブラウザと配信の 4 クラス）・`core`（残り）・
+  `all`（フィルタ無し）。`-ExcludeFragile` は全シャードに `Category!=Fragile` を足す。
+- **合計 0 件のシャードは失敗として扱う** ── `--filter` の空振りは `dotnet test` では
+  成功に見えるので、ここで落とす。
+- **発行物が `src/**/*.cs` より古ければ警告を 1 行出す**（上記の「古いバイナリに対して
+  緑になる」罠。致命ではないので止めはしない）。`-PublishDir` で発行ディレクトリを差し替えられる。
+- 各シャードの標準出力は `tests/ProcessRecorderApp.E2E/TestResults/e2e-<shard>.log` に落ち、
+  終了後に合格/失敗/スキップ/合計と所要の表が出る。**xUnit の `[FAIL]` 行は標準エラー側**
+  （`e2e-<shard>.err.log`）に出るので、赤い回はそちらを見る（表の後にも抜粋が出る）。
+- **`-Parallel` は壁時計を縮めるが、テストは伸びる。** 4 コアでプロセスを 2 本並べた実測は
+  大半のテストが 1.1〜1.3 倍（3 本は未計測）。伸びが最も大きいのは `Mp4ProbeTests` の
+  非ライブ生成（5 秒 → 58 秒）で、これは `core` に在る ── `web` と同じランナーに乗せない。
 
 > **フィルタが空振りしていないことを必ず確かめること。** トレイト式が1件も選ばなくても
 > `dotnet test` は成功で終わるので、**CI のゲートが丸ごと no-op になっても緑になる**。

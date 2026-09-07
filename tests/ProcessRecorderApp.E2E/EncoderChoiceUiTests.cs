@@ -34,6 +34,7 @@ namespace ProcessRecorderApp.E2E;
 /// </para>
 /// </summary>
 [Collection(E2ECollection.Name)]
+[Trait("Category", "Gui")]
 public sealed class EncoderChoiceUiTests(PublishedApp app, ITestOutputHelper output)
 {
     private const string ComboId = "PreferredH264Encoder";

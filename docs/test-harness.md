@@ -90,7 +90,7 @@ L3 の主な対象範囲。各ケースは「これを落とす退行」を先�
 | `TemplateVariablePersistenceUiTests` | Variables 画面の「保存」列。チェックボックスから `AppSettings` までの結線は GUI からしか触れない |
 | `PipelineDialogTests` | SrcPipeline 編集支援ダイアログ（OK で反映・キャンセルで不変）・不正なパイプラインでクラッシュしないこと・失敗の段の表明（`AssertFailedAtStateChange`。パース時ではなく状態遷移時に落ちていること。段を取り違えるとテストは緑でも意図した経路を一度も通らない） |
 | `LanguageMatrixTests` | 表示言語の強制マトリクス（ja-JP / en-US / de-DE。de-DE は en-US へフォールバック）・PropertyGrid のカテゴリ見出し・CLI のメッセージ |
-| `TrayMenuTests`（`Category=Fragile`） | トレイメニューの文言のローカライズと「表示」「終了」の経路。ウィンドウの外にある唯一の L3 で、赤の理由はシェル側にあるため CI の必須ゲートには入れない（`--filter "Category!=Fragile"`。トレイト式が1件も選ばなくても `dotnet test` は成功で終わるので、式が実際に何件選ぶかは確認してから使う） |
+| `TrayMenuTests`（`Category=Fragile`） | トレイメニューの文言のローカライズと「表示」「終了」の経路。ウィンドウの外にある唯一の L3 で、赤の理由はシェル側にあるため CI の必須ゲートには入れない（除外の出所は `tools/Run-E2E.ps1 -ExcludeFragile` の 1 箇所で、全シャードに同じ節 `Category!=Fragile` を足す。トレイト式が1件も選ばなくても `dotnet test` は成功で終わるので、式が実際に何件選ぶかは確認してから使う） |
 | `EncoderChoiceUiTests` | 優先エンコーダーの選択肢（表示名≠保存値でも保存されるのは値の方であること・一覧に無い値を持って開いても失わないこと）。属性をリフレクションで読む経路が発行物で生きていることの検査を兼ねる |
 | `PreviewPlaceholderTests` | 未初期化のレコーダーを選んだときに前のレコーダーの映像が残らないこと。プレビュー面とプレースホルダーの両方向を見る ── 片方だけでは「常に片側」の実装が通る |
 | `ShutdownTests` | Ctrl+閉じる での正常終了・録画中の終了・Ctrl なしの閉じるはトレイ格納。`app.exit exitCode=0` だけを見ない ── 未処理例外が握り潰されてもプロセスは 0 で終わるので、`app.error` が無いことと、保存された `settings.json` の中身（レコーダー名の配列）までセットで表明する |

@@ -4,7 +4,9 @@ CI は2つのワークフローに分かれる。`build.yml` は push のたび�
 
 ## build.yml の構成と理由
 
-トリガーは全ブランチへの push と `workflow_dispatch`。`windows-latest` の2ジョブ構成で、`build-and-test`（timeout 90 分）と `publish-aot`（timeout 120 分）が並走する。timeout は所要時間の見積もりではなく、ハングした run に既定の 6 時間を焼かせないための上限であり、意図的に厚く取る ── 実測は、開発機のフルスイートが 57 件・8 分強（GPU 無し）。ランナーの Fragile 除外 E2E は**同じコードでも 4〜9 分の幅で揺れる**ので、このばらつきの大きさ自体が厚い上限の根拠になる。打ち切りは「テスト結果」ではなく「何も分からない」なので、上限を薄くすると赤の切り分けが1サイクル遅れる。
+トリガーは全ブランチへの push と `workflow_dispatch`。`windows-latest` の3ジョブ構成で、発行の 2 ジョブ（`build-and-test` timeout 90 分・`publish-aot` timeout 120 分）が並走し、その両方を `needs` に取る `e2e`（timeout 60 分）が**形態（selfcontained / aot）× シャード（gui / web / core）の 6 ジョブの matrix**で走る。timeout は所要時間の見積もりではなく、ハングした run に既定の 6 時間を焼かせないための上限であり、意図的に厚く取る ── ランナーの Fragile 除外 E2E の実測は**直列 1 ジョブで約 21 分（196 件）**で、上限はその数倍を取ってある（シャード後の実測は初回 run の trx で差し替える）。打ち切りは「テスト結果」ではなく「何も分からない」なので、上限を薄くすると赤の切り分けが1サイクル遅れる。
+
+**壁時計の見込み**: 直列で回すと E2E は 1 ジョブ 21 分（開発機では 196 件・約 29 分）掛かり、run 全体の長さはこれで決まる。シャードに割ると最長のシャードが律速になり、run 全体で 15 分前後になる。代償は**固定費とランナー数**である ── matrix の 1 ジョブごとに checkout・.NET のセットアップ・artifact の download・MSYS2 の展開で数分掛かり、それが 6 本ぶん増える。短くなるのは壁時計であって、消費する計算時間ではない。
 
 `build-and-test` の段の順序と理由:
 
@@ -13,15 +15,21 @@ CI は2つのワークフローに分かれる。`build.yml` は push のたび�
 2. **`dotnet build -c Release -warnaserror`。** リポジトリの規約は 0 警告。トリミング／AOT 解析（`IsAotCompatible` / `EnableTrimAnalyzer`）は `src/Directory.Build.props` の条件無し PropertyGroup にあり、構成によらず常時有効 ── 「Release だから解析される」のではない。このステップの価値は `-warnaserror` で解析警告をエラーに昇格させる側にあり、AOT 非互換の混入はこれで落ちる。
 3. **L1（単体テスト）。**
 4. **`publish`（selfcontained）＋ 発行物に exe が実在することの確認。** 発行ステップに `--no-restore` を使ってはいけない ── `PublishReadyToRun` は `.pubxml` にしか書いていないので、プロファイル抜きの restore では ReadyToRun のランタイムパック（crossgen2）が復元されず `NETSDK1094` になる。
-5. **MSYS2(UCRT64) で GStreamer を入れる**（`msys2/setup-msys2@v2`）。**`gst-plugins-ugly` は必須** ── E2E フィクスチャが `x264enc` を明示指定しており、抜けると `openh264enc` へ落ちる。openh264 の bitrate は bit/sec で x264 の kbit/sec と桁が違うため、生成サイズの前提（下記の 20MB 下限など）が丸ごとずれる。展開先はランナー任せなので `C:\msys64` を決め打ちせず、`steps.msys2.outputs.msys2-location` から `ucrt64\bin` を組み立てて `GITHUB_PATH` に足す（バインディングの解決で最優先の段「元の `PATH` のディレクトリ走査」に効かせる）。本体 DLL・`libgstx264.dll`・`libgstopenh264.dll` の存在はこのステップで確かめて早く落とす ── E2E まで持ち越すと「GStreamer が無い」のか製品の不具合なのかの切り分けに数十分かかる。`libgstopenh264.dll`（`gst-plugins-bad`）を見るのは、録画トランスコードの E2E が `openh264dec` を名指しているため（`SoftwareDecoderRuntime`。CI はランタイムを差し替えず MSYS2 のまま使う）。**本体 DLL と `libgstopenh264.dll` は `publish-aot` の同名ステップでも確かめる**（あちらも L2+L3 を回す）が、`libgstx264.dll` の検査は `build-and-test` にしか無い ── AOT ジョブで `gst-plugins-ugly` が欠けると検査を素通りし、E2E で初めて表面化する。
-6. **L2 + L3（E2E）を発行物に対して実行する。** ここで初めて「録画が実際にできること」「GUI が実際に操作できること」が検証される。`--filter "Category!=Fragile"` で `TrayMenuTests` だけを外す ── 通知領域のオーバーフローを物理的なマウスカーソルで操作するテストで、不安定さの原因がシェル側にあるため、赤くなっても製品の退行を意味しない。CI ランナーには GPU が無い（WARP）ので、フィクスチャは `Type=System` + `videotestsrc` + `x264enc` を明示設定して起動する ── これはエンコーダーの自動フォールバックが効いていることの実証にもなる。このステップは `TMP` / `TEMP` を `runner.temp` に固定し `PROCESSRECORDERAPP_E2E_KEEP` を立てる ── 既定の一時ディレクトリはランナーによって `runner.temp` と別の場所になり、そのままだと失敗時の成果物収集が空振りする。
-7. **別ジョブ（`publish-aot`）で AOT 発行 ＋ AOT 発行物に対する L2 + L3。** 配布物が AOT（`release.yml`）なので、タグ限定ではなく常時流す（Fragile 除外は同じ）。AOT 固有の破損（リフレクション欠落）は発行時ではなく実行時に出る ── PropertyGrid のプロパティ列挙と設定 JSON のソース生成が危険域で、L1 では検出できない。このジョブはゲートである（`continue-on-error` は付けない ── run 単位の `success` 表示が赤いジョブを隠す誤読を防ぐ）。
+5. **発行物を artifact（`publish-selfcontained`）へ上げる。** E2E は別ジョブなので、発行ディレクトリはこの経路でしか渡らない。`if-no-files-found: error` にしてあるのは、空の artifact を配ると `e2e` 側が「発行物が無い」でしか落ちず、原因がこのジョブに在ることが見えなくなるため。
+6. **別ジョブ（`publish-aot`）で AOT 発行 ＋ artifact（`publish-aot`）。** 配布物が AOT（`release.yml`）なので、タグ限定ではなく常時流す。このジョブはゲートである（`continue-on-error` は付けない ── run 単位の `success` 表示が赤いジョブを隠す誤読を防ぐ）。**MSYS2 をこのジョブに置かない**のは、`setup-msys2` が後続ステップの PATH を書き換え、ILCompiler が `findvcvarsall.bat` 経由で PATH から探す `vswhere` を隠して MSB3073（exit 123）を招くため。MSYS2 が要るのは E2E だけなので `e2e` ジョブに在る。同じ理由で AOT 発行にも `--no-restore` は使えない（ILCompiler パッケージは `.pubxml` のプロファイル付き復元でしか入らない）。**AOT のネイティブ PDB は 80MB あり、この artifact に毎回載る**（発行ディレクトリごと上げるため）── `e2e` 側がダンプの記号化に使う。
+
+`e2e` ジョブ（matrix）:
+
+1. **発行物を download-artifact で元と同じパスへ戻す**（`src/ProcessRecorderApp/bin/Release/win-x64/publish/<flavor>`。発行ディレクトリ名は形態名と同じなので `matrix.flavor` がそのままパスになる）。**artifact 経由にする理由は 2 つ** ── AOT をシャードごとに発行し直すと 1 ジョブあたり数分（開発機で 3.4 分）を捨てることになる。そしてランナーを分ければ、E2E 同士が CPU を奪い合わない（同じ機械にプロセスを 2 本並べると大半のテストが 1.1〜1.3 倍に伸びる）。
+2. **MSYS2(UCRT64) で GStreamer を入れる**（`msys2/setup-msys2@v2`）。**`gst-plugins-ugly` は必須** ── E2E フィクスチャが `x264enc` を明示指定しており、抜けると `openh264enc` へ落ちる。openh264 の bitrate は bit/sec で x264 の kbit/sec と桁が違うため、生成サイズの前提（下記の 20MB 下限など）が丸ごとずれる。展開先はランナー任せなので `C:\msys64` を決め打ちせず、`steps.msys2.outputs.msys2-location` から `ucrt64\bin` を組み立てて `GITHUB_PATH` に足す（バインディングの解決で最優先の段「元の `PATH` のディレクトリ走査」に効かせる）。本体 DLL・`libgstx264.dll`・`libgstopenh264.dll` の存在はこのステップで確かめて早く落とす ── E2E まで持ち越すと「GStreamer が無い」のか製品の不具合なのかの切り分けに数十分かかる。`libgstopenh264.dll`（`gst-plugins-bad`）を見るのは、録画トランスコードの E2E が `openh264dec` を名指しているため（`SoftwareDecoderRuntime`。CI はランタイムを差し替えず MSYS2 のまま使う）。**この検査は matrix の全ジョブに掛かる**ので、形態ごとに検査が抜ける枝は無い。
+3. **WER LocalDumps を武装する**（DumpFolder を `runner.temp` 配下へ明示、DumpType=1 のミニダンプ）。書けたことを読み戻して `wer-status.log` に残す ── 武装できていない run の「ダンプが無い」を「クラッシュではない」と誤読しないため。AOT ではマネージドのスタックトレースが出ないので、ダンプが落ちた場所を知る唯一の手段になる。
+4. **`tools/Run-E2E.ps1 -Shard <shard> -ExcludeFragile -PublishDir <flavor のパス>`。** ここで初めて「録画が実際にできること」「GUI が実際に操作できること」が検証される。**シャードのフィルタを YAML に書かない** ── 定義の唯一の出所は `tools/Run-E2E.ps1` で、ワークフローが渡すのは名前だけである。`--filter` は 1 件も選ばなくても `dotnet test` が成功で終わるので、**空振りはスクリプトが「合計 0 件は失敗」で落とす**。`-ExcludeFragile` が外すのは `TrayMenuTests` だけ ── 通知領域のオーバーフローを物理的なマウスカーソルで操作するテストで、不安定さの原因がシェル側にあるため、赤くなっても製品の退行を意味しない。CI ランナーには GPU が無い（WARP）ので、フィクスチャは `Type=System` + `videotestsrc` + `x264enc` を明示設定して起動する ── これはエンコーダーの自動フォールバックが効いていることの実証にもなる。このステップは `TMP` / `TEMP` を `runner.temp` に固定し `PROCESSRECORDERAPP_E2E_KEEP` を立てる ── 既定の一時ディレクトリはランナーによって `runner.temp` と別の場所になり、そのままだと失敗時の成果物収集が空振りする。E2E プロジェクトは他プロジェクトを参照しないので、テストアセンブリはスクリプトがこのジョブでビルドする。
+5. **成果物は形態とシャードで名前を分ける**（`test-results-<flavor>-<shard>` ほか）。matrix の 6 ジョブが同じ名前で上げると衝突する。スクリプトは子プロセスの標準出力を `tests/ProcessRecorderApp.E2E/TestResults/e2e-<shard>.log` へ落とすので、**赤い回はこのファイルを見る**（子の console 出力はステップのログに出ない。要約表だけがステップに出る）。
+6. **`fail-fast: false`。** 1 つのシャードが赤でも残りの標本を取る ── このスイートは同じコードで失敗数が揺れるため、他のシャードの結果に独立した価値がある。
+
+**AOT 固有の破損（リフレクション欠落）は発行時ではなく実行時に出る** ── PropertyGrid のプロパティ列挙と設定 JSON のソース生成が危険域で、L1 では検出できない。だから matrix には `aot` の形態が要る（`selfcontained` だけでは、配るものが検証されない）。
 
 **NuGet の復元に認証は要らない。** 取得元はルートの `nuget.config` が nuget.org 1 つに固定しており（`<clear />` でマシン/ユーザー設定のソースを遮断）、`UiaTrigger.*` も nuget.org から取る。`permissions` はどちらのワークフローも必要なものだけを明示する ── `build.yml` は `contents: read`、`release.yml` は Release へ添付するための `contents: write`。permissions を書いた時点で未記載スコープは none になるので、増やすときは明示すること。
-
-**AOT ジョブでは MSYS2 のステップを AOT 発行の「後」に置く。** この action は後続ステップの PATH を書き換える。ILCompiler は `findvcvarsall.bat` 経由で `vswhere` を PATH 前提で探すため、発行より前に PATH をいじると、リンカのパスが壊れて MSB3073（exit 123）になる罠を踏む。MSYS2 が要るのは E2E だけ。同じ理由で AOT 発行にも `--no-restore` は使えない（ILCompiler パッケージは `.pubxml` のプロファイル付き復元でしか入らない）。
-
-両ジョブとも E2E の前に WER LocalDumps を武装する（DumpFolder を `runner.temp` 配下へ明示、DumpType=1 のミニダンプ）。書けたことを読み戻して `wer-status.log` に残す ── 武装できていない run の「ダンプが無い」を「クラッシュではない」と誤読しないため。AOT ではマネージドのスタックトレースが出ないので、ダンプが落ちた場所を知る唯一の手段になる。
 
 **ブラウザ E2E（`WebUiBrowserTests`）は `windows-latest` に Edge が同梱されている前提で走る**（`%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe`）。**入っていない環境では Skip する**ので、緑は「走った」の根拠にならない ── skip 件数を見ること。
 
@@ -91,11 +99,11 @@ git tag -d <tag>
 ## 運用上の注意
 
 - **cancel-in-progress**: `build.yml` は `concurrency` で同一 ref の実行を1つに絞り、続けて push すると前の run が打ち切られる。前の run がキャンセルで終わるのは意図した動作であり、異常ではない。
-- **アクションは Node 24 で走るメジャーに固定してある**（`actions/checkout@v7` / `actions/setup-dotnet@v6` / `actions/upload-artifact@v7`）。Node 20 のままだとランナーが強制的に Node 24 で走らせたうえで run ごとに警告注釈を出す。`upload-artifact` は **v6 以上でないと消えない** ── v5 は Node 24 に対応しただけで既定は Node 20 のままである。いずれも Runner 2.327.1 以上が要るので、self-hosted へ移すときはランナーの版を先に上げること。`msys2/setup-msys2@v2` は警告の対象外（すでに Node 24）。
+- **アクションは Node 24 で走るメジャーに固定してある**（`actions/checkout@v7` / `actions/setup-dotnet@v6` / `actions/upload-artifact@v7` / `actions/download-artifact@v7`）。Node 20 のままだとランナーが強制的に Node 24 で走らせたうえで run ごとに警告注釈を出す。`upload-artifact` は **v6 以上でないと消えない** ── v5 は Node 24 に対応しただけで既定は Node 20 のままである。いずれも Runner 2.327.1 以上が要るので、self-hosted へ移すときはランナーの版を先に上げること。`msys2/setup-msys2@v2` は警告の対象外（すでに Node 24）。
 - **ジョブ単位で conclusion を見ること。** run 単位の `success` は `continue-on-error` のジョブの失敗を隠す。現在ゲート外のジョブは無いが、確認の習慣として run の色ではなくジョブの色を見る。
 - **E2E の打ち切りやタイミング依存の分岐で、ランナーだけで赤が続けて再現したら、それ以上ランナー上での再試行を重ねないこと。** その分岐は純粋関数へ切り出して L1 で守る ── ランナー上の再試行は標本1つに数十分かかり、しかも環境要因と製品の欠陥を区別できない。
 - **下限の表明と打ち切りを区別する。** `StopSynchronicityTests` の生成サイズ 20MB は下限の表明なので、ランナーで届かなくても緩めず、録画時間かビットレートを上げて調整する（届かないと退行を検出できないテストになる）。較正の目安: 録画条件は 1280x720/30fps/20Mbit・20 秒で、開発機では 52〜55MB（下限の約 2.5 倍）出る ── ランナーの赤が退行か単なる能力不足かは、この余裕からの落ち幅で判断する。一方 `ShutdownTests` の `ExitBudget`（420 秒）は打ち切りなので、届かないなら緩めてよい ── 打ち切りは「テスト結果」ではなく「何も分からない」。ただし緩めてよいのはランナーの遅さが原因の場合だけで、切り分けは `activity.log` に `recording.stop` が出ているかで行う（出ていれば停止経路は動いていて遅いだけ、出ていなければ製品のハングを疑う）。対象の `CtrlClose_WhileRecording_FinalizesEveryFile` は録画しながら GUI を操作する唯一のケースのため、ソースは `AsBulkyButCheapToEncode`（640x360/15fps・約 20Mbit の `snow`）でバイト数＝検出力を据え置いたまま画素数だけ落としてある ── 録画時間・ビットレートとは別の、負荷だけを下げる第三の調整手段でもある。
 - **クラッシュダンプのアーティファクトだけは `always()` で上げる。** ワーカーはテストを緑にしたまま死にうる（ハーネスがリトライで拾う）ため、緑の回の「ARMED かつダンプ0件」を見て初めてクラッシュ無しと言える。ダンプは2系統あり、WER LocalDumps は AOT でも効くが、`DOTNET_DbgEnableMiniDump` 由来の `.dmp` は CoreCLR の機能なので AOT 発行物では出ない。
-- **失敗時診断の収集網は拡張子で決まる。** `build.yml` の2ジョブは `*.log` / `*.log.1` / `*.json` を拾うが、`release.yml` のスモーク診断が拾うのは `*.log` / `*.json`（と `TestResults/*.trx`）だけで、ローテート済みの `*.log.1` はそこでだけ黙って落ちる。新しい診断ファイルは `.log` か `.json` にすること。`.txt` にすると黙ってアップロードされず、無いことに気付けない。
+- **失敗時診断の収集網は拡張子で決まる。** `build.yml` の `e2e` ジョブは `*.log` / `*.log.1` / `*.json` を拾うが、`release.yml` のスモーク診断が拾うのは `*.log` / `*.json`（と `TestResults/*.trx`）だけで、ローテート済みの `*.log.1` はそこでだけ黙って落ちる。新しい診断ファイルは `.log` か `.json` にすること。`.txt` にすると黙ってアップロードされず、無いことに気付けない。
 - **`Activate_ShowsTheWindowWithoutFaulting` は環境起因で赤くなりやすい。** 対話セッション・デスクトップと WARP でのプレビュー初期化に依存する最初のテストで、赤でも製品の不具合とは限らない ── L3 全般と同じく、まずランナー側の制約を疑う。
 - **`LanguageMatrixTests` はどの行が実質的な検査かがランナーの表示言語で入れ替わる。** ランナー（en-US）で `ja-JP` の行が落ちたら、それはランナーの制約ではなく製品の欠陥（ja-JP のリソースが発行物に載っていない）なので、環境起因の赤とは切り分けて扱う。

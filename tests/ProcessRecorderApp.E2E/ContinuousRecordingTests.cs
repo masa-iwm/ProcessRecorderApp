@@ -20,8 +20,17 @@ namespace ProcessRecorderApp.E2E;
 /// あれは chunked 固有の性質（確定しないと丸ごと失われる）を見ている。
 /// fMP4 のセグメントを<b>配信として</b>見るのは <c>RecordingDeliveryTests</c>。
 /// </para>
+/// <para>
+/// <b>クラスごと <c>Category=Gui</c> である。</b> 常時録画の最後のセグメントが確定するのは
+/// 正常終了だけで、その唯一の手段が <c>AppUi</c> の Ctrl+閉じる なので
+/// （<see cref="CloseGracefully"/>）、ここのほとんどのケースは実デスクトップを要る。
+/// <c>ABrokenContinuousSetting_DoesNotTakeDownTheEventRecording</c> だけは画面を触らないが、
+/// トレイトはファイル単位で付ける規則なので一緒に gui シャードへ乗る
+/// （規則と検査は L4 の <c>E2EShardSyncTests</c>）。
+/// </para>
 /// </summary>
 [Collection(E2ECollection.Name)]
+[Trait("Category", "Gui")]
 public sealed class ContinuousRecordingTests(PublishedApp app, ITestOutputHelper output)
 {
     /// <summary>製品の下限。これより短くはできない。</summary>

@@ -7,6 +7,7 @@ namespace ProcessRecorderApp.E2E;
 /// 以降の GUI テストの赤は「製品の不具合」ではなく「テスト基盤の不具合」でありうる。
 /// </summary>
 [Collection(E2ECollection.Name)]
+[Trait("Category", "Gui")]
 public sealed class GuiSmokeTests(PublishedApp app, ITestOutputHelper output)
 {
     /// <summary>

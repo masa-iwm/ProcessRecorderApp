@@ -14,6 +14,7 @@ namespace ProcessRecorderApp.E2E;
 /// </para>
 /// </summary>
 [Collection(E2ECollection.Name)]
+[Trait("Category", "Gui")]
 public sealed class PipelineDialogTests(PublishedApp app)
 {
     /// <summary>「…」ボタンの AutomationId（<c>PropertyGridItem.BuilderButtonAutomationId</c>）。</summary>
