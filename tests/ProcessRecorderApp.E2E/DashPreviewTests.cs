@@ -78,7 +78,11 @@ public sealed class DashPreviewTests(PublishedApp app, ITestOutputHelper output)
     /// <summary>初期化の記録が現れるまでの待ち。</summary>
     private static readonly TimeSpan EventBudget = TimeSpan.FromSeconds(30);
 
-    /// <summary>manifest のポーリング間隔（クライアント側の既定と同じ 1 秒）。</summary>
+    /// <summary>
+    /// この検査が manifest を引く間隔。<b>クライアントの既定（<c>DASH_POLL_MS</c> = 0.25 秒）
+    /// とは別で構わない</b> ── ここで見るのはサーバーが公開するセグメントの並びであり、
+    /// セグメント長（<c>DashPreviewStream.FragmentDurationMs</c>）と同じ 1 秒で足りる。
+    /// </summary>
     private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(1);
 
     /// <summary>リングの上限と単調性を見る窓（1 秒セグメントで 8 本ぶん）。</summary>

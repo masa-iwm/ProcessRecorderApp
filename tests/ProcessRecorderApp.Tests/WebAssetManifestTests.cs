@@ -183,6 +183,47 @@ public sealed class WebAssetManifestTests
             + "remove() が再生中の GOP を巻き添えにしえます。");
     }
 
+    /// <summary><c>wwwroot</c> の JavaScript にある <c>DASH_POLL_MS</c> の宣言（ミリ秒）。
+    /// <b>行頭に錨を打たない</b> ── 打つとコメント行の除外が効かなくなる。</summary>
+    private static readonly Regex DashPollRegex =
+        new(@"\bvar\s+DASH_POLL_MS\s*=\s*(\d+)\s*;", RegexOptions.Compiled);
+
+    /// <summary>
+    /// <b>manifest の引き直しは、サーバーのセグメント長より短い。</b>
+    ///
+    /// <para>
+    /// 等しくすると、ポーリングとセグメントの公開の位相が<b>最初の 1 回で決まったまま</b>
+    /// セッションのあいだ固定される ── 公開の直前に当たる位相を引いた視聴者は、
+    /// セグメント 1 本ぶんに近い余裕を毎秒失い続け、再生が止まる。短くしておくと、
+    /// 公開からの遅れはポーリング 1 周期に収まる。
+    /// </para>
+    /// <para>
+    /// <b>サーバー側の値はリテラルで書かない</b>（<c>DashPreviewPipelineTests</c> と同じ
+    /// <see cref="DashPreviewStream.FragmentDurationMs"/> を見る）── 片方だけ動かした日に
+    /// 落ちるのが要点である。<b>コメント行は除く</b>。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void TheDashPollIsShorterThanTheServerSegment()
+    {
+        string script = AllScripts();
+
+        var declarations = DashPollRegex.Matches(script)
+            .Where(m => !SourceReferences.IsCommentLine(script, m.Index))
+            .ToArray();
+
+        Assert.True(declarations.Length == 1,
+            $"wwwroot の JavaScript に DASH_POLL_MS が {declarations.Length} 件見つかりました"
+            + "（走査が壊れているか、宣言の書き方が変わっています）。");
+
+        int poll = int.Parse(declarations[0].Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture);
+
+        Assert.True(0 < poll && poll < DashPreviewStream.FragmentDurationMs,
+            $"manifest の引き直し（{poll} ms）がセグメント長"
+            + $"（{DashPreviewStream.FragmentDurationMs} ms）より短くありません ── "
+            + "ポーリングとセグメントの公開の位相が固定され、悪い位相を引いた視聴者は止まります。");
+    }
+
     [Fact]
     public void TheDocumentOnlyReferencesManifestedAssets()
     {

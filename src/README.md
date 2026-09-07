@@ -2511,7 +2511,7 @@ caps 変化のたびに解き直される:
   止めれば `LeaseMs` 後に第 2 パイプラインが消える。
 
 遅延の目安は**おおむね 2〜3 秒**（セグメントの長さは次のセグメントが来るまで確定しない
-ぶんが 1 本＝約 1 秒、ポーリングの粒度が 1 秒、そこへ MSE の緩衝が乗る）。
+ぶんが 1 本＝約 1 秒、ポーリングの粒度が 0.25 秒、そこへ MSE の緩衝が乗る）。
 
 ### 録画トランスコード
 
@@ -2735,7 +2735,7 @@ false を返すので、単独では信用できない）。
 `AbortController`・ObjectURL・状態表示という同じ 4 つの handle に state を掛けてある。
 
 DASH 側は**第三者のライブラリを使わない**（資産は増やさない）。単一 Period のライブ配信で
-プレイヤーがやることは、`manifest.mpd` を 1 秒ごとに引き直し、
+プレイヤーがやることは、`manifest.mpd` を引き直し、
 `SegmentTimeline` の `S@t` のうち未取得のものを昇順に取って（**同時 1 本**）`SourceBuffer` へ
 append するだけである。`mode` は **`'segments'`**（chunked 側の `'sequence'` とは逆 ──
 セグメントは自分の復号時刻を持ち、MPD がその時刻で索引している）で、
@@ -2743,6 +2743,12 @@ append するだけである。`mode` は **`'segments'`**（chunked 側の `'se
 時間軸を 0 起点にする。MPD からは `AdaptationSet` → `Representation` を列挙して
 `{id, codecs, width, height, bandwidth, template}` の配列にし（`SegmentTemplate` と `codecs` は
 Representation 直下を優先し、無ければ `AdaptationSet` のものを継承する）、**先頭を再生する**。
+**引き直しは 0.25 秒ごと**（`DASH_POLL_MS`）で、これは**セグメント長より短くなければならない**
+（`DashPreviewStream.FragmentDurationMs` = 1 秒。L1 が両者を突き合わせている）── 1 秒間隔で引くと
+ポーリングと公開の位相が最初の 1 回で決まったまま固定され、公開の直前に当たった視聴者は
+セグメント 1 本ぶんに近い余裕を毎秒失い続けて止まる。短くすれば公開からの遅れは
+ポーリング 1 周期に収まる。代償は視聴者 1 人あたり毎秒 4 回の manifest 要求で、
+1 回はメモリから約 1 ミリ秒で返る（取得が貸出を延ばすので、頻度を上げる側に危険は無い）。
 MIME はその Representation の `codecs` から組み立て、
 `MediaSource.isTypeSupported` が偽なら理由を出して止める。503 の本文が
 `dash preview is starting` のあいだは**利用者が止めるまで**再試行し、他の 4xx / 5xx は
@@ -2751,7 +2757,7 @@ MIME はその Representation の `codecs` から組み立て、
 復号できず、同じ `SourceBuffer` へ 2 つ目の init を入れるのは MSE が壊れる操作そのものである。
 トリムと追従（ライブ端への寄せ）は chunked 側と**同じ関数**を使うが、狙う位置は違う ──
 **DASH はライブ端から 2.5 秒後ろを狙い、遅れが 4.5 秒を超えたときだけ寄せ直す**。
-1 秒セグメント×1 秒ポーリングでは chunked の 0.5 秒では次のセグメントが間に合わず、
+1 秒セグメントでは chunked の 0.5 秒では次のセグメントが間に合わず、
 寄せる → 止まる → 遅れが開いてまた寄せる、を繰り返す（chunked は連続到着なので 0.5 秒でよい）。
 
 録画一覧の「Play」は 2 経路ある。`fragmented` でない行は `<video src>` 直結で、

@@ -2084,7 +2084,16 @@
   //    cannot decode the new segments and a second init in the same SourceBuffer is
   //    exactly what breaks MSE, so that case rebuilds everything from scratch.
 
-  var DASH_POLL_MS = 1000;
+  // How often the manifest is asked for. It has to be **shorter than a segment**
+  // (1 s, DashPreviewStream.FragmentDurationMs): with a poll period equal to the
+  // segment duration the phase between the poll and the moment a segment is published
+  // is whatever the first fetch happened to land on and stays there for the whole
+  // session -- a poll that lands just before publication then loses almost a second of
+  // cushion on every segment. Polling faster bounds that lag to one poll period.
+  // The cost is at most 4 manifest requests per second per viewer, each answered from
+  // memory in about a millisecond. Fetching the manifest is also what holds the lease
+  // (DashPreviewLimits.LeaseMs), so asking more often only makes that safer.
+  var DASH_POLL_MS = 250;
 
   // How far behind the live edge the DASH mode plays, and how far behind that it has
   // to fall before `followPreview` seeks.
