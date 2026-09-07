@@ -6,6 +6,8 @@
     This script is the single source of truth for what each shard contains. CI
     (.github/workflows/build.yml) runs one matrix job per shard and must not spell the
     filters out again -- a filter written twice is two filters as soon as someone edits one.
+    CI also does not build the tests: it downloads the built assembly (`e2e-tests`) and
+    passes -NoBuild, which runs the dll directly and needs neither obj\ nor a restore.
 
     Shards:
       gui   Category=Gui                  (UIA-driven tests; needs an interactive desktop)
@@ -56,8 +58,14 @@
     dot-sourcing or repeated calls in one session do not leak it.
 
 .PARAMETER NoBuild
-    Skip the one-off `dotnet build` of the E2E project. Each shard always runs with
-    `--no-build --no-restore`, so without this switch the build happens exactly once.
+    Skip the one-off `dotnet build` of the E2E project and run the **built test assembly**
+    instead of the project: `dotnet test <bin>\ProcessRecorderApp.E2E.dll`. That form needs
+    no `obj\project.assets.json` and no restore, which is what makes it usable in CI, where
+    the e2e job downloads the `e2e-tests` artifact (the bin directory only) instead of
+    building. The dll must exist -- the script throws when it does not.
+    Without this switch the project form is used and each shard runs with
+    `--no-build --no-restore`, so the build happens exactly once.
+    Both forms write their TRX into tests\ProcessRecorderApp.E2E\TestResults.
 
 .PARAMETER Configuration
     Build configuration. Default: Release.
@@ -92,6 +100,11 @@ $Shard = @($Shard | ForEach-Object { $_.ToLowerInvariant() } | Select-Object -Un
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $project = Join-Path $repoRoot 'tests\ProcessRecorderApp.E2E'
 $resultsDir = Join-Path $project 'TestResults'
+# The test assembly, for -NoBuild. The TFM is spelled out here because the output path has
+# to be known without MSBuild; the same literal appears in the csproj (TargetFramework, with
+# AppendRuntimeIdentifierToOutputPath=false so the RID does not add a level) and in
+# .github/workflows/build.yml (the `e2e-tests` artifact path). Change one, change all three.
+$testDll = Join-Path $project "bin\$Configuration\net10.0-windows10.0.19041.0\ProcessRecorderApp.E2E.dll"
 
 function Get-ShardFilter {
     param([string] $Name)
@@ -150,7 +163,13 @@ Write-Host "publish : $publishFull"
 Write-Host "shards  : $($Shard -join ', ')$(if ($Parallel) { ' (parallel)' } else { '' })"
 
 # --- build once ------------------------------------------------------------------------
-if (-not $NoBuild) {
+if ($NoBuild) {
+    # With -NoBuild the shards target the dll, so the dll is the only thing that has to be
+    # there -- obj\project.assets.json is not (that is exactly why the CI artifact works).
+    if (-not (Test-Path $testDll)) {
+        throw "test assembly not found: $testDll -- build it first (dotnet build tests/ProcessRecorderApp.E2E -c $Configuration), or in CI download the e2e-tests artifact into that directory"
+    }
+} else {
     & dotnet build $project -c $Configuration --nologo -v q
     if ($LASTEXITCODE -ne 0) { throw "dotnet build failed with exit code $LASTEXITCODE" }
 }
@@ -171,14 +190,24 @@ function Start-Shard {
         Remove-Item -Force -ErrorAction SilentlyContinue
     Remove-Item -Path $log, $err -Force -ErrorAction SilentlyContinue
 
-    $arguments = @(
-        'test', ('"' + $project + '"'),
-        '-c', $Configuration,
-        '--no-build', '--no-restore')
+    # Two forms of the same run. Targeting the dll hands the arguments straight to
+    # VSTest (xunit.runner.visualstudio sits next to the dll), which needs neither obj\ nor
+    # a restore; the MSBuild-only switches are not passed there because VSTest ignores them
+    # with a warning. `--filter` has the same grammar and selects the same tests in both.
+    # `--results-directory` is given in both forms so the TRX lands in the same folder.
+    if ($NoBuild) {
+        $arguments = @('test', ('"' + $testDll + '"'))
+    } else {
+        $arguments = @(
+            'test', ('"' + $project + '"'),
+            '-c', $Configuration,
+            '--no-build', '--no-restore')
+    }
     if ($filter) { $arguments += @('--filter', ('"' + $filter + '"')) }
     $arguments += @(
         '--logger', ('"trx;LogFileName=' + $trxName + '"'),
-        '--logger', '"console;verbosity=minimal"')
+        '--logger', '"console;verbosity=minimal"',
+        '--results-directory', ('"' + $resultsDir + '"'))
 
     Write-Host "start   : $Name  filter=$(if ($filter) { $filter } else { '(none)' })"
     $process = Start-Process -FilePath 'dotnet' -ArgumentList ($arguments -join ' ') `

@@ -89,6 +89,20 @@ jobs:
         with:
           dotnet-version: '10.0.x'
 
+      # NuGet のグローバルパッケージフォルダ（~/.nuget/packages）だけを持ち越す。
+      # キーの入力は復元される集合を決めるファイル ── 各 csproj・Directory.Packages.props
+      # （版の正本）・src/Directory.Build.props・発行プロファイル（.pubxml。ILCompiler /
+      # crossgen2 のパックはここでしか要求されない）・nuget.config（取得元）。
+      # global.json はこのリポジトリに無いので入れない。
+      # **古いキーに当たっても害は無い** ── restore / publish はそのまま走り、
+      # 足りないパッケージだけを取りに行く（キャッシュは復元を速くするだけで、省かない）。
+      - name: Cache NuGet packages
+        uses: actions/cache@v6
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', '**/Directory.Packages.props', '**/Directory.Build.props', '**/*.pubxml', 'nuget.config') }}
+          restore-keys: nuget-${{ runner.os }}-
+
       - name: Restore
         run: dotnet restore src/ProcessRecorderApp.slnx
 
@@ -147,6 +161,23 @@ jobs:
           -c Release --no-restore --no-build
           --logger "trx;LogFileName=l1.trx"
 
+      # 上のビルドは slnx 全体なので E2E のテストアセンブリもここで出来ている。
+      # それを artifact で e2e ジョブへ渡し、あちら側の restore とビルドを丸ごと省く
+      # （スクリプトは -NoBuild で dll を直接 VSTest に渡す。obj/ は要らない）。
+      # 出力パスに RID の段が無いのは csproj の AppendRuntimeIdentifierToOutputPath=false。
+      #
+      # **このアセンブリはビルド時のワークスペースの絶対パスを埋め込んでいる**
+      # （csproj の AssemblyMetadata "RepositoryRoot"）。別のランナーで動くのは
+      # GitHub の Windows ランナーが常に同じ `${{ github.workspace }}` へ checkout する
+      # からで、そこが食い違えば `Strings/<locale>/Resources.resw` をこの根から解決する
+      # LanguageMatrixTests が落ちる。
+      - name: Upload the E2E test build
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-tests
+          path: tests/ProcessRecorderApp.E2E/bin/Release/net10.0-windows10.0.19041.0
+          if-no-files-found: error
+
       # **ここで --no-restore を使ってはいけない。**
       # PublishReadyToRun は .pubxml にしか書いていないので、プロファイル抜きの
       # `dotnet restore` では ReadyToRun のランタイムパック（crossgen2）が復元されず、
@@ -201,6 +232,22 @@ jobs:
         uses: actions/setup-dotnet@v6
         with:
           dotnet-version: '10.0.x'
+
+      # 入力は build-and-test と同じだが、**キーに `aot-` を挟んで別エントリにする。**
+      # ここでは publish がプロファイル付きの復元を行い、ILCompiler パッケージを取る
+      # ── build-and-test 側のエントリには入っていない。キーが同じだと、キャッシュの
+      # 無い回に 2 ジョブが並走して両方が保存を試み、後着は "Unable to reserve cache" で
+      # 捨てられる（build-and-test 側が残ると ILCompiler は毎回取り直しになる）。
+      # restore-keys は共通の接頭辞のままにして、初回は build-and-test のエントリから
+      # 共通パッケージだけでも受け取る。復元は必ず走る（在れば速いだけ）。
+      - name: Cache NuGet packages
+        uses: actions/cache@v6
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-aot-${{ hashFiles('**/*.csproj', '**/Directory.Packages.props', '**/Directory.Build.props', '**/*.pubxml', 'nuget.config') }}
+          restore-keys: |
+            nuget-${{ runner.os }}-aot-
+            nuget-${{ runner.os }}-
 
       # **ここで --no-restore を使ってはいけない。** PublishAot は .pubxml だけに書いてあり
       # （csproj 側を Release 条件付きにすると通常の Release ビルドまで AOT になるため、
@@ -283,6 +330,16 @@ jobs:
         with:
           name: publish-${{ matrix.flavor }}
           path: src/ProcessRecorderApp/bin/Release/win-x64/publish/${{ matrix.flavor }}
+
+      # テストアセンブリも build-and-test が作ったものを使う（このジョブは restore も
+      # ビルドもしない）。**戻し先はビルド時と同じ bin のパス** ── スクリプトが
+      # -NoBuild でそこの dll を組み立てて VSTest に渡す。
+      # obj/ は artifact に入らないが、dll を直接指す形は project.assets.json を要求しない。
+      - name: Download the E2E test build
+        uses: actions/download-artifact@v7
+        with:
+          name: e2e-tests
+          path: tests/ProcessRecorderApp.E2E/bin/Release/net10.0-windows10.0.19041.0
 
       # GStreamer は同梱していないので、ランナー側に入れる。
       # 既定（release: true）は MSYS2 のリリースを新規に展開する ── パッケージDBが
@@ -408,8 +465,8 @@ jobs:
       # ここで赤くなっても「録画アプリが壊れた」ことを意味しない。
       # 手元では `tools/Run-E2E.ps1`（除外なし）で回す。
       #
-      # E2E プロジェクトは他プロジェクトを参照しないので、スクリプトがこのジョブで
-      # テストアセンブリだけをビルドする（発行物はビルドしない）。
+      # テストアセンブリは build-and-test が作って artifact で渡すので、このジョブは
+      # `-NoBuild` で dll をそのまま回す（restore もビルドもしない）。
       - name: End-to-end tests (L2 + L3)
         env:
           PROCESSRECORDERAPP_E2E_KEEP: '1'
@@ -421,6 +478,7 @@ jobs:
           ./tools/Run-E2E.ps1
           -Shard ${{ matrix.shard }}
           -ExcludeFragile
+          -NoBuild
           -PublishDir ${{ github.workspace }}/src/ProcessRecorderApp/bin/Release/win-x64/publish/${{ matrix.flavor }}
 
       # trx に加えて、スクリプトが子プロセスの標準出力を落とした e2e-<shard>.log も上げる

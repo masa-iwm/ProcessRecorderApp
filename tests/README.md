@@ -173,6 +173,7 @@ tools\Run-E2E.ps1 -Shard web -ExcludeFragile -NoBuild  # ビルド済みなら�
 
 - シャードは `gui`（`Category=Gui`）・`web`（ブラウザと配信の 4 クラス）・`core`（残り）・
   `all`（フィルタ無し）。`-ExcludeFragile` は全シャードに `Category!=Fragile` を足す。
+- **`-NoBuild` はビルド済みのテストアセンブリ（`bin/<構成>/net10.0-windows10.0.19041.0/ProcessRecorderApp.E2E.dll`）を直接回す**ので `obj/` も restore も要らない（CI の `e2e` ジョブはこの形で、`build-and-test` が上げた `e2e-tests` artifact を受け取る）。dll が無ければその場で落とす。
 - **合計 0 件のシャードは失敗として扱う** ── `--filter` の空振りは `dotnet test` では
   成功に見えるので、ここで落とす。
 - **発行物が `src/**/*.cs` より古ければ警告を 1 行出す**（上記の「古いバイナリに対して
