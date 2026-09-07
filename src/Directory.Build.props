@@ -10,7 +10,7 @@
          このバージョンの Windows SDK がインストールされている必要は無い。 -->
     <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
     <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
-    <!-- 検証時の .NET SDK（10.0.302）の既定は 10.0.19041.57（CsWinRT 2.2）だが、.87 は CsWinRT 2.3.1 の
+    <!-- 検証時の .NET SDK（10.0.400）の既定は 10.0.19041.57（CsWinRT 2.2）だが、.87 は CsWinRT 2.3.1 の
          WinRT.Runtime と AOT ソースジェネレーターを同梱している。
          WinRT.DynamicWindowsRuntimeCast（AOT 用の動的キャスト注釈）が 2.3 以降にしか無く、
          本リポジトリは複数箇所で使っているため、このピン留めが必要。
@@ -24,7 +24,7 @@
          バージョンを、19041 の側が API サーフェスを決めるため、揃えないと
          「19041 を名乗りながら 26100 の API が見える」不整合になる。
          なおこのピン留めは手動更新が必要。.NET SDK の WindowsSdkSupportedTargetPlatformVersion 表が
-         10.0.19041.0 → .87 以降を指すようになればこの行は削除できる（10.0.302 時点では .57）。 -->
+         10.0.19041.0 → .87 以降を指すようになればこの行は削除できる（10.0.400 時点では .57）。 -->
     <WindowsSdkPackageVersion>10.0.19041.87</WindowsSdkPackageVersion>
     <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
     <AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>

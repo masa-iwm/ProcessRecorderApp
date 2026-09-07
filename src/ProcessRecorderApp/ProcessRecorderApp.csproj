@@ -49,6 +49,9 @@
     <PackageReference Include="Microsoft.Windows.AI.MachineLearning">
       <ExcludeAssets>all</ExcludeAssets>
     </PackageReference>
+    <PackageReference Include="Microsoft.WindowsAppSDK.Search">
+      <ExcludeAssets>all</ExcludeAssets>
+    </PackageReference>
     <!-- タスクトレイアイコン（WindowManager.IsVisibleInTray等、MainWindowのサイズ変更検知に使用）。MIT License -->
     <PackageReference Include="WinUIEx" />
     <!-- 起動引数（コマンドライン）の解析に使用。MIT License（.NET Foundation / dotnet/command-line-api） -->

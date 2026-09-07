@@ -23,7 +23,7 @@
 
 | 要件 | 実装 |
 |---|---|
-| .NET10 / C# / WinUI3 | `net10.0-windows10.0.19041.0`（動作対象OSの下限は `TargetPlatformMinVersion` `10.0.17763.0`）、Windows App SDK **2.3.1**、`UseWinUI` |
+| .NET10 / C# / WinUI3 | `net10.0-windows10.0.19041.0`（動作対象OSの下限は `TargetPlatformMinVersion` `10.0.17763.0`）、Windows App SDK **2.4.0**、`UseWinUI` |
 | MVVM 実装 | CommunityToolkit.Mvvm **8.4.2** |
 | Native AOT発行対応 | `PublishAot=true` + `SelfContained=true`（アンパッケージ配布）。**これらの発行設定は `Properties/PublishProfiles/*.pubxml` にのみ存在し、`.csproj` には構成条件付きの `PublishAot` 等を置いていない**（Release構成に条件付けすると CI の Release ビルドがすべて AOT になり、ビルド時間が現実的でなくなるため）。`.csproj` にあるのは AOT 時の挙動を調整するプロパティ（`TrimMode=full` / `StripSymbols=true` / `OptimizationPreference` / `IlcMaxVectorTBitWidth` など）だけで、これらは発行時以外は無害 |
 | 常時バッファリングによるイベント録画 | `GStreamer.GstSharpNet/EventRecorder.cs`（後述） |
@@ -34,10 +34,10 @@
 | 常駐ワーカー起動の排他制御 | 名前付き **Mutex** + 名前付き **EventWaitHandle**（後述） |
 | タスクトレイ常駐・閉じる/最小化でトレイ格納 | **WinUIEx**（`WindowManager.IsVisibleInTray` 等、MIT License）を使用 |
 | Win32 P/Invoke | **CsWin32**（`Microsoft.Windows.CsWin32`、MIT License）によるソース生成。使用箇所は `Components`・`GStreamer.GstSharpNet` のみ（後述） |
-| コマンドライン解析 | **System.CommandLine 2.0.10**（MIT License）による解析（後述） |
+| コマンドライン解析 | **System.CommandLine 2.0.11**（MIT License）による解析（後述） |
 | 常駐ワーカーでの処理失敗をランチャーの終了コードで識別 | 名前付き **EventWaitHandle** + **MemoryMappedFile** による結果通知（後述） |
 | Variables 画面のキー/値グリッド | **WinUI.TableView 1.4.1**（MIT License） |
-| 録画・プレビューエンジン | **GstSharp.Net**（`GstSharp.Net` / `GstSharp.Net.App` / `GstSharp.Net.Base` / `GstSharp.Net.Video` 1.28.4、GStreamer の .NET バインディング。nuget.org から取得する。後述「パッケージの取得元」） |
+| 録画・プレビューエンジン | **GstSharp.Net**（`GstSharp.Net` / `GstSharp.Net.App` / `GstSharp.Net.Base` / `GstSharp.Net.Video` 1.28.9、GStreamer の .NET バインディング。nuget.org から取得する。後述「パッケージの取得元」） |
 | en-US / ja-JP ローカライズ（OS表示言語に自動追従） | MRT Core（`.resw` + `resources.pri`）+ `x:Uid` + `Components/Localization.cs`（後述） |
 
 ---
@@ -1441,14 +1441,15 @@ Native AOTとも問題なく組み合わせられる。使用するAPIを追加�
 Windows App SDK標準のトースト通知（`AppNotificationManager`）を使用している
 （`SingleInstance/Notifications.cs`）。
 
-> **既知の制約**：Windows App SDK 2.3.1のセルフコンテインド（アンパッケージ）配布では、
+> **既知の制約**：Windows App SDK 2.4.0のセルフコンテインド（アンパッケージ）配布では、
 > `AppNotificationManager.Register()` が `Microsoft.WindowsAppRuntime.Insights.Resource.dll`
 > を読み込めず `COMException (0x8007007E)` で失敗することがある。このDLLはインストール
 > 済みのWindows App Runtime（AppXフレームワークパッケージ）内にのみ存在し、セルフコンテインド
 > 配布用のどのNuGetパッケージにも含まれていないことを確認済み（`dotnet build`/`dotnet publish`
-> のいずれでも再現し、Debugビルド固有の問題ではない）。Windows App SDK側の既知の不具合
-> ([microsoft/WindowsAppSDK#6071](https://github.com/microsoft/WindowsAppSDK/issues/6071)、
-> 1.8.6/2.1でも報告あり・未解決)と見られる。
+> のいずれでも再現し、Debugビルド固有の問題ではない）。`AppNotificationManager.Default.Register()`
+> だけを呼ぶ最小のコンソールアプリでも 2.3.1 / 2.4.0 の両方で同じ例外になる。Windows App SDK側の
+> 既知の不具合（[microsoft/WindowsAppSDK#6071](https://github.com/microsoft/WindowsAppSDK/issues/6071)。
+> issue は閉じられているが 2.4.0 で再現する）と見られる。
 >
 > トースト通知はあくまで補助的な結果通知であるため、`SingleInstanceManager`側で
 > `Notifications.ShowToast` の失敗をベストエフォートで握りつぶし（`TryShowToast`）、
@@ -1458,7 +1459,7 @@ Windows App SDK標準のトースト通知（`AppNotificationManager`）を使�
 ## 引数の仕様：System.CommandLine + コマンドレジストリ方式（拡張しやすい設計）
 
 起動引数は将来増えていくことを想定し、[System.CommandLine](https://github.com/dotnet/command-line-api)
-（2.0.10、MIT License、.NET Foundation / dotnet/command-line-api）を使ってサブコマンド形式で
+（2.0.11、MIT License、.NET Foundation / dotnet/command-line-api）を使ってサブコマンド形式で
 解析している（`ProcessRecorderApp/ActivationCommands.cs`）。
 
 ```
@@ -3604,6 +3605,8 @@ Windows SDK 参照のバージョン」であり、動作対象OSの下限は独
   ピン留めしてある ── これにより `Microsoft.Windows.CsWinRT` のパッケージ参照が不要になり、
   ローカルの Windows SDK（`Platforms\UAP\<ver>\Platform.xml`）にも依存しない
   （理由の詳細は `src/Directory.Build.props` のコメント）。
+- .NET SDK はルートの `global.json` が **10.0 系**を要求する（`rollForward=latestFeature`。
+  版は固定せず、入っている 10.0.x の最新を使う）。CI の `setup-dotnet` も `10.0.x` で同じ。
 - 発行プロファイル（`*.pubxml`）には `TargetFramework` を**書かない**。書くと定義元が
   二重化し、SDK 更新のたびに片方だけ取り残されて発行が失敗する。
 

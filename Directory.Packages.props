@@ -24,13 +24,14 @@
 
   <ItemGroup>
     <!-- WinUI 3 / Windows App SDK -->
-    <PackageVersion Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.28000.2270" />
-    <PackageVersion Include="Microsoft.WindowsAppSDK" Version="2.3.1" />
-    <PackageVersion Include="Microsoft.WindowsAppSDK.AI" Version="2.3.4" />
+    <PackageVersion Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.28000.2705" />
+    <PackageVersion Include="Microsoft.WindowsAppSDK" Version="2.4.0" />
+    <PackageVersion Include="Microsoft.WindowsAppSDK.AI" Version="2.4.4" />
     <PackageVersion Include="Microsoft.WindowsAppSDK.ML" Version="2.1.74" />
+    <PackageVersion Include="Microsoft.WindowsAppSDK.Search" Version="2.4.4" />
     <PackageVersion Include="Microsoft.Windows.AI.MachineLearning" Version="2.1.74" />
-    <PackageVersion Include="Microsoft.Windows.CsWin32" Version="0.3.298" />
-    <PackageVersion Include="WinUIEx" Version="2.9.2" />
+    <PackageVersion Include="Microsoft.Windows.CsWin32" Version="0.3.333" />
+    <PackageVersion Include="WinUIEx" Version="2.9.3" />
     <PackageVersion Include="WinUI.TableView" Version="1.4.1" />
     <PackageVersion Include="CommunityToolkit.Mvvm" Version="8.4.2" />
     <PackageVersion Include="CommunityToolkit.WinUI.Behaviors" Version="8.2.251219" />
@@ -38,23 +39,25 @@
     <PackageVersion Include="CommunityToolkit.WinUI.Controls.Sizers" Version="8.2.251219" />
 
     <!-- GStreamer / CLI（GstSharp.Net は nuget.org から） -->
-    <PackageVersion Include="GstSharp.Net" Version="1.28.4" />
-    <PackageVersion Include="GstSharp.Net.App" Version="1.28.4" />
-    <PackageVersion Include="GstSharp.Net.Base" Version="1.28.4" />
-    <PackageVersion Include="GstSharp.Net.Video" Version="1.28.4" />
-    <PackageVersion Include="System.CommandLine" Version="2.0.10" />
+    <PackageVersion Include="GstSharp.Net" Version="1.28.9" />
+    <PackageVersion Include="GstSharp.Net.App" Version="1.28.9" />
+    <PackageVersion Include="GstSharp.Net.Base" Version="1.28.9" />
+    <PackageVersion Include="GstSharp.Net.Video" Version="1.28.9" />
+    <PackageVersion Include="System.CommandLine" Version="2.0.11" />
 
     <!-- UIA トリガ（0.x のあいだは公開 API が動くので、上げるときは使用面を確かめる） -->
     <PackageVersion Include="UiaTrigger.Core" Version="0.1.0" />
     <PackageVersion Include="UiaTrigger.Picker.WinUI" Version="0.1.0" />
 
-    <!-- テスト -->
-    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
-    <PackageVersion Include="xunit.v3" Version="3.1.0" />
-    <PackageVersion Include="xunit.runner.visualstudio" Version="3.1.4" />
+    <!-- テスト。xunit は mtp-off 版を使う ── 素の xunit.v3 は 4.0 から Microsoft.Testing.Platform v2 が
+         既定で、.NET 10 SDK の `dotnet test`（VSTest）から呼ぶと拒否される。tools/Run-E2E.ps1 の
+         dll 直指定とフィルタ式の文法は VSTest 前提（docs/ci.md）なので、実行機構はそのまま残す。 -->
+    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.9.0" />
+    <PackageVersion Include="xunit.v3.mtp-off" Version="4.0.0" />
+    <PackageVersion Include="xunit.runner.visualstudio" Version="4.0.0" />
     <PackageVersion Include="FlaUI.UIA3" Version="5.0.0" />
     <!-- PNG の独立した復号器（PngWriter の出力を自前の符号化器で読み返さないため）。
          Windows 専用パッケージで、参照するのはテストプロジェクトだけ。 -->
-    <PackageVersion Include="System.Drawing.Common" Version="8.0.10" />
+    <PackageVersion Include="System.Drawing.Common" Version="10.0.11" />
   </ItemGroup>
 </Project>

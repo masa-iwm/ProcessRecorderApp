@@ -1,0 +1,60 @@
+# Dependabot の設定（NuGet / GitHub Actions / .NET SDK）。
+#
+# - NuGet の版は Directory.Packages.props だけが持つ（中央パッケージ管理）ので、
+#   directory は "/" 1 つで足りる。csproj には Version が無い。
+# - 同じ製品の部品を 1 つの PR にまとめる。Windows App SDK は metapackage と
+#   AI / ML / Search / Microsoft.Windows.AI.MachineLearning の版が互いに範囲で縛られており、
+#   個別に上げると NU1107 で復元が落ちる。GstSharp.Net の 4 つは同じ版で揃える
+#   （src/README.md「パッケージの取得元」）。
+# - .NET SDK は global.json の sdk.version を追う。rollForward=latestFeature なので
+#   手元も CI も「10.0 系で入っている最新」を使い、ここでの更新は下限の追随にすぎない。
+# - Microsoft.Windows.SDK.NET.Ref（WindowsSdkPackageVersion のピン留め）は NuGet の
+#   PackageReference ではないので Dependabot は追わない。更新は src/Directory.Build.props と
+#   tests/*/*.csproj の 3 か所を手で揃える（理由は src/Directory.Build.props のコメント）。
+version: 2
+updates:
+  - package-ecosystem: "nuget"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "Asia/Tokyo"
+    open-pull-requests-limit: 10
+    groups:
+      windows-app-sdk:
+        patterns:
+          - "Microsoft.WindowsAppSDK*"
+          - "Microsoft.Windows.AI.MachineLearning"
+          - "Microsoft.Windows.SDK.BuildTools"
+      gstsharp-net:
+        patterns:
+          - "GstSharp.Net*"
+      community-toolkit:
+        patterns:
+          - "CommunityToolkit.*"
+      uia-trigger:
+        patterns:
+          - "UiaTrigger.*"
+      test-tooling:
+        patterns:
+          - "xunit*"
+          - "Microsoft.NET.Test.Sdk"
+          - "FlaUI.*"
+          - "System.Drawing.Common"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "Asia/Tokyo"
+
+  - package-ecosystem: "dotnet-sdk"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "Asia/Tokyo"

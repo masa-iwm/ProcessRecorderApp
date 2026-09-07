@@ -93,14 +93,14 @@ jobs:
       # キーの入力は復元される集合を決めるファイル ── 各 csproj・Directory.Packages.props
       # （版の正本）・src/Directory.Build.props・発行プロファイル（.pubxml。ILCompiler /
       # crossgen2 のパックはここでしか要求されない）・nuget.config（取得元）。
-      # global.json はこのリポジトリに無いので入れない。
+      # global.json も入れる ── SDK の版は SDK 同梱の暗黙パッケージ（ILCompiler / ILLink）の版を決める。
       # **古いキーに当たっても害は無い** ── restore / publish はそのまま走り、
       # 足りないパッケージだけを取りに行く（キャッシュは復元を速くするだけで、省かない）。
       - name: Cache NuGet packages
         uses: actions/cache@v6
         with:
           path: ~/.nuget/packages
-          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', '**/Directory.Packages.props', '**/Directory.Build.props', '**/*.pubxml', 'nuget.config') }}
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', '**/Directory.Packages.props', '**/Directory.Build.props', '**/*.pubxml', 'nuget.config', 'global.json') }}
           restore-keys: nuget-${{ runner.os }}-
 
       - name: Restore
@@ -244,7 +244,7 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ~/.nuget/packages
-          key: nuget-${{ runner.os }}-aot-${{ hashFiles('**/*.csproj', '**/Directory.Packages.props', '**/Directory.Build.props', '**/*.pubxml', 'nuget.config') }}
+          key: nuget-${{ runner.os }}-aot-${{ hashFiles('**/*.csproj', '**/Directory.Packages.props', '**/Directory.Build.props', '**/*.pubxml', 'nuget.config', 'global.json') }}
           restore-keys: |
             nuget-${{ runner.os }}-aot-
             nuget-${{ runner.os }}-
