@@ -3038,9 +3038,15 @@ public partial class EventRecorder : ObservableObject, IDisposable
                     {
                         // 録画中の src 側エラー（ディスク満杯・書込権限なし）。
                         // **録画を止める** ── 壊れたファイルを書き続けて「録れているつもり」に
-                        // させない。
+                        // させない。開始中（StartCore の SetState がまだ旗を立てていない）の
+                        // エラーなら止めるものは無く、失敗は StartCore 自身が返すので、
+                        // 文言だけをその形にする（イベント名は同じ: 出力先が書けない障害は
+                        // どちらの経路でも recording.aborted として数えられる）。
+                        string outcome = _IsRecording
+                            ? "stopping because the source pipeline reported an error"
+                            : "the source pipeline reported an error while starting; nothing to stop";
                         Components.ActivityLog.Error("recording.aborted",
-                            $"recorder='{Name}' file='{LastFilename}' stopping because the source pipeline reported an error");
+                            $"recorder='{Name}' file='{LastFilename}' {outcome}");
                         RequestAbortRecording();
                     }
                     else

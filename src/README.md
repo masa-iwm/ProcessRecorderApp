@@ -3072,7 +3072,7 @@ GPU テクスチャになるため**アクセシブルテキストが 1 つも�
 | `recording.stop empty` | ERROR | 同上 | 1フレームも mux されず MP4 にメディアデータが無い（`samplesSeen` / `samplesPushed` / `srcState` / `samplesRejected`（0 なら I フレームが一度も押し込みに至っていない、0 でないなら I フレームは来たが `appsrc` が拒否した＝未始動）で原因を切り分ける。終了コード 16 の根拠） |
 | `recording.stop slow` | WARN | `EventRecorder.Close` の待ち | 進行中の排出が上限＋余裕の中で終わらず、src パイプラインを破棄せずに手放した |
 | `recorder.leak` | WARN | `EventRecorder.Close` | ネイティブを安全に破棄できず、解放を諦めた（クラッシュ回避のための意図的なリーク）。原因は 3 つ ── **排出中の src パイプライン**（`abandonedStop`）、**上限内に `NULL` へ降りなかった sink パイプライン**（quiesce の失敗。この場合はコールバックの解除もリングバッファの解放も行わない）、**予算内に片付かなかった常時録画**（排出中のセグメントを置いたまま先へ進む）。いずれの場合も `SetState(Null)` だけは必ず実行する |
-| `recording.aborted` | ERROR | `EventRecorder.HandleBusMessage` | 録画中に src 側バスがエラーを報告したため録画を中止した |
+| `recording.aborted` | ERROR | `EventRecorder.HandleBusMessage` | src 側バスがエラーを報告した。録画中なら録画を中止する（`stopping because ...`）。開始中（`StartCore` が旗を立てる前）なら止めるものは無く失敗は開始側が返す（`... while starting; nothing to stop`） |
 | `recorder.error` | ERROR | `EventRecorder.HandleBusMessage` | **両方のバス**の `Error`（バス名・要素名・メッセージ・debug 情報） |
 | `recorder.warning` | WARN | 同上 | 両方のバスの `Warning`。連続する同一内容は畳んで `repeated=N` を添える |
 | `recorder.eos` | INFO | 同上 | sink 側バスの `Eos`。**これも自動復帰の引き金**（種別の付く映像源のときだけ予約する。「自動復帰」の節）── WGC の画面キャプチャは切断してもエラーを出さず、この行だけを出す |
