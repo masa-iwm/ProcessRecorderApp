@@ -227,6 +227,19 @@ public static class ActivityLogFile
             CultureInfo.InvariantCulture, DateTimeStyles.None, out var value) ? value : null;
     }
 
+    /// <summary>
+    /// 行の <c>key=&lt;整数&gt;</c> を取る（無ければ null）。
+    /// 語境界つきで照合するので <c>samplesPushed</c> が <c>samplesSeen</c> や
+    /// <c>samplesRejected</c> に紛れることはない。
+    /// </summary>
+    public static int? IntValueOf(string line, string key)
+    {
+        var match = Regex.Match(line, @"\b" + Regex.Escape(key) + @"=(-?\d+)\b");
+        return match.Success
+            ? int.Parse(match.Groups[1].Value, CultureInfo.InvariantCulture)
+            : null;
+    }
+
     /// <summary>指定したイベント名に<b>完全一致</b>する行だけを返す。</summary>
     public static IReadOnlyList<string> Events(IEnumerable<string> lines, string eventName) =>
         [.. lines.Where(l => EventNameOf(l) == eventName)];

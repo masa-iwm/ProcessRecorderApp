@@ -46,6 +46,25 @@ public sealed partial class RecordingTests(PublishedApp app, ITestOutputHelper o
         Assert.Equal(2, stops.Count);
         Assert.All(stops, l => Assert.Contains("result=ok", l));
 
+        // **押し込んだ本数が MP4 に載っていること。** appsrc が受理した本数
+        // （samplesPushed）とファイルのサンプル数が食い違うのは「押したのに載らない」
+        // ＝録画開始の競合で頭が丸ごと落ちたときの決定的な印である。
+        // samplesRejected は appsrc が受け取らなかった「門を開ける I フレーム」の押し込み。
+        foreach (var (name, file) in started)
+        {
+            string stopLine = Assert.Single(stops, l => l.Contains($"recorder='{name}'", StringComparison.Ordinal));
+            var probe = Mp4File.Probe(file);
+            int pushed = Assert.NotNull(ActivityLogFile.IntValueOf(stopLine, "samplesPushed"));
+            int rejected = Assert.NotNull(ActivityLogFile.IntValueOf(stopLine, "samplesRejected"));
+            output.WriteLine($"{name}: samples={probe.SampleCount} pushed={pushed} rejected={rejected}");
+
+            Assert.True(rejected == 0,
+                $"{name}: appsrc が {rejected} 本の押し込みを拒否した（録画開始の競合）: {stopLine}");
+            Assert.True((int)probe.SampleCount == pushed,
+                $"{name}: 押したのに載っていない（頭欠け）── samplesPushed={pushed} に対し "
+                + $"MP4 のサンプル数は {probe.SampleCount}: {probe}" + Environment.NewLine + stopLine);
+        }
+
         // 失敗側のイベント名が1件も出ていないこと。
         // 「recording.stop が2件ある」だけでは、timeout/error で終わった停止と区別できない。
         Assert.Empty(ActivityLogFile.Events(log, "recording.stop timeout"));

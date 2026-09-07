@@ -495,7 +495,8 @@ public sealed class PreviewStreamTests(PublishedApp app, ITestOutputHelper outpu
         {
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-            var baseline = Mp4File.Probe(RecordOnce(instance, seen));
+            string baselineFile = RecordOnce(instance, seen);
+            var baseline = Mp4File.Probe(baselineFile);
             output.WriteLine("baseline: " + baseline);
             Assert.True(baseline.IsValid, "基準の録画が有効な MP4 になっていない: " + baseline);
             Assert.True(baseline.DurationSeconds >= 2, "基準の録画が 2 秒未満: " + baseline);
@@ -504,6 +505,7 @@ public sealed class PreviewStreamTests(PublishedApp app, ITestOutputHelper outpu
 
             using var client = CreateClient(port);
             Mp4Probe during;
+            string duringFile;
             using (var response = await OpenPreviewAsync(client, "0"))
             {
                 Assert.Equal(HttpStatusCode.OK, response.StatusCode);
@@ -517,7 +519,8 @@ public sealed class PreviewStreamTests(PublishedApp app, ITestOutputHelper outpu
                 Assert.True(instance.WaitForActivityLogEvent("preview.stream-start", EventBudget),
                     "preview.stream-start が現れませんでした。" + Environment.NewLine + instance.DiagnosticDump());
 
-                during = Mp4File.Probe(RecordOnce(instance, seen));
+                duringFile = RecordOnce(instance, seen);
+                during = Mp4File.Probe(duringFile);
                 output.WriteLine("during: " + during);
 
                 await pumping.CancelAsync();
@@ -540,7 +543,8 @@ public sealed class PreviewStreamTests(PublishedApp app, ITestOutputHelper outpu
                 "preview.stream-stop が現れませんでした。" + Environment.NewLine + instance.DiagnosticDump());
 
             // 配信を畳んだ後も録画は続けられる。
-            var after = Mp4File.Probe(RecordOnce(instance, seen));
+            string afterFile = RecordOnce(instance, seen);
+            var after = Mp4File.Probe(afterFile);
             output.WriteLine("after: " + after);
             Assert.True(after.IsValid, "配信を閉じた後の録画が有効な MP4 になっていない: " + after);
             Assert.True(after.DurationSeconds >= 2, "配信を閉じた後の録画が 2 秒未満: " + after);
@@ -561,6 +565,37 @@ public sealed class PreviewStreamTests(PublishedApp app, ITestOutputHelper outpu
             // 配信の失敗は 1 件も出ていないこと。
             Assert.Empty(ActivityLogFile.Events(lines, "preview.stream-error"));
             Assert.Empty(ActivityLogFile.Events(lines, "preview.leak"));
+
+            // **押し込んだ本数が MP4 に載っていること。** appsrc が受理した本数
+            // （samplesPushed）とファイルのサンプル数が食い違うのは「押したのに載らない」
+            // ＝録画開始の競合で頭が丸ごと落ちたときの決定的な印である
+            // （拒否された I フレームの後の差分フレームだけが受理され、録画側 h264parse が
+            // 次の IDR まで捨てる）。samplesRejected はその I フレームの拒否そのもの。
+            var stops = ActivityLogFile.Events(lines, "recording.stop");
+            Assert.Equal(3, stops.Count);
+            var expected = new[]
+            {
+                ("baseline", baselineFile, baseline),
+                ("during", duringFile, during),
+                ("after", afterFile, after),
+            };
+            for (int i = 0; i < expected.Length; i++)
+            {
+                var (label, file, probe) = expected[i];
+                string stop = stops[i];
+                // 並びの取り違えで素通りしないよう、行がその本のものであることを先に固定する。
+                Assert.Contains(Path.GetFileName(file), stop);
+
+                int pushed = Assert.NotNull(ActivityLogFile.IntValueOf(stop, "samplesPushed"));
+                int rejected = Assert.NotNull(ActivityLogFile.IntValueOf(stop, "samplesRejected"));
+                output.WriteLine($"{label}: samples={probe.SampleCount} pushed={pushed} rejected={rejected}");
+
+                Assert.True(rejected == 0,
+                    $"{label}: appsrc が {rejected} 本の押し込みを拒否した（録画開始の競合）: {stop}");
+                Assert.True((int)probe.SampleCount == pushed,
+                    $"{label}: 押したのに載っていない（頭欠け）── samplesPushed={pushed} に対し "
+                    + $"MP4 のサンプル数は {probe.SampleCount}: {probe}" + Environment.NewLine + stop);
+            }
         }
     }
 

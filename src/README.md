@@ -155,7 +155,7 @@ PTS付きで `ConcurrentQueue` の**リングバッファ**へ積み続ける。
 > 例外も漏らさない（トランポリンが `FlowReturn.Error` へ変換し、サンプル 1 枚の失敗で
 > パイプラインごとエラー停止する）。
 
-録画開始（`IsRecording = true`）の**最初の1回だけ**、リングバッファ全体を直近のIフレームから
+録画開始（`IsRecording = true`）の**最初の1回だけ**、リングバッファ全体を直近の受理されたIフレームから
 `appsrc`（srcパイプライン）へ流し込むことで、「録画開始前」の映像を含んだ MP4 が生成される
 （`PushRecordBuffer` / `isIframeFound`）。以降は新規バッファのみを逐次流し込む。
 
@@ -502,7 +502,7 @@ I フレームゲートが次の I まで捨てる ── そのぶんの映像�
 全候補に GOP 長を明示している（`gop-size` / `x264enc` は `key-int-max`）。
 **これは画質設定ではなく、アプリの中核契約を成立させるための制約**。
 
-録画開始時、`PushRecordBuffer` は最初の I フレームが見つかるまでバッファを捨て続ける
+録画開始時、`PushRecordBuffer` は最初の I フレームが `appsrc` に受理されるまでバッファを捨て続ける
 （[EventRecorder.cs](GStreamer.GstSharpNet/EventRecorder.cs) の `isIframeFound`）。
 リングバッファ（`BufferDuration`）の中に I フレームが1枚も無いと、
 **事前バッファが丸ごと捨てられたうえ、次の I フレームが来るまでのライブ映像まで失われる**。
@@ -3067,9 +3067,9 @@ GPU テクスチャになるため**アクセシブルテキストが 1 つも�
 | `gst.callback` | ERROR | 同上 | ネイティブのコールバック境界で捕捉された未処理例外（`GstSharp.UnhandledCallbackException`）。`appsink` の `new-sample` とバスの同期ハンドラは自前で例外を握るので、ここに出るのは**その握りをすり抜けたもの**だけ ── コールバックの中の障害はここにしか現れない |
 | `recorder.init ok` / `recorder.init fail` | INFO / ERROR | `GstControllerViewModel.AddRecorderFor` | レコーダーの初期化結果 |
 | `recording.start` / `recording.start fail` | INFO / ERROR | `EventRecorder.Start` | レコーダー名と**解決済み**ファイル名 |
-| `recording.stop` | INFO | `EventRecorder.StopDrainAndFinalize` | レコーダー名・ファイル名・経過ミリ秒・`result=ok｜timeout｜error` |
+| `recording.stop` | INFO | `EventRecorder.StopDrainAndFinalize` | レコーダー名・ファイル名・経過ミリ秒・`result=ok｜timeout｜error`・`samplesPushed=`（`appsrc` が受理した本数。`result=ok` なら MP4 のサンプル数と一致する）・`samplesRejected=`（`appsrc` が受け取らなかった I フレームの押し込み。0 でないなら、その回数だけ I フレームの門が開き直している） |
 | `recording.stop timeout` / `recording.stop error` | ERROR | 同上 | 排出が上限内に終わらなかった／排出中にエラーが出た場合の詳細 |
-| `recording.stop empty` | ERROR | 同上 | 1フレームも mux されず MP4 にメディアデータが無い（`samplesSeen` / `samplesPushed` / `srcState` で原因を切り分ける。終了コード 16 の根拠） |
+| `recording.stop empty` | ERROR | 同上 | 1フレームも mux されず MP4 にメディアデータが無い（`samplesSeen` / `samplesPushed` / `srcState` / `samplesRejected`（0 なら I フレームが一度も押し込みに至っていない、0 でないなら I フレームは来たが `appsrc` が拒否した＝未始動）で原因を切り分ける。終了コード 16 の根拠） |
 | `recording.stop slow` | WARN | `EventRecorder.Close` の待ち | 進行中の排出が上限＋余裕の中で終わらず、src パイプラインを破棄せずに手放した |
 | `recorder.leak` | WARN | `EventRecorder.Close` | ネイティブを安全に破棄できず、解放を諦めた（クラッシュ回避のための意図的なリーク）。原因は 3 つ ── **排出中の src パイプライン**（`abandonedStop`）、**上限内に `NULL` へ降りなかった sink パイプライン**（quiesce の失敗。この場合はコールバックの解除もリングバッファの解放も行わない）、**予算内に片付かなかった常時録画**（排出中のセグメントを置いたまま先へ進む）。いずれの場合も `SetState(Null)` だけは必ず実行する |
 | `recording.aborted` | ERROR | `EventRecorder.HandleBusMessage` | 録画中に src 側バスがエラーを報告したため録画を中止した |

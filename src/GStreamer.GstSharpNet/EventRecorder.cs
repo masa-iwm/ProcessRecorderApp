@@ -2820,21 +2820,28 @@ public partial class EventRecorder : ObservableObject, IDisposable
     /// </summary>
     private void PushRecordBuffer(ulong bufferPts, Gst.Buffer buffer, RecordSampleState state)
     {
-        if (!state.IsIframeFound)
+        // **門は「押し込めた」と分かってから確定する。** 開こうとしている I フレームが
+        // appsrc に拒否されたのに IsIframeFound / StartPts を立ててしまうと、
+        // 以後の差分フレームだけが受理され、caps が byte-stream（SPS/PPS は帯域内）なので
+        // 録画側 h264parse が次の IDR まで全部捨てる ── 事前バッファが丸ごと消える。
+        // 拒否されたらこの門は閉じたままにして、次の I フレーム（リング内でもライブでも）で
+        // 開き直す。
+        bool opening = !state.IsIframeFound;
+        ulong startPts;
+        if (opening)
         {
             if (buffer.HasFlags(BufferFlags.DeltaUnit))
                 return;
-            else
-            {
-                state.StartPts = bufferPts;
-                state.IsIframeFound = true;
-            }
+            startPts = bufferPts;
         }
+        else
+            startPts = state.StartPts;
+
         // PTS の巻き戻り（ソースの再起動）。符号なし減算のまま押し込むと約 2^64 ns 級の
         // PTS が mux へ渡り、当該録画のタイムスタンプが壊れる ── 退避側
         // （RecordingRingBuffer）と同じ「巻き戻りは起こる」前提を押し込み側にも適用し、
         // 次の I フレームから始点を取り直す。
-        if (bufferPts < state.StartPts)
+        if (bufferPts < startPts)
         {
             // 黙って捨てない（押し込みの拒否と同じ扱い）。同一内容が続くので畳む。
             var (emitRewind, rewindRepeated) = _srcThrottles.Warning.Observe("pts-rewind");
@@ -2859,7 +2866,7 @@ public partial class EventRecorder : ObservableObject, IDisposable
             Log(DebugLevel.Warning, "gst_buffer_copy_region failed; dropping one record buffer");
             return;
         }
-        buf.SetPts(ClockTime.FromNanoseconds(bufferPts - state.StartPts));
+        buf.SetPts(ClockTime.FromNanoseconds(bufferPts - startPts));
         buf.SetDts(ClockTime.None);
         // **数えるのは appsrc が受理した押し込みだけ。** PushBuffer は EOS 後は Eos、
         // 未始動なら Flushing を返してバッファを受け取らない。拒否も数えると
@@ -2867,9 +2874,23 @@ public partial class EventRecorder : ObservableObject, IDisposable
         // （pushed==0 → result=empty → 終了コード 16）を素通りする。
         var flow = _appSrc?.PushBuffer(buf);
         if (flow == FlowReturn.Ok)
+        {
+            // 受理された I フレームだけが門を開ける（開けた本人が始点になる）。
+            if (opening)
+            {
+                state.StartPts = startPts;
+                state.IsIframeFound = true;
+            }
             System.Threading.Interlocked.Increment(ref _samplesPushed);
+        }
         else
+        {
+            // 数えるのは門を開けようとした I フレームの拒否だけ ── 差分フレームの拒否は
+            // 停止窓でしか起こらず（門が開いている＝すでに受理済み）、失うものが無い。
+            if (opening)
+                System.Threading.Interlocked.Increment(ref _samplesRejected);
             Log(DebugLevel.Warning, $"appsrc rejected a buffer: {flow?.ToString() ?? "(no appsrc)"}");
+        }
     }
 
     /// <summary>連続して抑制されていた件数を最後に1行だけ吐き出す。</summary>
@@ -4052,13 +4073,13 @@ public partial class EventRecorder : ObservableObject, IDisposable
         // サンプルのコールバックと競合しない（逆順だと、立てた直後に数えた分を消しうる）。
         _samplesSeenWhileRecording = 0;
         _samplesPushed = 0;
+        _samplesRejected = 0;
         LastStopOutcome = RecordingStopOutcome.Ok;
 
         // 世代も _IsRecording より前に進める ── コールバックは _IsRecording（volatile）を
         // 見てから世代を読むので、この順序なら「録画中なのに世代が古いまま」は観測されない。
         _recordingSession++;
 
-        IsRecording = _IsRecording = true;
         _recordingStartedAt = Environment.TickCount64;
         _recordingStartedAtUtc = DateTimeOffset.UtcNow;
         if (_srcPipeline!.SetState(State.Playing) == StateChangeReturn.Failure)
@@ -4067,8 +4088,21 @@ public partial class EventRecorder : ObservableObject, IDisposable
             // 同名にすると L2 が `recording.start` に掛ける正規表現が失敗行にも一致してしまう。
             LastError = "src pipeline refused to play";
             Components.ActivityLog.Error("recording.start fail", $"recorder='{Name}' file='{filename}' src pipeline refused to play");
+            // 旗を立てるのは状態遷移の後なので、ここで投げると Stop() は早期に返り、誰も
+            // Null へ落とさない ── filesink が PAUSED のままファイルを掴み、次の location
+            // 設定が黙って拒否される。停止経路と同じ条件（_stateLock 下・_busLock 無し）。
+            _srcPipeline.SetState(State.Null);
             throw new InvalidOperationException("ERROR: pipeline doesn't want to play.");
         }
+
+        // **旗を立てるのは src パイプラインを Playing にした「後」。**
+        // appsrc は READY→PAUSED の start を済ませるまで、押し込みを Flushing で拒否する。
+        // SetState はシンクの preroll のぶん Async を返しうるが、appsrc の start は
+        // その呼び出しの中で同期に済んでいる ── したがってここまで来れば押し込みは通る。
+        // appsink のスレッドは _IsRecording（volatile）を見て世代差でリング全体を流すので、
+        // 順序を逆にすると、その再生分がまるごと appsrc に拒否される
+        // （事前バッファが丸ごと消え、次の IDR まで録画側 h264parse が捨てる）。
+        IsRecording = _IsRecording = true;
 
         // サムネイルは 1 回だけ要求する。撮るのはプレビュー枝で、完了は待たない
         // （録画中の一覧にもサムネイルが出る）。**録画が始まったと決まってから積む**
@@ -4157,6 +4191,17 @@ public partial class EventRecorder : ObservableObject, IDisposable
     /// 両方 0 ならサンプルが来ていない、見えているのに 0 なら I フレーム待ちで止まっている。
     /// </summary>
     private int _samplesPushed;
+
+    /// <summary>
+    /// この録画中に <c>appsrc</c> が<b>門を開けようとした I フレーム</b>を受け取らなかった回数
+    /// （<see cref="StartCore"/> で 0 に戻す）。
+    /// <b>0 でないなら、その回数だけ I フレームの門が開き直している</b> ── 門は
+    /// 受理された I フレームでしか開かないので、閉じている間の差分フレームは
+    /// 押しも拒否もされない（<c>samplesPushed</c> にも <c>samplesRejected</c> にも入らない）。
+    /// 門が開いている間の差分フレームの拒否は停止窓でしか起こらず失うものが無いので、
+    /// ここには数えない（WARN ログには残る）。
+    /// </summary>
+    private int _samplesRejected;
 
     /// <summary>
     /// 録画セッションの世代。<see cref="StartCore"/>（<c>_stateLock</c> 下）だけが増やし、
@@ -4419,8 +4464,11 @@ public partial class EventRecorder : ObservableObject, IDisposable
                 //   seen=0            → サンプルが一度も来ていない（ソースが EOS / sink が停止）
                 //   seen>0 かつ pushed=0 → 来ているのに I フレーム待ちで止まっている
                 //   srcState が PLAYING 以外 → 下流（h264parse / mp4mux / filesink）へ通っていない
+                //   rejected=0            → I フレームが一度も押し込みに至っていない（来ていない）
+                //   rejected>0            → I フレームは来たが appsrc が拒否した（appsrc が未始動）
                 string detail = $"recorder='{Name}' file='{LastFilename}' "
                     + $"samplesSeen={seen} samplesPushed=0 srcState={srcState} "
+                    + $"samplesRejected={System.Threading.Volatile.Read(ref _samplesRejected)} "
                     + "no frame was ever muxed, so the file has no media data";
                 Components.ActivityLog.Error("recording.stop empty", detail);
                 LastError = detail;
@@ -4472,7 +4520,8 @@ public partial class EventRecorder : ObservableObject, IDisposable
             FlushThrottles(_srcThrottles, "src");
             Components.ActivityLog.Info("recording.stop",
                 $"recorder='{Name}' file='{LastFilename}' elapsedMs={elapsedMs} result={result}"
-                + $" samplesPushed={System.Threading.Volatile.Read(ref _samplesPushed)}");
+                + $" samplesPushed={System.Threading.Volatile.Read(ref _samplesPushed)}"
+                + $" samplesRejected={System.Threading.Volatile.Read(ref _samplesRejected)}");
         }
     }
 
