@@ -482,9 +482,11 @@ jobs:
           -PublishDir ${{ github.workspace }}/src/ProcessRecorderApp/bin/Release/win-x64/publish/${{ matrix.flavor }}
 
       # trx に加えて、スクリプトが子プロセスの標準出力を落とした e2e-<shard>.log も上げる
-      # ── 子の console 出力はステップのログには出ない。
+      # ── 子の console 出力はステップのログには出ない。**緑でも上げる**: DASH E2E が
+      # 合否に関わらず trx へ残す余裕の軌跡（`dash smoothness trace`）は先行バッファを
+      # 決める較正データで、赤の回だけ集めると健全な形が見えない。
       - name: Upload test results
-        if: failure()
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7
         with:
           name: test-results-${{ matrix.flavor }}-${{ matrix.shard }}
