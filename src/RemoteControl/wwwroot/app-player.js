@@ -1852,6 +1852,7 @@
     var video = $('previewPlayer');
     video.removeAttribute('src');
     video.load();
+    video.autoplay = true;   // the DASH mode turns it off while it buffers its lead
     releasePreviewUrl();
 
     // Nothing is on offer any more: keeping the last manifest's list would have the
@@ -2098,9 +2099,9 @@
   // How far behind the live edge the DASH mode plays, and how far behind that it has
   // to fall before `followPreview` seeks.
   //
-  // Segments are one second long and the manifest is read once a second, so half a
-  // second of cushion is less than the stream needs to refill: playback runs dry
-  // (`waiting`), the buffer keeps growing while it is stopped, the lag crosses the
+  // Segments are one second long and arrive up to one poll after they are published,
+  // so half a second of cushion is less than the stream needs to refill: playback runs
+  // dry (`waiting`), the buffer keeps growing while it is stopped, the lag crosses the
   // threshold, and the seek drops it back exactly where it ran dry -- measured as a
   // cushion pinned at 0.50s and a `waiting` every few seconds. Two segments plus
   // jitter is a cushion the delivery can hold, and the server's ring is six seconds,
@@ -2108,6 +2109,17 @@
   // target plus one more segment, so ordinary jitter never seeks at all.
   var DASH_LIVE_TARGET_SECONDS = 2.5;
   var DASH_LAG_SECONDS = 4.5;
+
+  // How much has to be buffered before playback starts. The first viewer finds the
+  // ring almost empty (the second pipeline is only built on demand), so letting the
+  // element autoplay on the first segment starts with one second of cushion, and the
+  // cushion drains by the segment length (1s) plus the poll phase (up to 0.25s)
+  // before the next segment lands: measured as a trough of 0.1s, which is where the
+  // decoder underflows (about two frames at 15 fps), and a `waiting` every second.
+  // Two segments leave about 0.6s at the worst phase. The cost is the same amount of
+  // extra latency; 2.5s (the seek target above) would add half a second more for a
+  // margin nothing measured needs.
+  var DASH_JOIN_LEAD_SECONDS = 2;
 
   // The server's word for "the encoder is running but nothing is ready yet". It
   // arrives as the `error` of a 503 and any of the three requests can meet it, so
@@ -2202,6 +2214,9 @@
     var appended = 0;
     var fetching = false;
     var broken = false;
+
+    // Set once playback has been started (see `startWhenLeadIsBuffered`).
+    var started = false;
 
     // The init has to be in the SourceBuffer before any media reaches it, and the
     // manifest poll runs on its own clock: without this gate the second poll can
@@ -2377,6 +2392,9 @@
 
       releasePreviewUrl();
       previewUrl = URL.createObjectURL(source);
+      // The element autoplays (the chunked mode relies on it); here playback is started
+      // by hand once DASH_JOIN_LEAD_SECONDS is buffered. `stopPreview` puts it back.
+      video.autoplay = false;
       video.src = previewUrl;
 
       source.addEventListener('sourceopen', function () {
@@ -2396,12 +2414,44 @@
         buffer.addEventListener('updateend', function () {
           if (!alive()) { return; }
           trimPreview(video, buffer);
-          followPreview(video, DASH_LAG_SECONDS, DASH_LIVE_TARGET_SECONDS);
+          if (!started) {
+            startWhenLeadIsBuffered();
+          } else {
+            followPreview(video, DASH_LAG_SECONDS, DASH_LIVE_TARGET_SECONDS);
+          }
           flush();
         });
 
         take(times);
       });
+    }
+
+    // Starts playback once DASH_JOIN_LEAD_SECONDS is buffered, from the start of what
+    // is buffered (or the seek target behind the live edge, if more than that is
+    // already there). Until then the element stays paused and `followPreview` is not
+    // consulted: it would measure the lag from position 0.
+    function startWhenLeadIsBuffered() {
+      var ranges = video.buffered;
+      if (ranges.length === 0) { return; }
+
+      var start = ranges.start(0);
+      var end = ranges.end(ranges.length - 1);
+      if (end - start < DASH_JOIN_LEAD_SECONDS) { return; }
+
+      started = true;
+      var target = Math.max(start, end - DASH_LIVE_TARGET_SECONDS);
+      if (video.currentTime < target) { video.currentTime = target; }
+      video.play().catch(function () { /* the browser decides; the controls remain */ });
+      showLiveStatus();
+    }
+
+    // The quality being served is worth more than the segment count once the server
+    // names it; the count is kept for servers that do not.
+    function showLiveStatus() {
+      status(
+        $('previewStatus'),
+        'DASH: live (' + (previewLiveQuality === null ? appended : previewLiveQuality) + ')',
+        false);
     }
 
     function fetchInit() {
@@ -2476,12 +2526,13 @@
           if (!alive()) { return; }
           enqueue(new Uint8Array(bytes));
           appended++;
-          // The quality being served is worth more than the segment count once the
-          // server names it; the count is kept for servers that do not.
-          status(
-            $('previewStatus'),
-            'DASH: live (' + (previewLiveQuality === null ? appended : previewLiveQuality) + ')',
-            false);
+          // "live" is claimed only once playback has started; before that the status
+          // says what it is waiting for (the E2E tests key on the "DASH: live" prefix).
+          if (started) {
+            showLiveStatus();
+          } else {
+            status($('previewStatus'), 'DASH: buffering (' + appended + ')', false);
+          }
         });
       }).catch(function (error) {
         if (alive() && error.name !== 'AbortError') { fail(error.message); }

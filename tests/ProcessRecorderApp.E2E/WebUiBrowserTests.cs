@@ -1082,8 +1082,9 @@ public sealed class WebUiBrowserTests(PublishedApp app, ITestOutputHelper output
     private const int DashMinimumAdvanceSeconds = 15;
 
     /// <summary>
-    /// <b>停止を数える末尾の標本数。</b> join の停止はこの手前に落ちる ── 空のリングへ
-    /// join する 2〜3 回は前半に出る。<b>時刻で切らずに末尾で切る</b>のは、定常へ入る時刻が
+    /// <b>停止を数える末尾の標本数。</b> join の停止はこの手前に落ちる ── クライアントは
+    /// <c>DASH_JOIN_LEAD_SECONDS</c>（2 秒）溜めてから再生を始めるので定常では止まらないはずだが、
+    /// 開始直後の 1 回は前半に出うる。<b>時刻で切らずに末尾で切る</b>のは、定常へ入る時刻が
     /// 機械によって前後するためで、見るのは「最後まで定常だったか」である。
     /// <b><see cref="DashSmoothnessSeconds"/> より小さく保つこと</b>
     /// ── 増分の基準はこの窓の 1 つ手前の標本である。
@@ -1096,9 +1097,10 @@ public sealed class WebUiBrowserTests(PublishedApp app, ITestOutputHelper output
     /// 値は append との位相で決まる ── 「頂点が閾値に届くこと」は、ライブ端へ寄り切った形でも
     /// 1 本の append で満たされてしまい、健全な定常と分けられない（実測: 瞬間値が 0.4〜0.5 秒に
     /// 張り付いた 8 秒の頂点が 1.05〜1.35 秒で、定常の頂点 1.25〜1.48 秒と重なる）。
-    /// <b>製品側にも余裕を保証する機構は無い</b> ── 追従が動くのは遅れが 4.5 秒を超えたときだけで、
-    /// join 時に先行バッファを作るかは未決である。<b>観測点は停止の回数</b>（<c>waiting</c>）に置き、
-    /// 余裕は<b>合否に関わらず毎秒の最大・最小を出力へ残す</b>（先行バッファを決めるときの較正データ）。
+    /// <b>製品側が保証するのは join 時の先行バッファだけ</b>（<c>DASH_JOIN_LEAD_SECONDS</c> = 2 秒。
+    /// 追従が動くのは遅れが 4.5 秒を超えたときだけ）。<b>観測点は停止の回数</b>（<c>waiting</c>）に置き、
+    /// 余裕は<b>合否に関わらず毎秒の最大・最小を出力へ残す</b>（先行バッファの厚さの較正データ。
+    /// CI の実測: 先行 1 秒では谷 0.1 秒で毎秒停止、2 秒で谷 0.6 秒前後）。
     /// 断定に使うのは「停止の無い末尾の窓で余裕が負でないこと」だけである
     /// ── 停止の最中は再生位置が <c>buffered.end</c> に並ぶので、そこでの 0 前後は正常である。
     /// </summary>
@@ -1126,7 +1128,7 @@ public sealed class WebUiBrowserTests(PublishedApp app, ITestOutputHelper output
     /// 決まる定数しか見えない（余裕はセグメントが届くたびに跳ねて秒あたり 1 秒ずつ減る鋸歯で、
     /// 同じ健全な再生が位相しだいで全標本 1.15 秒にも 1.33/0.30 の交互にも見える）。
     /// <b>18 標本の軌跡は合否に関わらず 1 行で <c>output</c> へ出す</b>
-    /// ── join 時に先行バッファを作るかを決めるときの較正データになる。
+    /// ── join 時の先行バッファの厚さを決めるときの較正データになる。
     /// </para>
     /// </summary>
     [Fact]
@@ -1201,7 +1203,7 @@ public sealed class WebUiBrowserTests(PublishedApp app, ITestOutputHelper output
         double peakCushion = peaks.Max();
         double tailTrough = troughs.Skip(tail).Min();
 
-        // **軌跡は合否に関わらず出す。** 緑の run も、先行バッファを決めるときの較正データになる。
+        // **軌跡は合否に関わらず出す。** 緑の run も、先行バッファの厚さの較正データになる。
         string trace = string.Join(" ", Enumerable.Range(0, DashSmoothnessSeconds).Select(
             i => Inv($"t+{i + 1}:{peaks[i]:F2}-{troughs[i]:F2}/{stalls[i]:F0}")));
         output.WriteLine(Inv($"dash smoothness trace (cushion/waiting): {trace}"));
@@ -1224,10 +1226,10 @@ public sealed class WebUiBrowserTests(PublishedApp app, ITestOutputHelper output
             + Inv($"（{DashMinimumAdvanceSeconds} 秒以上進むこと。status='{state}'）。"));
 
         // **停止の総数では見ない ── 末尾の 5 標本だけを見る。** リースは要求されて
-        // 初めて第 2 パイプラインを起こすので、最初の視聴者が居合わせるリングは必ず空に近く、
-        // そこでは必ず何度か止まる ── `play()` そのもので 1 回、そこから余裕を育てるのにもう 1 回
+        // 初めて第 2 パイプラインを起こすので、最初の視聴者が居合わせるリングは必ず空に近い。
+        // クライアントは 2 秒溜めてから `play()` するが、開始直後の 1 回は数に入りうる
         //（生きた配信では生産レート＝再生レートなので、余裕は**止まっている間にしか増えない**）。
-        // その 2〜3 回は前半に出るので、**定常へ入ったあとの増分**だけを見る。
+        // それは前半に出るので、**定常へ入ったあとの増分**だけを見る。
         // 寄せすぎて周期的に止まる形は、末尾でも止まり続ける。
         Assert.True(tailWaiting <= 1,
             Inv($"末尾 {DashSteadySamples} 標本でバッファ切れの停止が {tailWaiting:F0} 回ありました（1 回まで）── ")

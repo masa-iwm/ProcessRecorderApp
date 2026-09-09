@@ -224,6 +224,41 @@ public sealed class WebAssetManifestTests
             + "ポーリングとセグメントの公開の位相が固定され、悪い位相を引いた視聴者は止まります。");
     }
 
+    /// <summary><c>wwwroot</c> の JavaScript にある <c>DASH_JOIN_LEAD_SECONDS</c> の宣言（秒）。</summary>
+    private static readonly Regex DashJoinLeadRegex =
+        new(@"\bvar\s+DASH_JOIN_LEAD_SECONDS\s*=\s*(\d+(?:\.\d+)?)\s*;", RegexOptions.Compiled);
+
+    /// <summary>
+    /// <b>join 時の先行バッファは、サーバーのセグメント 2 本ぶん以上。</b>
+    ///
+    /// <para>
+    /// 余裕は次のセグメントが届くまでにセグメント長 + ポーリング 1 周期ぶん減り、
+    /// 復号器は約 2 フレームを切ると止まる。1 本ぶんで走り出すと谷が 0.1 秒になって
+    /// 毎秒止まる（CI 実測）。2 本ぶんで谷は 0.6 秒前後残る。
+    /// <b>サーバー側の値はリテラルで書かない</b>（<see cref="DashPreviewStream.FragmentDurationMs"/>）。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void TheDashJoinLeadCoversTwoServerSegments()
+    {
+        string script = AllScripts();
+
+        var declarations = DashJoinLeadRegex.Matches(script)
+            .Where(m => !SourceReferences.IsCommentLine(script, m.Index))
+            .ToArray();
+
+        Assert.True(declarations.Length == 1,
+            $"wwwroot の JavaScript に DASH_JOIN_LEAD_SECONDS が {declarations.Length} 件見つかりました"
+            + "（走査が壊れているか、宣言の書き方が変わっています）。");
+
+        double lead = double.Parse(declarations[0].Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture);
+
+        Assert.True(2 * DashPreviewStream.FragmentDurationMs <= lead * 1000,
+            $"join 時の先行バッファ（{lead} 秒）がセグメント 2 本ぶん"
+            + $"（{2 * DashPreviewStream.FragmentDurationMs} ms）に満たしません ── "
+            + "次のセグメントが届く前に余裕が尽きて毎秒止まります。");
+    }
+
     [Fact]
     public void TheDocumentOnlyReferencesManifestedAssets()
     {
