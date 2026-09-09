@@ -2215,8 +2215,12 @@
     var fetching = false;
     var broken = false;
 
-    // Set once playback has been started (see `startWhenLeadIsBuffered`).
+    // Set once playback has been started (see `startWhenLeadIsBuffered`), and once
+    // the element has reported it is actually playing (`playing`): the status says
+    // "live" only from the second one -- the E2E tests key on that prefix, and what
+    // they measure from there is the position moving.
     var started = false;
+    var live = false;
 
     // The init has to be in the SourceBuffer before any media reaches it, and the
     // manifest poll runs on its own clock: without this gate the second poll can
@@ -2441,8 +2445,12 @@
       started = true;
       var target = Math.max(start, end - DASH_LIVE_TARGET_SECONDS);
       if (video.currentTime < target) { video.currentTime = target; }
+      video.addEventListener('playing', function () {
+        if (!alive()) { return; }
+        live = true;
+        showLiveStatus();
+      }, { once: true });
       video.play().catch(function () { /* the browser decides; the controls remain */ });
-      showLiveStatus();
     }
 
     // The quality being served is worth more than the segment count once the server
@@ -2526,9 +2534,9 @@
           if (!alive()) { return; }
           enqueue(new Uint8Array(bytes));
           appended++;
-          // "live" is claimed only once playback has started; before that the status
-          // says what it is waiting for (the E2E tests key on the "DASH: live" prefix).
-          if (started) {
+          // "live" is claimed only once the element is playing; before that the status
+          // says what it is waiting for.
+          if (live) {
             showLiveStatus();
           } else {
             status($('previewStatus'), 'DASH: buffering (' + appended + ')', false);

@@ -898,7 +898,6 @@ public sealed class WebUiBrowserTests(PublishedApp app, ITestOutputHelper output
         })()
         """;
 
-    private const string PreviewReadyState = "document.getElementById('previewPlayer').readyState";
 
     private const string PreviewTime = "document.getElementById('previewPlayer').currentTime";
 
@@ -913,7 +912,10 @@ public sealed class WebUiBrowserTests(PublishedApp app, ITestOutputHelper output
     /// </para>
     /// <para>
     /// 判定は<b>位置が実際に進むこと</b>で行う。<c>readyState</c> だけでは
-    /// 「最初の 1 枚は出たが続かない」を通してしまう。
+    /// 「最初の 1 枚は出たが続かない」を通してしまう。窓の起点は状態表示の
+    /// <c>DASH: live</c>（クライアントが <c>playing</c> を受けた時点）── <c>readyState</c> は
+    /// 先行バッファを溜めている（まだ再生していない）あいだに 2 へ達するので、起点にすると
+    /// 溜めの時間が窓を食う。
     /// </para>
     /// </summary>
     [Fact]
@@ -940,7 +942,7 @@ public sealed class WebUiBrowserTests(PublishedApp app, ITestOutputHelper output
         Assert.True(await browser.EvaluateBoolAsync(ClickFirstPreview, Ct), "行に Preview のボタンがありません。");
 
         Assert.True(
-            await browser.WaitUntilAsync($"2 <= {PreviewReadyState}", PageBudget, Ct),
+            await browser.WaitUntilAsync($"{TextOf("previewStatus")}.indexOf('DASH: live') === 0", PlaybackBudget, Ct),
             "DASH の再生が始まりませんでした: " + await browser.EvaluateStringAsync(TextOf("previewStatus"), Ct));
 
         double before = await browser.EvaluateNumberAsync(PreviewTime, Ct);
