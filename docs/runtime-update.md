@@ -8,8 +8,8 @@
 
 | 形態 | 元にするツリー | 同梱物 | 台帳 | 備考 |
 |---|---|---|---:|---|
-| `mingw` | 公式インストーラ（MinGW 64-bit / Runtime / **LGPL-only** 構成） | 46 ファイル・49.9MB | `licenses/third-party/COMPONENTS.tsv` | 自己完結 |
-| `msvc` | 公式 MSVC ビルド（**フル構成**。LGPL-only に相当する選択肢が無い） | 44 ファイル・24.6MB | `licenses/third-party/COMPONENTS-msvc.tsv` | **VC++ 再頒布可能パッケージが要る** |
+| `mingw` | 公式インストーラ（MinGW 64-bit / Runtime / **LGPL-only** 構成） | 46 ファイル・49.8MB | `licenses/third-party/COMPONENTS.tsv` | 自己完結 |
+| `msvc` | 公式 MSVC ビルド（**フル構成**。LGPL-only に相当する選択肢が無い） | 44 ファイル・24.5MB | `licenses/third-party/COMPONENTS-msvc.tsv` | **VC++ 再頒布可能パッケージが要る** |
 
 **中身は同じ製品面**（まっさらなレジストリでどちらも 16 プラグイン・268 件。blacklist 0）。
 違いは3点だけ:
@@ -28,8 +28,8 @@
 ## 命名規約
 
 - タグ: MinGW は `gstreamer-runtime-v<GStreamer の版>`、MSVC は
-  `gstreamer-runtime-msvc-v<版>`（例: `gstreamer-runtime-v1.28.6`、
-  `gstreamer-runtime-msvc-v1.28.6`）。同じ版のまま中身を差し替える場合は `-r2` のような
+  `gstreamer-runtime-msvc-v<版>`（例: `gstreamer-runtime-v1.28.7`、
+  `gstreamer-runtime-msvc-v1.28.7`）。同じ版のまま中身を差し替える場合は `-r2` のような
   枝番を付ける。**`v` 単独で始まる名前にしないこと** ── `v*` は `release.yml` の
   タグトリガーに一致する。
 - アセット: `gstreamer-runtime-win-x64-v<版>.zip` /
@@ -53,7 +53,7 @@
        "/COMPONENTS=$components",'/TASKS=environment_variables,registry_install_dir'
    ```
 
-   この選択で展開されるのは 349 ファイル・254MB（1.28.6 実測。`unins000.*` を除く）。
+   この選択で展開されるのは 349 ファイル・256.3MB（1.28.7 実測。`unins000.*` を除く）。
    `*_gpl` / `*_restricted` / `libav` / `base_crypto` を入れないのが LGPL-only の実体で、
    入っている構成は `HKCU:\...\Uninstall\*_is1` の `Inno Setup: Selected Components` で読める。
    アンインストーラも `unins000.exe /VERYSILENT` で無人化できるが、**どちらも途中で
@@ -68,7 +68,7 @@
    > `selected=` / `flavor=` で実際にどちらを踏んだか分かる）。
 
    **MSVC 版** ── **LGPL-only に相当する選択肢が無い**ので、フル構成のツリー
-   （`x264` も `libav` も入っている。1.28.6 実測で 828 ファイル・349MB）から絞る。
+   （`x264` も `libav` も入っている。1.28.7 実測で 826 ファイル・324.7MB）から絞る。
    したがって「GPL を持ち込まない」の根拠は**閉包の実測だけ**になる ──
    `-SeedPlugins` を**必ず明示**すること（既定は木の全プラグインを種にするので、
    GPL プラグインまで引き込む）。`objdump` の代わりに Visual Studio の `dumpbin` が使える
@@ -103,7 +103,8 @@
    `ZipFile.CreateFromDirectory` は `\` で書き、規格違反なので読み替えが黙って外れる）。
    SHA256 を採取する。
 5. 上流のバイナリを差し替えた場合（パッチを当てた自前ビルドなど）は、
-   **パッチを `patches/` へ置き**、`THIRD-PARTY-NOTICES.md` に改変の事実・対応する
+   **パッチを `patches/` へ置き**（`.gitattributes` に `patches/** -text` を足す ──
+   改行が変換されるとパッチが当たらない）、`THIRD-PARTY-NOTICES.md` に改変の事実・対応する
    ソース・ツールチェーン・公式ビルドとの同一性の実測を書く（LGPL の
    「対応するソースを示す」義務は、改変した側では **上流の tarball だけでは満たない**）。
    差し替えたファイルは **import ・閉包・要素一覧を公式ビルドと突き合わせる**

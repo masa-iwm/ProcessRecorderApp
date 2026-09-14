@@ -192,8 +192,8 @@ public static partial class SrcPipelineBuilder
             memoryFeature: "memory:D3D12Memory"),
 
         // 画面キャプチャ(D3D11): 上の D3D12 版と同じ形で、メモリ機能だけが D3D11Memory。
-        // **D3D12 版は show-cursor=true でプロセスごと落ちうる**（上流の欠陥。同梱ランタイムは
-        // 直したビルドを積むが、非同梱配布では利用者の GStreamer 次第 ──
+        // **D3D12 版は show-cursor=true でプロセスごと落ちうる**（GStreamer 1.28.6 以前の上流の欠陥。
+        // 同梱ランタイム（1.28.7）は修正済み、非同梱配布は利用者の GStreamer が 1.28.7 以降であること ──
         // docs/environment-facts.md）。**上流の D3D11 側は同じ処理が元から正しい**ので、
         // カーソルを写したい構成の逃げ道として置いてある。
         //

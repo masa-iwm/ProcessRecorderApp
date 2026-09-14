@@ -749,8 +749,8 @@ function Test-DemuxToEnd {
 
 # gst-discoverer-1.0.exe is NOT in the bundled runtime (verified: only gst-launch-1.0.exe
 # and gst-inspect-1.0.exe ship there). Borrow the one from the full dev-machine install --
-# safe only because both report the same 'GStreamer 1.28.6', checked by the caller before
-# ever invoking this.
+# safe only when both are the same GStreamer version. Nothing in this script compares
+# them -- the version of -GStreamerBin is only printed and written to the report.
 function Resolve-Discoverer {
     param([string]$Bin)
     $candidate = Join-Path $Bin 'gst-discoverer-1.0.exe'

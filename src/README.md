@@ -82,7 +82,7 @@
 足すだけで狙ったランタイムを踏めるのはこのためで、逆に「同梱物を配ったのに開発機の
 GStreamer が使われる」という取り違えもここから起きる（どちらだったかは `gst.runtime` に出る）。
 `Registry` / `DefaultInstallDirectory` が要るのは、**GStreamer をユーザー単位で
-インストールするとインストーラが環境変数も `PATH` も設定しない**ため（1.28.6 で実測）。
+インストールするとインストーラが環境変数も `PATH` も設定しない**ため（1.28.7 で実測）。
 
 **候補を全部 `PATH` に繋いではいけない。** 依存 DLL（`libglib-2.0-0.dll` 等）は
 「読み込み元 DLL のあるディレクトリ」ではなく `PATH` の順で解決されるため、繋ぐと
@@ -285,20 +285,18 @@ tee name=t
 > いけない ── あちらが仮想化された値の方である（175% の機械で 2194x1234 と 3840x2160。
 > 物理ピクセルを持つのは `display.coordinates`）。
 
-> **`show-cursor=true` はプロセスごと落としうる（上流の欠陥）。**
+> **`show-cursor=true` はプロセスごと落としうる（GStreamer 1.28.6 以前の上流の欠陥）。**
 > カーソル形状を組み立てる `PtrInfo::BuildTexture` の中で `abort()` に至る。
-> **MinGW 版の GStreamer で起き、MSVC 版では起きない**（`gst-launch` の1行で再現。
+> **1.28.6 以前の MinGW 版の GStreamer で起き、MSVC 版では起きない**（`gst-launch` の1行で再現。
 > アプリは関与していない）。**アプリ側では捕捉できない。** 既定の `false` のままにすること。
-> **同梱ランタイム（MinGW 版は `gstreamer-runtime-v1.28.6-r2` 以降、MSVC 版は
-> `gstreamer-runtime-msvc-v1.28.6` 以降）にはこの修正を当てた d3d12 プラグインを積んでいる**が、**非同梱配布は利用者の GStreamer をそのまま使うので
-> 従来どおり**（修正は上流のリリースにはまだ入っていない）。
+> **上流は 1.28.7 で直しており、同梱ランタイムは両形態とも 1.28.7** なので同梱配布には
+> この修正が入っている。**非同梱配布は利用者の GStreamer をそのまま使うので、1.28.7 以降が要る**。
 > **カーソルを写したいなら `d3d11screencapturesrc` を選べる**
 > （パイプラインの編集ダイアログのソース一覧にある）。**上流の D3D11 側は
 > 同じ処理が元から正しい**。ただしこの要素は**拡縮できない** ──
 > caps でモニターの実寸以外を要求すると `Internal data stream error` になる。
 > 詳細と、MSVC 版へ替えても「隠れるだけ」でありうる理由は
-> [docs/environment-facts.md](../docs/environment-facts.md)、
-> 改変版の中身は [THIRD-PARTY-NOTICES.md](../THIRD-PARTY-NOTICES.md)。
+> [docs/environment-facts.md](../docs/environment-facts.md)。
 
 #### フレームレートの上書きにも「上流の固定」が要る
 

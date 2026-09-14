@@ -11,11 +11,11 @@
 
     There are TWO bundled flavours, and -Flavor picks which one is unpacked:
 
-      mingw   the official GStreamer 1.28.6 MinGW runtime (LGPL-only selection), trimmed
-              to what this app can actually build: 46 files, 49.9 MB. Self-contained --
+      mingw   the official GStreamer 1.28.7 MinGW runtime (LGPL-only selection), trimmed
+              to what this app can actually build: 46 files, 49.8 MB. Self-contained --
               it brings its own libgcc / libstdc++ / libwinpthread
-      msvc    the official GStreamer 1.28.6 MSVC runtime, same selection, 44 files,
-              24.6 MB. It has NO C/C++ runtime of its own: msvcp140.dll,
+      msvc    the official GStreamer 1.28.7 MSVC runtime, same selection, 44 files,
+              24.5 MB. It has NO C/C++ runtime of its own: msvcp140.dll,
               vcruntime140.dll and vcruntime140_1.dll resolve outside the tree, so
               **this flavour needs the VC++ redistributable on the user's machine.**
               In exchange, d3d12screencapturesrc carries the WGC capture path
@@ -28,11 +28,8 @@
     whatever is there. Only one flavour can be staged at a time -- which is why the
     destination is emptied before unpacking (see below).
 
-    One file in each tree is NOT an upstream binary. The d3d12 plugin
-    (libgstd3d12.dll / gstd3d12.dll) is built from the 1.28.6 sources plus
-    patches/gst-plugins-bad-1.28.6-d3d12-monochrome-cursor.patch, which fixes an
-    out-of-bounds read that aborts the process when d3d12screencapturesrc composes a
-    monochrome cursor. THIRD-PARTY-NOTICES.md carries the provenance of both.
+    Every file in both trees is an unmodified upstream binary. THIRD-PARTY-NOTICES.md
+    carries the provenance of both.
 
     Neither has x264 nor libav, so a bundled build does not carry GPL plugins;
     Type=System falls through to mfh264enc. Hardware encoders (d3d11, d3d12, nvcodec,
@@ -78,8 +75,8 @@
     private repository (e.g. a private fork) need an authenticated request and return 404
     otherwise (verified). In that case fetch the asset yourself and pass -ArchivePath:
 
-        gh release download gstreamer-runtime-v1.28.6-r2 -p gstreamer-runtime-win-x64-v1.28.6-r2.zip
-        tools/Fetch-GStreamerRuntime.ps1 -ArchivePath .\gstreamer-runtime-win-x64-v1.28.6-r2.zip
+        gh release download gstreamer-runtime-v1.28.7 -p gstreamer-runtime-win-x64-v1.28.7.zip
+        tools/Fetch-GStreamerRuntime.ps1 -ArchivePath .\gstreamer-runtime-win-x64-v1.28.7.zip
 
     That is exactly what .github/workflows/release.yml does, so the workflow works either way.
 
@@ -116,12 +113,12 @@ Set-StrictMode -Version Latest
 # the one manual gate that catches a mismatch are in docs/runtime-update.md.
 $assets = @{
     mingw = @{
-        Uri    = 'https://github.com/masa-iwm/ProcessRecorderApp/releases/download/gstreamer-runtime-v1.28.6-r2/gstreamer-runtime-win-x64-v1.28.6-r2.zip'
-        Sha256 = '6FA7D925A1F965AE43EDE125F89F3467156D3B79BE1E22F2FBA374E8CB2CEEE5'
+        Uri    = 'https://github.com/masa-iwm/ProcessRecorderApp/releases/download/gstreamer-runtime-v1.28.7/gstreamer-runtime-win-x64-v1.28.7.zip'
+        Sha256 = '5066B3A533DF39CEE7ED15EEB7E6B097AD30995789938D4C30877B93976B43BD'
     }
     msvc  = @{
-        Uri    = 'https://github.com/masa-iwm/ProcessRecorderApp/releases/download/gstreamer-runtime-msvc-v1.28.6/gstreamer-runtime-msvc-win-x64-v1.28.6.zip'
-        Sha256 = '6A80C173D53B29DA1C2A2603889A9ADB9E92E7BA45338D329C510F89B39DB99D'
+        Uri    = 'https://github.com/masa-iwm/ProcessRecorderApp/releases/download/gstreamer-runtime-msvc-v1.28.7/gstreamer-runtime-msvc-win-x64-v1.28.7.zip'
+        Sha256 = '42A8961CC8AC87ED06A453FBACDE517A364F21BEEC80DAFF889B976D45D3EF94'
     }
 }
 

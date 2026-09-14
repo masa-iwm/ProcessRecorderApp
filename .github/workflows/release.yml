@@ -11,10 +11,10 @@
 #   - 非同梱     （`ProcessRecorderApp-<tag>-win-x64.zip`）
 #       利用者側に GStreamer(MinGW/MSVC) か MSYS2(UCRT64) が要る。軽い。
 #   - 同梱 MinGW （`ProcessRecorderApp-<tag>-win-x64-gstreamer-mingw.zip`）
-#       削減した runtimes（46 ファイル・49.9MB）を同梱する。**自己完結** ──
+#       削減した runtimes（46 ファイル・49.8MB）を同梱する。**自己完結** ──
 #       libstdc++ / libgcc / libwinpthread も入る。
 #   - 同梱 MSVC  （`ProcessRecorderApp-<tag>-win-x64-gstreamer-msvc.zip`）
-#       同じ選択の MSVC ビルド（44 ファイル・24.6MB）。小さく、画面キャプチャ 2 種
+#       同じ選択の MSVC ビルド（44 ファイル・24.5MB）。小さく、画面キャプチャ 2 種
 #       （`d3d12screencapturesrc` / `d3d11screencapturesrc`）に `capture-api`（WGC）が
 #       生えるが、**利用者の機械に VC++ 再頒布可能パッケージが要る**
 #       （`msvcp140` / `vcruntime140` / `vcruntime140_1` は同梱していない）。
@@ -49,10 +49,10 @@ env:
   # 同梱用ランタイムの置き場。形態ごとに Release アセット（prerelease）として上げてある。
   # tools/Fetch-GStreamerRuntime.ps1 の $assets と揃えること（更新手順は docs/runtime-update.md）。
   # 中身は licenses/third-party/COMPONENTS*.tsv が正本で、下の検証がそれと突き合わせる。
-  GSTREAMER_RUNTIME_TAG: 'gstreamer-runtime-v1.28.6-r2'
-  GSTREAMER_RUNTIME_ASSET: 'gstreamer-runtime-win-x64-v1.28.6-r2.zip'
-  GSTREAMER_RUNTIME_TAG_MSVC: 'gstreamer-runtime-msvc-v1.28.6'
-  GSTREAMER_RUNTIME_ASSET_MSVC: 'gstreamer-runtime-msvc-win-x64-v1.28.6.zip'
+  GSTREAMER_RUNTIME_TAG: 'gstreamer-runtime-v1.28.7'
+  GSTREAMER_RUNTIME_ASSET: 'gstreamer-runtime-win-x64-v1.28.7.zip'
+  GSTREAMER_RUNTIME_TAG_MSVC: 'gstreamer-runtime-msvc-v1.28.7'
+  GSTREAMER_RUNTIME_ASSET_MSVC: 'gstreamer-runtime-msvc-win-x64-v1.28.7.zip'
 
 jobs:
   package:

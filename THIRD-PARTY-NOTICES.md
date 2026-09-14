@@ -32,7 +32,7 @@
   `license.txt` と本ファイルは**同梱・非同梱の両方**に入ります。
 
 > **公式インストーラにはライセンス文が1つも入っていません。**
-> `gstreamer-1.0-mingw-x86_64-1.28.6.exe` の **Runtime / LGPL-only** 構成が展開する
+> `gstreamer-1.0-mingw-x86_64-1.28.7.exe` の **Runtime / LGPL-only** 構成が展開する
 > **349 ファイルを、名前（`COPYING` / `LICENSE` / `LICENCE` / `NOTICE`）でも
 > 中身でも全走査して 0 件**でした（中身の走査で当たるのは
 > `libfribidi-0.dll` のようにバイナリへ文字列として埋まっているものだけで、
@@ -41,21 +41,21 @@
 
 ## 由来（provenance）
 
-公式ビルドの GStreamer 1.28.6 を導入したツリーから、**このアプリが実際に構築しうる
-要素だけ**へ絞ったものです。**各形態とも 1 ファイルだけが改変版**で、残りは上流の
-バイナリそのままです（下記「改変しているファイル」）。
+公式ビルドの GStreamer 1.28.7 を導入したツリーから、**このアプリが実際に構築しうる
+要素だけ**へ絞ったものです。**両形態とも全ファイルが上流の公式バイナリそのまま**で、
+改変や再ビルドをしたファイルはありません。
 
 | 形態 | 元にしたツリー |
 |---|---|
-| MinGW | 公式インストーラ `gstreamer-1.0-mingw-x86_64-1.28.6.exe` の Runtime / **LGPL-only** 構成 |
+| MinGW | 公式インストーラ `gstreamer-1.0-mingw-x86_64-1.28.7.exe` の Runtime / **LGPL-only** 構成 |
 | MSVC | 公式 MSVC ビルドの**フル構成**（`x264` / `libav` を含むツリー。LGPL-only に相当する選択肢は無い） |
 
 | | ファイル数 | サイズ | zip |
 |---|---:|---:|---:|
-| MinGW 削減前（LGPL-only） | 349 | 254MB | 79.5MB |
-| MSVC 削減前（フル構成） | 828 | 349MB | ── |
-| **同梱物: MinGW 版** | **46** | **49.9MB** | **16.0MB** |
-| **同梱物: MSVC 版** | **44** | **24.6MB** | **8.2MB** |
+| MinGW 削減前（LGPL-only） | 349 | 256.3MB | ── |
+| MSVC 削減前（フル構成） | 826 | 324.7MB | ── |
+| **同梱物: MinGW 版** | **46** | **49.8MB** | **16.0MB** |
+| **同梱物: MSVC 版** | **44** | **24.5MB** | **8.2MB** |
 
 内訳（`ThirdPartyLicenseTests`（L1）が台帳から数え直して突き合わせます）:
 
@@ -83,46 +83,6 @@
 > **CI のランナーには Visual Studio が入っているため、この前提の欠落は
 > release.yml の smoke では踏めません**（緑を「入っていなくても動く」の根拠にしないこと）。
 > GPU 実機検証も CRT の在る機械で行っているので、同じく根拠になりません。
-
-### 改変しているファイル: `libgstd3d12.dll` / `gstd3d12.dll`
-
-同梱の d3d12 プラグイン（MinGW 版 `libgstd3d12.dll`、MSVC 版 `gstd3d12.dll`）は
-**上流のバイナリではありません**。GStreamer 1.28.6 の `gst-plugins-bad` に
-**同じ修正を1つ**当てて自前でビルドしたものです（形態ごとに別のツールチェーンで
-ビルドしていますが、当てた変更は同一です）。
-
-- **修正内容**: `d3d12screencapturesrc` がモノクロ（ハイコントラスト）カーソルを取り込む
-  ときの範囲外読み出し。XOR プレーンの開始位置に**出力 RGBA バッファの大きさ**を足して
-  いたのを、入力側の `shape_info.Pitch * height_` に直すもの（`gstd3d12dxgicapture.cpp`
-  の 2 行）。`d3d11screencapturesrc` 側は元から正しく、そちらへ合わせた形です。
-- **対応するソース**: 上流 1.28.6 のソース（下記「版とソースの入手先」の gst-plugins-bad）
-  ＋ [`patches/gst-plugins-bad-1.28.6-d3d12-monochrome-cursor.patch`](patches/gst-plugins-bad-1.28.6-d3d12-monochrome-cursor.patch)。
-  同じ変更は fork の
-  <https://gitlab.freedesktop.org/masa-iwm/gstreamer/-/commit/b508b0101499ded0aaf8ebc0e7d0520e046b2e71>
-  にもあります。上流の課題は
-  <https://gitlab.freedesktop.org/gstreamer/gstreamer/-/work_items/5259> で、
-  **上流のリリースにはまだ入っていません**。
-- **ビルドに使ったツールチェーン（MinGW 版）**: MinGW-W64 GCC 14.1.0（ucrt / posix / seh）。
-  cerbero の 14.2.0 とは別物です（バイナリの `GCC:` 文字列で確認）。同梱の
-  `libstdc++-6.dll` は 14.2.0 で、より新しい側なので読み込めます。
-- **ビルドに使ったツールチェーン（MSVC 版）**: MSVC リンカー 14.51
-  （Visual Studio 18 / MSVC 14.51.36231）。上流の公式ビルドは 14.44 です
-  （どちらも PE ヘッダーの linker version の実測値）。
-- **SHA256（MinGW 版 `libgstd3d12.dll`）**: `bf8c5a08e9756c056d80566eef23ff54210aca4e00882db9423c8b5870c3a6ed`
-- **SHA256（MSVC 版 `gstd3d12.dll`）**: `e27157082f59be15f855f4e5a961d2627ed8cc95b9abdb8eacdf76ada6b791f9`
-- **公式ビルドとの同一性（実測・両形態）**: PE のインポートは1件も違いません
-  （MSVC 版は差し替え前の公式バイナリと 28 件すべて一致）。それぞれの木の閉包は
-  MinGW 版 46 ファイル / MSVC 版 44 ファイルで removable 0、まっさらなレジストリでの要素は
-  **どちらも 16 プラグイン・268 件**で公式ビルドの木と完全一致、blacklist は 0 件。
-  `gst-inspect-1.0 d3d12` の `Version` は 1.28.6、`License` は LGPL、
-  `Source module` は gst-plugins-bad です。
-- **確かめていないこと**: **クラッシュそのものの解消は、この開発機では確認できません**
-  （WARP ＋ RDP でモノクロカーソルの経路に入らない）。当てた修正は
-  [`docs/environment-facts.md`](docs/environment-facts.md) に書いた原因分析と
-  同じ箇所・同じ値です。取り込みが動くこと（`show-cursor=true` で 60 フレーム、終了コード 0）
-  だけは**両形態の同梱する木そのもの**で確認しています
-  （`gst-launch-1.0 -e d3d12screencapturesrc show-cursor=true num-buffers=60 ! fakesink`
-  を各ツリーの `gst-launch-1.0.exe` で実行し、どちらも EOS・終了コード 0）。
 
 ### 一覧の作り方（再現手順）
 
@@ -160,7 +120,7 @@
 
 ## GStreamer プラグイン
 
-**両形態とも同じ 15 本**で、いずれも GStreamer 1.28.6 の一部、**申告ライセンスはすべて LGPL**
+**両形態とも同じ 15 本**で、いずれも GStreamer 1.28.7 の一部、**申告ライセンスはすべて LGPL**
 です（`gst-inspect-1.0` の `License` 行の実測値）。ファイル名は MinGW 版が
 `libgstX.dll`、MSVC 版が `gstX.dll` です。
 
@@ -174,7 +134,7 @@
 | `typefindfunctions` | gst-plugins-base | 型判定 |
 | `isomp4` | gst-plugins-good | `mp4mux` |
 | `videoparsersbad` | gst-plugins-bad | `h264parse` |
-| `d3d12`（**改変版**） | gst-plugins-bad | 画面キャプチャ / 変換 / プレビュー / D3D12 エンコーダー |
+| `d3d12` | gst-plugins-bad | 画面キャプチャ / 変換 / プレビュー / D3D12 エンコーダー |
 | `d3d11` | gst-plugins-bad | D3D11 経路のエンコーダー |
 | `mediafoundation` | gst-plugins-bad | カメラ入力・Media Foundation エンコーダー |
 | `nvcodec` | gst-plugins-bad | NVIDIA NVENC |
@@ -187,7 +147,7 @@
 ## GStreamer ライブラリ
 
 `libgstreamer-1.0-0.dll`（MSVC 版は `gstreamer-1.0-0.dll`）を含む GStreamer 本体の
-ライブラリ群で、いずれも **GStreamer 1.28.6（LGPL-2.1-or-later）** の一部です。内訳:
+ライブラリ群で、いずれも **GStreamer 1.28.7（LGPL-2.1-or-later）** の一部です。内訳:
 
 | 由来 | MinGW 版 | MSVC 版 | ライセンス文 |
 |---|---:|---:|---|
@@ -248,7 +208,7 @@
 
 `libstdc++-6.dll` は 25.3MB で**MinGW 版の半分以上（51%）**を占めます。
 **削減で減らせるのはここではありません** ── 同梱物は改変しない方針なので、
-`strip` も部分リンクもしていません。**MSVC 版が 24.6MB と半分以下で済むのは、
+`strip` も部分リンクもしていません。**MSVC 版が 24.5MB と半分以下で済むのは、
 まさにこの1ファイルを持たないからです**（その代わり利用者側に VC++ 再頒布可能
 パッケージを要求します）。
 
@@ -284,17 +244,12 @@ LGPL は「対応するソースの入手先を示すこと」を求めます。
 **下記の版そのもの**です（版は cerbero のレシピと、バイナリに埋め込まれた
 版文字列の両方で確認しました）。
 
-> **`libgstd3d12.dll` だけは「下記の版そのもの」ではありません。**
-> gst-plugins-bad 1.28.6 のソースに
-> [`patches/gst-plugins-bad-1.28.6-d3d12-monochrome-cursor.patch`](patches/gst-plugins-bad-1.28.6-d3d12-monochrome-cursor.patch)
-> を当てたものが対応するソースです（上記「改変している唯一のファイル」）。
-
 | プロジェクト | 版 | ソース（版を固定した実体） |
 |---|---|---|
-| GStreamer core | 1.28.6 | <https://gstreamer.freedesktop.org/src/gstreamer/gstreamer-1.28.6.tar.xz> |
-| gst-plugins-base | 1.28.6 | <https://gstreamer.freedesktop.org/src/gst-plugins-base/gst-plugins-base-1.28.6.tar.xz> |
-| gst-plugins-good | 1.28.6 | <https://gstreamer.freedesktop.org/src/gst-plugins-good/gst-plugins-good-1.28.6.tar.xz> |
-| gst-plugins-bad | 1.28.6 | <https://gstreamer.freedesktop.org/src/gst-plugins-bad/gst-plugins-bad-1.28.6.tar.xz> |
+| GStreamer core | 1.28.7 | <https://gstreamer.freedesktop.org/src/gstreamer/gstreamer-1.28.7.tar.xz> |
+| gst-plugins-base | 1.28.7 | <https://gstreamer.freedesktop.org/src/gst-plugins-base/gst-plugins-base-1.28.7.tar.xz> |
+| gst-plugins-good | 1.28.7 | <https://gstreamer.freedesktop.org/src/gst-plugins-good/gst-plugins-good-1.28.7.tar.xz> |
+| gst-plugins-bad | 1.28.7 | <https://gstreamer.freedesktop.org/src/gst-plugins-bad/gst-plugins-bad-1.28.7.tar.xz> |
 | GLib | 2.82.4 | <https://download.gnome.org/sources/glib/2.82/glib-2.82.4.tar.xz> |
 | proxy-libintl | 0.5 | <https://github.com/frida/proxy-libintl/archive/refs/tags/0.5.tar.gz> |
 | libffi（meson port） | meson-3.2.9999.5 | <https://gstreamer.freedesktop.org/src/mirror/libffi/libffi-meson-3.2.9999.5.tar.bz2> |
@@ -358,14 +313,11 @@ Cisco のロイヤリティフリー枠は「**Cisco が公開しているバイ
 
 ### 3. LGPL の義務
 
-同梱物は**動的リンク（DLL）**で、改変しているのは**各形態とも d3d12 プラグイン 1 件だけ**
-です（MinGW 版 46 件中 45 件・MSVC 版 44 件中 43 件は上流のまま ── 上記
-「改変しているファイル」）。したがって
+同梱物は**動的リンク（DLL）**で、**両形態とも全ファイルが上流の公式バイナリのまま**
+です（改変したファイルはありません）。したがって
 
 - 対応するソースの入手先を示すこと ── **上記「版とソースの入手先」に版を固定した
-  URL で記載**。改変した d3d12 プラグイン（`libgstd3d12.dll` / `gstd3d12.dll`）は、
-  そのソースと `patches/` のパッチを合わせたものが対応するソース ──
-  **両形態とも同一のパッチ**です
+  URL で記載**。そこに挙げた上流の tarball がそのまま対応するソースです
 - **利用者が DLL を差し替えられる状態を保つこと** ── 現状そうなっています。
   GstSharp.Net のローダーは PATH・環境変数・レジストリ・既定の導入先・MSYS2 を
   同梱物より**優先**するので、利用者は自分のビルドに差し替えられます
