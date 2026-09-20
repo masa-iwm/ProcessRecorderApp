@@ -96,12 +96,29 @@ jobs:
       # global.json も入れる ── SDK の版は SDK 同梱の暗黙パッケージ（ILCompiler / ILLink）の版を決める。
       # **古いキーに当たっても害は無い** ── restore / publish はそのまま走り、
       # 足りないパッケージだけを取りに行く（キャッシュは復元を速くするだけで、省かない）。
-      - name: Cache NuGet packages
-        uses: actions/cache@v6
+      #
+      # **リポジトリのキャッシュ枠は 10GB で、超えた分は最後に使われた時刻の古い順に消される。**
+      # 枠を食い潰すと「次に要るエントリが先に消える」ので、エントリを小さく・少なく保つ:
+      #   - **復元と保存を分け、保存は main だけ**（下の「Save NuGet packages」）。ブランチの
+      #     エントリは main から読めないので、保存しても枠を食うだけになる
+      #     （ブランチは main のエントリを読める）。
+      #   - **main では接頭辞フォールバック（restore-keys）を使わない。** 古いエントリを土台に
+      #     復元してから保存すると、使わなくなった版が残ったまま積み上がり、エントリが
+      #     単調に膨らむ（`.nupkg` 込みのクリーンな 1 本で圧縮後 約 1.2GB）。保存しないブランチでは
+      #     膨らむ先が無いので、フォールバックで差分だけ取りに行かせる。
+      #   - **`.nupkg` 本体は入れない。** NuGet が「展開済み」と判定するのは `.nupkg.metadata` で、
+      #     本体が無くても restore / publish は何も取り直さない。本体は展開済みフォルダの
+      #     約 3 割（2.4GB 中 0.7GB）で、圧縮済みなのでエントリの大きさにそのまま載る。
+      #     `path` の除外パターン（`!…/*.nupkg`）では落とせない ── actions/cache は
+      #     ディレクトリを丸ごと tar へ渡すので、その配下への除外は効かない。保存の直前に消す。
+      #   - **エントリは 1 本**（publish-aot は保存しない。あちらのコメントを参照）。
+      - name: Restore NuGet packages from the cache
+        id: nuget-cache
+        uses: actions/cache/restore@v6
         with:
           path: ~/.nuget/packages
           key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', '**/Directory.Packages.props', '**/Directory.Build.props', '**/*.pubxml', 'nuget.config', 'global.json') }}
-          restore-keys: nuget-${{ runner.os }}-
+          restore-keys: ${{ github.ref != 'refs/heads/main' && format('nuget-{0}-', runner.os) || '' }}
 
       - name: Restore
         run: dotnet restore src/ProcessRecorderApp.slnx
@@ -211,6 +228,25 @@ jobs:
           path: src/ProcessRecorderApp/bin/Release/win-x64/publish/selfcontained
           if-no-files-found: error
 
+      # 保存は **main で、キーが完全一致しなかった回だけ**（理由は上の復元ステップのコメント）。
+      # 発行の後に置く ── ReadyToRun のパック（crossgen2）は発行でしか復元されない。
+      # `.nupkg` 本体を消してから保存する（ランナーは使い捨てなので、消して困る後続は無い）。
+      - name: Drop the .nupkg files before saving the cache
+        if: github.ref == 'refs/heads/main' && steps.nuget-cache.outputs.cache-hit != 'true'
+        run: |
+          $root = Join-Path $env:USERPROFILE '.nuget\packages'
+          $files = @(Get-ChildItem -LiteralPath $root -Recurse -File -Filter '*.nupkg')
+          $bytes = ($files | Measure-Object Length -Sum).Sum
+          $files | Remove-Item -Force
+          Write-Host "removed $($files.Count) .nupkg files ($([math]::Round($bytes / 1MB)) MB)"
+
+      - name: Save NuGet packages to the cache
+        if: github.ref == 'refs/heads/main' && steps.nuget-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ~/.nuget/packages
+          key: ${{ steps.nuget-cache.outputs.cache-primary-key }}
+
   # 配布物が AOT（release.yml は win-x64-aot で発行する）なので、
   # タグ限定ではなく常時のジョブにしてある。
   #
@@ -233,21 +269,21 @@ jobs:
         with:
           dotnet-version: '10.0.x'
 
-      # 入力は build-and-test と同じだが、**キーに `aot-` を挟んで別エントリにする。**
+      # **このジョブは build-and-test のエントリを読むだけで、保存しない**（キーは同じ）。
       # ここでは publish がプロファイル付きの復元を行い、ILCompiler パッケージを取る
-      # ── build-and-test 側のエントリには入っていない。キーが同じだと、キャッシュの
-      # 無い回に 2 ジョブが並走して両方が保存を試み、後着は "Unable to reserve cache" で
-      # 捨てられる（build-and-test 側が残ると ILCompiler は毎回取り直しになる）。
-      # restore-keys は共通の接頭辞のままにして、初回は build-and-test のエントリから
-      # 共通パッケージだけでも受け取る。復元は必ず走る（在れば速いだけ）。
-      - name: Cache NuGet packages
-        uses: actions/cache@v6
+      # ── build-and-test 側のエントリには入っていないので、**ILCompiler は毎回取り直す**
+      # （展開後 約 100MB）。このジョブ専用のエントリを持てば省けるが、中身の 9 割以上が
+      # build-and-test と重複した約 1.2GB がキーごとにもう 1 本増え、10GB の枠を半分の
+      # 世代数で使い切る。
+      # restore-keys は条件無しで接頭辞まで落とす ── 保存しないので膨らむ先が無く、
+      # キーが変わった回（build-and-test と並走するので、その回は必ず外れる）も
+      # 直前のエントリから共通パッケージを受け取れる。復元は必ず走る（在れば速いだけ）。
+      - name: Restore NuGet packages from the cache
+        uses: actions/cache/restore@v6
         with:
           path: ~/.nuget/packages
-          key: nuget-${{ runner.os }}-aot-${{ hashFiles('**/*.csproj', '**/Directory.Packages.props', '**/Directory.Build.props', '**/*.pubxml', 'nuget.config', 'global.json') }}
-          restore-keys: |
-            nuget-${{ runner.os }}-aot-
-            nuget-${{ runner.os }}-
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', '**/Directory.Packages.props', '**/Directory.Build.props', '**/*.pubxml', 'nuget.config', 'global.json') }}
+          restore-keys: nuget-${{ runner.os }}-
 
       # **ここで --no-restore を使ってはいけない。** PublishAot は .pubxml だけに書いてあり
       # （csproj 側を Release 条件付きにすると通常の Release ビルドまで AOT になるため、
